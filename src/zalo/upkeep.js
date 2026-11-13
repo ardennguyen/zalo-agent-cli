@@ -1,14 +1,14 @@
 /**
- * What a logged-in Web client does on a timer (plan items L2e and L9), and nothing else.
+ * What a logged-in client does on a timer (plan items L2e and L9), and nothing else.
  *
- *  - **Settings refresh, hourly.** The official client asks `getServerInfo` again every hour, so a long-lived
+ *  - **Settings refresh, hourly.** `getServerInfo` is asked again every hour, so a long-lived
  *    process follows the server's settings (retry tables, keepalive, maintenance) instead of the ones it
  *    logged in with.
  *  - **HTTP keepalive, only when the server asks for it.** When `settings.keepalive` says `alway_keepalive` or
  *    gives a `keepalive_duration`, `keepAlive()` is called that often (120 s when the duration is 0). It is
  *    reset by every other request, which counts as proof the session is in use, and stops once nothing but
  *    keepalives has gone out for `time_deactive` seconds (300 when unset); the next request starts it again.
- *    The captured session's settings asked for neither, so by default no keepalive traffic is added.
+ *    The observed session's settings asked for neither, so by default no keepalive traffic is added.
  *
  * Both timers are unref'd: they never keep a process alive. Failures are swallowed: a missed refresh is
  * retried an hour later, a missed keepalive on the next tick.

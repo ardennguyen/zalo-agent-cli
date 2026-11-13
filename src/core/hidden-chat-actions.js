@@ -1,9 +1,9 @@
 /**
  * The hidden-chat actions both surfaces run (`conv hidden|hide|unhide|hidden-pin|hidden-pin-reset` and
- * zalo_conversation's `hidden`, `hide`, `unhide`, `hidden_pin`, `hidden_pin_reset`), as Zalo Web does them:
+ * zalo_conversation's `hidden`, `hide`, `unhide`, `hidden_pin`, `hidden_pin_reset`), as Zalo does them:
  *
  * - listing needs the PIN; without it only the count and whether a PIN is set are given;
- * - hiding needs a PIN to be set (Web asks for one first); unhiding needs the PIN, as opening a hidden chat does;
+ * - hiding needs a PIN to be set (Zalo asks for one first); unhiding needs the PIN, as opening a hidden chat does;
  * - changing the PIN needs the current one (when set) and the new one twice;
  * - removing the PIN (`reset`) needs no PIN, and then the device that asked deletes every hidden conversation through
  *   the ordinary delete, which Zalo syncs to the other devices.
@@ -58,7 +58,7 @@ export async function changeHiddenPin(api, set, { pin, newPin, newPin2 }) {
 }
 
 /**
- * Remove the PIN as Zalo Web does: list the hidden conversations, reset the PIN, then delete each conversation the way
+ * Remove the PIN as Zalo does: list the hidden conversations, reset the PIN, then delete each conversation the way
  * `conv delete` does (backwards from its newest known message), reporting each one.
  *
  * @param {object} api

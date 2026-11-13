@@ -212,7 +212,7 @@ export const CLOUD_META = {
         "commands), from the local index (zalo_sync stage 'cloud' fills it). Actions: 'summary' (items and bytes by " +
         "kind and by conversation) and 'plan' (the items a cleanup of this shape would cover, and the space it would " +
         "free; groups and My Cloud are left out unless asked for) only read; 'apply' deletes the chat message behind " +
-        "each planned item, for this account on every device, as Zalo Web's cloud view does: it cannot be undone, " +
+        "each planned item, for this account on every device, as Zalo's cloud view does: it cannot be undone, " +
         "has not been validated live yet, and is asked about first (`confirm`, `dryRun` shows the plan).",
     inputSchema: z
         .object({

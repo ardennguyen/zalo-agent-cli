@@ -82,7 +82,7 @@ describe("readControls", () => {
         );
     });
 
-    it("knows the controls Zalo PC uses only for its own UI, with no handler and a reason", () => {
+    it("knows the controls Zalo uses only for its own UI, with no handler and a reason", () => {
         const out = readControls({
             controls: [
                 control("41", "media_send2me", "remove_media"),

@@ -1,9 +1,9 @@
 /**
- * Splitting a long message the way Zalo Web does (src/zalo/format/split-message.js).
+ * Splitting a long message the way Zalo does (src/zalo/format/split-message.js).
  *
  * Zalo refuses an oversized message instead of cutting it (measured live: plain text past 3000 UTF-16 units is a
  * 114, a styled message past roughly 3.1 KB of text plus style JSON is a 112), and Chinese or long bulleted answers
- * reach that early. The Web client splits at 3000 bytes of text plus styles JSON, at a newline when it can.
+ * reach that early. The split is at 3000 bytes of text plus styles JSON, at a newline when it can.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
@@ -70,7 +70,7 @@ describe("where it cuts", () => {
         for (const p of parts) assert.match(p.text, /here\.$/);
     });
 
-    it("at Chinese punctuation, which Web's ASCII-only list would miss", () => {
+    it("at Chinese punctuation, which an ASCII-only list would miss", () => {
         const text = "这是一个测试的句子，用来检查切分。".repeat(300);
         const parts = splitMessage({ text });
         assert.ok(parts.length >= 2);
@@ -95,7 +95,7 @@ describe("where it cuts", () => {
         assert.equal(parts.map((p) => p.text).join(""), text);
     });
 
-    it("drops the whitespace at a cut, as Web trims its parts", () => {
+    it("drops the whitespace at a cut, trimming its parts", () => {
         const parts = splitMessage({ text: `${words(400)}\n\n\n${words(400)}` });
         for (const p of parts) assert.equal(p.text, p.text.trim());
     });

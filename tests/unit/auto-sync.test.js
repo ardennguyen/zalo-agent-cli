@@ -26,12 +26,12 @@ const control = (data, { ts = NOW - 1000, act = "transfer_after_login", actionId
 const KEY = "k".repeat(64);
 
 describe("pickTransferAfterLogin", () => {
-    it("takes the key of a transfer_after_login control that is for the web", () => {
+    it("takes the key of a transfer_after_login control that is for a browser session", () => {
         const got = pickTransferAfterLogin([control({ temp_key: KEY, imei: null, pc: 0 })], { now: NOW });
         assert.deepEqual(got, { tempKey: KEY, ageMs: 1000 });
     });
 
-    it("ignores a control for the PC app (pc 1), one with no key or an empty one, and other acts", () => {
+    it("ignores a control for the desktop app (pc 1), one with no key or an empty one, and other acts", () => {
         const none = [
             control({ temp_key: KEY, pc: 1 }),
             control({ pc: 0 }),
@@ -84,7 +84,7 @@ describe("pickTransferAfterLogin", () => {
 });
 
 describe("classifyLoginOffer: what `login` says about the phone's 'sync messages' box", () => {
-    it("ticked: a fresh offer for the web, with its key and age", () => {
+    it("ticked: a fresh offer for a browser session, with its key and age", () => {
         assert.deepEqual(classifyLoginOffer([control({ temp_key: KEY, imei: "x", pc: 0 })], { now: NOW }), {
             status: "ticked",
             tempKey: KEY,
@@ -92,7 +92,7 @@ describe("classifyLoginOffer: what `login` says about the phone's 'sync messages
         });
     });
 
-    it("late: the offer for the web is older than the limit (the phone would ask for a tap again)", () => {
+    it("late: the offer for a browser session is older than the limit (the phone would ask for a tap again)", () => {
         const old = control({ temp_key: KEY, pc: 0 }, { ts: NOW - AUTO_SYNC_MAX_AGE_MS - 5000 });
         assert.deepEqual(classifyLoginOffer([old], { now: NOW }), {
             status: "late",
@@ -100,11 +100,11 @@ describe("classifyLoginOffer: what `login` says about the phone's 'sync messages
         });
     });
 
-    it("other-client: only an offer for the PC app (pc 1), which this client must not use", () => {
+    it("other-client: only an offer for the desktop app (pc 1), which this client must not use", () => {
         assert.deepEqual(classifyLoginOffer([control({ temp_key: KEY, pc: 1 })], { now: NOW }), {
             status: "other-client",
         });
-        // A web offer next to it wins.
+        // A browser-session offer next to it wins.
         const both = [control({ temp_key: KEY, pc: 1 }), control({ temp_key: KEY, pc: 0 })];
         assert.equal(classifyLoginOffer(both, { now: NOW }).status, "ticked");
     });
@@ -207,7 +207,7 @@ describe("autoSyncAfterLogin against the fake phone", () => {
         assert.equal(phone.requests.length, 0);
     });
 
-    it("starts nothing for an offer meant for the PC app", async () => {
+    it("starts nothing for an offer meant for the desktop app", async () => {
         const { out, phone } = await run([control({ temp_key: KEY, pc: 1 }, { ts: Date.now() - 500 })]);
         assert.equal(out.offered, false);
         assert.equal(out.status, "other-client");
@@ -268,7 +268,7 @@ describe("autoSyncAfterLogin against the fake phone", () => {
         assert.deepEqual(out.pulls, [{ queue: "603_1", from: "start", pages: 3, reason: "found" }]);
     });
 
-    it("reads from the saved control cursor first, as Zalo Web does, and finds the offer after it", async () => {
+    it("reads from the saved control cursor first, and finds the offer after it", async () => {
         const q = keptQueue(120, Date.now() - 500);
         const cursors = [];
         const { out } = await run(null, {

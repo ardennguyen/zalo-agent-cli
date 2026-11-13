@@ -227,7 +227,7 @@ export function registerProfileCommands(program) {
     profile
         .command("active <on|off>")
         .description(
-            "Set this session's presence, active (on) or away (off), as Zalo Web does when its tab gains or loses " +
+            "Set this session's presence, active (on) or away (off), as Zalo does when its window gains or loses " +
                 "focus. It does not hide your online status from others: that is `profile set online-status 0`",
         )
         .action(async (state) => {
@@ -255,7 +255,7 @@ export function registerProfileCommands(program) {
 
     profile
         .command("lost-focus")
-        .description("Tell Zalo this client moved to the background (what Zalo Web sends when its tab loses focus)")
+        .description("Tell Zalo this client moved to the background (what Zalo sends when its window loses focus)")
         .action(async () => {
             try {
                 const result = await getApi().lostFocus();
@@ -264,6 +264,6 @@ export function registerProfileCommands(program) {
                 error(`Lost focus failed: ${e.message}`);
             }
         });
-    // Asked about first, as Zalo Web does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    // Asked about first, as Zalo does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
     guardSubcommand(profile, "delete-avatar", "profile.deleteAvatar", { target: (photoIds) => ({ photoIds }) });
 }

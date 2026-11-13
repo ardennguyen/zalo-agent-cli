@@ -99,7 +99,7 @@ const isFakeNoised = (token) => token.includes("NOISED");
 const ALLOWED = new Map([
     [
         String(2n ** 63n),
-        "2^63, Zalo Web's MAX_MSG_ID: NEWEST_MSG_ID in src/zalo/custom/group-history.js, and its tests",
+        "2^63, Zalo's newest-message id: NEWEST_MSG_ID in src/zalo/custom/group-history.js, and its tests",
     ],
     [
         String(Number.MAX_SAFE_INTEGER),

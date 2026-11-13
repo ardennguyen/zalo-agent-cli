@@ -1,7 +1,7 @@
 /**
  * The login cipher: what `getLoginInfo` and `getServerInfo` need before any session key exists.
  *
- * Wire facts (Zalo Web's `createZcid`, `encryptParam`, `decryptResp` and `getSignKey`; spec-kernel 11.2):
+ * Wire facts (spec-kernel 11.2):
  *
  * - `zcid` = uppercase hex of AES-256-CBC (zero IV, PKCS#7) of `"<type>,<imei>,<firstLaunchTime>"`, keyed by the
  *   UTF-8 bytes of a fixed 32-character string (32 bytes, so AES-256; it is not hex-decoded).
@@ -15,7 +15,7 @@
  */
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomInt } from "node:crypto";
 
-/** The fixed key `zcid` is sealed with (Zalo Web's param cipher key). */
+/** The fixed key `zcid` is sealed with (Zalo's param cipher key). */
 const ZCID_KEY = "3FC4F0D2AB50057BCE0D90D9187A22B1";
 
 /** `enc_ver` of every encrypted login call. */
@@ -44,7 +44,7 @@ const md5 = (text) => createHash("md5").update(text, "utf8").digest("hex");
 /**
  * The `zcid` of a login.
  *
- * @param {number|string} type - the API type (30 for Web)
+ * @param {number|string} type - the API type (30)
  * @param {string} imei
  * @param {number} firstLaunchTime - milliseconds
  * @returns {string} uppercase hex

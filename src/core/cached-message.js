@@ -49,7 +49,7 @@ export function cachedCliMsgId(row) {
  * The message's text as it was sent.
  *
  * The listener trims the `text` column; the payload keeps the original string,
- * which is what Zalo Web forwards and pins.
+ * which is what a forward or a pin carries.
  *
  * @param {object} row - a `messages` row
  * @returns {string}
@@ -84,7 +84,7 @@ export function quotedReply(quote) {
         msgId,
         cliMsgId,
         senderId,
-        // The quoted author as Zalo Web shows them: it renames the quote's `fromD` at render with the owner's alias
+        // The quoted author as Zalo shows them: it renames the quote's `fromD` at render with the owner's alias
         // (src/core/contact-names.js). `senderZaloName` keeps the name the quote carried.
         ...senderNameFields(senderId, typeof quote.fromD === "string" && quote.fromD ? quote.fromD : null),
         text: typeof quote.msg === "string" ? quote.msg : "",

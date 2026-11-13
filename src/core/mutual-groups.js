@@ -1,10 +1,10 @@
 /**
- * The groups this account shares with one user, as Zalo PC shows them: "Nhóm chung (N)" on a profile and in a new
+ * The groups this account shares with one user, as Zalo shows them: "Nhóm chung (N)" on a profile and in a new
  * chat, for friends and strangers alike.
  *
- * PC reads them from the profile's extra fields (`/api/social/profile/extra`, cmd 11864: `groupIds`), the read
- * `profile-extra` here (src/zalo/reads.js), and leaves out a group that is a hidden chat
- * (`checkHiddenChatByPureGroupId`). Names come from the groups' own info. Nothing here writes zalo.db.
+ * They come from the profile's extra fields (`/api/social/profile/extra`, cmd 11864: `groupIds`), the read
+ * `profile-extra` here (src/zalo/reads.js), and a group that is a hidden chat is left
+ * out. Names come from the groups' own info. Nothing here writes zalo.db.
  */
 import { callRead } from "../zalo/reads.js";
 import { getGroupInfoWatched } from "./group-exit.js";
@@ -45,7 +45,7 @@ export async function groupNames(api, groupIds, { ownId = null } = {}) {
  * @param {string} userId
  * @param {object} [opts]
  * @param {string|null} [opts.ownId] - for the group-info watch (a group answered as gone is recorded)
- * @param {{isHidden: (id: string) => boolean}|null} [opts.hidden] - hidden chats to leave out, as PC does; null keeps all
+ * @param {{isHidden: (id: string) => boolean}|null} [opts.hidden] - hidden chats to leave out; null keeps all
  * @param {boolean} [opts.names] - also read the groups' names (default true)
  * @returns {Promise<{count: number, groups: {groupId: string, name: string|null}[], hiddenLeftOut: number}>}
  * @throws Zalo's error when the profile read fails

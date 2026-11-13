@@ -17,7 +17,7 @@ import { senderNameFields } from "../core/contact-names.js";
  * A buffered message with its sender named as of now: the owner's alias when one is set, else the name the message
  * carried. The buffer keeps the name from when the message arrived, and an alias set or changed since (a rename while
  * parked comes back in the same catch-up as the messages, and is read about two seconds after them) would otherwise
- * show the old name, where Zalo PC and Web show the current alias.
+ * show the old name, where Zalo shows the current alias.
  *
  * @param {object} m
  * @returns {object}

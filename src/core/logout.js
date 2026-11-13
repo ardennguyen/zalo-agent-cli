@@ -2,7 +2,7 @@
  * The local side of `logout` and `account remove`: the saved login tried again, the chat history wiped, the
  * trusted-device identity described, and the result told to a person.
  *
- * The server side -- Zalo Web's logout calls, the official six-step device sign-out, the session-key probe -- is the
+ * The server side -- the logout calls, the official six-step device sign-out, the session-key probe -- is the
  * protocol layer's: src/zalo/logout.js (and src/zalo/official-logout.js), whose header has the history.
  */
 import { join } from "node:path";
@@ -30,7 +30,7 @@ async function probeSavedLogin(saved) {
 }
 
 /**
- * Sign this device out at Zalo, the way the official client does: `serverLogout` of src/zalo/logout.js, with the
+ * Sign this device out at Zalo, the way Zalo's own app does: `serverLogout` of src/zalo/logout.js, with the
  * saved login tried in a new login of this CLI's own making.
  *
  * @param {object} api - a logged-in session API
@@ -51,10 +51,8 @@ const EMPTY_REPLY = /Failed to parse response data/;
 
 /**
  * Delete the local chat cache (zalo.db + WAL/SHM sidecars) and downloaded media
- * for one account. Mirrors Zalo Web's "Xóa lịch sử trò chuyện khi đăng xuất"
- * checkbox — a purely local operation there too (a z_cleardata localStorage
- * flag consumed by the web's own deleteAllData(), no server call), so no
- * network round trip here either.
+ * for one account, like Zalo's "Xóa lịch sử trò chuyện khi đăng xuất" checkbox:
+ * a purely local operation, no network round trip.
  *
  * @param {string} ownId
  * @returns {{dbDeleted: boolean, mediaDeleted: boolean}}

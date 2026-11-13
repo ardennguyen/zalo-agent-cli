@@ -1,6 +1,6 @@
 /**
  * The action tools: one MCP tool per area of the account (zalo_conversation, zalo_profile, zalo_catalog, …), whose
- * `action` input picks one row of a table. A row says which inputs the action needs, whether Zalo Web asks about it
+ * `action` input picks one row of a table. A row says which inputs the action needs, whether Zalo asks about it
  * first (its GUARDS key, src/core/confirm-guard.js), and the session call it makes, which is the call the matching
  * CLI command makes. Every action is settled in the same order: its inputs are checked, then a guarded one is settled
  * (dry run, refusal or question), and only then is Zalo asked.
@@ -28,7 +28,7 @@ const NUMERIC_INPUTS = {
 };
 
 /**
- * `confirm` for a tool with actions Zalo Web asks about first, which it settles through the guard after its
+ * `confirm` for a tool with actions Zalo asks about first, which it settles through the guard after its
  * arguments are checked and before anything is sent.
  *
  * @param {string} which - the actions it applies to, for the description
@@ -115,7 +115,7 @@ export function checkInputs(action, args, needs) {
  * - `needs`: the inputs it requires (see {@link checkInputs});
  * - `check(a)`: any further check; returns the refusal, or nothing;
  * - `prepare(a, ctx)`: what the guard and the call both need, read once before the guard (fields added to `a`);
- * - `guard(a)`: `{key, target, applies?}` for an action Zalo Web asks about first;
+ * - `guard(a)`: `{key, target, applies?}` for an action Zalo asks about first;
  * - `preview(a, ctx)`: more for a guarded action's dry run (what `conv forget --dry-run` lists);
  * - `run(a, ctx, extra)`: the session call; returns the reply's fields (the action's name is added), or
  *   `{needsReply}` for a "needs X" reply (pinRequired with a secure page link), returned as an error reply;

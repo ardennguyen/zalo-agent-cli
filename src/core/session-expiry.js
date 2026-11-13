@@ -2,8 +2,7 @@
  * When the saved login stops working by itself.
  *
  * The chat session's cookie, `zpw_sek`, is set once, by `jr.chat.zalo.me/jr/pushsession` at login, with a life of about
- * 90 days. In every captured Zalo Web session (eight of them, from a few minutes to a long idle one) no API answer set
- * it again, and the Web client's own `exta/rnw` renewal call has no caller in any bundle. So nothing extends it: a
+ * 90 days. No API answer sets it again, and the `exta/rnw` renewal call is never made. So nothing extends it: a
  * login is good until `creation + max-age`, and a daemon running past that needs a new QR login. This reads that date
  * from the saved cookie jar, so it can be shown before it arrives instead of after.
  *

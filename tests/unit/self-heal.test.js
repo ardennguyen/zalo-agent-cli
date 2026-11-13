@@ -1,12 +1,11 @@
 /**
  * The daemon self-heals a coverage gap from Zalo's offline queue, on its own socket.
  *
- * Zalo Web, on every authenticated connect (bundle 1.e0ef5e98…: `_doAfterAuth`
- * → `onAuthenticated` reads the handshake's `qCmds`, then `signalGetOffline` →
- * `doGetOffline` per queue), asks each queue for what it missed since its
+ * On every authenticated connect (after reading the handshake's `qCmds`),
+ * a client asks each queue for what it missed since its
  * saved cursor -- `{first:true, reqId, lastId, preIds:[]}` on cmd 510/511 sub 1
- * -- and pages while the answer says `more`, continuing from `lastActionId`
- * (`onGotOffline`). No phone is involved: that is the full restore's job
+ * -- and pages while the answer says `more`, continuing from `lastActionId`.
+ * No phone is involved: that is the full restore's job
  * (cmd 590), which only a `zalo-agent sync` someone typed may start.
  *
  * These tests drive the real socket tap, the real frame decoder, the real
@@ -228,11 +227,11 @@ describe("self-heal: catch up from the offline queue on the daemon's own socket"
                 { cmd: 510, subCmd: 1, first: true, lastId: g1 },
                 { cmd: 511, subCmd: 1, first: true, lastId: g1 },
             ],
-            "510 has no cursor of its own, so it starts where 511 is -- the web's shared lastActionId",
+            "510 has no cursor of its own, so it starts where 511 is -- the shared lastActionId",
         );
         for (const p of asked) {
             assert.deepEqual(p.data.preIds, []);
-            assert.match(String(p.data.reqId), /^req_\d+$/, "the web's reqId shape");
+            assert.match(String(p.data.reqId), /^req_\d+$/, "the expected reqId shape");
         }
     });
 
@@ -257,7 +256,7 @@ describe("self-heal: catch up from the offline queue on the daemon's own socket"
         await sleep(0);
         await d.heal.settled();
 
-        // Red on asking at once (5c99017, Zalo PC's signalGetOffline): every first page would go out before any
+        // Red on asking at once (5c99017): every first page would go out before any
         // answer, and live Zalo then left 511_1 and 603_1 unanswered (2026-11-12).
         assert.deepEqual(
             order,
@@ -507,7 +506,7 @@ describe("self-heal: catch up from the offline queue on the daemon's own socket"
     });
 
     it("(c) a queue answering with messages from before the cursor is not taken as coverage", async () => {
-        // The web's own use says lastId means "after this"; an answer that
+        // lastId means "after this"; an answer that
         // contradicts it cannot vouch for the window after the cursor either.
         const older = nextId();
         const g1 = nextId();
@@ -754,7 +753,7 @@ describe("Y10: queue items are acknowledged (532) only after their rows are stor
         assert.deepEqual(idsIn(acksOf(d.listener)[0]).sort(), [a, b].sort());
     });
 
-    it("an offline page is stored and moves the cursor, but is never acknowledged (Zalo PC's skip_offline_verify)", async () => {
+    it("an offline page is stored and moves the cursor, but is never acknowledged", async () => {
         const g1 = nextId();
         const next = nextId();
         const d = daemon({ respond: scripted({ 511: [page(511, [row(next)])] }) });
@@ -789,7 +788,7 @@ describe("Y10: queue items are acknowledged (532) only after their rows are stor
         const r = row(id);
         live(d.listener, r);
         d.listener.push(521, 0, envelope(r));
-        // Red if the verifier sends while the offline queues drain: Zalo PC's is "not started yet".
+        // Red if the verifier sends while the offline queues drain: it must not have started yet.
         assert.equal(d.heal.flushAcks(), 0, "an ack went out mid-drain");
         assert.equal(acksOf(d.listener).length, 0);
         assert.equal(d.heal.queueAcks().held, true);

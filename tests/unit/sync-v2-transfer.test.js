@@ -150,7 +150,7 @@ describe("applyControl: statuses", () => {
         assert.equal(isIdleTooLong(null), false);
     });
 
-    it("gives an idle phone a minute on an incomplete session where Web gives it ten (pinned: a change is a decision)", () => {
+    it("gives an idle phone a minute on an incomplete session, not ten (pinned: a change is a decision)", () => {
         assert.equal(STALL_IDLE_MS, 60_000);
         assert.equal(IDLE_TIMEOUT_MS, 600_000);
     });

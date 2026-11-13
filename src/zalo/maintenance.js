@@ -2,12 +2,11 @@
  * Zalo's maintenance gate (plan item L3).
  *
  * While Zalo is in maintenance, every login and socket attempt fails, and a
- * retry ladder only adds load to a service that is down on purpose. The
- * official client asks one cheap question instead, `GET {maintenance host}/api/chk`,
+ * retry ladder only adds load to a service that is down on purpose. Zalo's
+ * own app asks one cheap question instead, `GET {maintenance host}/api/chk`,
  * and waits for the answer to change. This is that question and that wait.
  *
- * What the answer means, from the official client's own code (its maintenance
- * module, read in the 2026-10-23 Web bundle): `error_code` 0 is "no maintenance",
+ * What the answer means: `error_code` 0 is "no maintenance",
  * 70 is "in maintenance now" and 71 is "continue checking". The answer's `data`
  * may carry an announced window, `{startTime, endTime}` in milliseconds. A
  * running client that gets 70 restarts into its maintenance screen; one that gets
@@ -22,7 +21,7 @@
  * settings, echoed back.
  */
 
-/** Where the official client asks. */
+/** Where Zalo's own app asks. */
 export const MAINTENANCE_URL = "https://maint.chat.zalo.me";
 
 /** How long to wait between questions, by where "now" is against the announced window. */
@@ -34,8 +33,8 @@ export const MAINTENANCE_POLL_MS = Object.freeze({
 });
 
 /**
- * How long to wait before asking again: the official client's rule. Inside the window an hour, from its end (or
- * with no window) a minute. Before the window starts the official client waits 0 ms, which would ask in a loop;
+ * How long to wait before asking again: Zalo's own app's rule. Inside the window an hour, from its end (or
+ * with no window) a minute. Before the window starts Zalo's own app waits 0 ms, which would ask in a loop;
  * this waits a minute instead.
  *
  * @param {{startTime?: number, endTime?: number}} [window] - milliseconds, 0 when none was announced
@@ -57,7 +56,7 @@ function windowOf(data) {
 
 /**
  * The two numbers the question carries, as the session's login learned them: the disaster-recovery settings the
- * server sent (`features.dr_config`). The official client sends what it stored the same way; -1 and -1 is what a
+ * server sent (`features.dr_config`). Zalo's own app sends what it stored the same way; -1 and -1 is what a
  * client that has stored nothing sends, so a session without them asks exactly that.
  *
  * @param {object} [api] - a session object from {@link loginWithSession}
@@ -142,10 +141,10 @@ export async function waitOutMaintenance({ check, sleep, onPoll = () => {}, sign
 }
 
 /**
- * Keep asking after a 71, as the official client does ("continue checking"): the caller carries on, and this
+ * Keep asking after a 71, as Zalo's own app does ("continue checking"): the caller carries on, and this
  * asks again after each {@link pollDelayMs} wait until Zalo says it is fine (0, which ends the watch) or says it
  * is in maintenance now (70, which is handed to `onMaintenance` and ends the watch: the caller restarts into
- * its maintenance wait, as the official client restarts into its maintenance screen). 71 and an unanswered
+ * its maintenance wait, as Zalo's own app restarts into its maintenance screen). 71 and an unanswered
  * question both mean "ask again". Resolves with why it ended.
  *
  * @param {object} opts

@@ -67,7 +67,7 @@ export const CLOSE_CODE = Object.freeze({
 /**
  * The retry keys. A key is either a number (a close or error code, looked up
  * as its decimal string in the server's retry table) or a name. The numbers
- * after the names are what the official client logs them as.
+ * after the names are what Zalo's own app logs them as.
  */
 export const RETRY_KEY = Object.freeze({
     MANUAL: "manual",
@@ -79,7 +79,7 @@ export const RETRY_KEY = Object.freeze({
     SYSTEM_RESUME: "system_resume", // 5026: the machine woke up
 });
 
-/** The numbers the official client logs the named retry keys as. */
+/** The numbers Zalo's own app logs the named retry keys as. */
 export const RETRY_KEY_NUMBER = Object.freeze({
     internal: 5021,
     interval_check: 5022,
@@ -159,7 +159,7 @@ export function errorCodeOf(err) {
  *
  * `code` is null when there is none (an HTTP failure, an undecryptable reply); a number is kept as given, 0
  * included. An HTTP failure also carries `.status`. An error envelope's own `data` is kept on `.data` when it had
- * one: Zalo Web reads some answers by it (a list's end is an error whose `data` is the string `"[]"`). The message
+ * one: some answers are read by it (a list's end is an error whose `data` is the string `"[]"`). The message
  * never holds the session context.
  */
 export class ZaloApiError extends Error {

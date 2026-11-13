@@ -12,9 +12,7 @@
  * can't tell text from a photo — the numeric `msgType` and the attachment
  * shape are the only real signals, which is what this module reads.
  *
- * msgType numbers were recovered empirically from a decoded sync capture and
- * cross-checked against Zalo Web's own switch statements (MSG_PHOTO /
- * MSG_PHOTO_2 / MSG_VIDEO / MSG_FILE / MSG_CONTACT). Zalo adds types over
+ * msgType numbers were recovered empirically from decoded sync data. Zalo adds types over
  * time, so an unknown number degrades to `type_<n>` and — critically — still
  * keeps its full `meta`, rather than being silently flattened to text.
  */
@@ -164,8 +162,8 @@ export function extractSyncAttachments(msg, msgTypeName) {
             // Fall back to the message's own type, NOT a blanket "link": an OA
             // notification card and a profile card both carry an href, and
             // calling them links makes "show me the links in this thread"
-            // return mostly notifications. Zalo Web is equally narrow — its
-            // Link store takes only action "recommened.link".
+            // return mostly notifications. Zalo is equally narrow — its
+            // link list takes only action "recommened.link".
             kind: kind || type,
             url,
             thumbUrl,
@@ -181,7 +179,7 @@ export function extractSyncAttachments(msg, msgTypeName) {
             width: Number(pick(params, "width", "video_width", "tWidth")) || undefined,
             height: Number(pick(params, "height", "video_height", "tHeight")) || undefined,
             duration: Number(pick(params, "duration")) || undefined,
-            // Mobile-only renewal hints. Zalo Web never sends these; the phone
+            // Mobile-only renewal hints. Only the phone sends these; it
             // uses them to re-upload media whose CDN copy has aged out.
             urlToRenew: pick(params, "fileUrlToRenew", "video_url_to_renew") || undefined,
             thumbUrlToRenew: pick(params, "thumbUrlToRenew", "thumb_url_to_renew") || undefined,
@@ -497,8 +495,8 @@ export function classifyLiveMessage(data) {
             ttl: data?.ttl ? Number(data.ttl) : undefined,
             property: data?.propertyExt || undefined,
             // A seen or delivered receipt names its message by these three, and
-            // they exist nowhere but on the socket frame: Zalo Web echoes them
-            // back verbatim (captured `"st":3,"at":9,"cmd":501`), and `at`
+            // they exist nowhere but on the socket frame: a receipt echoes them
+            // back verbatim (e.g. `"st":3,"at":9,"cmd":501`), and `at`
             // differs per message, so they cannot be rebuilt later -- only kept.
             // 0 is a real value (card receipts carry "at":0), so only an absent
             // field is left out. See src/core/receipts.js.

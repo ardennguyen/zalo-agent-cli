@@ -236,7 +236,7 @@ describe("the hidden-chat actions", () => {
         };
         const set = new HiddenChats();
         const r = await resetHiddenPinAndDelete(api, set);
-        assert.equal(calls[0][0], "reset", "the PIN goes first, as on Web");
+        assert.equal(calls[0][0], "reset", "the PIN goes first");
         assert.equal(r.reset, true);
         assert.equal(r.conversations.length, 2);
         assert.deepEqual(

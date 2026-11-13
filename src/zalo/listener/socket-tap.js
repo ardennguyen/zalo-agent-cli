@@ -13,9 +13,7 @@
  *   clearUnreads, pageMsgs, delivereds, seens        read state, page messages
  *   qCmds, ctrl_qCmds, bk_cmds (cmd 1)               which queues to drain
  *
- * Zalo Web reads all of it (bundle 1.e0ef5e98…: `processSuccessData` →
- * `queueIds.addLastActionIds(o.queueStatus, …)` @~11109700, `onAuthenticated`
- * reads `data.qCmds` @~11118700). So does this: it listens beside the listener on
+ * A client is expected to read all of it. This does: it listens beside the listener on
  * the same raw `ws`, decodes each frame with the listener's own decoder
  * (src/zalo/listener/frames.js), and hands `{cmd, subCmd, body, data}` to whoever subscribed to that
  * cmd. The reaction backlog drain has done this privately since 2026-09-28

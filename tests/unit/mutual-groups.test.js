@@ -1,5 +1,5 @@
 /**
- * Mutual groups, as Zalo PC shows "Nhóm chung (N)" on a profile and in a new chat (src/core/mutual-groups.js):
+ * Mutual groups, as Zalo shows "Nhóm chung (N)" on a profile and in a new chat (src/core/mutual-groups.js):
  * read from the profile's extra fields (`/api/social/profile/extra`, `groupIds`), groups in hidden chats left out,
  * named from the groups' info. Driven offline over the session's HTTP seam; the answers are hand-written.
  */
@@ -51,7 +51,7 @@ describe("mutual groups", () => {
         assert.deepEqual(m.groups[2], { groupId: HIDDEN, name: null }, "a name Zalo did not give stays null");
     });
 
-    it("leaves out a group in a hidden chat, as Zalo PC does, and says how many", async () => {
+    it("leaves out a group in a hidden chat, and says how many", async () => {
         const hidden = { isHidden: (id) => id === HIDDEN };
         const m = await mutualGroupsOf(getApi(), U, { hidden });
         // Red if the hidden chat's group is counted or listed: that would reveal it.

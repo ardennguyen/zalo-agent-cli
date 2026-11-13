@@ -164,7 +164,7 @@ describe("planCloudCleanup", () => {
     });
 });
 
-describe("cloud apply: the message reference Zalo Web's cloud delete sends", () => {
+describe("cloud apply: the message reference a cloud delete sends", () => {
     const item = (r) => describeItem(r, OWN);
 
     it("names a peer's message by its global id and sender, in the DM it belongs to", () => {
@@ -172,8 +172,8 @@ describe("cloud apply: the message reference Zalo Web's cloud delete sends", () 
         assert.deepEqual(t, { data: { cliMsgId: "c-p", msgId: "777", uidFrom: PEER }, threadId: PEER, type: 0 });
     });
 
-    it("writes this account as 0 for its own message, and keeps the queue's literal 0 global id as the Web does", () => {
-        // The Web sends `glbMsgId || cliMsgId_001`: the string "0" is not empty, so it is sent as it is.
+    it("writes this account as 0 for its own message, and keeps the queue's literal 0 global id as it is", () => {
+        // Zalo expects `glbMsgId || cliMsgId_001`: the string "0" is not empty, so it is sent as it is.
         const t = cloudDeleteTarget(item(row("m", { msgInfo: { srcId: OWN, destId: PEER } })), OWN);
         assert.deepEqual(t.data, { cliMsgId: "c-m", msgId: "0", uidFrom: "0" });
         assert.equal(t.threadId, PEER);
@@ -215,7 +215,7 @@ describe("cloud apply: deleting, conversation by conversation", () => {
         assert.deepEqual(r.failed, []);
     });
 
-    it("stops a conversation at its first failure, as the Web does, and goes on with the next", async () => {
+    it("stops a conversation at its first failure, and goes on with the next", async () => {
         const sent = [];
         const r = await applyCloudCleanup({
             items,

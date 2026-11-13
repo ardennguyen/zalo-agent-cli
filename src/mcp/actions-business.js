@@ -177,7 +177,7 @@ export const QUICK_MESSAGE_META = {
         "apps insert when the owner types `/keyword`. Actions: 'list', 'add' (`keyword`, `title`: the text), " +
         "'update' (the same, for `quickMessageId`), 'remove' (`quickMessageIds`; asked about first: " +
         "`confirm`, `dryRun`), and 'enable' / 'disable' (turn the quick-message feature on or off for " +
-        "the account, as Zalo Web's switch does; unverified live).",
+        "the account, as Zalo's switch does; unverified live).",
     inputSchema: z
         .object({
             action: z.enum(Object.keys(QUICK_MESSAGE_ACTIONS)).describe("Quick-message operation to perform"),

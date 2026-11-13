@@ -8,7 +8,7 @@
  * differently from every other Zalo endpoint:
  *
  *   cmd 621 `mycloudMedia`  -- "your cloud index may be stale, go verify"
- *     Zalo Web throttles acting on this to once per 30 minutes.
+ *     Zalo throttles acting on this to once per 30 minutes.
  *
  *   GET {auth}/api/getCloudViewerKey                   (12741) -- {viewer_key, enk}, no params
  *   GET {zcloud}/cloudmedia/queue/pc/verify            (12740) -- the cloud queue, paged by lastNoiseId
@@ -18,7 +18,7 @@
  *
  * {auth} is https://wpa.chat.zalo.me, the host the login talks to. {zcloud}
  * is the service map's `zcloud` entry, falling back to https://zcld.chat.zalo.me
- * exactly as Zalo Web does. "verify_v2" (12761, chosen by the web when the plan
+ * exactly as Zalo does. "verify_v2" (12761, chosen when the plan
  * is zcloud) is the same path; the client strips the command id before sending,
  * so it never reaches the wire.
  *
@@ -31,12 +31,12 @@
  *   3. `params` is encrypted with enk, not the session key (./kernel/zcloud-cipher.js).
  *      Replies are {error_code, data}; 0 and -904 are success and `data` is the
  *      payload itself, encrypted with enk.
- *   4. -205 / -1 mean the key is stale. Zalo Web's transport drops its key on those codes and
+ *   4. -205 / -1 mean the key is stale. Zalo drops its key on those codes and
  *      fails that request (the next call fetches a new one). Here the cached key is dropped too,
  *      and a key that was not fetched for this very request is fetched once through
  *      getCloudViewerKey and the GET repeated once: one extra request, so that a stale key from
  *      the login does not fail the first call of a run.
- *   5. Other failures follow the web client's retry rules: server code 112, a dropped connection,
+ *   5. Other failures follow Zalo's retry rules: server code 112, a dropped connection,
  *      an unreadable reply and an HTTP 4xx/5xx are retried after 0, 5, 5 and 10 s (a 4xx/5xx
  *      also moves to the service map's next zCloud domain); -201 and anything else fail at once.
  *
@@ -61,19 +61,17 @@
  * plain and are the only ones read. Acquiring that key, and with it downloading and
  * decrypting blobs, is out of scope for this client (decision D8 of the 3.0 plan).
  *
- * Reconstructed from Zalo Web's bundle (build 826674fb31d2af1b2b59, captured
- * 2026-09-29; modules tP1L, 98yS, 1LoH, UwMY, u4F8). The request shapes are
- * unit-tested against that client's own cipher, but this module's tests do not
- * talk to the live server.
+ * The request shapes are unit-tested, but this module's tests do not talk to
+ * the live server.
  */
 import { boundUtils } from "./kernel/bound.js";
 import { decryptZCloud, encodeZCloudParams } from "./kernel/zcloud-cipher.js";
 import { createDownloadFetch } from "./download-fetch.js";
 import { cloudBlobRequest } from "./zcloud-e2ee.js";
 
-/** Where the viewer key is issued: Zalo Web's authDomain, the session's login host. */
+/** Where the viewer key is issued: the auth domain, the session's login host. */
 const AUTH_DOMAIN = "https://wpa.chat.zalo.me";
-/** Zalo Web's fallback when the service map lacks `zcloud` (getMediaCloudDomain). */
+/** The fallback when the service map lacks `zcloud`. */
 const ZCLOUD_DOMAIN = "https://zcld.chat.zalo.me";
 
 const PATH = {
@@ -93,11 +91,11 @@ const OK_CODES = new Set([0, -904]);
 /** cloud_viewer_expired, invalid_cloud_viewer_key: the codes that reload the key. */
 const VIEWER_KEY_ERRORS = new Set([-1, -205]);
 /**
- * The one server code the web client's retry list names (the rest of it is transport: timeouts, no network, bad
+ * The one server code that is retried (the rest of the retry list is transport: timeouts, no network, bad
  * data). Every other code fails at once, -201 (over the limit) among them.
  */
 const RETRY_ERROR_CODES = new Set([112]);
-/** Waits before each retry, as the web client's (0, 5, 5, 10 s). */
+/** Waits before each retry (0, 5, 5, 10 s). */
 let retryDelaysMs = [0, 5000, 5000, 10000];
 
 /**
@@ -108,14 +106,13 @@ let retryDelaysMs = [0, 5000, 5000, 10000];
 export function configureZCloudRetry({ delaysMs } = {}) {
     if (Array.isArray(delaysMs)) retryDelaysMs = delaysMs;
 }
-/** Zalo Web asks for download URLs this many noise ids at a time. */
+/** Download URLs are asked for this many noise ids at a time. */
 const DOWNLOAD_URL_BATCH = 100;
-/** verify `loadType`: oldest_to_newest, what the web's own walk sends. */
+/** verify `loadType`: oldest_to_newest, what a full walk sends. */
 export const LOAD_OLDEST_TO_NEWEST = 1;
 /**
- * verify `tracking_source`, a telemetry tag (enum `UwMY` of the web client: Unknown 0, Start_session 1,
- * Need_Verify_CMD 2, Re_login 3, Client 4). Every captured Web walk page of every capture sends 2, the walk the
- * cmd 621 notice asks for.
+ * verify `tracking_source`, a telemetry tag (Unknown 0, Start_session 1, Need_Verify_CMD 2, Re_login 3,
+ * Client 4). Every observed walk page sends 2, the walk the cmd 621 notice asks for.
  */
 const TRACKING_NEED_VERIFY = 2;
 /** msgInfo.destType for a group; users are 3, pages 5. */
@@ -143,7 +140,7 @@ export class ZCloudError extends Error {
     }
 }
 
-/** The zCloud media domains, in the service map's order, with Zalo Web's own fallback when it names none. */
+/** The zCloud media domains, in the service map's order, with the fallback when it names none. */
 function cloudDomains(api) {
     const v = api?.zpwServiceMap?.zcloud;
     const urls = (Array.isArray(v) ? v : [v]).filter(Boolean).map((u) => String(u).replace(/\/+$/, ""));
@@ -298,7 +295,7 @@ async function decodeZCloudReply(resp, enk) {
     }
 }
 
-/** One GET to zCloud with a given key pair, exactly as Zalo Web builds it. */
+/** One GET to zCloud with a given key pair, exactly as the server expects it. */
 function sendZCloud(api, path, params, key, base) {
     return withSession(api, async (_ctx, utils) => {
         let url = utils.makeURL(`${base}${path}`);
@@ -311,10 +308,10 @@ function sendZCloud(api, path, params, key, base) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * GET a zCloud endpoint the way the web client's transport does.
+ * GET a zCloud endpoint.
  *
  * - A stale viewer key (-1 / -205) is dropped from the cache. A key that was not fetched for this very request is
- *   then fetched once and the call repeated (the web client stops at the reload; the repeat is a GET, so it costs
+ *   then fetched once and the call repeated (the repeat is a GET, so it costs
  *   nothing but one request).
  * - Transient failures are retried after 0, 5, 5 and 10 s: server code 112, a dropped or unreachable connection, a
  *   reply that is not valid data, and an HTTP 4xx/5xx, which also moves to the next zCloud domain of the service map.
@@ -369,7 +366,7 @@ async function zcloudGet(api, path, params = null) {
  * @param {string} [page.lastNoiseId=""] - cursor; "" starts from the top
  * @param {number} [page.loadType=1] - 1 oldest_to_newest, 0 newest_to_oldest
  * @param {string[]} [page.listNoiseIds=[]]
- * @param {number} [page.trackingSource=2] - telemetry tag; 2 Need_Verify_CMD, what the web client sends
+ * @param {number} [page.trackingSource=2] - telemetry tag; 2 Need_Verify_CMD
  * @returns {Promise<{mediaItems?: object[], lastNoiseId?: string, hasMore?: number|boolean}|null>}
  */
 export async function verifyCloudQueue(api, page = {}) {
@@ -387,9 +384,9 @@ export async function verifyCloudQueue(api, page = {}) {
     });
 }
 
-/** How long a resolved download URL is reused (the web client's in-memory cache). */
+/** How long a resolved download URL is reused (an in-memory cache). */
 let urlCacheMs = 60_000;
-/** Ids asked for within this window share requests (the web client's microbatch). */
+/** Ids asked for within this window share requests (a microbatch). */
 let urlWindowMs = 500;
 /** This many callers waiting end the window early; so does a full request's worth of ids. */
 const URL_FLUSH_AT = 50;
@@ -461,7 +458,7 @@ function queueDownloadUrls(api, ids) {
  * Turn cloud noiseIds into signed download URLs.
  *
  * Calls made close together share requests (a 500 ms window, ended early by 50 waiting ids; 100 ids to a request),
- * and a URL is reused for 60 s, as the web client does. The blob behind a URL is end-to-end encrypted per client;
+ * and a URL is reused for 60 s. The blob behind a URL is end-to-end encrypted per client;
  * nothing here downloads or decrypts it. An id with no URL is `unresolved` — the client's NOT_FOUND_DOWNLOAD_URL —
  * which is not evidence the media is gone elsewhere.
  *
@@ -491,8 +488,8 @@ export async function fetchCloudDownloadUrl(api, noiseIds) {
 }
 
 /**
- * Download one cloud item's blob the way Zalo Web's download layer does (zcloud-e2ee.js, ZP-10): its signed URL from
- * `downloadurls`, `?zcloudurl=true` (and the `&` the Web leaves when the item has a key), the `cloud-viewer-key` header,
+ * Download one cloud item's blob the way the server expects (zcloud-e2ee.js, ZP-10): its signed URL from
+ * `downloadurls`, `?zcloudurl=true` (and a trailing `&` when the item has a key), the `cloud-viewer-key` header,
  * no cookie, in the account's own identity and proxy. Unverified live: the bare URL answered 404 before.
  *
  * The bytes are the blob as stored: encrypted when `encrypted` is true, opened with the account's cloud key
@@ -544,7 +541,7 @@ export async function getCloudUsage(api) {
 }
 
 /**
- * What the account's own cloud uses (`usage-mycloud`), a read. The web client asks for it at boot.
+ * What the account's own cloud uses (`usage-mycloud`), a read. Zalo asks for it at startup.
  *
  * @param {object} api
  * @returns {Promise<object|null>}
@@ -554,7 +551,7 @@ export async function getMyCloudUsage(api) {
 }
 
 /**
- * What the family plan uses (`family-usage`), a read. The web client asks for it at boot and shows nothing when it
+ * What the family plan uses (`family-usage`), a read. Zalo asks for it at startup and shows nothing when it
  * fails; a caller here gets the error.
  *
  * @param {object} api
@@ -566,7 +563,7 @@ export async function getFamilyUsage(api) {
 
 /**
  * The zCloud subscription (`cloudinfopcweb`, command 12754): package, billing gateway, status and expiry, and the
- * migration state. Zalo Web asks for it only on a paid plan; a free account gets an empty or refused answer.
+ * migration state. Zalo asks for it only on a paid plan; a free account gets an empty or refused answer.
  *
  * @param {object} api
  * @returns {Promise<object|null>}
@@ -591,8 +588,8 @@ const finiteOrNull = (v) =>
 /**
  * Reduce the usage and settings replies to what the CLI reports.
  *
- * The two `...PerFileLimitRaw` values are the settings' numbers as sent: no Web or PC client reads them, so their unit
- * is not defined anywhere we can read (live: 100 on a free account, probably megabytes; 2147483640 on a paid one, a
+ * The two `...PerFileLimitRaw` values are the settings' numbers as sent: Zalo's own apps do not read them, so their
+ * unit is not defined anywhere (live: 100 on a free account, probably megabytes; 2147483640 on a paid one, a
  * "no practical limit" number). They are not bytes.
  *
  * Over-quota is `usage > quota`, the client's own rule. `opt_in` is read as a
@@ -640,8 +637,8 @@ export async function getCloudQuota(api) {
 // ── the cloud index ─────────────────────────────────────────────────────────
 
 /**
- * The conversation an item belongs to, derived the way Zalo Web does
- * (getToIdFromCloudItem): a group item belongs to destId; a DM to whichever
+ * The conversation an item belongs to, derived the way Zalo does: a group
+ * item belongs to destId; a DM to whichever
  * side is not the account itself.
  */
 export function conversationOf(msg, ownId) {
@@ -661,8 +658,8 @@ function zKeyOf(cliMsgId, conversation, sender, ownId) {
 }
 
 /**
- * The key Zalo Web gives a queue item (getZCloudKeyFromCloudItem), in this database's conversation spelling (a
- * group's id without the web's `g` prefix). Null when the item names no client message id.
+ * The key Zalo gives a queue item, in this database's conversation spelling (a
+ * group's id without Zalo's `g` prefix). Null when the item names no client message id.
  *
  * @param {object} item
  * @param {string|null} [ownId]

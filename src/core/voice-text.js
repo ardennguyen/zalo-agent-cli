@@ -3,7 +3,7 @@
  *
  * `write run voice-to-text` asks Zalo to transcribe a voice message and gets back only a request id. The text comes
  * later, as a `601` control on the socket: `act_type "voice2text"`, `act "convert_finish"`, its data `{req_id, err,
- * text, url, has_more}` (seen live, 2026-10-27; the key names are the web client's own). A command that is not the
+ * text, url, has_more}` (seen live, 2026-10-27; the key names are Zalo's own). A command that is not the
  * daemon has no socket to hear it on, so the daemon (`listen`, `mcp start`) writes each answer into a small file in the
  * account folder, and `read run voice-transcript` reads it from there.
  *

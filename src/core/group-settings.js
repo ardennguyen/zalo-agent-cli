@@ -7,9 +7,9 @@
 
 /**
  * CLI flag -> the GroupSetting key it toggles. Each flag also has a `--no-`
- * form. `topic-only` is Zalo Web's ONLY_ADMIN_SET_TOPIC: when 1, only the
+ * form. `topic-only` is Zalo's ONLY_ADMIN_SET_TOPIC: when 1, only the
  * owner and admins can pin messages, notes and polls to the top of the chat
- * (the web's `checkAuth` denies a plain member `allowPin` then, ~2668943).
+ * (a plain member is denied `allowPin` then).
  */
 export const SETTING_FLAGS = Object.freeze({
     "block-name": "blockName",

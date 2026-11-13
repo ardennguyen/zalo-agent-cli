@@ -7,7 +7,7 @@
  * parses it, against a fake session that records each call. What is asserted for each action:
  * - a happy path reaches the session call its CLI command makes (or Zalo's transport, for the actions built on it);
  * - a call missing what the action needs, or carrying an input the tool does not take, is refused and calls nothing;
- * - an action Zalo Web asks about first is refused without `confirm` (agent mode), previews with `dryRun`, and acts
+ * - an action Zalo's own apps ask about first is refused without `confirm` (agent mode), previews with `dryRun`, and acts
  *   with `confirm`, as the guard's GUARDS table says.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";

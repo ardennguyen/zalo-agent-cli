@@ -1,5 +1,5 @@
 /**
- * `reminder list` pages a group's reminders the way Zalo Web does (and `zalo_reminder` does): page 2 and later carry
+ * `reminder list` pages a group's reminders the way Zalo expects (and `zalo_reminder` does): page 2 and later carry
  * `last_id`, the id of the last topic of the page before, so the pages before are read first. A DM's pages have no
  * cursor. Runs the real command against an offline session (./support/offline-cli.js). Every id is fake.
  */
@@ -30,7 +30,7 @@ describe("reminder list --page", () => {
         seedThread(PEER, "dm");
     });
 
-    it("a group's page 2 asks page 1 first and sends its last id, as Web does", async () => {
+    it("a group's page 2 asks page 1 first and sends its last id", async () => {
         const r = await runOffline(["reminder", "list", GROUP, "-t", "1", "-n", "2", "-p", "2", "--json"], {
             responses: {
                 "/api/board/listReminder": {
@@ -45,7 +45,7 @@ describe("reminder list --page", () => {
             asks.map((o) => [o.page, o.count, o.last_id]),
             [
                 [1, 2, 0],
-                [2, 2, 72], // a JSON number, as the Web's parsed id is: the exact id quoted brings page 1 back
+                [2, 2, 72], // a JSON number, a parsed id: the exact id quoted brings page 1 back
             ],
         );
         assert.deepEqual(

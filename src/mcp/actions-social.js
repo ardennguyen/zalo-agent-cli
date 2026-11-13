@@ -29,9 +29,9 @@ function ownOf(api) {
 /** What Zalo answers for an endpoint it has retired, and what to use instead (as `friend online` / `close` say). */
 const RETIRED_404 = {
     online:
-        "Zalo answers 404 for the online-friends list, and Zalo Web discards this answer too; 'last_online' " +
+        "Zalo answers 404 for the online-friends list, and Zalo's own apps discard this answer too; 'last_online' " +
         "works for one user, and the listener caches Zalo's presence pushes ('last_online' with `cached`).",
-    close: "Zalo has retired close friends: the web client has no caller for it, and the request answers 404.",
+    close: "Zalo has retired close friends: Zalo's own apps no longer use it, and the request answers 404.",
 };
 
 /** A 404 from a retired endpoint, said plainly. */
@@ -115,7 +115,7 @@ export const FRIEND_EXTRA_ACTIONS = {
         needs: ["userIds"],
         async run(a, { api, hidden, hiddenMode }) {
             const res = await api.getRelatedFriendGroup(a.userIds);
-            // Groups in hidden chats are left out unless the deployment includes them, as Zalo PC leaves them out.
+            // Groups in hidden chats are left out unless the deployment includes them, as Zalo leaves them out.
             const set = hiddenMode?.() === "include" ? null : (hidden?.() ?? null);
             const lists = Object.entries(res?.groupRelateds ?? {}).map(([userId, groups]) => [
                 userId,
@@ -174,7 +174,7 @@ export const FRIEND_EXTRA_INPUTS = {
         .optional()
         .describe(
             "Only for 'last_online': ask Zalo even when this account's own online status is hidden (by default " +
-                'nothing is asked then and the reply says hiddenBy "you", as Zalo Web does)',
+                'nothing is asked then and the reply says hiddenBy "you", as Zalo does)',
         ),
     cached: z
         .boolean()
@@ -307,7 +307,7 @@ export const GROUP_EXTRA_ACTIONS = {
         guard: (a) => ({ key: "group.disperse", target: { groupId: a.groupId, others: a.plan?.others } }),
         async run(a, { api }) {
             await runDisperse(api, a.plan);
-            // The disperser deletes locally on the API's success, as Zalo Web does (src/core/group-exit.js).
+            // The disperser deletes locally on the API's success, as Zalo does (src/core/group-exit.js).
             return {
                 success: true,
                 groupId: a.groupId,
@@ -373,7 +373,7 @@ export const GROUP_EXTRA_ACTIONS = {
                     data: (await api.getGroupLinkInfo({ link: a.link, memberPage: a.page })) ?? null,
                 };
             }
-            // No member page asked: every member page, as Zalo PC reads a link preview (src/core/list-all.js).
+            // No member page asked: every member page, as Zalo reads a link preview (src/core/list-all.js).
             const { paging, ...data } = await groupLinkInfoAll(api, a.link);
             return {
                 link: a.link,

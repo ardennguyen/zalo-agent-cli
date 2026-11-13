@@ -1,12 +1,12 @@
 /**
  * Why was this session ended? (plan item L12b)
  *
- * After a kick the official client asks Zalo for the reason:
+ * After a kick the client asks Zalo for the reason:
  * `POST {aext}/api/session/kickout-info` with the form field `token`. It is a read: it changes nothing on the
  * server. The answer is shown to the person ("you logged in on a different browser") instead of a bare disconnect.
  *
- * Where the key comes from (read in the Web client's code and seen live, 2026-10-26): the **getLoginInfo** answer
- * carries `auth_ext_info: {viewer_key, enk}`, and the Web client keeps both (`setDataKeyGetKickoutInfo`). The viewer
+ * Where the key comes from (seen live, 2026-10-26): the **getLoginInfo** answer
+ * carries `auth_ext_info: {viewer_key, enk}`, and the client keeps both. The viewer
  * key (334 characters) is the form's `token`; the answer is sealed with `enk` (24 characters, a base64 AES-128 key)
  * in the session cipher's shape (zero IV), and opens to `{error_code, error_message, data: {kickoutSrc, kickoutTs}}`.
  * The zCloud key pair (`zcloud`, 216 characters) is a different key and gets error 112, which is how the first

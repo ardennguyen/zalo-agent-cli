@@ -2,16 +2,16 @@
  * When this client's device id (imei) for an account came into use, and what that means for coverage.
  *
  * Zalo keeps the offline queue per device: a new device's queue starts at its login, and a cursor from an earlier
- * device is answered with what the new queue holds (often nothing), `more: 0`, with no `evict`. Zalo Web never meets
- * this because it keeps one imei per browser for good; a first login on a browser is a missing range `[0, now]`
+ * device is answered with what the new queue holds (often nothing), `more: 0`, with no `evict`. A browser session never
+ * meets this because it keeps one imei per browser for good; a first login on a browser is a missing range `[0, now]`
  * (reason `first_login`) that only the phone-backed restore fills. So a catch-up from the queue can never cover
  * anything from before the device's login (agent research: offline-queue retention §4, §5).
  *
  * Two signals, the later one wins (a later floor claims less, never more):
  *  - `deviceSince`, stamped in the saved credentials whenever the imei changes (./credentials.js). A login saved before
  *    stamps existed uses its file's last write time, which is never earlier than the imei's first use.
- *  - `first_time_login_device` from the server settings the login fetched, when Zalo sends it (Web reads it at login,
- *    `checkFirstLogin`). Its unit is not documented: a value below 10^12 is read as seconds.
+ *  - `first_time_login_device` from the server settings the login fetched, when Zalo sends it (read at login).
+ *    Its unit is not documented: a value below 10^12 is read as seconds.
  *
  * Nothing here writes or sends anything.
  */
@@ -105,8 +105,8 @@ export function loginDeviceChange(before, imei) {
 export function describeLoginDevice(change, loginAt) {
     if (!change.newDevice) {
         return (
-            "Device: the same device id as this account's last login here, as Zalo Web keeps one per browser, so " +
-            "Zalo's offline queue for it is expected to carry over to the next listen/mcp start."
+            "Device: the same device id as this account's last login here (kept for good, as a browser keeps " +
+            "its own), so Zalo's offline queue for it is expected to carry over to the next listen/mcp start."
         );
     }
     const why = {

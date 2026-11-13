@@ -2,7 +2,7 @@
  * The boards area on the wire (design 3.1 and 3.3, package BRD): notes, the group board list, polls and reminders,
  * and `listOneOneBoard`, src/zalo/api/boards.js on one logged-in fake.
  *
- * Each case has two parts: (1) our record against its reviewed golden record; (2) the error answers. The Web
+ * Each case has two parts: (1) our record against its reviewed golden record; (2) the error answers. The expected
  * behavior is also asserted outright, so a reader sees it here and not only in the golden file.
  *
  * Two calls make a read first (addPollOptions without votes, editReminder): those cases assert the read on its own.
@@ -218,7 +218,7 @@ describe("wire: boards (src/zalo/api/boards.js)", () => {
             const rec = await check("board-list-g", "getListBoard", [{}, `g${GROUP}`], { reply: { items: [] } });
             assert.equal(rec.own.requests[0].params.group_id, GROUP);
             assert.equal(rec.own.requests[0].params.page, 1, "default page");
-            assert.equal(rec.own.requests[0].params.count, 20, "default count: the Web's page size");
+            assert.equal(rec.own.requests[0].params.count, 20, "default count: the expected page size");
         });
 
         it("a reply that is a JSON string of a bare array is a list of notes (the previous engine crashed on it)", async () => {
@@ -232,7 +232,7 @@ describe("wire: boards (src/zalo/api/boards.js)", () => {
     });
 
     describe("polls", () => {
-        it("createPoll: POST {group_poll}/api/poll/create in the Web's order; creator and voters stay strings", async () => {
+        it("createPoll: POST {group_poll}/api/poll/create in the expected order; creator and voters stay strings", async () => {
             const options = {
                 question: "Lunch?",
                 options: ["Pho", "Com"],
@@ -372,7 +372,7 @@ describe("wire: boards (src/zalo/api/boards.js)", () => {
             wire.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.invalid; Path=/", "https://chat.zalo.invalid/");
         });
 
-        it("createPoll falls back to the group host, the Web's own fallback", async () => {
+        it("createPoll falls back to the group host", async () => {
             const rec = await bare.run("createPoll", [{ question: "Q", options: ["a", "b"] }, GROUP], {
                 reply: { ...pollReply(), creator: OWN, options: [] },
             });
@@ -384,7 +384,7 @@ describe("wire: boards (src/zalo/api/boards.js)", () => {
     });
 
     describe("reminders", () => {
-        it("createReminder DM: oneone/create, objectData in the Web's order and colour, the caller's emoji", async () => {
+        it("createReminder DM: oneone/create, objectData in the expected order and colour, the caller's emoji", async () => {
             const options = { title: "Call mom", emoji: "📞", startTime: T0 + 3_600_000, repeat: 1 };
             const rec = await check("reminder-create-dm", "createReminder", [options, PEER, 0], {
                 reply: { reminderId: 9, creatorUid: OWN, toUid: PEER, startTime: T0 + 3_600_000 },
@@ -421,7 +421,7 @@ describe("wire: boards (src/zalo/api/boards.js)", () => {
             assert.equal(o.repeat, 0);
         });
 
-        it("createReminder group: createv2 with the Web's colour, src before imei, pinAct 0", async () => {
+        it("createReminder group: createv2 with the expected colour, src before imei, pinAct 0", async () => {
             const options = { title: "Retro", emoji: "⏰", startTime: T0 + 600_000, repeat: 2 };
             const rec = await check("reminder-create-group", "createReminder", [options, GROUP, 1], {
                 reply: { ...NOTE_REPLY, id: 44, startTime: T0 + 600_000, params: '{"title":"Retro"}' },
@@ -511,7 +511,7 @@ describe("wire: boards (src/zalo/api/boards.js)", () => {
             assert.equal(p.params, '{"title":"Old"}', "the title is kept when none is given");
         });
 
-        it("editReminder DM: finds the reminder in the DM list, then oneone/update in the Web's order", async () => {
+        it("editReminder DM: finds the reminder in the DM list, then oneone/update in the expected order", async () => {
             const list = [
                 { reminderId: 8, creatorUid: OWN, toUid: PEER, startTime: T0, params: { title: "Other" } },
                 {
@@ -714,7 +714,7 @@ describe("wire: boards (src/zalo/api/boards.js)", () => {
             wire.fake.clearRoutes();
             wire.fake.routeAnswer("/api/board/oneone/list", (req) => {
                 const o = JSON.parse(req.params.objectData);
-                // One page of board: a DM's board ends at an empty page, as the Web's does.
+                // One page of board: a DM's board ends at an empty page.
                 return o.board_type === 0 && o.page === 1
                     ? { data: JSON.stringify([{ boardType: 2, data: { id: 50, params: '{"title":"pinned"}' } }]) }
                     : { data: "[]" };
@@ -805,8 +805,8 @@ describe("wire: boards (src/zalo/api/boards.js)", () => {
         });
     });
 
-    describe("the Web's end of a list, single-choice votes, DM creators, page cursors", () => {
-        /** Zalo's "no more": an error whose data is the string "[]" (the code is not one the Web reads). */
+    describe("the end of a list, single-choice votes, DM creators, page cursors", () => {
+        /** Zalo's "no more": an error whose data is the string "[]" (the code is not one that matters). */
         const END = { inner: { error_code: 1, error_message: "no more items", data: "[]" } };
         /** A group's reminder page of two topics: a reminder, then a note the reader filters out. */
         const GROUP_LIST_TWO = {
@@ -841,7 +841,7 @@ describe("wire: boards (src/zalo/api/boards.js)", () => {
             assert.equal(rec.own.requests.length, 1);
         });
 
-        it("addPollOptions: voting a new option on a single-choice poll drops the old vote, as the Web's dialog does", async () => {
+        it("addPollOptions: voting a new option on a single-choice poll drops the old vote", async () => {
             // The fixture poll is single-choice with option 1 voted by this account: red if [1] went out beside the
             // new vote, which would hold two votes on a one-vote poll.
             const rec = await wire.run("addPollOptions", [{ pollId: 5, options: [{ content: "Bun", voted: true }] }], {
@@ -890,7 +890,7 @@ describe("wire: boards (src/zalo/api/boards.js)", () => {
             assert.equal(rec.own.result[0].toUid, BIG_UID);
         });
 
-        it("listOneOneBoard files a bare reminder under its reminderId, as the Web does, even beside an id", async () => {
+        it("listOneOneBoard files a bare reminder under its reminderId, even beside an id", async () => {
             const rec = await wire.run("listOneOneBoard", [PEER], {
                 reply: JSON.stringify([{ reminderId: 9, id: 3, startTime: T0 }]),
             });
@@ -944,8 +944,8 @@ describe("wire: boards (src/zalo/api/boards.js)", () => {
                 wire.fake.clearRoutes();
             }
             const sent = wire.fake.requests.slice(from).map((r) => JSON.parse(r.params.objectData));
-            // The Web's cursor is the last topic of the page (listByConversation), not the last reminder kept.
-            // It is a JSON number, as the Web's parsed id is (live, 2026-11-07: the exact id brings page 1 back).
+            // The cursor is the last topic of the page (listByConversation), not the last reminder kept.
+            // It is a JSON number, a parsed id (live, 2026-11-07: the exact id brings page 1 back).
             assert.deepEqual(
                 sent.map((o) => [o.page, o.last_id]),
                 [
@@ -955,8 +955,8 @@ describe("wire: boards (src/zalo/api/boards.js)", () => {
             );
         });
 
-        it("groupReminderPage: a big cursor goes out as the Web's rounded Number, and a short page is not the end", async () => {
-            const big = "500000000000000071"; // past 2^53: the Web's Number rounds it
+        it("groupReminderPage: a big cursor goes out as a rounded Number, and a short page is not the end", async () => {
+            const big = "500000000000000071"; // past 2^53: a Number rounds it
             wire.fake.clearRoutes();
             wire.fake.routeAnswer("/api/board/listReminder", (req) => {
                 const page = JSON.parse(req.params.objectData).page;
@@ -972,7 +972,7 @@ describe("wire: boards (src/zalo/api/boards.js)", () => {
             }
             const raw = wire.fake.requests.slice(from).map((r) => r.params.objectData);
             // Red if page 1's single topic (short of 2) ended the walk, or the cursor went out quoted or exact: live,
-            // the exact id of page 1's last reminder brings page 1 back, and the Web never sends it exactly.
+            // the exact id of page 1's last reminder brings page 1 back, so it is never sent exactly.
             assert.equal(raw.length, 2);
             const rounded = JSON.stringify(Number(big));
             assert.notEqual(rounded, big);

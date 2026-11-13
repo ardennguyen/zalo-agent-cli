@@ -1,8 +1,7 @@
 /**
- * Seen and delivered receipts must leave this CLI exactly as Zalo Web sends them.
+ * Seen and delivered receipts must leave this CLI exactly as Zalo expects them.
  *
- * Ground truth is a capture of the real Zalo Web client (build
- * 826674fb31d2af1b2b59, zpw_ver 691), decrypted request by request. The
+ * Ground truth is a capture (zpw_ver 691), decrypted request by request. The
  * templates below are those captured plaintexts, copied verbatim with the ids
  * replaced by placeholders; each names the capture row it came from.
  *
@@ -11,7 +10,7 @@
  * `msg.st || 0 === msg.st ? 0 : -1`, which parses as
  * `(msg.st || (0 === msg.st)) ? 0 : -1` and can only ever yield 0 or -1; a DM
  * seen omits `imei`; and the listener rewrites an own message's `uidFrom` "0" to the
- * account uid, where the web sends "0". Hence src/zalo/receipts.js.
+ * account uid, where Zalo expects "0". Hence src/zalo/receipts.js.
  *
  * Everything runs through the session's HTTP seam (`ctx.options.polyfill`):
  * the real apiFactory, the real AES, a fake transport that decrypts each
@@ -114,13 +113,13 @@ function fill(template, values) {
 
 // ---- Captured plaintexts (ids replaced by <placeholders>) --------------------
 
-/** group.A1 row 3: the web acknowledging its own group text. */
+/** group.A1 row 3: acknowledging this account's own group text. */
 const GROUP_DELIVERED_OWN_ECHO = String.raw`{"msgInfos":"{\"seen\":0,\"data\":[{\"cmi\":\"<cmi>\",\"gmi\":\"<gmi>\",\"si\":\"0\",\"di\":\"<grid>\",\"mt\":\"webchat\",\"st\":3,\"at\":5,\"cmd\":521,\"ts\":\"<ts>\"}],\"grid\":\"<grid>\"}","imei":"<imei>"}`;
 
-/** dm.D13_reminder row 2: the web acknowledging a DM from the peer. No imei. */
+/** dm.D13_reminder row 2: acknowledging a DM from the peer. No imei. */
 const DM_DELIVERED_INCOMING = String.raw`{"msgInfos":"{\"seen\":0,\"data\":[{\"cmi\":\"<cmi>\",\"gmi\":\"<gmi>\",\"si\":\"<peer>\",\"di\":\"0\",\"mt\":\"webchat\",\"st\":3,\"at\":9,\"cmd\":501,\"ts\":\"<ts>\"}]}"}`;
 
-/** dm.D13_reminder row 3: the web acknowledging its own DM card. */
+/** dm.D13_reminder row 3: acknowledging this account's own DM card. */
 const DM_DELIVERED_OWN_ECHO = String.raw`{"msgInfos":"{\"seen\":0,\"data\":[{\"cmi\":\"<cmi>\",\"gmi\":\"<gmi>\",\"si\":\"0\",\"di\":\"<peer>\",\"mt\":\"chat.ecard\",\"st\":3,\"at\":0,\"cmd\":501,\"ts\":\"<ts>\"}]}"}`;
 
 /** group.A13_create_reminder row 2: group seenv2. */
@@ -193,7 +192,7 @@ describe("seenv2 — what `conv read` puts on the wire", () => {
         assert.equal(rec.method, "POST");
         assert.equal(rec.origin, HOSTS.group);
         assert.equal(rec.path, "/api/group/seenv2");
-        assert.equal(rec.query.nretry, "0", "the web sends seenv2 with nretry=0");
+        assert.equal(rec.query.nretry, "0", "seenv2 goes with nretry=0");
         assert.equal(
             rec.plain,
             fill(GROUP_SEEN, {
@@ -221,7 +220,7 @@ describe("seenv2 — what `conv read` puts on the wire", () => {
                     st: 3,
                     at: 9,
                     cmd: 501,
-                    ts: 1700000000301, // a number in, the web's string out
+                    ts: 1700000000301, // a number in, a string out
                 },
             ],
         });
@@ -263,7 +262,7 @@ describe("deliveredv2 — built from the frame the socket hands the listener", (
         assert.equal(rec.method, "POST");
         assert.equal(rec.origin, HOSTS.group);
         assert.equal(rec.path, "/api/group/deliveredv2");
-        assert.equal(rec.query.nretry, undefined, "the web sends deliveredv2 without nretry");
+        assert.equal(rec.query.nretry, undefined, "deliveredv2 goes without nretry");
         assert.equal(
             rec.plain,
             fill(GROUP_DELIVERED_OWN_ECHO, {
@@ -323,7 +322,7 @@ describe("deliveredv2 — built from the frame the socket hands the listener", (
         assert.equal(JSON.parse(rec.params.msgInfos).grid, GRID);
     });
 
-    it("a field the frame lacks goes out as -1, as the web's own builder sends it", async () => {
+    it("a field the frame lacks goes out as -1", async () => {
         const msg = groupEcho();
         delete msg.data.st;
         delete msg.data.at;
@@ -339,9 +338,9 @@ describe("deliveredv2 — built from the frame the socket hands the listener", (
 });
 
 describe("liveReceiptTarget — which live messages get a receipt", () => {
-    it("skips the removal frames Zalo Web does not acknowledge", () => {
-        // The web's message reducer routes chat.delete and chat.undo rows to
-        // their own handlers and never into the delivered batch.
+    it("skips the removal frames Zalo does not acknowledge", () => {
+        // chat.delete and chat.undo rows have their own handling and never
+        // go into the delivered batch.
         assert.equal(liveReceiptTarget(dmEcho({ msgType: "chat.delete", content: [{}] })), null);
         assert.equal(liveReceiptTarget(groupEcho({ msgType: "chat.undo" })), null);
     });
@@ -378,7 +377,7 @@ describe("createDeliveredReceipts — the listener's automatic receipts", () => 
             sent.map((r) => r.path),
             ["/api/group/deliveredv2", "/api/message/deliveredv2"],
         );
-        assert.equal(entries(sent[0])[0].si, "0", "our own echo is acknowledged, as the web does");
+        assert.equal(entries(sent[0])[0].si, "0", "our own echo is acknowledged");
         assert.equal(entries(sent[1])[0].si, PEER);
     });
 

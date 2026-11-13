@@ -14,9 +14,7 @@
  * (./support/offline-session.js) and asserts the request the engine actually put
  * on the wire, decrypted.
  *
- * Capture this is checked against: agent/work/zalo-web-capture-2026-09-29,
- * group.A5_default and dm.D5_reaction_heart (the capture's comparison notes #13, §5.13):
- * the web sends `cMsgID: <the target's cliMsgId>`, never its msgId.
+ * What Zalo expects: `cMsgID: <the target's cliMsgId>`, never its msgId.
  */
 import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";

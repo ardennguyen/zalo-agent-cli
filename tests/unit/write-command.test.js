@@ -44,7 +44,7 @@ describe("write arguments", () => {
 });
 
 describe("enum names on the command line", () => {
-    it("turns a name into the web client's number, in any case, and leaves numbers alone", () => {
+    it("turns a name into Zalo's own number, in any case, and leaves numbers alone", () => {
         assert.equal(args("topic-response", { arg: ["type=Accept"] }).type, 1);
         assert.equal(args("topic-response", { arg: ["type=reject"] }).type, 2);
         assert.equal(args("topic-response", { arg: ["type=2"] }).type, 2);

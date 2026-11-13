@@ -1,11 +1,11 @@
 /**
  * storeHistoryMessage -- the one writer msg history's fetches go through.
  *
- * Insert-if-absent, as Zalo Web writes the history it fetches (findMsgsAddDb,
- * then ZStorage.setMessage with replace:false): a msgId already in zalo.db is
+ * Insert-if-absent, as Zalo's own apps store the history they fetch
+ * (never replacing a stored row): a msgId already in zalo.db is
  * left exactly as it is, every column; a new one is written with the
  * listener's normalization, so the two are indistinguishable but for the
- * provenance tag. Zalo Web's two other guards are mirrored where our schema
+ * provenance tag. Two other guards are mirrored where our schema
  * has the data: removal and empty rows are never written, and nothing older
  * than a conversation's delete marker (threads.leftAt, which conv delete sets)
  * comes back.

@@ -249,7 +249,7 @@ function resolveThreadType(threadId, explicit) {
 const LABEL_GROUP_ID = /^g\d+$/;
 
 /**
- * A thread as a conversation label names it: `g<groupId>` for a group, the bare id for a user (Zalo Web's
+ * A thread as a conversation label names it: `g<groupId>` for a group, the bare id for a user (Zalo's
  * conversation ids). An id already given as `g<digits>` is kept.
  *
  * @param {string} threadId
@@ -273,7 +273,7 @@ const threadTypeName = (type) => (Number(type) === THREAD_GROUP ? "group" : "dm"
 
 /**
  * How many member ids `zalo_get_group_members` asks Zalo to name per request.
- * The session puts them in the request URL, and Zalo Web asks in bounded batches
+ * The session puts them in the request URL, and Zalo asks in bounded batches
  * too; 50 is the batch the group commands already use for `getGroupInfo`.
  */
 const MEMBER_NAME_BATCH = 50;
@@ -668,7 +668,7 @@ export function registerTools(
                 "so one bot's zalo_mark_read does not hide messages from another. Omit it for a single bot.",
         );
 
-    // Every tool with an action Zalo Web asks about first takes `confirm` and `dryRun` (confirmInput, dryRunInput
+    // Every tool with an action Zalo asks about first takes `confirm` and `dryRun` (confirmInput, dryRunInput
     // in action-tool.js), and settles it through gate() (src/core/confirm-guard.js) after its arguments are checked
     // and before anything is sent.
     // Over the stateless HTTP transport this server lives for one request (mcp-http-transport.js marks it), so
@@ -745,7 +745,7 @@ export function registerTools(
                 "Read the new incoming Zalo messages (DMs and groups) from the live buffer, in order. It returns the messages this consumer has not yet marked read; when you have handled them, call zalo_mark_read with the reply's `cursor`. " +
                 "To continue exactly after the last reply, pass its `cursor` as `since`. To wait for the next message instead of polling, use zalo_wait_for_message. " +
                 "Each message has `msgId` (pass it as `msgId` or `quoteMsgId` to other tools), `threadId`, `threadType` (dm or group), `senderId`, `senderName` (the name to show: your alias for the sender when you set one, else the name the message carried), `senderAlias` (your alias, or null), `senderZaloName` (the name the message carried), `senderDisplayName` (the current name: your alias, else the phonebook name, else the Zalo name, else the display name, else the uid; `senderDisplayNameSource` says which: alias, phonebook, zalo, display or uid), `text`, `timestamp` (epoch ms), `type`, `threadName` and `readOnZalo`. " +
-                "`readOnZalo` is true or false when the account owner has or has not read the message on Zalo (phone or Zalo Web), and null when that is unknown; zalo_mark_read does not change it. " +
+                "`readOnZalo` is true or false when the account owner has or has not read the message on Zalo (on the phone or another Zalo app), and null when that is unknown; zalo_mark_read does not change it. " +
                 'A recall arrives in the same list with `type` "undo": its `msgId` is the recalled message (null when only its `cliMsgId` is known), its `text` is empty, and the earlier message is gone from the cache. ' +
                 SYSTEM_EVENTS_NOTE +
                 "Returns `{ messages, cursor, hasMore }`.",
@@ -831,7 +831,7 @@ export function registerTools(
             title: "Send Zalo Message",
             description:
                 "Send a message to a Zalo conversation: text, files or images, a link preview card, a contact card, a sticker, a voice message or a video from a URL, a bank account card, or a VietQR transfer image. Give `threadId` and one kind of content: `text`, `filePath` or `files`, `link`, `cardUserId`, `sticker`, `voiceUrl`, `video`, `bankCard` or `qrTransfer`. With files, a link, a video or a QR transfer, `text` is an optional caption. " +
-                'Text: use real line breaks, never the two characters backslash and n (Zalo shows those as typed). Markdown is converted to Zalo formatting by default; `format: "plain"` sends the text exactly as written. A text over 3000 bytes (a Chinese, Japanese, Korean, Thai or Hindi character is 3, a Cyrillic or Arabic one 2) is split into several messages at paragraph or sentence ends, as Zalo Web does, and the reply then lists every part (`splitInto`, `parts`). ' +
+                'Text: use real line breaks, never the two characters backslash and n (Zalo shows those as typed). Markdown is converted to Zalo formatting by default; `format: "plain"` sends the text exactly as written. A text over 3000 bytes (a Chinese, Japanese, Korean, Thai or Hindi character is 3, a Cyrillic or Arabic one 2) is split into several messages at paragraph or sentence ends, as Zalo does, and the reply then lists every part (`splitInto`, `parts`). ' +
                 "Mention in a group: put `@[userId]` in the text where the tag belongs (`@[-1]` is @All). Take the user id from a message's `senderId` (zalo_get_messages, zalo_get_history) or from zalo_get_group_members. It is sent as `@Their Name` and notifies that person; a user id the cache cannot name is tagged as the bare id and listed in `unresolvedMentions`. Mentions only work in groups. " +
                 "Reply to a message: pass its msgId as `quoteMsgId` (text messages only, and the message must be in the local cache). " +
                 '`urgency` marks the message Important or Urgent, as the apps do. `threadId: "me"` sends to the owner\'s My Documents. ' +
@@ -1274,10 +1274,10 @@ export function registerTools(
 
                 // 1 (important) or 2 (urgent), mapped exactly as `msg send
                 // --urgency` maps it; the session turns it into the `metaData:
-                // {urgency}` Zalo Web sends. "normal" is no urgency at all.
+                // {urgency}` Zalo sends. "normal" is no urgency at all.
                 const urgency = urgencyIn ? urgencyLevel(urgencyIn) : null;
 
-                // Zalo refuses one oversized message (114 plain, 112 styled), so a long text goes out as Web sends
+                // Zalo refuses one oversized message (114 plain, 112 styled), so a long text goes out as Zalo sends
                 // it: split at 3000 bytes of text plus styles, in order, 300 ms apart. The quote and the urgency
                 // belong to the first part only.
                 const parts = splitMessage({ text: expanded.text, styles, mentions });
@@ -1465,7 +1465,7 @@ export function registerTools(
         {
             title: "Get Zalo Message History",
             description:
-                "Get the stored messages of one conversation (DM or group), for context older than the live buffer. It reads the local cache first (everything the listener and `zalo-agent sync` have saved, which can be the full history) and asks the Zalo server only when the cache has nothing for the thread: a group's message store, paged back until it has nothing older. A DM has no server history (Zalo Web and PC show 1-1 history from the device's own store), so for a DM only `scan` asks Zalo, by scanning the socket's old-message stream. " +
+                "Get the stored messages of one conversation (DM or group), for context older than the live buffer. It reads the local cache first (everything the listener and `zalo-agent sync` have saved, which can be the full history) and asks the Zalo server only when the cache has nothing for the thread: a group's message store, paged back until it has nothing older. A DM has no server history (Zalo's own apps show 1-1 history from the device's own store), so for a DM only `scan` asks Zalo, by scanning the socket's old-message stream. " +
                 "Without `limit` the reply holds every message (all cached ones, or everything the group's store serves); pass `limit` to page, then page back with `before` (epoch ms: the `cursor` of the previous reply) or, on the server path, `lastMsgId` (the previous reply's `cursor`). Zalo's server serves only messages since this login: `filtered: true` in the reply means older ones exist that only `zalo-agent sync` can restore, and that needs the owner's phone. " +
                 "Each message has `msgId`, `senderId`, `senderName` (your alias for the sender when you set one, else the name the message carried), `senderAlias`, `senderZaloName` (the name the message carried), `senderDisplayName` (the current name: your alias, else the phonebook name, else the Zalo name, else the display name, else the uid; `senderDisplayNameSource` says which), `text`, `timestamp` and `type`. Reply: `{ threadId, threadType, count, messages, cursor, hasMore }`. " +
                 "For one period, pass `since` and/or `until` (epoch ms) or `last` (7d, 2w, 3m, 1y): the cached messages in it come oldest first, all of them, or `limit` per page with `hasMore` and `nextSince` (pass it back as `since`, same `until`) for the rest. Reply: `{ threadId, since, until, count, messages, hasMore, nextSince }`. It reads only the cache. " +
@@ -2933,8 +2933,8 @@ export function registerTools(
                             result = all.reminders;
                             note = all.paging.note;
                         } else {
-                            // A group's page 2 and later carry the cursor of the page before, as Zalo Web pages them;
-                            // a DM's have none (the Web always sends 0 there) and go by page number.
+                            // A group's page 2 and later carry the cursor of the page before, as Zalo pages them;
+                            // a DM's have none (Zalo always sends 0 there) and go by page number.
                             result =
                                 Number(threadType) === THREAD_GROUP
                                     ? await groupReminderPage(api, threadId, page ?? 1, count ?? 20)
@@ -3123,7 +3123,7 @@ export function registerTools(
                             ...(all.paging.note && { note: all.paging.note }),
                         });
                     }
-                    // Page 2 and later carry the cursor of the page before, as Zalo Web pages the board.
+                    // Page 2 and later carry the cursor of the page before, as Zalo pages the board.
                     const result = await boardPage(api, groupId, page ?? 1, count ?? 20);
                     return ok({
                         action,
@@ -3687,7 +3687,7 @@ export function registerTools(
                 "'alias' (set the nickname this account shows for userId to `alias`; an empty alias removes it; " +
                 "the nickname is what `senderDisplayName` and `@[userId]` mentions then use), " +
                 "'alias_list' (the nicknames set on this account: all of them unless limit is given), " +
-                "'online' (friends online now: dead in practice, Zalo answers 404 and Zalo Web discards it too), " +
+                "'online' (friends online now: dead in practice, Zalo answers 404 and Zalo's own apps discard it too), " +
                 "'close' (close friends), 'last_online' (when userId was last seen, with hiddenBy \"you\" or \"them\" " +
                 "when hidden; nothing is asked when this account hides its own status, unless `askAnyway`; " +
                 "`cached` reads the listener's presence cache instead), " +
@@ -3823,7 +3823,7 @@ export function registerTools(
                         return ok({ action, success: true, userId: target, alias: null });
                     }
                     case "alias_list": {
-                        // No limit: every page, as Zalo Web pages its alias list (src/core/list-all.js); a limit is
+                        // No limit: every page, as Zalo pages its alias list (src/core/list-all.js); a limit is
                         // one page of that size.
                         let items;
                         let note = null;
@@ -3874,7 +3874,7 @@ export function registerTools(
                 "'remove_member' (remove the one member userId from the group), " +
                 "'leave' (only this account leaves; `silent` hides the usual notice from ordinary members, the owner " +
                 "still sees it; the owner of a group with other members must give `newOwner` (a member's userId: " +
-                "ownership is handed over first, as Zalo PC does) or `randomOwner: true` (Zalo picks a member)), " +
+                "ownership is handed over first, as Zalo does) or `randomOwner: true` (Zalo picks a member)), " +
                 "'rename' (set the group's name to `name`; every member sees the change), " +
                 "'avatar' (set the group's avatar from a local image, `filePath`), " +
                 "'add_admin' / 'remove_admin' (userIds), 'transfer_owner' (to userId), " +
@@ -4101,7 +4101,7 @@ export function registerTools(
                         const quiet = silent === true;
                         const res = await runLeave(api, leavePlan, { silent: quiet });
                         const memberError = Array.isArray(res?.memberError) ? res.memberError : [];
-                        // As Zalo Web on the API's success: the group's local history goes now (or is kept flagged,
+                        // As Zalo does on the API's success: the group's local history goes now (or is kept flagged,
                         // groups.onLeave), whether or not a listener sees the echo.
                         const exit = await recordOwnExit({ ownId: ownIdOf(api), groupId: gid, reason: "leave" });
                         return ok({
@@ -4160,9 +4160,9 @@ export function registerTools(
     server.registerTool(
         "zalo_read",
         {
-            title: "Read From Zalo's Web API",
+            title: "Read From Zalo's API",
             description:
-                "Ask Zalo one of the read-only endpoints Zalo Web calls that no other tool covers: the sticker and GIF " +
+                "Ask Zalo one of the read-only endpoints Zalo calls that no other tool covers: the sticker and GIF " +
                 "catalogs and GIF search, a profile's rank and extra fields, the block list, the nickname list, the " +
                 "search history Zalo keeps, delivery and seen status, the group quota and the account's role in a " +
                 "group, friend profile checks, the emoji statuses of friends, the server's client settings, and " +
@@ -4200,9 +4200,9 @@ export function registerTools(
     server.registerTool(
         "zalo_write",
         {
-            title: "Change Something Through Zalo's Web API",
+            title: "Change Something Through Zalo's API",
             description:
-                "Make one of the state-changing calls Zalo Web makes that no other tool covers: reminder RSVP, creating " +
+                "Make one of the state-changing calls Zalo makes that no other tool covers: reminder RSVP, creating " +
                 "or changing a group note or reminder with a repeat rule, pinning and unpinning board items, removing a " +
                 "topic, recalling several messages at once, suggested-friend cleanup, blocking an " +
                 "Official Account, removing one account from several groups, the search history. Omit `name` to list " +
@@ -4211,7 +4211,7 @@ export function registerTools(
                 'something, so a real call is asked about first, even where the deployment\'s confirmMode is "off" ' +
                 '(`confirm: true`; in "human" mode the server asks the user), and `dryRun: true` ' +
                 "returns the request that would be sent without sending anything: use it first, and try an unverified " +
-                "write on something disposable. Enum-like arguments take the web client's names or numbers (`list` " +
+                "write on something disposable. Enum-like arguments take Zalo's own names or numbers (`list` " +
                 "shows them). `args` is an object named by the write's own argument list (ids are strings).",
             inputSchema: z.object({
                 name: z

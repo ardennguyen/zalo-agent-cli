@@ -4,10 +4,10 @@
  * environment variable (`<NAME>_<ownId>`), then the environment variable, then mcp-config.json, then the default. A value that is not one of the allowed ones is reported once (on stderr) and skipped.
  *
  * - `hiddenChats` (`ZALO_MCP_HIDDEN_CHATS`): what the MCP server shows of the account's hidden conversations.
- *   `exclude` (default) leaves them out of every list, search, history and event, as Zalo Web does until the PIN is
+ *   `exclude` (default) leaves them out of every list, search, history and event, as Zalo does until the PIN is
  *   typed; `contentless` also leaves them out of lists, but an event in one is still passed on as
- *   `{event, hidden: true}` with no thread id and no content (Web's unread dot); `include` shows them like any other
- *   conversation, which hands them to the agent: an owner's explicit choice.
+ *   `{event, hidden: true}` with no thread id and no content (like Zalo's unread dot); `include` shows them like any
+ *   other conversation, which hands them to the agent: an owner's explicit choice.
  * - `allowPinArgument` (`ZALO_MCP_ALLOW_PIN_ARGUMENT`): the hidden-chat tools accept the PIN as a `pin` input. Off by
  *   default: an input is written to the MCP client's logs and the model's context. For non-AI clients only.
  * - `publicUrl` (`--public-url`, `ZALO_MCP_PUBLIC_URL`): the one address people and clients reach this server at, behind

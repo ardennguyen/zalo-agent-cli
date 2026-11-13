@@ -2,8 +2,7 @@
 
 Everything in this CLI that speaks Zalo's protocol: the session cipher and transport, the endpoint
 modules, the chat socket and its supervisor, logins (saved and QR), logout, receipts, zCloud, transfer sync
-(cmd 590/591), the socket's queues, and the message-text helpers. Every request is written from Zalo Web's wire
-format.
+(cmd 590/591), the socket's queues, and the message-text helpers. Every request follows Zalo's own wire format.
 
 It is a library the CLI uses, never the other way round: **nothing under `src/zalo/` imports `src/core`,
 `src/utils`, `src/commands`, `src/mcp` or `src/index.js`.** ESLint (`no-restricted-imports` on `src/zalo/**`) and

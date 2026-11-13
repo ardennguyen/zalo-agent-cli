@@ -2,8 +2,8 @@
  * Downloading the batches a phone prepared (plan item Y3).
  *
  * Every `upload_batch` the phone sends carries a signed `msgUrl`. Until now each was fetched late, one at a time,
- * with no timeout and no retry, and one that failed was skipped without a word, so a shard quietly lost data. The
- * official client starts a download the moment the batch is announced, runs two at once, gives each 60 s, retries
+ * with no timeout and no retry, and one that failed was skipped without a word, so a shard quietly lost data. Zalo's
+ * own app starts a download the moment the batch is announced, runs two at once, gives each 60 s, retries
  * a failure three times one second apart, and tells a missing batch (404) from a server fault (5xx) from a
  * network fault, so the scope can be failed with its reason instead of dropped.
  *
@@ -11,7 +11,7 @@
  * {@link BatchDownloader.get} returns its bytes, throwing a {@link BatchDownloadError} that says why not.
  */
 
-/** The official client's settings. */
+/** Zalo's own app's settings. */
 export const DOWNLOAD_DEFAULTS = Object.freeze({ concurrent: 2, timeoutMs: 60_000, retries: 3, retryDelayMs: 1_000 });
 
 /** Why a download failed. */

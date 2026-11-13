@@ -272,7 +272,7 @@ describe("the queue verifier: a connection ends", () => {
     });
 });
 
-describe("the queue verifier: held while the offline queues drain (Zalo PC's verify_on_done_offline)", () => {
+describe("the queue verifier: held while the offline queues drain", () => {
     it("sends nothing while held, past the threshold or the interval, and keeps what it was given", () => {
         const { verifier, sent, clock } = rig();
         verifier.hold();

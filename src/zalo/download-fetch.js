@@ -3,16 +3,16 @@
  *
  * Both used the global `fetch` with no headers at all: undici's default User-Agent, no `Referer`, and, for an account
  * with a proxy, a direct connection from this machine's own address while the session, the socket and the zCloud calls
- * went through the proxy. Zalo Web's sync worker sends a `User-Agent` and a `Referer` to the batch host, and a full
- * browser header set (no cookie) to the CDN. This is the same fetch with those headers, over the same proxy and the same
- * User-Agent as the account's session.
+ * went through the proxy. The batch host expects a `User-Agent` and a `Referer`, and the CDN a full browser header set
+ * (no cookie). This is the same fetch with those headers, over the same proxy and the same User-Agent as the
+ * account's session.
  *
  * It carries no cookie: neither the batch host nor the CDN is given the session (the batch URL and the media URLs are
- * signed), exactly as the Web client's download requests are.
+ * signed).
  */
 import { withBrowserHeaders } from "./headers.js";
 
-/** The page the Web client's requests come from. */
+/** The `Referer` the download requests carry. */
 export const WEB_REFERER = "https://chat.zalo.me/";
 
 /**

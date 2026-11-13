@@ -1,5 +1,5 @@
 /**
- * The Web-shaped socket requests (src/zalo/pulls.js, src/zalo/req-id.js; plan items X5, X6, Y7): the shared request
+ * The socket requests (src/zalo/pulls.js, src/zalo/req-id.js; plan items X5, X6, Y7): the shared request
  * counter, the queue pulls with `reqId`, the connect-time request builders, and the paged action list.
  */
 import { describe, it, beforeEach } from "node:test";
@@ -62,7 +62,7 @@ describe("a queue pull", () => {
 });
 
 describe("the connect-time requests", () => {
-    it("the key-id request (564) asks for the Web platform", () => {
+    it("the key-id request (564) asks for the browser platform", () => {
         const r = buildKeyIdRequest();
         assert.equal(r.cmd, 564);
         assertConforms(diffBody(r.data, WEB_FRAMES["564"], "564"), "the 564 request");
@@ -84,7 +84,7 @@ describe("the connect-time requests", () => {
 });
 
 describe("paging the action list (537)", () => {
-    it("asks for 50 items from the start by default, as the Web client does", () => {
+    it("asks for 50 items from the start by default", () => {
         assert.deepEqual(buildActionListRequest().data, { lastId: 0, maxItem: 50 });
     });
 
@@ -107,7 +107,7 @@ describe("paging the action list (537)", () => {
         );
     });
 
-    it("reads the cursor from `id`, the field the Web client reads, and asks for 50 items like it", async () => {
+    it("reads the cursor from `id`, and asks for 50 items each time", async () => {
         const asked = [];
         const answers = [
             { hasMore: true, actions: [{ id: "10" }, { id: "11" }] },

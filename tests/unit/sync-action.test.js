@@ -1,8 +1,8 @@
 /**
- * src/core/sync-action.js — the Web's `sync_action` media reports, built and not yet wired to any caller.
+ * src/core/sync-action.js — the `sync_action` media reports, built and not yet wired to any caller.
  *
- * The entry, the server's switch and the batching are checked against what Zalo Web's `SubmitActionDownloadResource`
- * does (read in its bundle); the payloads are hand-written, the ids throwaway constants. Nothing is sent: the submit
+ * The entry, the server's switch and the batching are checked against what Zalo expects;
+ * the payloads are hand-written, the ids throwaway constants. Nothing is sent: the submit
  * is injected, and the one test of the real request path uses `dryRun`.
  */
 import { describe, it } from "node:test";
@@ -40,7 +40,7 @@ function manualTimers() {
     };
 }
 
-describe("one report entry, as the Web builds it", () => {
+describe("one report entry, as Zalo expects it", () => {
     it("names the sender, the conversation without the group prefix, the group flag and the client id as a number", () => {
         assert.deepEqual(syncActionItem({ threadId: "g5001", isGroup: true, senderId: "1002", cliMsgId: "42" }, OWN), {
             fromUid: "1002",

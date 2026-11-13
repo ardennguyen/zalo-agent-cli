@@ -193,7 +193,7 @@ export function registerCatalogCommands(program) {
                 error(e.message);
             }
         });
-    // Asked about first, as Zalo Web does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    // Asked about first, as Zalo does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
     guardSubcommand(catalog, "delete", "catalog.delete", { target: (catalogId) => ({ catalogId }) });
     guardSubcommand(catalog, "delete-product", "catalog.deleteProduct", {
         target: (catalogId, productIds) => ({ catalogId, productIds }),

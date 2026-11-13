@@ -218,7 +218,7 @@ describe("gap commands over the wire", () => {
             ok(r);
             const req = one("/api/group/link/ginfo");
             assert.equal(req.host, serviceHost("group"));
-            // Zalo Web's 160 px avatars (src/zalo/api/groups.js, the API module's avatar size, not 120).
+            // 160 px avatars (src/zalo/api/groups.js, the API module's avatar size, not 120).
             assert.deepEqual(req.params, { link, avatar_size: 160, member_avatar_size: 160, mpage: 2 });
             assert.equal(r.out.name, "Linked");
         });
@@ -281,7 +281,7 @@ describe("gap commands over the wire", () => {
             assert.equal(fake.calls("/deactive").length, 0);
             fake.requests.length = 0;
             ok(await run(registerProfileCommands, ["profile", "active", "off"], route));
-            // Zalo Web's deactive seals the imei only (src/zalo/api/profile.js), no status.
+            // deactive seals the imei only (src/zalo/api/profile.js), no status.
             assert.deepEqual(one("/api/social/profile/deactive").params, { imei: FAKE.imei });
             assert.equal(fake.calls("/ping").length, 0);
         });
@@ -312,7 +312,7 @@ describe("gap commands over the wire", () => {
                 }),
             );
             const req = one("/api/social/profile/changefgtobg");
-            // Zalo Web's lostFocus is a POST with no params and no body: only the common query.
+            // lostFocus is a POST with no params and no body: only the common query.
             assert.equal(req.method, "POST");
             assert.equal(req.params, null);
             assert.equal(req.form, null);

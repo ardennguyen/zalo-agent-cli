@@ -1,7 +1,7 @@
 /**
  * src/core/live-store.js — the one place live socket events become rows.
  *
- * `listen` and a running mobile sync both funnel through this, because Zalo Web
+ * `listen` and a running mobile sync both funnel through this, because a session
  * does not freeze while a sync runs: messages keep arriving on the same socket
  * and keep being stored. A sync that ignored them left a hole exactly where it
  * promised completeness.

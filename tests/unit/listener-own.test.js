@@ -1,7 +1,7 @@
 /**
  * Our chat socket listener (src/zalo/listener/listener.js) on its own, over a real WebSocket to the fake Zalo socket
  * (tests/helpers/fake-zalo/socket.js): the lifecycle order the engine's 71 call sites depend on
- * (agent/docs/zca-replace/design.md 4.1, row L2; spec-listener 1.2 and 14), and the places where it follows Zalo Web
+ * (agent/docs/zca-replace/design.md 4.1, row L2; spec-listener 1.2 and 14), and the places where it follows Zalo's rules
  * instead of the previous engine.
  *
  * Every id is fake. The context is built by hand (no login), so each case controls the jar, the ping interval and
@@ -136,7 +136,7 @@ describe("listener module", () => {
         for (const k of ["ws", "cipherKey", "urls", "wsURL", "pingInterval"]) assert.ok(Object.hasOwn(l, k), k);
         assert.equal(l.ws, null);
         assert.deepEqual(l.urls, ["wss://ws1-msg.chat.zalo.me/"]);
-        // Web's order: the common query first, then the stamp.
+        // The expected order: the common query first, then the stamp.
         assert.match(l.wsURL, /^wss:\/\/ws1-msg\.chat\.zalo\.me\/\?zpw_ver=\d+&zpw_type=30&t=\d+$/);
     });
 
@@ -319,7 +319,7 @@ describe("ping", () => {
         await until(() => r.sock.framesOf(2, 1).length >= 3, "three pings");
     });
 
-    it("sends no second ping while one is outstanding (Web's guard)", async () => {
+    it("sends no second ping while one is outstanding", async () => {
         // A frozen clock: the outstanding ping never ages, so only its echo may let the next one go. Red if the
         // guard is removed (a ping on every 20 ms tick).
         const r = await rig({ socket: { autoPong: false }, ctx: { pingInterval: 20 }, now: () => 1_700_000_000_000 });
@@ -399,7 +399,7 @@ describe("upgrade", () => {
     });
 });
 
-describe("frames Web reads differently", () => {
+describe("frames read differently from the previous engine", () => {
     it("does not decode a frame whose top-level error_code is not 0", async () => {
         const r = await rig();
         await startKeyed(r);

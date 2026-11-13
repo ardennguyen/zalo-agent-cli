@@ -48,9 +48,9 @@ zalo-agent mcp start --account 1000000000000000001 --status
 
 Với http thường ngoài loopback, máy chủ không cấp link media (link mang token dùng một lần và cần https): ảnh được trả trực tiếp, media khác thành tệp tạm. Muốn có link trong mạng LAN, hãy cấp chứng chỉ cho máy chủ (`ZALO_MCP_TLS_CERT` / `ZALO_MCP_TLS_KEY` trong `server.env`).
 
-## 4. Điện thoại, Zalo PC và Zalo Web
+## 4. Điện thoại, ứng dụng máy tính và trình duyệt
 
-Zalo chỉ giữ **một phiên đăng nhập web cho mỗi tài khoản**, và máy chủ này chính là phiên đó. Đăng nhập QR vào **Zalo Web** sẽ đăng xuất máy chủ: service vẫn chạy nhưng trả lời mọi lệnh gọi bằng `SIGNED_OUT` cho đến khi bạn chạy lại `zalo-agent login` và khởi động lại service (`ZALO_EXIT_ON_SIGNED_OUT=1` trong `server.env` cho nó thoát mã 4 thay vào đó). **Điện thoại** và **ứng dụng Zalo PC** hoạt động song song với máy chủ. Hãy dùng chúng, không dùng Zalo Web. Mỗi lần đăng nhập QR thêm một mục mới vào danh sách thiết bị trên điện thoại (các mục web cũ hiện là đã đăng xuất); đăng nhập lại thì giữ nguyên mã thiết bị, nên hàng đợi tin nhắn bị lỡ của Zalo vẫn còn.
+Zalo chỉ giữ **một phiên đăng nhập web cho mỗi tài khoản**, và máy chủ này chính là phiên đó. Đăng nhập QR vào **Zalo trên trình duyệt** sẽ đăng xuất máy chủ: service vẫn chạy nhưng trả lời mọi lệnh gọi bằng `SIGNED_OUT` cho đến khi bạn chạy lại `zalo-agent login` và khởi động lại service (`ZALO_EXIT_ON_SIGNED_OUT=1` trong `server.env` cho nó thoát mã 4 thay vào đó). **Điện thoại** và **ứng dụng Zalo trên máy tính** hoạt động song song với máy chủ. Hãy dùng chúng, không dùng trình duyệt. Mỗi lần đăng nhập QR thêm một mục mới vào danh sách thiết bị trên điện thoại (các mục web cũ hiện là đã đăng xuất); đăng nhập lại thì giữ nguyên mã thiết bị, nên hàng đợi tin nhắn bị lỡ của Zalo vẫn còn.
 
 Và mỗi tài khoản chỉ chạy ở một nơi: một bản sao thứ hai của cùng phiên đăng nhập (một máy khác, hoặc `mcp start` chạy cạnh service) sẽ lấy socket. Khi đó máy chủ này **nhường lại**: nó vẫn chạy, trả lời `YIELDED`, và không tự lấy lại gì. Hãy đóng bản sao kia, rồi chạy `zalo-agent presence resume --yes --account <id>`.
 

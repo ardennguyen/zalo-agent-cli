@@ -1,35 +1,34 @@
 /**
- * `msg forward` must send the forward the way Zalo Web does: with a reference.
+ * `msg forward` must send the forward the way Zalo expects: with a reference.
  *
  * Forwarded text used to go out as `msgInfo: {"message": …}` and
  * `decorLog: "null"`, so the copy arrived as plain text with no "forwarded"
  * badge. The code's comment claimed the reference id was opaque and not
- * derivable. It is derivable, and the web derives it:
+ * derivable. It is derivable:
  *
  *     id = md5(cliMsgId + senderUid + conversationKey)
  *
  * where senderUid is the sender's numeric uid (the own uid for one's own
- * message) and conversationKey is the web's conversation id: "g" + groupId for
- * a group, the peer's uid for a 1-1. Checked offline against the real capture
- * (agent/work/zalo-web-capture-2026-09-29/live/both.A16_forward_multi.json):
+ * message) and conversationKey is Zalo's conversation id: "g" + groupId for
+ * a group, the peer's uid for a 1-1. Checked offline against a real capture:
  * md5 of the captured source cliMsgId + the own uid + "g" + the group id
  * reproduces the captured reference id exactly (the capture's comparison notes §5.16).
  *
  * The expected ids below were computed from the fake ids here with that
  * derivation. The request SHAPE is the captured one, key order included,
  * because msgInfo, reference, data and decorLog are nested JSON strings and
- * the web's serialization is what the server has been seen to accept:
+ * this serialization is what the server has been seen to accept:
  *
  *   msgInfo   = {"message", "reference": "{\"type\":3,\"data\":\"{id,ts,logSrcType,fwLvl,rootMsgRef}\"}"}
  *   decorLog  = {"fw":{"pmsg":{"st","ts","id"},"rmsg":{"st","ts","id"},"fwLvl"}}
  *
- * `st` is the reference's logSrcType (the web maps st -> logSrcType), so it is
+ * `st` is the reference's logSrcType (st maps to logSrcType), so it is
  * 2 for a group source and 1 for a 1-1 source. The previous engine hardcodes 1, which is
  * why this goes through a custom call.
  *
- * NOT captured, derived from the web bundle and flagged for the live session:
+ * NOT captured, derived and flagged for the live session:
  * a 1-1 SOURCE (conversationKey = peer uid, logSrcType 1), and `ts` = the
- * source message's server timestamp -- the web's own sends carry their local
+ * source message's server timestamp -- a captured send carries its local
  * send time there, which in the capture equals the cliMsgId.
  */
 import { assertSandboxed } from "../helpers/sandbox.js";
@@ -80,7 +79,7 @@ before(() => {
 });
 
 /**
- * The msgInfo / decorLog strings Zalo Web sends for a first-level forward.
+ * The msgInfo / decorLog strings Zalo expects for a first-level forward.
  *
  * @param {string} text
  * @param {string} id - the reference id
@@ -113,7 +112,7 @@ describe("msg forward sends the captured reference and decorLog", () => {
         assert.equal(q.method, "POST");
         assert.equal(q.service, "file");
         // Red if the reference is missing, derived from different inputs, or
-        // serialized in a different order or nesting than the web's.
+        // serialized in a different order or nesting than expected.
         assert.equal(q.params.msgInfo, want.msgInfo);
         assert.equal(q.params.decorLog, want.decorLog);
         assert.deepEqual(Object.keys(q.params), ["grids", "ttl", "msgType", "totalIds", "msgInfo", "decorLog"]);

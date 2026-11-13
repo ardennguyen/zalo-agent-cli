@@ -3,9 +3,8 @@
  *
  * A gap is a window the daemon was not connected for, so whatever arrived in it
  * is missing from zalo.db. The daemon used to "attempt a mobile-sync backfill"
- * itself, over `pullMobileMsg`/`getCrossDB` — endpoints Zalo retired (MEASURED
- * 2026-09-20: still in Zalo Web's bundle, ZERO call sites across its 4,642
- * modules). That call cannot return history, so the daemon printed a hopeful
+ * itself, over `pullMobileMsg`/`getCrossDB` — endpoints Zalo retired. That
+ * call cannot return history, so the daemon printed a hopeful
  * line and then went quiet, leaving the gap `pending` forever with nothing said.
  *
  * The working restore is `transfer-sync-v2` (socket cmd 590/591), which the

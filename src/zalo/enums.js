@@ -1,5 +1,5 @@
 /**
- * The small number tables the protocol uses, as Zalo Web sends them (spec-kernel 15). Frozen plain objects: nothing
+ * The small number tables the protocol uses, as Zalo sends them (spec-kernel 15). Frozen plain objects: nothing
  * in the engine indexes them backwards.
  */
 

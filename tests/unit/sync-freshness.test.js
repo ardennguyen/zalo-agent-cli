@@ -2,7 +2,7 @@
  * src/core/sync.js — the sync-freshness debounce (`checkSyncFreshness`,
  * `markSyncSuccess`, `getLastSuccessfulSyncAt`).
  *
- * Background: a live capture of Zalo Web (2026-09-21) showed that after a
+ * Background: a live capture (2026-09-21) showed that after a
  * successful sync it sets a "sufficient messages / synced recently" marker and
  * a repeat "Đồng bộ tin nhắn" becomes a silent no-op — it never re-opens the
  * transfer session, so it never re-pings the phone. This suite covers the CLI

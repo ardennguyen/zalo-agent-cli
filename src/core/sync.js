@@ -19,9 +19,8 @@ function resolveAccountDir(accountName) {
     return resolve(getAccountDir(accountName));
 }
 
-/** Zalo Web's own client only ever seems to backfill about this far on a
- * fresh login (confirmed by live observation — see agent/docs/mobile-sync-
- * live-test-results.md, task #4). Clamp any gap we ask the mobile app to
+/** Zalo only ever seems to backfill about this far on a fresh login
+ * (confirmed by live observation). Clamp any gap we ask the mobile app to
  * fill to this width so we never request something the platform wouldn't
  * honor anyway, and so a very old `lastConnectedAt` (e.g. the tool sat
  * uninstalled for months) doesn't produce a nonsensical multi-month ask. */
@@ -29,12 +28,9 @@ export const MAX_GAP_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
 
 /**
  * How recently a sync must have completed for a fresh one to be treated as
- * redundant and skipped. This is the CLI equivalent of Zalo Web's own
- * redundant-sync gate: after a successful sync, Zalo Web sets a
- * `0_sufficient_msg_ts` marker and records the run in `0_sync_download_stats_v1`,
- * and clicking "Đồng bộ tin nhắn" again while those are fresh is a silent no-op —
- * it never re-opens the transfer session, so it never re-pings the phone
- * (confirmed by a live capture, 2026-09-21). Bypass with `{force: true}`
+ * redundant and skipped: a redundant-sync gate, so that asking again while the
+ * last run is fresh is a silent no-op that never re-opens the transfer session
+ * and so never re-pings the phone. Bypass with `{force: true}`
  * (the `sync-mobile --force` flag).
  */
 export const SYNC_FRESHNESS_MS = 60 * 60 * 1000; // 1 hour
@@ -161,8 +157,8 @@ export class SyncManager {
 
     /**
      * Decide whether a sync can be skipped because we completed one recently
-     * and know of no coverage gap — the CLI equivalent of Zalo Web's
-     * redundant-sync debounce (see {@link SYNC_FRESHNESS_MS}), so repeated runs
+     * and know of no coverage gap — a redundant-sync
+     * debounce (see {@link SYNC_FRESHNESS_MS}), so repeated runs
      * don't spam the socket or, for the phone-waking transfer-sync path, the
      * owner's phone.
      *
@@ -212,9 +208,8 @@ export class SyncManager {
      *
      * MEASURED 2026-09-20, and worth knowing before trusting this: Zalo
      * returned an EMPTY set for both commands on the development account, both
-     * with `lastId: null` and with the exact anchor ids Zalo Web sends. Zalo
-     * Web gets the same empty answer and falls back to `transfer-sync-v2`
-     * (cmd 590/591, libsignal), which is not implemented here. Treat this as a
+     * with `lastId: null` and with exact anchor ids. The fallback is
+     * `transfer-sync-v2` (cmd 590/591, libsignal), which is not implemented here. Treat this as a
      * cheap probe, not a guaranteed restore. See agent/work/transfer-sync-v2/NOTES.md § Mobile sync.
      *
      * The caller owns the socket: it must hold `daemon.lock`, start the

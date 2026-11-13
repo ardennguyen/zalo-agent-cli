@@ -6,7 +6,7 @@ Trang này nói cách client gọi tên một người trong mọi đầu ra (3.
 
 ## Cách gọi tên trong 3.0: alias trước tiên, ở mọi nơi
 
-Mọi đầu ra gọi tên một người giống Zalo Web và PC: **alias mà chủ tài khoản đặt cho họ**, rồi tên trong danh bạ (chỉ
+Mọi đầu ra gọi tên một người giống ứng dụng Zalo: **alias mà chủ tài khoản đặt cho họ**, rồi tên trong danh bạ (chỉ
 khi nơi gọi truyền vào: client này không đọc danh bạ), rồi tên Zalo, rồi tên hiển thị, rồi UID
 (`src/core/contact-names.js`). Quy tắc này áp dụng cho các dòng của `listen`, JSONL và webhook, bộ đệm MCP, notifier và
 kết quả chờ, mọi phản hồi `zalo_*`, `msg history` / `msg search`, danh sách `conv`, các lệnh `friend` và

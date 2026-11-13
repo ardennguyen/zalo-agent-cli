@@ -171,7 +171,7 @@ export function registerMsgSearch(msg, program) {
                     cursor: opts.cursor,
                     context: opts.context,
                     ...filtersFromOptions(opts, account.ownId),
-                    // Hidden chats are left out, as Zalo Web's search leaves them out. This command has no session,
+                    // Hidden chats are left out, as Zalo's search leaves them out. This command has no session,
                     // so the ids come from the mirror the listener and the hidden-chat commands keep.
                     excludeThreadIds: [
                         ...hiddenChatsFor(account.ownId, { stateDir: getAccountDir(account.ownId) }).ids,

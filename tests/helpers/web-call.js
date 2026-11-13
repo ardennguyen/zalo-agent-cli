@@ -12,7 +12,7 @@ export const decodeAES = openSession;
 export const SESSION_KEY = Buffer.alloc(16, 0x11).toString("base64");
 export const IMEI = "test-imei-0000";
 
-/** The service-map keys the web client's domain manager knows (module `pUq9`), plus the ones the tables use. */
+/** The service-map keys Zalo's service map knows, plus the ones the tables use. */
 export const SERVICE_KEYS = new Set([
     "ai_features",
     "alias",

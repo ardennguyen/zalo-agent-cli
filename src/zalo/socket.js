@@ -1,6 +1,6 @@
 /**
- * The socket supervisor: keeps one chat socket alive the way the official Zalo
- * Web client does, and stops where it stops (plan items L3, L10, L11, L12, X2).
+ * The socket supervisor: keeps one chat socket alive the way Zalo's own client
+ * does, and stops where it stops (plan items L3, L10, L11, L12, X2).
  *
  * It drives a `Listener` (src/zalo/listener/listener.js) that has no retry of its
  * own: the listener keeps parsing frames and emitting events; this decides when the socket is
@@ -15,7 +15,7 @@
  * `establish_timeout` (5012) or does not authenticate in `timeout_authen`
  * (5015) is closed and retried the same way.
  *
- * **Retry.** Every close is turned into a retry key by the official client's
+ * **Retry.** Every close is turned into a retry key by Zalo's own app's
  * rules (`_onClose`): 1006 asks a network probe first (it worked: key 4001; it
  * did not: wait for the interval check), 1000 that nobody asked for waits for
  * the interval check, 1001-1015 is `internal`, anything else is retried under
@@ -35,9 +35,9 @@
  * until Zalo's maintenance gate says the service is back; no retry ladder runs
  * meanwhile.
  *
- * Differences from the official client, all on the slow side: the retry counters
+ * Differences from Zalo's own app, all on the slow side: the retry counters
  * start over only after a connection has stayed authenticated for `stableMs`
- * (the official client resets them at authentication), and a close that nobody
+ * (Zalo's own app resets them at authentication), and a close that nobody
  * asked for and that carries no error is brought back by the interval check
  * instead of staying down.
  */
@@ -46,7 +46,7 @@ import { CLOSE_CODE, RETRY_KEY, SOCKET_ERROR, classifyServerError } from "./erro
 import { checkMaintenance, waitOutMaintenance, watchMaintenance } from "./maintenance.js";
 import { createAnomalyHistory, createRetryEngine, resolveSocketSettings } from "./retry.js";
 
-/** The fixed timings of the official client. Every one can be overridden, which tests do. */
+/** The fixed timings of Zalo's own app. Every one can be overridden, which tests do. */
 export const DEFAULT_TIMING = Object.freeze({
     /** How long a ping may go unechoed before the socket is suspected. */
     pingTimeoutMs: 5000,
@@ -88,8 +88,8 @@ function abortableSleep(clock) {
  * question is "can this machine reach the internet", not "is Zalo healthy".
  *
  * The target is `ZALO_NET_PROBE`: a URL, or `off` to assume the network is
- * always up (for a machine that must not contact anything but Zalo). The
- * official client asks a global search engine.
+ * always up (for a machine that must not contact anything but Zalo). Zalo's
+ * own app asks a global search engine.
  *
  * @param {object} [env]
  * @param {typeof fetch} [fetchFn]
@@ -567,7 +567,7 @@ export class SocketSupervisor extends EventEmitter {
 
     _scheduleRetry(key) {
         if (!this._live()) return;
-        if (this._timers.retry) return; // one at a time, as the official client
+        if (this._timers.retry) return; // one at a time, as Zalo's own app
         const next = this.engine.next(key);
         if (next.rotate) this._rotateEndpoint();
         this._setState("retrying");
@@ -669,7 +669,7 @@ export class SocketSupervisor extends EventEmitter {
     }
 
     /**
-     * Keep asking the maintenance gate after it answered 71, as the official client does: the socket carries on, and
+     * Keep asking the maintenance gate after it answered 71, as Zalo's own app does: the socket carries on, and
      * a later 70 sends it back into the maintenance wait. One watch at a time; it ends when Zalo says all is well.
      *
      * @param {{startTime?: number, endTime?: number}} [window] - the window the 71 announced
@@ -723,7 +723,7 @@ export class SocketSupervisor extends EventEmitter {
 }
 
 /**
- * The id of the ping an echo answers. The official client reads it from the top of the frame body;
+ * The id of the ping an echo answers. Zalo's own app reads it from the top of the frame body;
  * it is also looked for in `data`, as an object or as JSON text, and one level inside that.
  *
  * @param {object} top - the parsed frame body

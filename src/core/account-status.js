@@ -9,7 +9,7 @@
  *    (`<feature>.config.<limit>.{<package id>: value}`, `<feature>.enable.{<package id>: 0|1}`). It is read, never copied
  *    here: the numbers belong to the server and change.
  *  - zCloud `v2/usage` and `cloud-settings` (every account answers them) and, on a paid plan only, `cloudinfopcweb`
- *    (the subscription: gateway, status, size, dates), exactly as Zalo Web does.
+ *    (the subscription: gateway, status, size, dates).
  *
  * The plan numbers are the client's own (`usage.plan`): -1 free, 0 paid, 100 grace period (30 days after expiry, the
  * data is deleted when it ends), 69 free after the grace period. A number the client does not know counts as paid
@@ -42,7 +42,7 @@ export function zcloudState(planCode) {
 }
 
 /**
- * The tier name of a paid zCloud plan, from its size. The sizes and names are in Zalo Web's shipped configuration
+ * The tier name of a paid zCloud plan, from its size. The sizes and names are Zalo's
  * (Mini 10 GB, Standard 100 GB, Family 500 GB, Advanced 1 TB); the pairing of an account's size with a name is ours.
  *
  * @param {number|null} totalBytes

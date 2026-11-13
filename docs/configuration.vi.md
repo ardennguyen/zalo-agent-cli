@@ -129,7 +129,7 @@ mã bằng KMS). `ZALO_MCP_ADMIN_TOKEN` chỉ dùng khi phát triển.
 
 ### Rời nhóm (`groups.onLeave`)
 
-Khi tài khoản **rời** một nhóm, bị **xóa** hoặc bị **chặn** khỏi nhóm, hoặc nhóm bị **giải tán**, Zalo Web và PC xóa
+Khi tài khoản **rời** một nhóm, bị **xóa** hoặc bị **chặn** khỏi nhóm, hoặc nhóm bị **giải tán**, ứng dụng Zalo xóa
 ngay lịch sử cục bộ của nhóm đó. Engine này cũng làm vậy theo mặc định:
 
 | Giá trị | Điều gì xảy ra |
@@ -140,7 +140,7 @@ ngay lịch sử cục bộ của nhóm đó. Engine này cũng làm vậy theo 
 Trong cả hai trường hợp nhóm giữ một **mốc xóa** (`threads.deleteMarkerAt`, như tombstone `deleteAllPrior` của Zalo):
 không bên ghi nào -- listener, khôi phục từ điện thoại (`sync`), `msg history`, đồng bộ bù khi offline hay kéo từ cloud --
 lưu lại tin nhắn của nhóm có thời điểm bằng hoặc trước mốc đó. Khi nhóm đã rời, các sự kiện nhóm sau đó bị bỏ qua cho
-đến khi có một `join` nêu tên tài khoản này (quy tắc của Zalo Web); một tin nhắn chat có thời điểm sau khi rời, hoặc danh
+đến khi có một `join` nêu tên tài khoản này (quy tắc của Zalo); một tin nhắn chat có thời điểm sau khi rời, hoặc danh
 sách hội thoại của một lần khôi phục có chứa nhóm, cũng chứng tỏ tài khoản đã quay lại. Vào lại nhóm không bao giờ mang
 về những gì đã xóa.
 
@@ -217,14 +217,14 @@ tối đa `warmWait` cho kết nối và lần bắt kịp, rồi trả lời k�
 qua daemon cư xử như lớp `socket`. Daemon không bao giờ tạm nghỉ giữa chừng một bước sync đang chạy.
 
 **Đã nhường (yielded) và đã bị đăng xuất (signed out).** Zalo chỉ giữ một lần đăng nhập web cho mỗi tài khoản: đăng nhập
-QR trên bất kỳ trình duyệt nào sẽ thu hồi lần trước, còn điện thoại và Zalo PC chạy song song với máy chủ được. **Đừng mở tài khoản trên
-Zalo Web khi đã có máy chủ giữ nó**; hãy đọc và trả lời trên điện thoại hoặc Zalo PC. Có hai trạng thái không tự hồi phục, và trong cả hai daemon **vẫn chạy** (trạng thái, admin API, thêm lại bằng QR vẫn hoạt
+QR trên bất kỳ trình duyệt nào sẽ thu hồi lần trước, còn điện thoại và ứng dụng Zalo trên máy tính chạy song song với máy chủ được. **Đừng mở tài khoản trên
+trình duyệt khi đã có máy chủ giữ nó**; hãy đọc và trả lời trên điện thoại hoặc ứng dụng trên máy tính. Có hai trạng thái không tự hồi phục, và trong cả hai daemon **vẫn chạy** (trạng thái, admin API, thêm lại bằng QR vẫn hoạt
 động) và **từ chối** mọi lệnh gọi công cụ, lease, lệnh chờ và yêu cầu CLI:
 
 | Trạng thái (`account_state`) | Khi nào | Từ chối | Kết thúc bằng |
 |---|---|---|---|
 | `yielded` | on-demand, `onKick: "yield"`: một phiên khác của cùng lần đăng nhập lấy socket (đóng 3000) | `YIELDED` | người dùng đóng phiên đó và xác nhận: `zalo-agent presence resume --yes`, `POST /zalo/admin/presence/resume`, `POST /zalo/admin/accounts/<ownId>/presence/resume` của fleet controller, hoặc MCP `zalo_profile` `presence_resume` (theo confirmMode) |
-| `signed_out` (presence `signed-out`) | mọi chế độ: Zalo từ chối lần đăng nhập đã lưu ba lần (một trình duyệt khác đăng nhập Zalo Web bằng QR) | `SIGNED_OUT` | thêm lại tài khoản bằng QR (`zalo-agent login`, hoặc thêm bằng QR qua fleet controller, sẽ khởi động lại daemon) |
+| `signed_out` (presence `signed-out`) | mọi chế độ: Zalo từ chối lần đăng nhập đã lưu ba lần (một trình duyệt khác đăng nhập Zalo bằng QR) | `SIGNED_OUT` | thêm lại tài khoản bằng QR (`zalo-agent login`, hoặc thêm bằng QR qua fleet controller, sẽ khởi động lại daemon) |
 
 Cả hai được gửi tới webhook, bộ đệm MCP, `/status` (`socket.state` `yielded` / `signed-out`, kèm cảnh báo), `/metrics`
 và `presence status`. Trước đây daemon bị đăng xuất dừng với mã 4; `ZALO_EXIT_ON_SIGNED_OUT=1` giữ cách dừng đó (unit
@@ -276,7 +276,7 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 | `ZALO_MCP_ADMIN_CLIENT_CA` | có | chứng chỉ CA (PEM): chứng chỉ client do CA này ký được vào admin API (mTLS). Cần `--cert`/`--key` | | `admin.clientCa` |
 | `ZALO_MCP_TRUSTED_PROXIES` | có | danh sách địa chỉ reverse proxy (phân tách bằng dấu phẩy) mà `X-Forwarded-For` của nó được tin (`127.0.0.1`, hoặc `loopback`). Mặc định không có: địa chỉ client là đầu kia của kết nối | | `trustedProxies` |
 | `ZALO_MCP_GROUP_CONFIRM` |  | đã lỗi thời: `0` nghĩa là chế độ `off`, `1` là `agent`; chế độ xác nhận đặt rõ được ưu tiên | | `groupConfirm` |
-| `ZALO_SYNC_NAME_REFRESH_MAX` |  | giới hạn tùy chọn số tên DM không phải bạn bè mà một lần restore tra. Không đặt (mặc định) = tra tất cả, mỗi yêu cầu 500 id như Zalo PC; khi bị từ chối mã 221 thì dừng làm mới trong lần đó và tạm gác các id bị từ chối một giờ (hoặc đến `nextTs` của máy chủ) | | |
+| `ZALO_SYNC_NAME_REFRESH_MAX` |  | giới hạn tùy chọn số tên DM không phải bạn bè mà một lần restore tra. Không đặt (mặc định) = tra tất cả, mỗi yêu cầu 500 id như Zalo; khi bị từ chối mã 221 thì dừng làm mới trong lần đó và tạm gác các id bị từ chối một giờ (hoặc đến `nextTs` của máy chủ) | | |
 | `ZALO_SEND_FORMAT` |  | `markdown` hoặc `plain`: định dạng mặc định khi gửi tin chữ. Không đặt: `msg send` gửi nguyên văn (người gõ), `zalo_send_message` chuyển Markdown (mô hình viết). `--md`/`--markdown` hoặc `format` của tool, khi có, sẽ thắng | | |
 | `ZALO_START_JITTER` | có | chờ một khoảng ngẫu nhiên tối đa chừng này giây (0–600, mặc định 0) trước khi đăng nhập, để một đội daemon khởi động lại cùng lúc không đăng nhập cùng lúc | | |
 | `ZALO_CONNECT_SLOTS` | có | tối đa chừng này daemon trên máy cùng đánh thức socket đang tạm nghỉ một lúc (hiện diện on-demand; 0–64, mặc định 0, không giới hạn; mẫu fleet 16): một lần thức giữ suất cho đến khi lần bắt kịp đầu tiên xong, tối đa 60 giây. `ZALO_CONNECT_SLOT_WAIT` (giây, mặc định 120) là thời gian chờ tối đa trước khi cứ tiếp tục | | |
@@ -292,7 +292,7 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 | `ZALO_LOG_MAX_SIZE`, `ZALO_LOG_KEEP` | có | xoay `daemon.log` khi đạt dung lượng này (mặc định `50m`, tối thiểu `4k`) và giữ chừng này file (mặc định 3) | | |
 | `ZALO_AGENT_NO_UPDATE_CHECK` |  | giá trị bất kỳ: không bao giờ chạy kiểm tra cập nhật `npm view` | | |
 | `ZALO_API_VERSION` |  | phiên bản giao thức báo cho Zalo. Mặc định 695 | | |
-| `ZALO_QR_FLOW` |  | cách `login` đăng nhập bằng QR: `official` (mặc định: đúng trình tự Zalo Web, không gọi `verify-client`, `continue=https://chat.zalo.me/`, chuyển hướng qua `jr.zaloapp.com` và `jr.chat.zalo.me`, kèm mã QR thứ hai mà tài khoản có thiết bị tin cậy phải quét, khiến client này thành một thiết bị tin cậy đi kèm), là cách đăng nhập QR duy nhất. `legacy` đã bị bỏ ở 3.0.0; nó và mọi giá trị khác bị từ chối trước khi liên hệ Zalo | | |
+| `ZALO_QR_FLOW` |  | cách `login` đăng nhập bằng QR: `official` (mặc định: đúng trình tự đăng nhập của Zalo, không gọi `verify-client`, `continue=https://chat.zalo.me/`, chuyển hướng qua `jr.zaloapp.com` và `jr.chat.zalo.me`, kèm mã QR thứ hai mà tài khoản có thiết bị tin cậy phải quét, khiến client này thành một thiết bị tin cậy đi kèm), là cách đăng nhập QR duy nhất. `legacy` đã bị bỏ ở 3.0.0; nó và mọi giá trị khác bị từ chối trước khi liên hệ Zalo | | |
 | `ZALO_NET_PROBE` |  | thứ daemon hỏi để biết mạng còn hoạt động hay không khi socket đang đứt (mỗi 10 giây): một URL, mặc định là một trang nhẹ của công cụ tìm kiếm toàn cầu, hoặc `off` để coi như mạng luôn hoạt động và không liên hệ nơi nào ngoài Zalo | | |
 | `ZALO_STORAGE_PROVIDER` |  | bộ cung cấp khóa bảo vệ các file đã lưu trên đĩa: `dpapi`, `keychain`, `secret-service`, `systemd-creds`, `kms`, `passphrase`, `env`. Mặc định theo nền tảng; server Linux không có desktop keyring phải đặt. Xem [security.vi.md](security.vi.md) | | |
 | `ZALO_RETENTION_MESSAGES`, `ZALO_RETENTION_MEDIA` | có | `keep` hoặc `<N>d`: quy tắc theo tuổi của bộ nhớ đệm, đè lên `retention.messages` / `retention.media` của `storage.json` (xem mục Hạn mức dung lượng và thời gian lưu giữ) | | |
@@ -412,7 +412,7 @@ CRM cần ba thứ từ một tài khoản: **nghe** tin mới, **gửi**, và *
 
 **Bắt kịp.** Sau thời gian ngừng, hỏi những gì đã lỡ: `zalo_get_history` theo từng thread, hoặc `zalo-agent sync --from <date>` (có thể yêu cầu chủ tài khoản xác nhận trên điện thoại).
 
-**Trò chuyện ẩn và trang nhập bảo mật.** Các cuộc trò chuyện ẩn của tài khoản bị bỏ khỏi mọi thứ CRM đọc (`hiddenChats: "exclude"`); `contentless` gửi sự kiện webhook `{event: "message", hidden: true, accountId}` không có thread id hay nội dung, như chấm chưa đọc mà Zalo Web hiện. Mọi thứ một người phải gõ hoặc duyệt (mã PIN trò chuyện ẩn, một lần duyệt của `confirmMode: "human"`) là một trang dùng một lần trên chính port của server, `/zalo/secure/<token>`: kết quả của tool có `secureUrl`, `ticketExpiresAt` (5 phút) và `retryWith.ticket`; CRM hiện link cho chủ tài khoản và gọi lại với `ticket` khi họ làm xong. Cho `/zalo/secure/` đi qua cùng proxy với `/mcp` và đặt `publicUrl` là địa chỉ công khai của nó (link không bao giờ được dựng từ header `Host` của request). Trang không cần bearer token (token của nó là chìa khóa), gửi `Cache-Control: no-store`, không tải gì từ nơi khác, và token bị che trong log request. Xem [`docs/deployment.vi.md`](deployment.vi.md) §5.5.
+**Trò chuyện ẩn và trang nhập bảo mật.** Các cuộc trò chuyện ẩn của tài khoản bị bỏ khỏi mọi thứ CRM đọc (`hiddenChats: "exclude"`); `contentless` gửi sự kiện webhook `{event: "message", hidden: true, accountId}` không có thread id hay nội dung, như chấm chưa đọc mà Zalo hiện. Mọi thứ một người phải gõ hoặc duyệt (mã PIN trò chuyện ẩn, một lần duyệt của `confirmMode: "human"`) là một trang dùng một lần trên chính port của server, `/zalo/secure/<token>`: kết quả của tool có `secureUrl`, `ticketExpiresAt` (5 phút) và `retryWith.ticket`; CRM hiện link cho chủ tài khoản và gọi lại với `ticket` khi họ làm xong. Cho `/zalo/secure/` đi qua cùng proxy với `/mcp` và đặt `publicUrl` là địa chỉ công khai của nó (link không bao giờ được dựng từ header `Host` của request). Trang không cần bearer token (token của nó là chìa khóa), gửi `Cache-Control: no-store`, không tải gì từ nơi khác, và token bị che trong log request. Xem [`docs/deployment.vi.md`](deployment.vi.md) §5.5.
 
 **Duyệt ngay trong giao diện của CRM.** Với `approval.deliver: "webhook"` link không bao giờ đi qua agent: server POST `{event: "approval_requested", accountId, kind, action, wouldDo, target, secureUrl, expiresAt, approverSecret}` tới webhook (xếp hàng và ký như sự kiện tin nhắn), CRM hiện `wouldDo` và link cho một người, còn kết quả của tool chỉ có `{confirmationRequired hoặc pinRequired: true, approvalPending: true, ticket, ticketExpiresAt, deliveredTo: "webhook"}`. CRM gọi lại với `ticket` đó khi người kia làm xong; ticket không phải token của trang, nên không gì trong kết quả mở được trang. Khi link buộc phải đi qua agent, hãy đặt mật khẩu người duyệt (`zalo-agent mcp approver set`) hoặc `approval.secret: "pin"`, để trang hỏi điều chỉ người đó biết.
 
@@ -444,7 +444,7 @@ Một tài khoản là một tiến trình, một WebSocket, một tệp SQLite 
 | TLS kết thúc tại proxy, hoặc đã đặt `--cert`/`--key` | bearer token qua HTTP thường đọc được trên đường truyền |
 | proxy không ghi `Authorization` và không đệm `/events/wait` | token lọt vào log; long-poll bị cắt theo timeout của proxy |
 | `GET /health` và `GET /ready` là hai route duy nhất không cần xác thực | chúng chỉ cho biết tiến trình có trả lời không và có phục vụ được tài khoản không (`/ready` trả 200 khi socket đang kết nối hoặc tạm nghỉ, 503 khi mất kết nối, đã nhường hoặc đã bị đăng xuất), không nói gì về bản thân tài khoản. `/status` và `/metrics` nằm sau token: đừng công bố chúng qua proxy |
-| mỗi tài khoản một tiến trình, không bao giờ hai cho cùng tài khoản, và không đăng nhập Zalo Web cho tài khoản mà máy chủ đang giữ | phiên thứ hai của cùng lần đăng nhập đóng phiên thứ nhất (mã 3000); đăng nhập Zalo Web bằng QR thu hồi lần đăng nhập của máy chủ (`signed_out`). Điện thoại và Zalo PC thì không sao |
+| mỗi tài khoản một tiến trình, không bao giờ hai cho cùng tài khoản, và không đăng nhập trên trình duyệt cho tài khoản mà máy chủ đang giữ | phiên thứ hai của cùng lần đăng nhập đóng phiên thứ nhất (mã 3000); đăng nhập Zalo trên trình duyệt bằng QR thu hồi lần đăng nhập của máy chủ (`signed_out`). Điện thoại và ứng dụng Zalo trên máy tính thì không sao |
 
 ## 5. Kiểm tra một mô hình đã chạy đúng
 

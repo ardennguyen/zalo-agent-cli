@@ -1,5 +1,5 @@
 /**
- * The zCloud queue, kept current from the daemon: what Zalo Web does when the server sends it cmd 621.
+ * The zCloud queue, kept current from the daemon: what a client does when the server sends it cmd 621.
  *
  * cmd 621 (`mycloudMedia`) is the server saying "your copy of the cloud queue may be stale, go and verify". It arrives
  * after login as plain JSON in the frame's `data.data`:
@@ -7,7 +7,7 @@
  *   {"mycloudMedia": {"pageSize": 300, "lastNoiseId": "<24 characters>", "forceVerify": 0,
  *                     "onboardingCompleted": 0, "auditLocalCloudQueue": 0, "correctCloudKey": 0}}
  *
- * Zalo Web answers it by walking the queue from its saved place, at most once in 30 minutes. This does the same, with
+ * A client answers it by walking the queue from its saved place, at most once in 30 minutes. This does the same, with
  * the rules that keep a daemon from doing anything its owner would not expect:
  *
  * - **Only after a person has walked it once.** A first walk reads the whole queue (megabytes of JSON for an old
@@ -17,27 +17,26 @@
  * - **At most once in 30 minutes**, counted from the last walk this daemon started.
  * - **Never beside another stage.** It takes the daemon's stage lock (`tryAcquire`, never waits): a notice that meets
  *   a running sync or history fetch is dropped, and the next one (or a `sync-cloud`) catches up.
- * - **Never an acknowledgment.** The onboarding ack the web client sends after its first verify changes what Zalo
+ * - **Never an acknowledgment.** The onboarding ack a client sends after its first verify changes what Zalo
  *   does with this account's cloud; it is not ours to send.
- * - **`forceVerify` and `forceReset` walk the whole queue from the top**, as the Web does (`verifyFromNothing`): past
- *   the 30-minute pace and the "already current" check, which the Web skips for them too, as a `--full` walk, so that
- *   once the server says it is done every item no page listed is swept (an interrupted walk sweeps nothing). Where the
- *   Web empties its store first, this keeps it until the walk has finished. A walk, forced or not, has no page cap
- *   (it reads until the server is done or its cursor stops moving); forced walks are paced at one in 30 minutes, a guard the Web has
- *   not. Still no baseline means still no walk, and the Web's report afterwards (`submit_verify_action`) is not sent.
- * - **`correctCloudKey` and `auditLocalCloudQueue` are read and left.** The first makes the Web fetch the account's
+ * - **`forceVerify` and `forceReset` walk the whole queue from the top**: past the 30-minute pace and the "already
+ *   current" check, as a `--full` walk, so that once the server says it is done every item no page listed is swept (an
+ *   interrupted walk sweeps nothing). The index is kept until the walk has finished. A walk, forced or not, has no page
+ *   cap (it reads until the server is done or its cursor stops moving); forced walks are paced at one in 30 minutes.
+ *   Still no baseline means still no walk, and no report (`submit_verify_action`) is sent afterwards.
+ * - **`correctCloudKey` and `auditLocalCloudQueue` are read and left.** The first asks a client to fetch the account's
  *   cloud key again, which this client never holds (D8); the second audits its local media against the store and
  *   reports to the server. Each is named in the log.
  *
- * **cmd 620 is one queue entry pushed live** (Zalo PC 26.10.20 names it `CLOUD.PUSH`; its body is the entry itself:
- * `noiseId`, `action`, `actionType`, `cliTs`, `msgInfo`, `mediaInfo`, `encryptInfo`, `ts`). Zalo PC applies it to its
- * store at once, and so does this, as one page of the walk ({@link applyQueuePage}): an `add` is recorded, a `remove`
+ * **cmd 620 is one queue entry pushed live** (`CLOUD.PUSH`; its body is the entry itself: `noiseId`, `action`,
+ * `actionType`, `cliTs`, `msgInfo`, `mediaInfo`, `encryptInfo`, `ts`). It is applied to the
+ * store at once, as one page of the walk ({@link applyQueuePage}): an `add` is recorded, a `remove`
  * deletes the items it names, a `del_thread` deletes a conversation's older items, `temp` and `duplicate` change
- * nothing. Two rules are Zalo PC's own:
+ * nothing. Two more rules:
  *
  * - **A removal can overtake its add.** A `remove` naming an item the index does not hold is remembered for an hour,
- *   and an `add` of that item arriving in that hour is dropped (PC's push validator).
- * - **`reset_cloud` walks the queue from the top**, as a forced notice does (PC runs its "reset" verify): it does not
+ *   and an `add` of that item arriving in that hour is dropped.
+ * - **`reset_cloud` walks the queue from the top**, as a forced notice does (a "reset" verify): it does not
  *   empty the index from one entry, and it follows the rules above (a baseline, the 30-minute pace, the stage lock).
  *
  * A push needs no baseline and takes no stage lock: it is one entry, written at once, and it never moves the walk's
@@ -53,10 +52,10 @@ import { cloudKeyOf, ownIdOf, removalKeysOf, selfChatIdOf } from "../zalo/zcloud
 /** The server's "verify your cloud queue" push. */
 export const CMD_MYCLOUD = 621;
 
-/** One cloud-queue entry, pushed live (Zalo PC's `CLOUD.PUSH`). */
+/** One cloud-queue entry, pushed live (`CLOUD.PUSH`). */
 export const CMD_CLOUD_PUSH = 620;
 
-/** How long a removal that found nothing cancels the add it overtook (Zalo PC: an hour). */
+/** How long a removal that found nothing cancels the add it overtook (an hour). */
 export const EARLY_REMOVE_MS = 60 * 60 * 1000;
 
 /** Queue entry actions, as src/zalo/zcloud.js `ACTION` names them. */
@@ -91,11 +90,11 @@ export function readCloudPush(frame) {
     return item.noiseId !== undefined || item.action !== undefined ? item : null;
 }
 
-/** The web client acts on this event at most once per 30 minutes. */
+/** This event is acted on at most once per 30 minutes. */
 export const THROTTLE_MS = 30 * 60 * 1000;
 
 // No page cap: a walk, automatic or forced, reads until the server says it is done or its cursor stops moving
-// (src/core/sync-v2/zcloud.js). What bounds the work is the 30-minute pace above, as on the Web.
+// (src/core/sync-v2/zcloud.js). What bounds the work is the 30-minute pace above.
 
 /**
  * Read a cmd 621 frame.
@@ -253,7 +252,7 @@ export function createCloudVerifier({
             if (!item) return "ignored";
             const action = item.action === undefined || item.action === null ? ADD : Number(item.action);
             if (action === RESET_CLOUD) {
-                say("the server reset the cloud queue (cmd 620 reset_cloud): walking it from the top, as Zalo PC does");
+                say("the server reset the cloud queue (cmd 620 reset_cloud): walking it from the top");
                 const outcome = await handle({ data: { data: { mycloudMedia: { forceReset: 1 } } } });
                 if (WHY[outcome]) say(`reset: ${WHY[outcome]}`);
                 return `reset:${outcome}`;

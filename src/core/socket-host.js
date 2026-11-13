@@ -137,11 +137,11 @@ export function createSocketHost({
     // On-demand presence: no supervisor on purpose (parked, or yielded to another session after a kick).
     let parked = false;
     let parking = false;
-    // What the last session's login learned about maintenance; the question carries it, as the official client's does.
+    // What the last session's login learned about maintenance; the question carries it, as Zalo's own app's does.
     let gateKeys = {};
     // The account's own fetch (its proxy, when it has one): the gate's question leaves the way the account's traffic does.
     let gateFetch;
-    // A 71 from the gate while logging in: the next supervisor keeps asking, as the official client does.
+    // A 71 from the gate while logging in: the next supervisor keeps asking, as Zalo's own app does.
     let noticeWindow = null;
     let reloginRunning = false;
     const abort = new AbortController();

@@ -158,7 +158,7 @@ function savedDeviceOf(ownId) {
 }
 
 /**
- * Login via QR code with optional proxy: the official Web sequence (src/zalo/qr-login.js), then our own login with
+ * Login via QR code with optional proxy: the official QR sequence (src/zalo/qr-login.js), then our own login with
  * the session it produced. `ZALO_QR_FLOW=legacy` (the previous engine's flow) was removed in 3.0.0 and is refused here,
  * before any request.
  *
@@ -177,7 +177,7 @@ export async function loginWithQR(proxyUrl = null, onQrEvent = null) {
     // the initial QR login; the hints are derived from it (src/zalo/headers.js), and it persists for this account
     // afterward via the saved credentials' userAgent field (extractCredentials()/loginWithCredentials()).
     //
-    // Zalo Web keeps one device id (imei) per browser across logout and login, and Zalo keeps the offline queue per
+    // A browser keeps one device id (imei) across logout and login, and Zalo keeps the offline queue per
     // device. So a re-login of the active account presents the same browser again (its saved user agent), and an
     // account that confirms the QR with a device id saved for that browser logs in with it again: its queue survives
     // the re-login. Any other account gets a new device id (src/zalo/qr-login.js `deviceImeiFor`).
@@ -251,12 +251,12 @@ export async function autoLogin(jsonMode = false) {
         // upstream message ("Đăng nhập thất bại") sends people looking for a
         // bug that isn't there.
         //
-        // Measured 2026-09-20: this CLI authenticates as a WEB client — the
-        // same device class as Zalo Web. Zalo permits one such session per
-        // account, so logging into Zalo Web revokes this one *server-side*,
+        // Measured 2026-09-20: this CLI authenticates as a browser-class client --
+        // the same device class as Zalo in a browser. Zalo permits one such session
+        // per account, so logging into Zalo in a browser revokes this one *server-side*,
         // instantly and silently. The credential file on disk is left
         // byte-identical; only the server rejects it. The reverse is also
-        // true: `zalo-agent login` logs Zalo Web out. The phone app is a
+        // true: `zalo-agent login` logs the browser session out. The phone app is a
         // different device class and is unaffected.
         //
         // Saying only "Not logged in. Run: zalo-agent login" is actively
@@ -270,10 +270,11 @@ export async function autoLogin(jsonMode = false) {
         console.error(`AutoLogin failed: ${e.message}`);
         if (revoked) {
             console.error(
-                "  This session was revoked. Usually Zalo Web or another PC client signed in\n" +
-                    "  on this account (only one such session is allowed at a time), or the\n" +
-                    "  session was signed out from the phone's list of logged-in devices.\n" +
-                    "  Running `zalo-agent login` will restore the CLI; if another web session\n" +
+                "  This session was revoked. Usually another Zalo session (a browser or the\n" +
+                    "  desktop app) signed in on this account (only one such session is allowed\n" +
+                    "  at a time), or the session was signed out from the phone's list of\n" +
+                    "  logged-in devices.\n" +
+                    "  Running `zalo-agent login` will restore the CLI; if another browser session\n" +
                     "  is active, it will sign that one out. The phone app is unaffected.",
             );
         }

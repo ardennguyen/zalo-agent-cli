@@ -20,20 +20,20 @@
  * fetch never reached the daemon at all -- the CLI fetched and wrote it beside
  * the running daemon. Two writers for one account.
  *
- * The fetch, in Zalo Web's order:
+ * The fetch, in this order:
  *
  *   1. a group: Zalo's cloud-message store (getrecentv2 then getoldv2,
- *      ../zalo/custom/group-history.js), what Zalo Web reads when a group is
+ *      ../zalo/custom/group-history.js), what Zalo serves when a group is
  *      opened and scrolled: 50 a page, until the store has nothing older;
  *   2. a group whose store failed or came back empty (an empty page does not
  *      prove an empty group: Zalo gates the store on server config), and a DM
  *      only when the caller asks (`scanLimit`, `msg history --scan`): the
  *      socket's old-message stream, paged account-wide and filtered to this
  *      thread, up to the scan's own bound.
- *      Zalo Web and PC fetch no 1-1 history from the server at all.
+ *      Zalo keeps no 1-1 history on the server to fetch.
  *
  * Every frame found then goes through storeHistoryMessage (./live-store.js):
- * insert-if-absent, as Zalo Web writes the history it fetches, so a message
+ * insert-if-absent, so a message
  * zalo.db already holds is left exactly as it is.
  */
 import { storeHistoryMessage } from "./live-store.js";
@@ -119,10 +119,10 @@ function wanted(v) {
  * Fetch a conversation's history and cache what zalo.db does not hold.
  *
  * A group: Zalo's cloud-message store, 50 messages a request, one request after the other, back until the store says
- * it has nothing older (`hasMore: 0`) -- every message unless `limit` asks for fewer -- as Zalo Web pages a group.
+ * it has nothing older (`hasMore: 0`) -- every message unless `limit` asks for fewer.
  * Each page waits for the one before and starts strictly older than it, so a walk never sends the same request twice.
  *
- * A DM: Zalo keeps no server copy a client can page (Zalo Web and PC show 1-1 history from the device's own store), so
+ * A DM: Zalo keeps no server copy a client can page (1-1 history lives in each device's own store), so
  * nothing is fetched unless the caller asks for the socket's old-message scan with `scanLimit`, its own bound. A group
  * whose store failed or came back empty still falls back to that scan (an empty page does not prove an empty group),
  * bounded by `scanLimit` or {@link DEFAULT_SCAN_LIMIT}.

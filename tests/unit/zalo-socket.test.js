@@ -3,7 +3,7 @@
  * WebSocket server on 127.0.0.1 and the real listener.
  *
  * Every timing is a few milliseconds so the suite stays fast; what each test
- * checks is the behavior of the official client the supervisor follows:
+ * checks is the behavior of Zalo's own app the supervisor follows:
  * dead-socket detection, the close-code policy, retry and endpoint rotation,
  * the terminal kick, the maintenance hold, and the interval check.
  */

@@ -3,20 +3,20 @@
  * links, the invitation box, communities, and the group avatar (agent/docs/zca-replace/spec-groups.md and
  * spec-sweep.md 1.2/1.3).
  *
- * Every call is one session request (kernel/endpoint.js) shaped as Zalo Web 26.11.10 sends it: the group domain
+ * Every call is one session request (kernel/endpoint.js) shaped as the server expects it: the group domain
  * (`group` service key) unless noted, the encrypted `params` in the query of a GET or in the form body of a POST,
- * and the body keys in the Web's order. Where the Web differs from what this engine sent before 3.0.0, the Web wins:
+ * and the body keys in the expected order. Where that differs from what this engine sent before 3.0.0:
  *
- * - `getAllGroups` asks the `group` host (Web `getGroupListV4`), not `group_poll`.
- * - `getGroupMembersInfo` is a form POST (Web `getMemberInGroup`), in batches of at most 300 ids.
- * - `getGroupInfo` asks in batches of at most 100 groups (Web `num_max_group_a_req`) and merges the answers.
+ * - `getAllGroups` asks the `group` host, not `group_poll`.
+ * - `getGroupMembersInfo` is a form POST, in batches of at most 300 ids.
+ * - `getGroupInfo` asks in batches of at most 100 groups and merges the answers.
  * - `createGroup` is a GET with `memberTypes` and `groupType` 1 (a normal group), without `zsource`, and leaves the
- *   own account out of `members` (Web `createGroupV2` and its compose dialog).
- * - `changeGroupOwner` is a form POST (Web 10063).
- * - `disperseGroup` sends `{imei, grid}` in that order (Web 11832).
+ *   own account out of `members`.
+ * - `changeGroupOwner` is a form POST.
+ * - `disperseGroup` sends `{imei, grid}` in that order.
  * - `changeGroupAvatar` sends `avatarSize` 160 and a `clientId` of the own uid plus the local time, keys in the
- *   Web's order (Web `updateAvatar`, 11195).
- * - `getGroupLinkInfo` and `getGroupInviteBoxList` ask for 160 px avatars (the Web's avatar size).
+ *   expected order (cmd 11195).
+ * - `getGroupLinkInfo` and `getGroupInviteBoxList` ask for 160 px avatars.
  * - An empty group name is refused before any request (`createGroup`, `changeGroupName`) instead of being replaced
  *   by a timestamp.
  *
@@ -28,22 +28,22 @@ import { readFile } from "node:fs/promises";
 import { ZaloApiError } from "../errors.js";
 import { CallUsageError } from "../kernel/endpoint.js";
 
-/** Groups per `getmg-v2` request (Web `group_config.num_max_group_a_req`). */
+/** Groups per `getmg-v2` request. */
 export const GROUP_INFO_BATCH = 100;
 
-/** Member ids per `social/group/members` request (Web `group_config.num_max_member_a_req`). */
+/** Member ids per `social/group/members` request. */
 export const MEMBER_INFO_BATCH = 300;
 
-/** The avatar size the Web asks for and uploads with. */
+/** The avatar size asked for and uploaded with. */
 export const GROUP_AVATAR_SIZE = 160;
 
-/** `memberTypes` entry of a member added from the friend list (Web `MEMBERS_TRACKING_SOURCE.friend`). */
+/** `memberTypes` entry of a member added from the friend list. */
 export const MEMBER_TYPE_FRIEND = -1;
 
-/** `groupType` of a normal group, as the Web's compose dialog creates it (a community is 2). */
+/** `groupType` of a normal group (a community is 2). */
 export const GROUP_TYPE_NORMAL = 1;
 
-/** `srcInteraction` of an invitation made from a contact's context menu (Web `MULTI_GROUP_INTERACTION_SRC`). */
+/** `srcInteraction` of an invitation made from a contact's context menu. */
 export const INTERACTION_CONTEXT_MENU = 2;
 
 /** Width and height sent for an avatar whose size could not be read. */
@@ -141,7 +141,7 @@ export const GROUP_ADMINS_REMOVE = groupGet("/api/group/admins/remove", 11815, (
     imei: ctx.imei,
 }));
 
-/** `POST {group}/api/group/change-owner` (a POST on the Web, spec-sweep 1.3). */
+/** `POST {group}/api/group/change-owner` (a POST, spec-sweep 1.3). */
 export const GROUP_CHANGE_OWNER = groupPost("/api/group/change-owner", 10063, (a, ctx) => ({
     grid: a.groupId,
     newAdminId: a.memberId,
@@ -194,7 +194,7 @@ export const GROUP_PENDING_REVIEW = groupGet("/api/group/pending-mems/review", 1
     isApprove: a.approve ? 1 : 0,
 }));
 
-/** `GET {group}/api/group/link/new`: a new invite link (Web `renewGroupLink`). */
+/** `GET {group}/api/group/link/new`: a new invite link. */
 export const GROUP_LINK_NEW = groupGet("/api/group/link/new", 11822, (a, ctx) => ({
     grid: a.groupId,
     imei: ctx.imei,
@@ -249,7 +249,7 @@ export const GROUP_INVITE_MULTI = groupGet("/api/group/invite/multi", 12605, (a,
     clientLang: ctx.language,
 }));
 
-/** `POST {group}/api/group/disperse`: `imei` first, as the Web writes it. */
+/** `POST {group}/api/group/disperse`: `imei` first, as the server expects it. */
 export const GROUP_DISPERSE = groupPost("/api/group/disperse", 11832, (a, ctx) => ({
     imei: ctx.imei,
     grid: a.groupId,
@@ -273,7 +273,7 @@ export const GROUP_AVATAR = Object.freeze({
 });
 
 /**
- * A local time as the Web stamps an avatar's `clientId`: `HH:MM DD/MM/YYYY`.
+ * A local time as Zalo stamps an avatar's `clientId`: `HH:MM DD/MM/YYYY`.
  *
  * @param {number} ms
  * @returns {string}
@@ -580,7 +580,7 @@ export function groupMethods(s) {
          * The group invitations the account has received.
          *
          * @param {{mpage?: number, page?: number, invPerPage?: number, mcount?: number, lastGroupId?: string|null}}
-         *   [payload] - member page 1, page 0, 12 a page and 10 members each by default (the Web's config defaults)
+         *   [payload] - member page 1, page 0, 12 a page and 10 members each by default (Zalo's defaults)
          * @returns {Promise<{invitations: object[], total: number, hasMore: boolean}>}
          */
         getGroupInviteBoxList: (payload) =>

@@ -63,7 +63,7 @@ describe("callEndpoint with bigIdKeys", () => {
     });
 });
 
-describe("callEndpoint with swapHosts (Web's switchDomain)", () => {
+describe("callEndpoint with swapHosts", () => {
     /** A transport that answers each host with the status in `byHost`, 200 with an empty object otherwise. */
     function hostsAnswering(byHost, profile) {
         const seen = [];

@@ -9,7 +9,7 @@
  * 2. Error cases: an outer error, an inner error, HTTP 500 and an undecryptable `data`, for every method, plus the
  *    codes the MCP tools read (165 kickout, 166/167 leave), each checked against a literal `{message, code}`.
  *
- * A few cases also assert the Web facts on our side directly (verb, host, key order, member types), so a reader
+ * A few cases also assert the expected facts on our side directly (verb, host, key order, member types), so a reader
  * sees them here and not only in the golden file. Every id is fake.
  */
 import { assertSandboxed, SANDBOX_HOME } from "../helpers/sandbox.js";
@@ -202,7 +202,7 @@ describe("groups on the wire (wire-groups)", () => {
         }
     });
 
-    describe("the Web facts, on our side", () => {
+    describe("the expected facts, on our side", () => {
         const only = (name) => {
             assert.equal(recs[name].own.requests.length, 1, `${name}: one request`);
             return recs[name].own.requests[0];

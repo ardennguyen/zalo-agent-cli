@@ -1,8 +1,8 @@
 /**
- * The QR login, as the official Zalo Web client does it (plan item L15).
+ * The QR login, as Zalo's own client does it (plan item L15).
  *
- * The previous engine's `loginQR` differed from what the captured client sends: it announces `continue=https://zalo.me/pc`
- * to three calls, makes a `verify-client` call the official client never makes, leaves out `cliGenQR`, and
+ * The previous engine's `loginQR` differed from what the server expects: it announces `continue=https://zalo.me/pc`
+ * to three calls, makes a `verify-client` call Zalo's own app never makes, leaves out `cliGenQR`, and
  * ends with a request to `jr/userinfo`. This is the verified sequence instead, all on `id.zalo.me` until the
  * last hop:
  *
@@ -28,8 +28,8 @@
  * change; the second QR is one more `QR_GENERATED` event, with `data.layer` 2.
  *
  * Why the first version of this sequence failed on 2026-10-27, after it worked on 2026-10-25: the phone answered
- * "QR is not valid" to it twice, and the scan answer carried no name. The captured Web login shows the step it was
- * missing: the scan of the first QR is answered with `status 4` and a new code, and the page makes and shows a second
+ * "QR is not valid" to it twice, and the scan answer carried no name. The step it was missing: the scan of the
+ * first QR is answered with `status 4` and a new code, and the client makes and shows a second
  * QR. That version took the answer for the scan and confirmed on the first code. Why it was not asked for on the 25th
  * is not known. See `docs/agent-notes.md`.
  */
@@ -409,7 +409,7 @@ export function deviceImeiFor(uid, userAgent, deviceFor) {
  * @param {Function} [p.loadTrust] - `(ctx, scriptUrl, signal) => trust module`, the page's by default
  * @param {{load: Function, save: Function, clear: Function}|null} [p.trustStore] - where the device identity is kept
  * @param {(uid: string) => ({imei: string, userAgent: string}|null)} [p.deviceFor] - the device id this machine
- *   already uses for an account, if any. Zalo Web keeps one imei per browser across logout and login, and Zalo keeps
+ *   already uses for an account, if any. Zalo keeps one imei per browser across logout and login, and keeps
  *   the offline queue per device: an account that confirms the QR and has a saved device id with this same user agent
  *   logs in with that imei again, so its queue survives the re-login. Anything else gets a new imei.
  * @returns {Promise<{cookies: object[], imei: string, userAgent: string, language: string, trusted: object|null,

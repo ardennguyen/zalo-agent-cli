@@ -1,33 +1,30 @@
 /**
- * Forward a text message the way Zalo Web does: as a forward, not a copy.
+ * Forward a text message the way Zalo does: as a forward, not a copy.
  *
  * A forward is the source text plus a `reference` that names the source
  * message, and a `decorLog` that repeats it. Without them the copy arrives as
  * plain text with no "forwarded" badge, which is what `msg forward` sent until
  * this module existed.
  *
- * The reference id is derived, not looked up. The web builds it as
+ * The reference id is derived, not looked up. It is built as
  *
  *     id = md5(cliMsgId + senderUid + conversationKey)
  *
- * with senderUid the source sender's numeric uid (its own uid when the web
- * holds the sender as "0") and conversationKey the web's conversation id: "g"
- * plus the group id for a group, the peer's uid for a 1-1, the send2me id for
- * My Documents. Verified offline against the 2026-09-29 capture: the captured
- * group-source forward's id is exactly that md5
- * (the 2026-09-29 Zalo Web capture's comparison notes, §5.16).
+ * with senderUid the source sender's numeric uid (the own uid when the sender
+ * is held as "0") and conversationKey the conversation id: "g" plus the group
+ * id for a group, the peer's uid for a 1-1, the send2me id for My Documents.
+ * Verified offline: a group-source forward's id is exactly that md5.
  *
- * `ts` is the source message's send time -- `sendDttm` in the web's message
- * model, which for any message the web did not send itself is the server
- * timestamp (`sendDttm: e.ts`). `logSrcType` classifies the source
- * conversation, and the decorLog's `st` IS that logSrcType (the web maps
- * st -> logSrcType), so it is 2 for a group source and 1 for a 1-1.
+ * `ts` is the source message's send time -- for any message this client did
+ * not send itself, the server timestamp. `logSrcType` classifies the source
+ * conversation, and the decorLog's `st` IS that logSrcType, so it is 2 for a
+ * group source and 1 for a 1-1.
  * The previous engine's forwardMessage hardcoded `st: 1`, which is right only for a 1-1
  * source; that is why the request is sent from here instead.
  *
  * Only a first-level forward is built (fwLvl 1, rootMsgRef = the source
- * itself). Forwarding something that was itself a forward makes the web carry
- * the original root and raise fwLvl; the local cache does not keep a message's
+ * itself). Forwarding something that was itself a forward carries the
+ * original root and raises fwLvl; the local cache does not keep a message's
  * own reference, so that cannot be reproduced.
  *
  * A voice or video message is not forwarded this way: it is re-sent by its
@@ -35,7 +32,7 @@
  * `videoResendOptions` read what those need out of the cached message, so a
  * video re-send does not ask the CDN for a size the cache already knows (the
  * HEAD the engine otherwise makes), and a HEAD that is still needed is bounded.
- * A voice re-send makes no HEAD at all, as Web does.
+ * A voice re-send makes no HEAD at all.
  */
 import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
@@ -86,8 +83,8 @@ function knownSize(declared, localPath) {
 }
 
 /**
- * The `sendVoice` options that re-send a cached voice message: its URL and the m4a copy Zalo keeps beside it (Zalo
- * Web forwards `m4aUrl: params.m4a`). No size: Web sends none for a voice, so the engine asks the host for nothing.
+ * The `sendVoice` options that re-send a cached voice message: its URL and the m4a copy Zalo keeps beside it
+ * (`m4aUrl: params.m4a`). No size: none is sent for a voice, so the engine asks the host for nothing.
  *
  * @param {object|null} content - the cached message's `content` (`{href, params}`)
  * @returns {{voiceUrl: string|undefined, m4aUrl?: string}}
@@ -124,7 +121,7 @@ export function videoResendOptions(content, localPath = null) {
     };
 }
 
-/** Zalo Web's source-conversation kinds for a forward (its `logSrcType` enum). */
+/** Zalo's source-conversation kinds for a forward (the `logSrcType` values). */
 export const LOG_SRC_TYPE = Object.freeze({ UNKNOWN: 0, ONE_ONE: 1, GROUP: 2, COMMUNITY: 3, OA: 4, MY_CLOUD: 5 });
 
 /**
@@ -143,7 +140,7 @@ export function buildForwardReference({ cliMsgId, senderUid, threadId, isGroup, 
     const kind = logSrcType ?? (isGroup ? LOG_SRC_TYPE.GROUP : LOG_SRC_TYPE.ONE_ONE);
     const conversationKey = isGroup ? `g${threadId}` : String(threadId);
     const id = createHash("md5").update(`${cliMsgId}${senderUid}${conversationKey}`).digest("hex");
-    // Key order is the web's, and it matters: every level is serialized to a
+    // Key order is the server's, and it matters: every level is serialized to a
     // JSON string, so the order is part of the bytes Zalo receives.
     const self = { id, ts, logSrcType: kind };
     return {
@@ -155,8 +152,8 @@ export function buildForwardReference({ cliMsgId, senderUid, threadId, isGroup, 
 /**
  * Send one mforward request with `reference` and `decorLog` exactly as given.
  *
- * Same endpoint and parameter layout as the previous engine's forwardMessage (and as the
- * capture): `grids[]` for groups, `toIds[]` plus `imei` for 1-1s, the message
+ * Same endpoint and parameter layout as the previous engine's forwardMessage:
+ * `grids[]` for groups, `toIds[]` plus `imei` for 1-1s, the message
  * info as nested JSON strings. The clientId that went on the wire is stamped
  * onto the result as `cliMsgId`, as every send of the session does, so the caller can report the {msgId, cliMsgId} pair that
  * `msg undo` needs.

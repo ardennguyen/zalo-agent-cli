@@ -116,7 +116,7 @@ export function registerConvCommands(program, deps = {}) {
                 error("No active account. Please login first.");
                 process.exit(1);
             }
-            // Hidden chats are left out, as Zalo Web lists them, unless --include-hidden and the PIN.
+            // Hidden chats are left out, as Zalo lists them, unless --include-hidden and the PIN.
             let liveApi = null;
             try {
                 liveApi = getApi();
@@ -279,8 +279,8 @@ export function registerConvCommands(program, deps = {}) {
         .action(async () => {
             try {
                 const result = await zaloApi().getPinConversations();
-                // Zalo's `m1` entry is not a conversation; Web skips it (spec-actions 7.3), as the pin sync does.
-                // A hidden chat is left out, as Web's list leaves it out (`u<id>`/`g<id>` entries).
+                // Zalo's `m1` entry is not a conversation; Zalo skips it (spec-actions 7.3), as the pin sync does.
+                // A hidden chat is left out, as Zalo's list leaves it out (`u<id>`/`g<id>` entries).
                 const active = getActive();
                 const hidden = active ? await hiddenSetForCli(active.ownId, zaloApi(), { preferMirror: true }) : null;
                 const conversations = withoutHidden(
@@ -431,7 +431,7 @@ export function registerConvCommands(program, deps = {}) {
 
     conv.command("read <threadId>")
         .description(
-            'Mark a conversation as read, as Zalo Web\'s "Mark as read" does: a seen receipt for every cached ' +
+            'Mark a conversation as read, as Zalo\'s "Mark as read" does: a seen receipt for every cached ' +
                 "incoming message newer than your read position (up to 50), a reaction-seen receipt when a reaction " +
                 'is unread (unverified), and removing the manual unread mark when it is set. The sender sees "Seen" unless your ' +
                 "seen status is hidden (profile set seen-status 0)",
@@ -443,7 +443,7 @@ export function registerConvCommands(program, deps = {}) {
         )
         .action(async (threadId, opts) => {
             // Both surfaces call src/core/receipts.js markConversationRead and answer its JSON (zalo_conversation
-            // `read`). The requests are built to match a capture of the real Zalo Web client.
+            // `read`). The requests are built to match what Zalo sends.
             //
             // process.exit stays outside the try blocks: inside one, a throwing
             // exit would be caught and reported as an API error.
@@ -525,9 +525,9 @@ export function registerConvCommands(program, deps = {}) {
                 // the network -- which no test caught, because reaching the
                 // network is exactly what the offline suite cannot do.
                 //
-                // Zalo Web pins the mark to the conversation's newest message
+                // Zalo pins the mark to the conversation's newest message
                 // (its cliMsgId and sender), so the cache is read for it; with
-                // none cached the Web's "-1" goes out instead.
+                // none cached Zalo's "-1" goes out instead.
                 const last = newestMessageForUnreadMark(threadId);
                 const result = await zaloApi().addUnreadMark(threadId, Number(opts.type), last);
                 output(result, program.opts().json, () => success("Marked as unread"));
@@ -550,7 +550,7 @@ export function registerConvCommands(program, deps = {}) {
         conv
             .command("hidden")
             .description(
-                "List hidden conversations: asks for the hidden-chat PIN first, as Zalo Web does (without it, " +
+                "List hidden conversations: asks for the hidden-chat PIN first, as Zalo does (without it, " +
                     "only how many there are and whether a PIN is set)",
             ),
         { include: false },
@@ -572,7 +572,7 @@ export function registerConvCommands(program, deps = {}) {
             return;
         }
         // With a PIN set it is checked even when nothing is hidden: a wrong PIN is refused (exit 1, counted toward
-        // the lockout) whatever the list holds, as Web asks it before showing the list.
+        // the lockout) whatever the list holds, as Zalo asks it before showing the list.
         await unlockOrExit(set, {
             pinStdin: Boolean(opts.pinStdin),
             json,
@@ -609,7 +609,7 @@ export function registerConvCommands(program, deps = {}) {
             try {
                 const set = await hiddenSetForCli(acc.ownId, null);
                 await set.refresh(zaloApi());
-                // Zalo Web asks for a PIN before the first hide: a hidden chat with no PIN is hidden from nobody.
+                // Zalo asks for a PIN before the first hide: a hidden chat with no PIN is hidden from nobody.
                 if (!set.hasPin) {
                     error("No hidden-chat PIN is set: set one with `zalo-agent conv hidden-pin` first, then hide.");
                     process.exit(1);
@@ -714,7 +714,7 @@ export function registerConvCommands(program, deps = {}) {
 
     conv.command("hidden-pin-reset")
         .description(
-            "Remove the hidden-chat PIN (no PIN needed) and, as Zalo Web does, delete every hidden conversation's " +
+            "Remove the hidden-chat PIN (no PIN needed) and, as Zalo does, delete every hidden conversation's " +
                 "history for this account; each deletion is reported",
         )
         .action(async () => {
@@ -752,7 +752,7 @@ export function registerConvCommands(program, deps = {}) {
 
     conv.command("block-sharing <threadId> <state>")
         .description(
-            "Turn block sharing on or off for one conversation (on|off): Zalo Web's setting that stops its messages " +
+            "Turn block sharing on or off for one conversation (on|off): Zalo's setting that stops its messages " +
                 "being forwarded or saved. Needs a zBusiness Max account; unverified (never seen to succeed). " +
                 "`read run blocksharing-list` lists the conversations that have it",
         )
@@ -995,7 +995,7 @@ export function registerConvCommands(program, deps = {}) {
             error(`Get muted conversations failed: ${e.message}`);
         }
     });
-    // Asked about first, as Zalo Web does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    // Asked about first, as Zalo does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
     guardSubcommand(conv, "delete", "conv.delete", { target: (threadId) => ({ threadId }) });
     guardSubcommand(conv, "hidden-pin-reset", "conv.hiddenPinReset", { target: () => ({}) });
     guardSubcommand(conv, "unhide", "conv.unhide", { target: (threadIds) => ({ threadIds }) });

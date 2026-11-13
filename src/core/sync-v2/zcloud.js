@@ -3,7 +3,7 @@
  *
  * The REST client, its sign-in and the queue's item shapes are the protocol layer's (src/zalo/zcloud.js, whose
  * header explains the handshake and why zCloud is a partial source). This module owns the writes: it applies each
- * queue page to zalo.db the way Zalo Web's walker applies it to its own store.
+ * queue page to zalo.db the way Zalo's own walker applies it to its store.
  */
 import {
     backfillCloudZKeys,
@@ -31,17 +31,17 @@ import {
     verifyCloudQueue,
 } from "../../zalo/zcloud.js";
 
-/** An entry's time as Zalo Web orders and compares them: the message's own, else the entry's. */
+/** An entry's time as Zalo orders and compares them: the message's own, else the entry's. */
 const entryTs = (item) => Number(item?.msgInfo?.ts ?? item?.ts ?? 0) || 0;
 
 /**
- * Apply one page of the queue to the local index, the way Zalo Web's walker does (`verifyFromId`):
+ * Apply one page of the queue to the local index:
  *
  * 1. The newest `reset_cloud` on the page empties the index except the self chat, and every entry on the page that
  *    is older than it (self chat aside) is dropped unread.
  * 2. What is left is read oldest first and applied in three groups, in this order: `add` entries are recorded,
  *    `remove` entries delete the messages they name, `del_thread` entries delete a conversation's older items.
- * 3. `temp` and `duplicate` entries change nothing (the web client does nothing with them either).
+ * 3. `temp` and `duplicate` entries change nothing.
  *
  * @param {object[]} items - the page's entries
  * @param {object} [opts]
@@ -109,10 +109,10 @@ export function applyQueuePage(items, opts = {}) {
 /**
  * Walk the cloud verify queue and keep the local index equal to what it says.
  *
- * This is the CLI's stand-in for what Zalo Web does when it receives a cmd 621 `mycloudMedia` event: page through
- * the queue by `lastNoiseId` while the reply says `hasMore`, applying each page as it arrives
- * ({@link applyQueuePage}: adds are recorded, removals, cleared conversations and resets are applied). A recall, for
- * instance, arrives as a remove entry for a chat.undo, and the item it names is deleted here.
+ * This is what the CLI does for a cmd 621 `mycloudMedia` event: page through the queue by `lastNoiseId` while the reply
+ * says `hasMore`, applying each page as it arrives ({@link applyQueuePage}: adds are recorded, removals, cleared
+ * conversations and resets are applied). A recall, for instance, arrives as a remove entry for a chat.undo, and the
+ * item it names is deleted here.
  *
  * `full` walks from the top and, when the server says it is done, deletes every item that no page listed: the
  * mark-and-sweep that corrects an index the incremental walks left stale. It never deletes before the walk has
@@ -249,7 +249,7 @@ export function messageZKey(row) {
  * only on the local-cache path. Callers must not turn `found: false` into "gone".
  *
  * The queue's `glbMsgId` is the literal "0" for about three quarters of its entries, so the message id alone finds
- * few of them. Zalo Web joins on `cliMsgId_conversation_sender` ({@link messageZKey}); that key is tried first and
+ * few of them. Zalo joins on `cliMsgId_conversation_sender` ({@link messageZKey}); that key is tried first and
  * the message id second.
  *
  * @param {string} msgId - the message's global id

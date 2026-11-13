@@ -1,6 +1,6 @@
 /**
  * `conv read`, `msg seen` and `conv unread` over the local cache: which cached messages a seen receipt names, where
- * an unread mark is anchored, and marking a conversation read as Zalo Web's "Mark as read" does. The CLI commands and
+ * an unread mark is anchored, and marking a conversation read as Zalo's "Mark as read" does. The CLI commands and
  * the zalo_conversation actions call the same functions here and answer the same JSON.
  *
  * The receipts themselves (seenv2, deliveredv2, the listener's automatic delivered queue) are the protocol layer's:
@@ -22,7 +22,7 @@ import { getConvState, getMessageById, getMessages } from "./db.js";
 const THREAD_USER = THREAD_TYPE.USER;
 const THREAD_GROUP = THREAD_TYPE.GROUP;
 
-/** Our type vocabulary -> the live msgType the web would name it by (first mapping wins). */
+/** Our type vocabulary -> the live msgType Zalo names it by (first mapping wins). */
 const WEB_MSG_TYPE = Object.freeze(
     Object.entries(LIVE_MSG_TYPES).reduce((acc, [live, ours]) => {
         if (!(ours in acc)) acc[ours] = live;
@@ -68,11 +68,11 @@ export function pickSeenAnchor(rows, { ownId }) {
 /**
  * The message `conv unread` pins the unread mark to: the newest cached message Zalo can identify, sent by anyone.
  *
- * Zalo Web marks a conversation unread at its newest message that has a client id, naming that message's
+ * Zalo marks a conversation unread at its newest message that has a client id, naming that message's
  * `cliMsgId` and sender (`fromUid`, `"0"` for this account's own). A tombstone and a system-line placeholder are
  * passed over, as for the seen anchor. A row restored by sync under a noised sender id names no real sender, so
  * the search stops there and answers null: an older message would mark the wrong place, and the caller then sends
- * the Web's "unknown" (`"-1"`) instead.
+ * Zalo's "unknown" (`"-1"`) instead.
  *
  * @param {object[]} rows - `messages` rows, newest first (db.getMessages)
  * @param {{ownId: string}} opts
@@ -137,7 +137,7 @@ export function seenTargetFromCachedRow(row, raw, { threadId, type }) {
 /** How many of a thread's newest cached rows `conv read` and `msg seen` look through. */
 export const READ_SCAN_DEPTH = 200;
 
-/** Whether a cached row is an end-to-end encrypted message (Zalo Web sends those its own E2EE way, not seenv2). */
+/** Whether a cached row is an end-to-end encrypted message (those are marked seen the E2EE way, not seenv2). */
 function isE2ee(row, raw) {
     return /^chat\.e2ee/.test(String(raw.msgType ?? "")) || raw.undecryptable === true;
 }
@@ -148,7 +148,7 @@ function newer(a, b) {
 }
 
 /**
- * The cached incoming messages `conv read` marks seen, as Zalo Web's "Mark as read" does: every incoming message
+ * The cached incoming messages `conv read` marks seen, as Zalo's "Mark as read" does: every incoming message
  * newer than the read watermark (all cached ones when no watermark is known), the newest 50, oldest first.
  *
  * Passed over: our own messages, tombstones, rows Zalo cannot identify (no numeric msgId or no cliMsgId), and
@@ -276,7 +276,7 @@ function cachedRowsOf(threadId, read = getMessages) {
 }
 
 /**
- * Mark a conversation read the way Zalo Web's "Mark as read" (and opening the chat) does: `conv read` and
+ * Mark a conversation read the way Zalo's "Mark as read" (and opening the chat) does: `conv read` and
  * zalo_conversation `read`, one function and one reply.
  *
  * 1. seenv2 for every cached incoming message newer than the read watermark, the newest 50, oldest first; end-to-end

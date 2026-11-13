@@ -1,5 +1,5 @@
 /**
- * The chat socket listener: opens the WebSocket the way Zalo Web's socket manager does, reads the handshake key,
+ * The chat socket listener: opens the WebSocket the way the server expects, reads the handshake key,
  * keeps the ping going for short sessions, and turns the pushes into the typed events the engine subscribes to.
  *
  * Its public surface is the one the engine has always read (agent/docs/zca-replace/spec-listener.md 1): an
@@ -15,15 +15,15 @@
  *   message, undo, reaction, old_messages, old_reactions, group_event, friend_event, typing, upload_attachment,
  *   delivered_messages, seen_messages, alias_change, profile_change  see ./dispatch.js
  *
- * What it does as Web does, where the previous engine did otherwise (each pinned by tests/unit/wire-listener.test.js
+ * What it does where the previous engine did otherwise (each pinned by tests/unit/wire-listener.test.js
  * and its golden records):
  *  - the upgrade headers are a browser's (`Pragma`, not a misspelled `prgama`), and the `Cookie` is computed
  *    from the jar at every `start()`, for the socket's own host;
- *  - text frames are ignored by the `isBinary` flag (Web reads array buffers only);
+ *  - text frames are ignored by the `isBinary` flag (only binary frames are read);
  *  - frames that come before the handshake are held and read after it, and sends other than pings wait for it
- *    (Web's `_pendingReceive` and its send queue); pings are never queued;
+ *    (a receive buffer and a send queue); pings are never queued;
  *  - a frame whose top-level `error_code` is not 0 is reported, not decoded;
- *  - ids under Web's per-family key lists are kept lossless as strings (../kernel/json-ids.js);
+ *  - ids under the per-family key lists are kept lossless as strings (../kernel/json-ids.js);
  *  - every chat push is read for every message and receipt list, controls and reactions are read item by item.
  *
  * Order guarantees the engine depends on (spec-listener 14): the handshake key is set synchronously while the frame
@@ -32,7 +32,7 @@
  * before `disconnected`; `stop()` nulls `ws` before it returns.
  *
  * The supervisor (../socket.js) owns retry, rotation, the immediate ping after the key and the pong watch. This
- * listener's own interval pings only while no ping is outstanding (Web's guard), for the short sessions that run
+ * listener's own interval pings only while no ping is outstanding, for the short sessions that run
  * without a supervisor. Nothing here writes to stdout or logs; the key, the cookie and ids never leave it except
  * as the events above.
  */
@@ -53,10 +53,10 @@ import {
 } from "./frames.js";
 import { dispatchFrame, isDispatched } from "./dispatch.js";
 
-/** Where Zalo Web's page lives: the `Origin` of the upgrade. */
+/** The `Origin` of the upgrade. */
 export const CHAT_ORIGIN = "https://chat.zalo.me";
 
-/** The kick: another session took the account (Web's MAX_CONNECTION). */
+/** The kick: another session took the account. */
 export const CMD_KICK = 3000;
 
 /** The close code a kick ends this socket with; the engine reads it as "duplicate session". */
@@ -65,7 +65,7 @@ export const CLOSE_DUPLICATE = 3000;
 /** The close code of a deliberate `stop()`. */
 export const CLOSE_NORMAL = 1000;
 
-/** How long a ping counts as outstanding without its echo (Web's pong timer). */
+/** How long a ping counts as outstanding without its echo. */
 export const PONG_WAIT_MS = 5000;
 
 /** At most this many frames are held before the handshake, and this many sends; the oldest beyond are dropped. */
@@ -226,7 +226,7 @@ export class Listener extends EventEmitter {
 
     /**
      * Send one frame: `{version, cmd, subCmd, data}`, the header then the JSON of `data`, as it is: a request that
-     * needs an id carries its own `reqId` in `data`, as Web's do. Without a socket it does nothing. Before the
+     * needs an id carries its own `reqId` in `data`. Without a socket it does nothing. Before the
      * handshake a ping is dropped and anything else waits for it, in order.
      *
      * @param {{version?: number, cmd: number, subCmd: number, data?: object}} payload
@@ -247,7 +247,7 @@ export class Listener extends EventEmitter {
     }
 
     /**
-     * Ask for the old messages of one thread type (510 1-1, 511 group), the Web way.
+     * Ask for the old messages of one thread type (510 1-1, 511 group).
      *
      * @param {number} threadType - 0 for 1-1, 1 for groups
      * @param {string|null} [lastId]
@@ -257,7 +257,7 @@ export class Listener extends EventEmitter {
     }
 
     /**
-     * Ask for the old reactions of one thread type (610 1-1, 611 group), the Web way.
+     * Ask for the old reactions of one thread type (610 1-1, 611 group).
      *
      * @param {number} threadType - 0 for 1-1, 1 for groups
      * @param {string|null} [lastId]
@@ -439,7 +439,7 @@ export class Listener extends EventEmitter {
         this.pingInterval = null;
         const every = Number(this.#ctx?.settings?.features?.socket?.ping_interval);
         if (!Number.isFinite(every) || every <= 0) return;
-        // A ping counts as outstanding for Web's pong wait, or for one interval when the interval is shorter: a
+        // A ping counts as outstanding for the pong wait, or for one interval when the interval is shorter: a
         // ping older than that has missed its echo, which the supervisor's pong watch acts on; this only keeps the
         // cadence without sending a second ping on top of one still in flight (the supervisor's own, after the key).
         const outstandingMs = Math.min(PONG_WAIT_MS, every);

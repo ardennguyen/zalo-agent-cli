@@ -60,7 +60,7 @@ cho kết nối; nếu vẫn đang kết nối, lệnh gọi báo lỗi có th�
 bước đã chạy, daemon không tạm nghỉ cho đến khi bước đó xong. Mọi tool, kể cả
 `zalo_sync_status`, bị từ chối với `YIELDED` khi một phiên khác của cùng lần đăng nhập
 đang giữ tài khoản (chủ tài khoản xác nhận `presence resume`) và với `SIGNED_OUT` sau khi
-một lần đăng nhập Zalo Web ở nơi khác đã thu hồi lần đăng nhập này (thêm lại tài khoản
+một lần đăng nhập Zalo trên trình duyệt ở nơi khác đã thu hồi lần đăng nhập này (thêm lại tài khoản
 bằng QR). Xem
 [configuration.vi.md](configuration.vi.md#người-dùng-giới-hạn-luôn-kết-nối-và-hiện-diện-theo-nhu-cầu).
 

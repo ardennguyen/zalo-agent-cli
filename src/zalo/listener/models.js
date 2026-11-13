@@ -121,7 +121,7 @@ export class Reaction {
  * `{uid, ts, isPC}`; or act `sending` with act_type `fsending`, the peer is sending a file).
  *
  * `action` is `"typing"` or `"fsending"`. `isSelf` is true when the uid is this account's own (another of its
- * devices); the dispatcher drops those, as Zalo Web does ("block send to me typing"), so an event reaching a
+ * devices); the dispatcher drops those, as Zalo does, so an event reaching a
  * subscriber is never self.
  */
 export class UserTyping {

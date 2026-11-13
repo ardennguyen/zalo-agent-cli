@@ -496,7 +496,7 @@ export const SECOND_QR_SCANNED = {
  *   (8 = not yet, 0 = scanned) or `"hang"` (never answers until aborted); the last one repeats
  * @param {Array<number|"hang">} [opts.confirm] - the same for waiting-confirm (0 = confirmed, -13 = declined)
  * @param {object} [opts.confirmData] - fields added to the confirm answer's data, e.g. `{chatUid}` as the captured
- *   Web logins carry it
+ *   logins carry it
  * @param {boolean|object} [opts.second] - the account has a trusted device: the first scan is answered with the
  *   request for a second QR ({@link SECOND_QR_ASKED}) and the long poll on the new code with the name and link data
  *   ({@link SECOND_QR_SCANNED}). An object overrides `asked`, `scanned` and `scan` (the second poll's answers).

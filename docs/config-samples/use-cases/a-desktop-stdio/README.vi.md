@@ -35,9 +35,9 @@ zalo-agent account security status      # các tệp được niêm phong bằng
 zalo-agent mcp start --account 1000000000000000001 --status   # chỉ khi client đang chạy nó
 ```
 
-## 4. Điện thoại, Zalo PC và Zalo Web
+## 4. Điện thoại, ứng dụng máy tính và trình duyệt
 
-Zalo chỉ giữ **một phiên đăng nhập web cho mỗi tài khoản**, và máy chủ này chính là phiên đó. Đăng nhập cùng tài khoản vào **Zalo Web** (chat.zalo.me) bằng QR sẽ đăng xuất máy chủ: phiên đăng nhập của nó bị từ chối, và mọi lệnh gọi tool trả về `SIGNED_OUT` cho đến khi bạn chạy lại `zalo-agent login` (quét QR) và khởi động lại client. **Điện thoại** và **ứng dụng Zalo PC** là các phiên đăng nhập riêng và hoạt động song song với máy chủ. Hãy dùng điện thoại hoặc Zalo PC, không dùng Zalo Web.
+Zalo chỉ giữ **một phiên đăng nhập web cho mỗi tài khoản**, và máy chủ này chính là phiên đó. Đăng nhập cùng tài khoản vào **Zalo trên trình duyệt** bằng QR sẽ đăng xuất máy chủ: phiên đăng nhập của nó bị từ chối, và mọi lệnh gọi tool trả về `SIGNED_OUT` cho đến khi bạn chạy lại `zalo-agent login` (quét QR) và khởi động lại client. **Điện thoại** và **ứng dụng Zalo trên máy tính** là các phiên đăng nhập riêng và hoạt động song song với máy chủ. Hãy dùng điện thoại hoặc ứng dụng trên máy tính, không dùng trình duyệt.
 
 Mỗi lần đăng nhập QR thêm một mục mới vào danh sách thiết bị trên điện thoại (các mục web cũ hiện là đã đăng xuất). Đăng nhập lại cùng tài khoản thì giữ nguyên mã thiết bị, nên những tin Zalo xếp hàng cho nó trong lúc vắng mặt vẫn đến.
 

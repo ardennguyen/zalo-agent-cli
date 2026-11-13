@@ -3,12 +3,12 @@
  * cleanup itself.
  *
  * `ls` and `plan` read the local index that `sync-cloud` fills and the local message cache; they send nothing to Zalo.
- * `apply` does what Zalo Web's cloud view does when you delete items there (bundle 2026-11-06): it deletes the chat
+ * `apply` does what Zalo's own cloud view does when you delete items there: it deletes the chat
  * message each item belongs to, for this account on every device, which cannot be undone. Zalo has no zCloud delete
  * endpoint. It is guarded (`--yes`, `--dry-run`, src/core/confirm-guard.js) and unverified: no such delete has been
  * watched on a disposable item yet (docs/agent-notes.md).
  *
- * `get` downloads one item's blob as Zalo Web opens it (src/zalo/zcloud-e2ee.js, ZP-10), unverified. An encrypted blob
+ * `get` downloads one item's blob as Zalo opens it (src/zalo/zcloud-e2ee.js, ZP-10), unverified. An encrypted blob
  * opens only with the account's cloud key, which a person gives at run time (`--key-stdin`, `--key-prompt`) and which
  * is never stored (decision D8).
  */
@@ -263,7 +263,7 @@ export function registerCloudCommands(program) {
         cloud
             .command("apply")
             .description(
-                "Delete the planned items as Zalo Web's cloud view does: the chat message behind each, for this " +
+                "Delete the planned items as Zalo's cloud view does: the chat message behind each, for this " +
                     "account on every device (no undo; unverified). Same filters as `plan`; acts on every match " +
                     "(or the first --limit), a page of 60 at a time, one delete per message",
             ),
@@ -332,7 +332,7 @@ export function registerCloudCommands(program) {
     const get = cloud
         .command("get <noiseId>")
         .description(
-            "Download one zCloud item as Zalo Web opens it (unverified live). An encrypted item opens only with the " +
+            "Download one zCloud item as Zalo opens it (unverified live). An encrypted item opens only with the " +
                 "account's cloud key, given at run time and never stored",
         )
         .requiredOption("-o, --out <file>", "Where to write the file (mode 0600)")
@@ -370,7 +370,7 @@ export function registerCloudCommands(program) {
                     /* a filesystem with no modes */
                 }
             };
-            // My Cloud (the chat with oneself): the Web opens the item through its chat message first.
+            // My Cloud (the chat with oneself): Zalo opens the item through its chat message first.
             const selfChat = String(row.threadId) === String(index.ownId);
             if (selfChat && index.savedLocally({ cliMsgId: raw.msgInfo?.cliMsgId, threadId: row.threadId })) {
                 const msg = findMessageByClientId(String(raw.msgInfo.cliMsgId), row.threadId);
@@ -453,7 +453,7 @@ export function registerCloudCommands(program) {
         });
     // It logs in itself, after the key was read: a wrong key fails before anything is sent.
     get.zaloLocalOnly = true;
-    // Deleting is asked about first, as Zalo Web's confirm dialog does: --yes to act, --dry-run to preview. The action
+    // Deleting is asked about first, as Zalo's confirm dialog does: --yes to act, --dry-run to preview. The action
     // settles it itself, after reading the plan (src/core/confirm-guard.js).
     guardSubcommand(cloud, "apply", "cloud.delete", { target: () => ({}), deferred: true, ownDryRun: true });
 }

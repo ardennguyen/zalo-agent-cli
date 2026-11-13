@@ -5,7 +5,7 @@
  *
  * Background:
  * The old phone-transfer path nudged the mobile app via `pullMobileMsg`, polled
- * `getCrossDB`, and acked with `deleteSnapshotMobileMsg`. In modern Zalo Web, those
+ * `getCrossDB`, and acked with `deleteSnapshotMobileMsg`. Today those
  * endpoints are completely unused (0 call sites) and always return empty.
  * Full-history restore runs exclusively over WebSocket binary frames via
  * transfer-sync-v2 (cmd 590/591, src/core/sync-v2/).

@@ -134,7 +134,7 @@ describe("error wording shared with `friend add`", () => {
         assert.equal(extractErrorCode("no code here"), null);
     });
 
-    it("keeps the CLI's original wording and names the codes Zalo Web itself names", () => {
+    it("keeps the CLI's original wording and names the codes Zalo itself names", () => {
         assert.match(describeFriendAddError(225, "9"), /Already friends with 9/);
         assert.match(describeFriendAddError("215", "9"), /blocked you/);
         assert.match(describeFriendAddError(222, "9"), /friend accept 9/);

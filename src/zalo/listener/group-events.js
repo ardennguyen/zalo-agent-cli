@@ -3,7 +3,7 @@
  *
  * `{type, act, data, threadId, isSelf}`: `act` is the server's name for the change, `type` the name the engine
  * prints and gates on (`group_${type}` in `listen`). For 3.0.0 `type` keeps the 22-name vocabulary the engine has
- * always seen, which equals `act` for every name in it, and is "unknown" for any other act (Web also knows
+ * always seen, which equals `act` for every name in it, and is "unknown" for any other act (Zalo also sends
  * `join_accept`, `group_type`, `new_group_invitation`, `update_group_invitation`, `remove_group_invitation`,
  * `update_status`); `act` always carries the real name.
  *
@@ -44,7 +44,7 @@ export const GROUP_EVENT_UNKNOWN = "unknown";
 
 /**
  * Acts the listener drops. When an admin approves a join request the server sends `join_reject` beside
- * `join_accept`; Zalo Web's group act enum (bundle 26.11.10 @~1521167) handles the two as one "approval update"
+ * `join_accept`; Zalo treats the two as one "approval update"
  * and never announces a rejection from it (agent/docs/zca-replace/spec-listener.md 2.5 and 3, "Group acts"), so
  * emitting it would report a rejection that did not happen.
  */

@@ -1,9 +1,9 @@
 /**
- * Sending the "typing…" indicator (`msg typing`, zalo_conversation `typing`): one function, one reply, and Zalo Web's
+ * Sending the "typing…" indicator (`msg typing`, zalo_conversation `typing`): one function, one reply, and Zalo's
  * privacy rule for strangers.
  *
- * Zalo Web does not send typing to a stranger in a 1-1 conversation when its `enable_new_privacy_stranger_chat`
- * switch is on and the peer is a stranger (`isStrangerV2`, bundle 2026-11-06). This client follows it, using the
+ * Zalo does not send typing to a stranger in a 1-1 conversation when the `enable_new_privacy_stranger_chat`
+ * switch is on and the peer is a stranger. This client follows it, using the
  * friend list this process already holds ({@link rememberFriends}: the MCP server loads it on start). A one-shot CLI
  * holds none: the cache is cold, so the indicator is sent and the reply says the check could not be made. Groups are
  * never checked.
@@ -57,7 +57,7 @@ export async function sendTyping(api, { threadId, type, ownId, isFriend = isKnow
         const known = ownId && id === String(ownId) ? true : isFriend(id);
         if (known === false) {
             throw new Error(
-                "Not sent: this user is not a friend, and Zalo Web never shows a stranger that you are typing " +
+                "Not sent: this user is not a friend, and Zalo never shows a stranger that you are typing " +
                     "(its privacy rule for strangers' chats).",
             );
         }
@@ -72,7 +72,7 @@ export async function sendTyping(api, { threadId, type, ownId, isFriend = isKnow
         ...(friendCheck === "unknown" && {
             note:
                 "Sent without checking whether this user is a friend: no friend list is loaded in this process. " +
-                "Zalo Web does not send typing to strangers.",
+                "Zalo does not send typing to strangers.",
         }),
     };
 }

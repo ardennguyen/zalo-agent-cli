@@ -21,7 +21,7 @@ import { hiddenSetForCli } from "../utils/hidden-access.js";
 
 /**
  * The groups shared with one user for a CLI reply (src/core/mutual-groups.js), groups in hidden chats left out as
- * Zalo PC does. Never throws: a failed read is `{error}`.
+ * Zalo does. Never throws: a failed read is `{error}`.
  *
  * @param {object} api
  * @param {string|null|undefined} userId
@@ -77,8 +77,8 @@ export function registerFriendCommands(program) {
     friend
         .command("online")
         .description(
-            "List currently online friends (unverified, dead in practice: Zalo answers 404, and Zalo Web discards " +
-                "this answer too). Use `friend last-online <userId>` or `listen --events online` instead",
+            "List currently online friends (unverified, dead in practice: Zalo answers 404, and Zalo's own apps " +
+                "discard this answer too). Use `friend last-online <userId>` or `listen --events online` instead",
         )
         .action(async () => {
             try {
@@ -87,7 +87,7 @@ export function registerFriendCommands(program) {
             } catch (e) {
                 error(
                     /404/.test(e.message)
-                        ? `${e.message}. Zalo answered 404 for the online-friends list on every profile host of this account's service map. Zalo Web's contact list asks the same thing and discards the answer. \`friend last-online <userId>\` works, and \`listen --events online\` reports presence as Zalo pushes it.`
+                        ? `${e.message}. Zalo answered 404 for the online-friends list on every profile host of this account's service map. Zalo's own contact list asks the same thing and discards the answer. \`friend last-online <userId>\` works, and \`listen --events online\` reports presence as Zalo pushes it.`
                         : e.message,
                 );
             }
@@ -241,7 +241,7 @@ export function registerFriendCommands(program) {
     friend
         .command("last-online <userId>")
         .description(
-            "When a user was last online, as Zalo Web reads it: when your own online status is hidden " +
+            "When a user was last online, as Zalo reads it: when your own online status is hidden " +
                 '(profile set online-status 0) nothing is asked and hiddenBy is "you"; hiddenBy "them" means ' +
                 "they hide theirs (unverified live)",
         )
@@ -321,7 +321,7 @@ export function registerFriendCommands(program) {
             try {
                 let result;
                 if (opts.count === undefined && opts.page === undefined) {
-                    // No page asked: every page, as Zalo Web pages its alias list (src/core/list-all.js).
+                    // No page asked: every page, as Zalo pages its alias list (src/core/list-all.js).
                     const all = await allAliases(getApi());
                     result = { items: all.items };
                     if (all.paging.note) warning(all.paging.note);
@@ -438,7 +438,7 @@ export function registerFriendCommands(program) {
                 error(
                     `Get close friends failed: ${e.message}` +
                         (/404/.test(e.message)
-                            ? ". Zalo has retired close friends: this build's web client has no menu and no caller for it, and the request answers 404."
+                            ? ". Zalo has retired close friends: Zalo's own apps have no menu for it, and the request answers 404."
                             : ""),
                 );
             }
@@ -516,7 +516,7 @@ export function registerFriendCommands(program) {
             try {
                 const api = getApi();
                 const result = await api.getRelatedFriendGroup(friendIds);
-                // Groups in hidden chats are left out, as Zalo PC leaves them out of "Nhóm chung".
+                // Groups in hidden chats are left out, as Zalo leaves them out of "Nhóm chung".
                 const ownId = api.getOwnId?.() ?? null;
                 const hidden = ownId ? await hiddenSetForCli(String(ownId), api, { preferMirror: true }) : null;
                 const lists = Object.entries(result?.groupRelateds ?? {}).map(([fid, groups]) => [
@@ -569,7 +569,7 @@ export function registerFriendCommands(program) {
                 error(`Block feed failed: ${e.message}`);
             }
         });
-    // Asked about first, as Zalo Web does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    // Asked about first, as Zalo does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
     guardSubcommand(friend, "remove", "friend.remove", { target: (userId) => ({ userId }) });
     guardSubcommand(friend, "block", "friend.block", { target: (userId) => ({ userId }) });
     guardSubcommand(friend, "reject", "friend.reject", { target: (userId) => ({ userId }) });

@@ -1,35 +1,32 @@
 /**
  * Notes, polls and reminders: the board objects of a conversation (agent/docs/zca-replace/spec-boards.md).
  *
- * Every call is one session request on the ordinary envelope (kernel/endpoint.js), shaped the way Zalo Web 26.11.10
- * shapes it (API module `1.c72c0957b455ab70b73c.js`, offsets below). Where the Web differs from what the engine sent
- * before, the Web wins:
+ * Every call is one session request on the ordinary envelope (kernel/endpoint.js), shaped the way the server
+ * expects it. Where that differs from what the engine sent before:
  *
- * - Polls go to the `group_poll` host, falling back to `group` when the service map has no `group_poll` (the Web's
- *   `getGroupPollDomain()`, @11653486). Their replies keep `creator` and `voters` as strings (the Web's
- *   `_preParsePollData` keys, @11279239).
- * - `getPollDetail` is a GET (the Web's `getPollDetail`, @11653790).
+ * - Polls go to the `group_poll` host, falling back to `group` when the service map has no `group_poll`. Their
+ *   replies keep `creator` and `voters` as strings.
+ * - `getPollDetail` is a GET.
  * - `getListBoard` and the group `getListReminder` take a cursor (`lastId`, `lastType`) for page 2 and later, as the
- *   Web's board manager sends it (@1578806); `boardCursor()` reads it off a page. A reply that is a JSON string of a
- *   bare array is read as a list of notes (@1577470). The group reminder list's `last_id` goes out as the Web's
- *   parsed Number, rounded past 2^53 as the Web's is: the exact id brings page 1 back again (live, 2026-11-07). A page with the
- *   cursor can come back short while more follow, so the pagers stop at an empty page, as the Web's does.
- * - A group id loses the Web's conversation prefix `g` before it goes out.
- * - Reminders are created and edited in the colour the Web uses (-16777216, opaque black) and in the key order of
- *   the Web's reminder builder (@3292729). The caller's emoji is kept (design 6.1 item 12; the Web always sends "⏰").
+ *   server expects; `boardCursor()` reads it off a page. A reply that is a JSON string of a
+ *   bare array is read as a list of notes. The group reminder list's `last_id` goes out as a
+ *   parsed Number, rounded past 2^53: the exact id brings page 1 back again (live, 2026-11-07). A page with the
+ *   cursor can come back short while more follow, so the pagers stop at an empty page.
+ * - A group id loses Zalo's conversation prefix `g` before it goes out.
+ * - Reminders are created and edited in Zalo's default colour (-16777216, opaque black) and in the expected key
+ *   order. The caller's emoji is kept (design 6.1 item 12; Zalo's own apps always send "⏰").
  * - `editReminder` loads the reminder first and sends its current values for every field the caller did not change
- *   (a group one through `getReminder`, a DM one from the DM list), as the Web edits a loaded reminder. Before, an
+ *   (a group one through `getReminder`, a DM one from the DM list), as Zalo edits a loaded reminder. Before, an
  *   edit without a time moved the reminder to the moment of the edit, and one without a repeat reset it.
  * - `addPollOptions` sends the caller's current votes as `voted_option_ids` (read from the poll first) unless the
- *   caller names them: the Web's list is the full selection after the change, so an empty one cleared them. On a
- *   single-choice poll, voting a new option drops the old vote, as the Web's vote dialog unchecks the other options
- *   (`_onCheck`, @2427557) before it reads the checked ones (`getCheckedIdsList`, @2435416).
- * - Reminder replies keep `topicId`, `reminderId`, `id` and `eventId` as strings (the Web's reminder id keys,
- *   @2604923); a `params` that arrives as a JSON string is opened into an object.
- * - `lockPoll` takes a success with no `data` as done (the Web reads only the outer code of `/api/poll/end`).
- * - A list call answered with an error whose `data` is the string `"[]"` is an empty page: the Web's board manager
- *   reads that answer as "no more" (`getGroupBoardList` @1578806, `getGroupBoardOneOneList` @1580053).
- * - A DM's reminder replies keep `creatorUid`, `creatorId` and `toUid` as strings too (ours, not a Web key list:
+ *   caller names them: the list is the full selection after the change, so an empty one cleared them. On a
+ *   single-choice poll, voting a new option drops the old vote, as Zalo does.
+ * - Reminder replies keep `topicId`, `reminderId`, `id` and `eventId` as strings; a `params` that arrives as a JSON
+ *   string is opened into an object.
+ * - `lockPoll` takes a success with no `data` as done (only the outer code of `/api/poll/end` is read).
+ * - A list call answered with an error whose `data` is the string `"[]"` is an empty page: that answer means
+ *   "no more".
+ * - A DM's reminder replies keep `creatorUid`, `creatorId` and `toUid` as strings too (ours, not Zalo's key list:
  *   `editReminder` sends the loaded creator back, and a rounded uid would name somebody else).
  *
  * `listOneOneBoard` (moved here from src/core/sync-v2/board.js) asks a DM's board for every kind of item.
@@ -42,12 +39,12 @@ import { openSession } from "../kernel/cipher.js";
 import { callEndpoint } from "../kernel/endpoint.js";
 import { preParse } from "../kernel/json-ids.js";
 
-// ── Constants (the Web's constant module, spec-boards 0) ───────────────
+// ── Constants (spec-boards 0) ───────────────
 
 /** The board host of notes, board lists and reminders. */
 export const BOARD_HOST = "group_board";
 
-/** The poll host, and the one the Web falls back to when the service map has no `group_poll`. */
+/** The poll host, and the fallback when the service map has no `group_poll`. */
 export const POLL_HOST = Object.freeze(["group_poll", "group"]);
 
 /** A topic's default colour: opaque black, `0xFF000000` as an int32. */
@@ -62,13 +59,13 @@ export const CREATE_SRC = 1;
 /** What a board list item is (`boardType`): a note or reminder, a pinned message, a poll. */
 export const BOARD_TYPE = Object.freeze({ ALL: 0, TOPIC: 1, MESSAGE: 2, POLL: 3 });
 
-/** The page size the Web asks for (`MAX_REF_LOAD_TOPIC`). */
+/** The page size asked for. */
 export const PAGE_SIZE = 20;
 
-/** The keys the Web quotes in a poll reply, so a 19-digit uid keeps every digit. */
+/** The keys quoted in a poll reply, so a 19-digit uid keeps every digit. */
 export const POLL_ID_KEYS = Object.freeze(["creator", "voters"]);
 
-/** The keys the Web quotes in a reminder reply. */
+/** The keys quoted in a reminder reply. */
 export const REMINDER_ID_KEYS = Object.freeze(["topicId", "reminderId", "id", "eventId"]);
 
 /**
@@ -89,7 +86,7 @@ export const INVALID_THREAD_TYPE = "Thread type is invalid";
 // ── Small helpers ───────────────────────────────────────────────────────
 
 /**
- * A group id as the wire carries it: the Web's conversation prefix `g` taken off, always a string.
+ * A group id as the wire carries it: Zalo's conversation prefix `g` taken off, always a string.
  *
  * @param {string|number} id - `"g<digits>"` or `"<digits>"`
  * @returns {string}
@@ -162,7 +159,7 @@ function maybeJson(data) {
 
 /**
  * The cursor of the page after `items`: the id and board type of the last item with a positive id (a poll's id is
- * its `poll_id`), as the Web's board manager keeps it. `{lastId: 0, lastType: 0}` when there is none.
+ * its `poll_id`). `{lastId: 0, lastType: 0}` when there is none.
  *
  * @param {Array<{boardType?: number, data?: object}>} items
  * @returns {{lastId: number|string, lastType: number}}
@@ -184,8 +181,8 @@ export function boardCursor(items) {
 }
 
 /**
- * Open the sealed `data` of a reply whose outer envelope said success, for a call where the Web reads only the
- * outer code: no data at all is a success with nothing to return.
+ * Open the sealed `data` of a reply whose outer envelope said success, for a call where only the outer code
+ * matters: no data at all is a success with nothing to return.
  *
  * @param {object} ctx - the session (`secretKey`)
  * @param {unknown} data - the outer envelope's `data`
@@ -216,8 +213,8 @@ export function openOptionalReply(ctx, data, keys) {
 }
 
 /**
- * Whether an error is Zalo's "no more" answer to a list: an error whose `data` is the string `"[]"`, which the Web's
- * board manager reads as the end of the list (@1578806, @1580053).
+ * Whether an error is Zalo's "no more" answer to a list: an error whose `data` is the string `"[]"`, which marks
+ * the end of the list.
  *
  * @param {unknown} e
  * @returns {boolean}
@@ -259,7 +256,7 @@ export function topicReply(data) {
 
 /**
  * A board list reply as `{items: [{boardType, data}], ...}`. An object with `items` keeps every other key; a JSON
- * string of a bare array is a list of notes (the Web reads it so). Every item but a poll has its `params` opened.
+ * string of a bare array is a list of notes. Every item but a poll has its `params` opened.
  *
  * @param {any} data
  * @returns {{items: Array<{boardType: number, data: object}>}}
@@ -277,10 +274,10 @@ export function boardListReply(data) {
 }
 
 /**
- * A group reminder list as the Web reads `/api/board/listReminder`: the reply (a JSON string) is a bare array or
+ * A group reminder list read from `/api/board/listReminder`: the reply (a JSON string) is a bare array or
  * `{items: [{boardType, data}]}`; the reminders are the topic items whose `startTime` is a positive number.
  *
- * The page's cursor is read before that filter, as the Web reads it (`listByConversation`, web-startup @1005569):
+ * The page's cursor is read before that filter:
  * the array carries it as a non-enumerable `page` property, `{lastId, size}`, the id (`reminderId`, else `id`) of
  * the page's last topic and how many topics the page held. {@link groupReminderPage} pages with it.
  *
@@ -317,8 +314,8 @@ export function dmReminderListReply(data) {
 
 /**
  * A DM's whole board (`/api/board/oneone/list`, board type 0) as `{items: [{boardType, data}]}`. An item that comes
- * without its board type is a reminder: the Web files each one as a topic (`GNOTICE_TOPIC`, 1) whose `id` is its
- * `reminderId` (`getGroupBoardOneOneList`, @1578940). Unlike the Web, the item keeps its `reminderId` too.
+ * without its board type is a reminder: Zalo files each one as a topic (board type 1) whose `id` is its
+ * `reminderId`. Here the item keeps its `reminderId` too.
  *
  * @param {any} data
  * @returns {{items: Array<{boardType: number, data: object}>}}
@@ -354,7 +351,7 @@ const noteHead = (a) => ({
     params: JSON.stringify({ title: a.title }),
 });
 
-/** `POST {group_board}/api/board/topic/createv2`, a note (the Web's `createGroupTopicv2`, @11658103). */
+/** `POST {group_board}/api/board/topic/createv2`, a note. */
 export const NOTE_CREATE = Object.freeze({
     host: BOARD_HOST,
     path: "/api/board/topic/createv2",
@@ -365,7 +362,7 @@ export const NOTE_CREATE = Object.freeze({
     transform: topicReply,
 });
 
-/** `POST {group_board}/api/board/topic/updatev2`, a note; `pinAct` 2 leaves the pin as it is (@11658731). */
+/** `POST {group_board}/api/board/topic/updatev2`, a note; `pinAct` 2 leaves the pin as it is. */
 export const NOTE_UPDATE = Object.freeze({
     host: BOARD_HOST,
     path: "/api/board/topic/updatev2",
@@ -376,7 +373,7 @@ export const NOTE_UPDATE = Object.freeze({
     transform: topicReply,
 });
 
-/** `GET {group_board}/api/board/list`: a group's notes, pinned messages and polls (the Web's `listBoard`, @11656932). */
+/** `GET {group_board}/api/board/list`: a group's notes, pinned messages and polls. */
 export const BOARD_LIST = Object.freeze({
     host: BOARD_HOST,
     path: "/api/board/list",
@@ -395,7 +392,7 @@ export const BOARD_LIST = Object.freeze({
     transform: boardListReply,
 });
 
-/** `POST {group_poll}/api/poll/create` (the Web's `createPoll`, @11653486). */
+/** `POST {group_poll}/api/poll/create`. */
 export const POLL_CREATE = Object.freeze({
     host: POLL_HOST,
     path: "/api/poll/create",
@@ -419,7 +416,7 @@ export const POLL_CREATE = Object.freeze({
     bigIdKeys: POLL_ID_KEYS,
 });
 
-/** `GET {group_poll}/api/poll/detail` (@11653790). */
+/** `GET {group_poll}/api/poll/detail`. */
 export const POLL_DETAIL = Object.freeze({
     host: POLL_HOST,
     path: "/api/poll/detail",
@@ -430,7 +427,7 @@ export const POLL_DETAIL = Object.freeze({
     bigIdKeys: POLL_ID_KEYS,
 });
 
-/** `GET {group_poll}/api/poll/vote`: `option_ids` is the whole selection after the vote; empty removes it (@11654321). */
+/** `GET {group_poll}/api/poll/vote`: `option_ids` is the whole selection after the vote; empty removes it. */
 export const POLL_VOTE = Object.freeze({
     host: POLL_HOST,
     path: "/api/poll/vote",
@@ -441,7 +438,7 @@ export const POLL_VOTE = Object.freeze({
     bigIdKeys: POLL_ID_KEYS,
 });
 
-/** `POST {group_poll}/api/poll/end`: the reply is read by its outer code; `data` may be absent (@11654791). */
+/** `POST {group_poll}/api/poll/end`: the reply is read by its outer code; `data` may be absent. */
 export const POLL_LOCK = Object.freeze({
     host: POLL_HOST,
     path: "/api/poll/end",
@@ -451,7 +448,7 @@ export const POLL_LOCK = Object.freeze({
     reply: "plain",
 });
 
-/** `POST {group_poll}/api/poll/share` (@11654556). */
+/** `POST {group_poll}/api/poll/share`. */
 export const POLL_SHARE = Object.freeze({
     host: POLL_HOST,
     path: "/api/poll/share",
@@ -462,7 +459,7 @@ export const POLL_SHARE = Object.freeze({
     bigIdKeys: POLL_ID_KEYS,
 });
 
-/** `GET {group_poll}/api/poll/option/add`, no imei (the Web's `addNewOptionPoll`, @11654068). */
+/** `GET {group_poll}/api/poll/option/add`, no imei. */
 export const POLL_ADD_OPTIONS = Object.freeze({
     host: POLL_HOST,
     path: "/api/poll/option/add",
@@ -474,8 +471,8 @@ export const POLL_ADD_OPTIONS = Object.freeze({
 });
 
 /**
- * A group reminder's topic body, in the Web's `createGroupTopicV2Revamp`/`updateGroupTopicV2Revamp` order
- * (@11659377): `grid, type, color, emoji, startTime, duration, params, [topicId,] repeat, [src,] imei, pinAct`.
+ * A group reminder's topic body, in the expected order:
+ * `grid, type, color, emoji, startTime, duration, params, [topicId,] repeat, [src,] imei, pinAct`.
  */
 function groupReminderBody(a, ctx, { update }) {
     const body = {
@@ -496,7 +493,7 @@ function groupReminderBody(a, ctx, { update }) {
 }
 
 /**
- * A DM reminder's `objectData`, in the order of the Web's reminder builder (@3292729): `toUid, creatorUid, type,
+ * A DM reminder's `objectData`, in the expected order: `toUid, creatorUid, type,
  * color, emoji, startTime, duration, params, needPin, repeat`, then `src` on a create or `reminderId` on an edit.
  */
 function dmReminderObject(a, { update }) {
@@ -541,7 +538,7 @@ export const REMINDER_UPDATE_GROUP = Object.freeze({
     transform: topicReply,
 });
 
-/** `POST {group_board}/api/board/oneone/create`: `{objectData, imei}` (the Web's `createOneOneGroupTopic`, @11670931). */
+/** `POST {group_board}/api/board/oneone/create`: `{objectData, imei}`. */
 export const REMINDER_CREATE_DM = Object.freeze({
     host: BOARD_HOST,
     path: "/api/board/oneone/create",
@@ -553,7 +550,7 @@ export const REMINDER_CREATE_DM = Object.freeze({
     transform: topicReply,
 });
 
-/** `POST {group_board}/api/board/oneone/update`: `{objectData}`, no imei (@11671182). */
+/** `POST {group_board}/api/board/oneone/update`: `{objectData}`, no imei. */
 export const REMINDER_UPDATE_DM = Object.freeze({
     host: BOARD_HOST,
     path: "/api/board/oneone/update",
@@ -565,7 +562,7 @@ export const REMINDER_UPDATE_DM = Object.freeze({
     transform: topicReply,
 });
 
-/** `POST {group_board}/api/board/topic/remove` (the Web's `removeGroupTopicv2`, @11661378). */
+/** `POST {group_board}/api/board/topic/remove`. */
 export const REMINDER_REMOVE_GROUP = Object.freeze({
     host: BOARD_HOST,
     path: "/api/board/topic/remove",
@@ -575,7 +572,7 @@ export const REMINDER_REMOVE_GROUP = Object.freeze({
     reply: "session",
 });
 
-/** `POST {group_board}/api/board/oneone/remove`: `{uid, reminderId}`, no imei (@11671341). */
+/** `POST {group_board}/api/board/oneone/remove`: `{uid, reminderId}`, no imei. */
 export const REMINDER_REMOVE_DM = Object.freeze({
     host: BOARD_HOST,
     path: "/api/board/oneone/remove",
@@ -585,7 +582,7 @@ export const REMINDER_REMOVE_DM = Object.freeze({
     reply: "session",
 });
 
-/** `GET {group_board}/api/board/topic/getReminder` (the Web's `getDetailReminder`, @11687912). */
+/** `GET {group_board}/api/board/topic/getReminder`. */
 export const REMINDER_GET = Object.freeze({
     host: BOARD_HOST,
     path: "/api/board/topic/getReminder",
@@ -598,7 +595,7 @@ export const REMINDER_GET = Object.freeze({
 });
 
 /**
- * The group reminder list's `last_id` as the Web sends it: a JSON number. The Web's id is a parsed Number (its board
+ * The group reminder list's `last_id` as the server expects it: a JSON number, a parsed Number (the board
  * reply has no big-id pass), so past 2^53 it goes out rounded. Live (2026-11-07), that is what pages correctly: Zalo
  * answers a value that is no reminder's id by page number, while the exact id of the page's last reminder, quoted or
  * bare, brings page 1 back again.
@@ -610,7 +607,7 @@ function webLastId(id) {
     return typeof id === "string" && /^\d+$/.test(id) ? Number(id) : id;
 }
 
-/** `GET {group_board}/api/board/listReminder` (the Web's `getListBoardGroup`, @11671895). */
+/** `GET {group_board}/api/board/listReminder`. */
 export const REMINDER_LIST_GROUP = Object.freeze({
     host: BOARD_HOST,
     path: "/api/board/listReminder",
@@ -633,7 +630,7 @@ export const REMINDER_LIST_GROUP = Object.freeze({
 });
 
 /**
- * `GET {group_board}/api/board/oneone/list`: `{objectData}`, no imei (the Web's `getListBoardOneOne`, @11671584).
+ * `GET {group_board}/api/board/oneone/list`: `{objectData}`, no imei.
  * Board type 1 is the reminders, 0 every kind of item.
  */
 export const ONEONE_LIST = Object.freeze({
@@ -656,7 +653,7 @@ export const ONEONE_LIST = Object.freeze({
     transform: (data, a) => (a.boardType === BOARD_TYPE.ALL ? dmBoardReply(data) : dmReminderListReply(data)),
 });
 
-/** `GET {group_board}/api/board/topic/listResponseEvent`: `{eventId}`, no imei (@11687657). */
+/** `GET {group_board}/api/board/topic/listResponseEvent`: `{eventId}`, no imei. */
 export const REMINDER_RESPONSES = Object.freeze({
     host: BOARD_HOST,
     path: "/api/board/topic/listResponseEvent",
@@ -671,7 +668,7 @@ export const REMINDER_RESPONSES = Object.freeze({
 
 /**
  * List a 1-1 conversation's whole board (notes, pinned messages, reminders): `/api/board/oneone/list` with board
- * type 0, which is what Zalo Web asks. Usable with a session handle or a logged-in api object.
+ * type 0, which is what Zalo asks. Usable with a session handle or a logged-in api object.
  *
  * @param {object} target - a session handle `s`, or the api object (`getContext()`, `zpwServiceMap`)
  * @param {string} threadId - the other user's id
@@ -722,7 +719,7 @@ export function creatorOf(reminder, ownId) {
 }
 
 /**
- * The option ids the caller has voted for on a poll (the Web's `getCheckedIdsList`: the options whose voters
+ * The option ids the caller has voted for on a poll (the options whose voters
  * include this account, or that say `voted`).
  *
  * @param {any} poll - a poll detail
@@ -741,10 +738,10 @@ export function votedOptionIds(poll, ownId) {
 }
 
 /**
- * One page of a group's board, reached the way Zalo Web pages it: page 2 and later carry the cursor of the page
+ * One page of a group's board, reached the way Zalo pages it: page 2 and later carry the cursor of the page
  * before (`boardCursor`), so the pages before the one asked are read first. An empty page on the way means there is
  * nothing after it, and `{items: []}` is the answer without asking further. A short page does not: with the cursor,
- * Zalo can answer fewer items than asked while more follow (live, 2026-11-07), and the Web stops only when empty.
+ * Zalo can answer fewer items than asked while more follow (live, 2026-11-07), so paging stops only when empty.
  *
  * @param {{getListBoard: Function}} api - a logged-in api
  * @param {string} groupId
@@ -764,11 +761,11 @@ export async function boardPage(api, groupId, page = 1, count = PAGE_SIZE) {
 }
 
 /**
- * One page of a group's reminders, reached the way Zalo Web pages them: page 2 and later carry `lastId`, the id of
+ * One page of a group's reminders, reached the way Zalo pages them: page 2 and later carry `lastId`, the id of
  * the last topic of the page before (read off the reply, {@link groupReminderListReply}), so the pages before the one
  * asked are read first. An empty page means there is nothing after it; a short one does not, since a page asked
- * with the cursor can hold fewer than asked while more follow (the Web stops only at an empty page). A DM's reminders
- * have no cursor (the Web always sends `last_id` 0 there) and are asked for by page number alone.
+ * with the cursor can hold fewer than asked while more follow (paging stops only at an empty page). A DM's reminders
+ * have no cursor (`last_id` is always 0 there) and are asked for by page number alone.
  *
  * @param {{getListReminder: Function}} api - a logged-in api
  * @param {string} groupId
@@ -901,9 +898,9 @@ export function boardMethods(s) {
 
         /**
          * Add options to a poll. `votedOptionIds` is this account's whole selection afterwards; when it is empty or
-         * absent, the poll is read first and the current votes are kept (the Web sends them, and an empty list
+         * absent, the poll is read first and the current votes are kept (Zalo expects them, and an empty list
          * would clear them), except on a single-choice poll where a new option is voted: that vote replaces the
-         * old one, so none is kept (the Web's `_onCheck` unchecks the others).
+         * old one, so none is kept (Zalo unchecks the others).
          *
          * @param {{pollId: number|string, options: Array<{content: string, voted?: boolean}>,
          *   votedOptionIds?: Array<number|string>}} payload

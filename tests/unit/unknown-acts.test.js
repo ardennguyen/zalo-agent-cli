@@ -100,7 +100,7 @@ describe("what gets noted", () => {
         assert.equal(existsSync(file), false, "nothing to write");
     });
 
-    it("does not note recent_search/update, known as Zalo PC's own search history", () => {
+    it("does not note recent_search/update, known as Zalo's own search history", () => {
         const file = fresh();
         const acts = createUnknownActs({ file });
         assert.equal(acts.observe(CMD_PUSH_ACTIONS, actions({ act_type: "recent_search", act: "update" })), 0);

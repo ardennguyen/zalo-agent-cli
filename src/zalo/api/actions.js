@@ -2,19 +2,19 @@
  * Message actions and conversation-list reads: recall, delete, react, delete a conversation, unread marks, pinned and
  * archived conversations, and conversation labels (agent/docs/zca-replace/spec-actions.md).
  *
- * Every call is one session request on the ordinary envelope (kernel/endpoint.js), shaped the way Zalo Web 26.11.10
- * shapes it. Where the Web differs from what the engine sent before, the Web wins:
+ * Every call is one session request on the ordinary envelope (kernel/endpoint.js), shaped the way the server
+ * expects it. Where that differs from what the engine sent before:
  *
- * - `undo`: the Web's key order (`msgId, toid|grid, clientId, ...`); a group's `visibility` from the caller when it
+ * - `undo`: the expected key order (`msgId, toid|grid, clientId, ...`); a group's `visibility` from the caller when it
  *   knows it, else 0; error 211 read as "the recall window has passed".
- * - `deleteMessage`: in a DM, `destId` is this account's own uid when the peer sent the message (the Web's rule).
+ * - `deleteMessage`: in a DM, `destId` is this account's own uid when the peer sent the message.
  * - `addReaction`: `gMsgID` is the message id as a string (no rounding past 2^53); a thread type other than user (0)
  *   or group (1) is refused before any request.
  * - `deleteChat`: no `nretry` in the query.
- * - `getUnreadMark`, `removeUnreadMark`: ids are parsed losslessly (`id`, `fromUid`, `cliMsgId`), the Web's
- *   `preParse` keys; `removeUnreadMark` writes the Web's fixed key order.
- * - `getPinConversations`: error 212 ("no pinned conversation") is an empty list, as the Web reads it.
- * - `updateLabels`: the server's `chat_label.api.update_label_version` picks the flow, as the Web's does. 1 (the
+ * - `getUnreadMark`, `removeUnreadMark`: ids are parsed losslessly (`id`, `fromUid`, `cliMsgId`);
+ *   `removeUnreadMark` writes the expected fixed key order.
+ * - `getPinConversations`: error 212 ("no pinned conversation") is an empty list.
+ * - `updateLabels`: the server's `chat_label.api.update_label_version` picks the flow. 1 (the
  *   default): the full-array `/api/convlabel/update`. 2: the per-label `/api/convlabel/manage/*` calls, planned from
  *   the difference between the list on the server and the one asked for. Error 230 (the list changed since the
  *   caller read it) is said plainly in both. Flow 2 is not atomic: its calls go out one by one, nothing undoes the
@@ -47,7 +47,7 @@ export function threadTypeOf(type, fallback = THREAD_TYPE.USER) {
 }
 
 /**
- * A group id as the wire carries it: the Web's conversation prefix `g` taken off, always a string.
+ * A group id as the wire carries it: Zalo's conversation prefix `g` taken off, always a string.
  *
  * @param {string|number} id - `"g<digits>"` or `"<digits>"`
  * @returns {string}
@@ -57,7 +57,7 @@ export function bareGroupId(id) {
     return /^g\d+$/.test(s) ? s.slice(1) : s;
 }
 
-/** The keys the Web's `preParse` quotes in an unread-mark answer, so a 19-digit id keeps every digit. */
+/** The keys quoted in an unread-mark answer, so a 19-digit id keeps every digit. */
 export const UNREAD_ID_KEYS = Object.freeze(["id", "fromUid", "cliMsgId"]);
 
 /**
@@ -193,7 +193,7 @@ function idsFromText(text) {
 
 // ── Endpoints ──────────────────────────────────────────────────────────
 
-/** `POST {chat}/api/message/undo` (Web undoMessage, 11281). */
+/** `POST {chat}/api/message/undo` (cmd 11281). */
 export const UNDO_USER = Object.freeze({
     host: "chat",
     path: "/api/message/undo",
@@ -202,7 +202,7 @@ export const UNDO_USER = Object.freeze({
     body: (a) => ({ msgId: a.msgId, toid: a.threadId, clientId: a.clientId, cliMsgIdUndo: a.cliMsgId }),
 });
 
-/** `POST {group}/api/group/undomsg` (Web undoMessage, 11192). */
+/** `POST {group}/api/group/undomsg` (cmd 11192). */
 export const UNDO_GROUP = Object.freeze({
     host: "group",
     path: "/api/group/undomsg",
@@ -218,7 +218,7 @@ export const UNDO_GROUP = Object.freeze({
     }),
 });
 
-/** `POST {chat}/api/message/delete` (Web deleteOneOneMessageV2, 11779). */
+/** `POST {chat}/api/message/delete` (cmd 11779). */
 export const DELETE_USER = Object.freeze({
     host: "chat",
     path: "/api/message/delete",
@@ -227,7 +227,7 @@ export const DELETE_USER = Object.freeze({
     body: (a, ctx) => ({ toid: a.threadId, cliMsgId: a.clientId, msgs: a.msgs, onlyMe: a.onlyMe, imei: ctx.imei }),
 });
 
-/** `POST {group}/api/group/deletemsg` (Web deleteGroupMessageV2, 11834): no imei. */
+/** `POST {group}/api/group/deletemsg` (cmd 11834): no imei. */
 export const DELETE_GROUP = Object.freeze({
     host: "group",
     path: "/api/group/deletemsg",
@@ -239,7 +239,7 @@ export const DELETE_GROUP = Object.freeze({
 /** A reaction's answer: `msgIds` held as a JSON string is opened, ids as strings. */
 const reactionReply = (data) => (data && typeof data.msgIds === "string" ? { msgIds: idsFromText(data.msgIds) } : data);
 
-/** `POST {reaction}/api/message/reaction` (Web sendReactionMessage, 12410). */
+/** `POST {reaction}/api/message/reaction` (cmd 12410). */
 export const REACT_USER = Object.freeze({
     host: "reaction",
     path: "/api/message/reaction",
@@ -249,7 +249,7 @@ export const REACT_USER = Object.freeze({
     transform: reactionReply,
 });
 
-/** `POST {reaction}/api/group/reaction` (Web sendReactionMessage, 12411). */
+/** `POST {reaction}/api/group/reaction` (cmd 12411). */
 export const REACT_GROUP = Object.freeze({
     host: "reaction",
     path: "/api/group/reaction",
@@ -259,7 +259,7 @@ export const REACT_GROUP = Object.freeze({
     transform: reactionReply,
 });
 
-/** `POST {chat}/api/message/deleteconver` (Web deleteOneOneConversationV2, 11778): no nretry. */
+/** `POST {chat}/api/message/deleteconver` (cmd 11778): no nretry. */
 export const DELETE_CHAT_USER = Object.freeze({
     host: "chat",
     path: "/api/message/deleteconver",
@@ -268,7 +268,7 @@ export const DELETE_CHAT_USER = Object.freeze({
     body: (a, ctx) => ({ toid: a.threadId, cliMsgId: a.clientId, conver: a.conver, onlyMe: 1, imei: ctx.imei }),
 });
 
-/** `POST {group}/api/group/deleteconver` (Web deleteGroupConversationV2, 11835): no nretry. */
+/** `POST {group}/api/group/deleteconver` (cmd 11835): no nretry. */
 export const DELETE_CHAT_GROUP = Object.freeze({
     host: "group",
     path: "/api/group/deleteconver",
@@ -277,7 +277,7 @@ export const DELETE_CHAT_GROUP = Object.freeze({
     body: (a, ctx) => ({ grid: a.threadId, cliMsgId: a.clientId, conver: a.conver, onlyMe: 1, imei: ctx.imei }),
 });
 
-/** `GET {conversation}/api/conv/getUnreadMark` (Web getMarkAsUnread, 12011): ids kept whole. */
+/** `GET {conversation}/api/conv/getUnreadMark` (cmd 12011): ids kept whole. */
 export const UNREAD_GET = Object.freeze({
     host: "conversation",
     path: "/api/conv/getUnreadMark",
@@ -288,7 +288,7 @@ export const UNREAD_GET = Object.freeze({
     transform: unreadMarkReply,
 });
 
-/** `POST {conversation}/api/conv/removeUnreadMark` (Web removeMarkAsUnread, 12014). */
+/** `POST {conversation}/api/conv/removeUnreadMark` (cmd 12014). */
 export const UNREAD_REMOVE = Object.freeze({
     host: "conversation",
     path: "/api/conv/removeUnreadMark",
@@ -299,10 +299,10 @@ export const UNREAD_REMOVE = Object.freeze({
     transform: unreadMarkReply,
 });
 
-/** What the Web reads error 212 of the pinned list as: nothing is pinned, version 0. */
+/** What error 212 of the pinned list means: nothing is pinned, version 0. */
 export const NO_PINS = Object.freeze({ conversations: [], version: 0 });
 
-/** `GET {conversation}/api/pinconvers/list` (Web getPinnedConversations, 12120). */
+/** `GET {conversation}/api/pinconvers/list` (cmd 12120). */
 export const PINS_GET = Object.freeze({
     host: "conversation",
     path: "/api/pinconvers/list",
@@ -312,7 +312,7 @@ export const PINS_GET = Object.freeze({
     emptyOn: { 212: NO_PINS },
 });
 
-/** `GET {label}/api/archivedchat/list` (Web getListArchivedChat, 12076): version 1, a fresh client's. */
+/** `GET {label}/api/archivedchat/list` (cmd 12076): version 1, a fresh client's. */
 export const ARCHIVED_GET = Object.freeze({
     host: "label",
     path: "/api/archivedchat/list",
@@ -336,7 +336,7 @@ export function labelReply(data) {
     return { labelData, version: data?.version, lastUpdateTime: data?.lastUpdateTime };
 }
 
-/** `GET {label}/api/convlabel/get` (Web getConversationLabel, 12161). */
+/** `GET {label}/api/convlabel/get` (cmd 12161). */
 export const LABELS_GET = Object.freeze({
     host: "label",
     path: "/api/convlabel/get",
@@ -346,7 +346,7 @@ export const LABELS_GET = Object.freeze({
     transform: labelReply,
 });
 
-/** `POST {label}/api/convlabel/update` (Web updateConversationLabel, 12160): the whole list at once. */
+/** `POST {label}/api/convlabel/update` (cmd 12160): the whole list at once. */
 export const LABELS_UPDATE = Object.freeze({
     host: "label",
     path: "/api/convlabel/update",

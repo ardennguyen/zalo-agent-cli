@@ -1,9 +1,8 @@
 /**
- * The zCloud queue applied to the local index, the way Zalo Web's walker applies it (bundle module `_EZi`,
- * `verifyFromId`, with `bWos` for the keys): adds are recorded, a remove entry deletes the messages it names, a
+ * The zCloud queue applied to the local index, the way Zalo applies it: adds are recorded, a remove entry deletes the messages it names, a
  * del_thread entry clears a conversation's older items, a reset_cloud entry empties the index but for the self chat.
  *
- * Every entry below is hand-written from those modules' reading of the live shape (`noiseId`, `action`,
+ * Every entry below is hand-written from the live shape (`noiseId`, `action`,
  * `msgInfo{cliMsgId, glbMsgId, srcId, destId, destType, ts, extInfo.orgMsgs}`, `ts`); ids are throwaway constants.
  * No network, no socket.
  */
@@ -147,7 +146,7 @@ describe("zcloud queue — sandbox", () => {
     });
 });
 
-describe("the keys Zalo Web gives queue items", () => {
+describe("the keys Zalo gives queue items", () => {
     it("is cliMsgId_conversation_sender, a DM's conversation being the other side", () => {
         assert.equal(cloudKeyOf(add("a", 11, { from: PEER, to: OWN }), OWN), "11_1002_1002", "incoming");
         assert.equal(cloudKeyOf(add("a", 12, { from: OWN, to: PEER }), OWN), "12_1002_1001", "outgoing");
@@ -557,7 +556,7 @@ describe("`sync-cloud` reads the plan first", () => {
         assert.equal(q.pages, 1);
     });
 
-    it("reads in the web client's order, and a free account never asks for v2/usage", async () => {
+    it("reads in the expected order, and a free account never asks for v2/usage", async () => {
         const calls = [];
         const seams = (mine) => ({
             settings: async () => (calls.push("settings"), { opt_in: 4 }),

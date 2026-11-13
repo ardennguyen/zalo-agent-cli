@@ -1,9 +1,9 @@
 /**
  * A group stops being ours: the account LEFT it, was REMOVED or BLOCKED from it, or it was DISBANDED.
  *
- * Zalo Web and PC delete the group's local history at once in all four cases (`_deleteGroupConversation` ->
- * `deleteConversation({isLeaveGroup: true, deleteAllPrior: true})`): messages, media, pin and preview, with a delete
- * tombstone so a later restore or fetch cannot bring the old messages back. This module is that, for this cache:
+ * Zalo's own apps delete the group's local history at once in all four cases: messages, media, pin and preview,
+ * with a delete tombstone so a later restore or fetch cannot bring the old messages back. This module is that, for this
+ * cache:
  *
  * - **purge** (default, `groups.onLeave: "purge"`): the messages (their row MACs and search entries go with them through
  *   their triggers; `secure_delete` zeroes the pages), reactions, board items (pins, notes, polls), reminders, the
@@ -16,7 +16,7 @@
  * Either way the thread row keeps `leftAt`, `goneReason` and the delete marker (`deleteMarkerAt`): no writer -- the
  * listener, a phone restore, a history or cloud fetch -- stores a message of the group from at or before it again
  * (src/core/db.js). While the group is gone, its later group events are ignored until a `join` naming us, which
- * clears `leftAt` (Web's ZGroupLeaveCache); a chat message dated after `leftAt` is also proof we are back.
+ * clears `leftAt`; a chat message dated after `leftAt` is also proof we are back.
  *
  * The setting is a live runtime policy key (src/core/policy-schema.js), read at the moment of each exit. Lowest first:
  * the default (`purge`), `storage.json` `groups.onLeave` and `accounts.<ownId>.groups.onLeave`, the environment
@@ -130,8 +130,7 @@ function extraDataOf(data) {
 
 /**
  * The `leaveType` a `leave` control may carry in `data.extraData` (an object, or the JSON text of one): "leave",
- * "kick" or "disband". Zalo PC has the KICK_GROUP/DISBAND_GROUP screens for it, but its reader is a stub returning
- * `{}` in 26.10.20, 26.11.10 and 26.11.11, and no live exit has carried one. Kept for a server that sends it: when
+ * "kick" or "disband". No live exit has carried one. Kept for a server that sends it: when
  * present it wins in {@link exitReasonOf}. Unreadable is null.
  *
  * @param {object|null|undefined} data - the group event's `data`
@@ -145,13 +144,13 @@ export function leaveTypeOf(data) {
 /**
  * The exit reason of a group event that is our own departure.
  *
- * Zalo sends all three ways out of a group as act `leave` naming us in `updateMembers`, and Web/PC cannot tell them
- * apart (their leaveType reader is a stub). Which keys `extraData` carries does, seen live and recovered from the
+ * Zalo sends all three ways out of a group as act `leave` naming us in `updateMembers`, with no `leaveType` to tell
+ * them apart. Which keys `extraData` carries does, seen live and recovered from the
  * offline queue after a park (2026-11-12/13):
  *
  * - **disband** by the owner: `prjName`. The owner is `sourceId` live, but a replayed one names us, so who did it is
  *   not the signal. Our own disband (`group disperse`, or from the phone) is a disband too: the group is gone for
- *   everyone, which a leave is not. (Zalo PC drops a disband's banner when `creatorId` is us; that is display only.)
+ *   everyone, which a leave is not.
  * - **our own leave**: `featureId`, `sourceId` us.
  * - **removed** by the owner or an admin: no key, `sourceId` the remover (live and replayed alike).
  *
@@ -480,7 +479,7 @@ export function sendRefusal(threadId) {
 
 /**
  * Where group info says a group is gone: listed in `removedsGroup`, or answered with 161 (it no longer exists) or
- * not-a-member. Zalo Web takes the same three to `_deleteGroupConversation`.
+ * not-a-member. Zalo treats the same three as the group being gone.
  *
  * @param {{result?: object, error?: Error|null, groupIds: string[]}} args
  * @returns {Array<{threadId: string, reason: "disbanded"|"removed"}>}
@@ -605,8 +604,8 @@ export async function getGroupInfoWatched(api, ownId, groupIds) {
 }
 
 /**
- * Our own successful leave or disperse: the group's exit, as Zalo Web does it on the API's success
- * (`leaveGroup` / `disperseGroup` -> `storage.deleteGroup`), whether or not a listener sees an echo. Never throws:
+ * Our own successful leave or disperse: the group's exit, on the API's success
+ * (`leaveGroup` / `disperseGroup`), whether or not a listener sees an echo. Never throws:
  * the Zalo action already happened, and a cache that cannot record it says so in the reply.
  *
  * @param {{ownId: string, groupId: string, reason: "leave"|"disbanded"}} args

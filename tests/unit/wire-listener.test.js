@@ -107,7 +107,7 @@ const SCRIPTS = {
         { cmd: 501, encrypt: 0, body: ok({ msgs: [dm(9)] }) },
         { text: "a text frame is ignored by both" },
     ],
-    // spec-listener 5 and 3 (Push messages): Web reads every list of every chat push.
+    // spec-listener 5 and 3 (Push messages): every list of every chat push is read.
     "mixed-pushes": [
         {
             cmd: 501,

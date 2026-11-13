@@ -2,7 +2,7 @@
  * What a QR login does when a code expires (src/core/qr-login-flow.js).
  *
  * Live, 2026-11-06: the page never said the login had ended, and an expired code was replaced on its own without end.
- * Zalo Web shows "QR code expired" and waits for a click; with someone at the terminal we do the same, for a while,
+ * Zalo shows "QR code expired" and waits for a click; with someone at the terminal we do the same, for a while,
  * and with nobody to ask (an agent, a background login) we replace a few codes and then stop.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";

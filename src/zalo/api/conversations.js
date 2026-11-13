@@ -2,12 +2,12 @@
  * Conversation settings: mute, the unread mark, hidden chats and their PIN, and auto-delete
  * (agent/docs/zca-replace/spec-sweep.md 1.2, "Conversations").
  *
- * Every call is one session request on the ordinary envelope (kernel/endpoint.js), shaped the way Zalo Web 26.11.10
- * shapes it. Where the Web differs from what the engine sent before, the Web wins:
+ * Every call is one session request on the ordinary envelope (kernel/endpoint.js), shaped the way the server
+ * expects it. Where that differs from what the engine sent before:
  *
- * - `addUnreadMark`: the inner `param` JSON keeps the Web's fixed order `{convsGroup, convsUser, imei}`, and the
- *   entry names the conversation's newest message (`cliMsgId`, `fromUid`) or `"-1"` for both, as the Web's does.
- * - `setHiddenConversations`: the Web's fixed order `{del_threads, add_threads, imei}`.
+ * - `addUnreadMark`: the inner `param` JSON keeps the fixed order `{convsGroup, convsUser, imei}`, and the
+ *   entry names the conversation's newest message (`cliMsgId`, `fromUid`) or `"-1"` for both.
+ * - `setHiddenConversations`: the fixed order `{del_threads, add_threads, imei}`.
  * - `resetHiddenConversPin`: a GET with the common query only, no `params`.
  * - `updateAutoDeleteChat`: a POST whose sealed `params` ride in the query, with no body.
  *
@@ -54,12 +54,12 @@ export function muteDurationOf({ duration = MUTE_FOREVER, action = MUTE_ACTION.M
     return duration === MUTE_UNTIL_8AM ? secondsUntil8am(now) : duration;
 }
 
-/** What the Web's `addMarkAsUnread` caller sends for a message it does not know: `"-1"` (@6622758). */
+/** What an unread mark names for a message it does not know: `"-1"`. */
 export const UNREAD_AT_UNKNOWN = "-1";
 
 /**
  * The message an unread mark is pinned to, as `addUnreadMark` sends it: both ids as strings when both are known,
- * else the Web's `"-1"` for both (it never sends one without the other).
+ * else `"-1"` for both (never one without the other).
  *
  * @param {{cliMsgId?: string|number, fromUid?: string|number}|null|undefined} last
  * @returns {{cliMsgId: string, fromUid: string}}
@@ -90,7 +90,7 @@ export function hiddenPinHash(pin) {
 
 // ── Endpoints ──────────────────────────────────────────────────────────
 
-/** `POST {profile}/api/social/profile/setmute` (Web setMuteConversation, 11288). */
+/** `POST {profile}/api/social/profile/setmute` (cmd 11288). */
 export const MUTE_SET = Object.freeze({
     host: "profile",
     path: "/api/social/profile/setmute",
@@ -106,7 +106,7 @@ export const MUTE_SET = Object.freeze({
     }),
 });
 
-/** `GET {profile}/api/social/profile/getmute` (Web getMuteConversations, 11280). */
+/** `GET {profile}/api/social/profile/getmute` (cmd 11280). */
 export const MUTE_GET = Object.freeze({
     host: "profile",
     path: "/api/social/profile/getmute",
@@ -115,7 +115,7 @@ export const MUTE_GET = Object.freeze({
     body: (_a, ctx) => ({ imei: ctx.imei }),
 });
 
-/** `POST {conversation}/api/conv/addUnreadMark` (Web addMarkAsUnread, 12013): JSON held in a `param` string. */
+/** `POST {conversation}/api/conv/addUnreadMark` (cmd 12013): JSON held in a `param` string. */
 export const UNREAD_ADD = Object.freeze({
     host: "conversation",
     path: "/api/conv/addUnreadMark",
@@ -126,7 +126,7 @@ export const UNREAD_ADD = Object.freeze({
     transform: unreadMarkReply,
 });
 
-/** `GET {conversation}/api/hiddenconvers/get-all` (Web getAllListHiddenChat, 10048). */
+/** `GET {conversation}/api/hiddenconvers/get-all` (cmd 10048). */
 export const HIDDEN_GET = Object.freeze({
     host: "conversation",
     path: "/api/hiddenconvers/get-all",
@@ -135,7 +135,7 @@ export const HIDDEN_GET = Object.freeze({
     body: (_a, ctx) => ({ imei: ctx.imei }),
 });
 
-/** `POST {conversation}/api/hiddenconvers/add-remove` (Web updateItemHiddenChat, 10049). */
+/** `POST {conversation}/api/hiddenconvers/add-remove` (cmd 10049). */
 export const HIDDEN_SET = Object.freeze({
     host: "conversation",
     path: "/api/hiddenconvers/add-remove",
@@ -144,7 +144,7 @@ export const HIDDEN_SET = Object.freeze({
     body: (a, ctx) => ({ del_threads: JSON.stringify(a.del), add_threads: JSON.stringify(a.add), imei: ctx.imei }),
 });
 
-/** `GET {conversation}/api/hiddenconvers/update-pin` (Web updatePINCodeHiddenChat, 10050). */
+/** `GET {conversation}/api/hiddenconvers/update-pin` (cmd 10050). */
 export const HIDDEN_PIN_SET = Object.freeze({
     host: "conversation",
     path: "/api/hiddenconvers/update-pin",
@@ -153,7 +153,7 @@ export const HIDDEN_PIN_SET = Object.freeze({
     body: (a, ctx) => ({ new_pin: a.pinHash, imei: ctx.imei }),
 });
 
-/** `GET {conversation}/api/hiddenconvers/reset` (Web resetPIN, 10051): the common query only. */
+/** `GET {conversation}/api/hiddenconvers/reset` (cmd 10051): the common query only. */
 export const HIDDEN_PIN_RESET = Object.freeze({
     host: "conversation",
     path: "/api/hiddenconvers/reset",
@@ -162,7 +162,7 @@ export const HIDDEN_PIN_RESET = Object.freeze({
     body: () => null,
 });
 
-/** `GET {conversation}/api/conv/autodelete/getConvers` (Web getAutoDeleteConvers, 12022). */
+/** `GET {conversation}/api/conv/autodelete/getConvers` (cmd 12022). */
 export const AUTO_DELETE_GET = Object.freeze({
     host: "conversation",
     path: "/api/conv/autodelete/getConvers",
@@ -172,8 +172,8 @@ export const AUTO_DELETE_GET = Object.freeze({
 });
 
 /**
- * `POST {conversation}/api/conv/autodelete/updateConvers` (Web updateAutoDeleteConvers, 12023): the Web seals the
- * params into the query and posts no body.
+ * `POST {conversation}/api/conv/autodelete/updateConvers` (cmd 12023): the
+ * params are sealed into the query and no body is posted.
  */
 export const AUTO_DELETE_SET = Object.freeze({
     host: "conversation",
@@ -226,7 +226,7 @@ export function conversationMethods(s) {
     const getMute = () => s.call(MUTE_GET, {});
 
     /**
-     * Mark a conversation unread, at its newest message the way the Web does: that message's client id and sender
+     * Mark a conversation unread, at its newest message the way Zalo does: that message's client id and sender
      * (`"0"` for this account's own), or `"-1"` for both when the caller does not know the newest message.
      *
      * @param {string} threadId - the user or group id
@@ -281,7 +281,7 @@ export function conversationMethods(s) {
     const updateHiddenConversPin = async (pin) => s.call(HIDDEN_PIN_SET, { pinHash: hiddenPinHash(pin) });
 
     /**
-     * Remove the hidden-conversation PIN. This call does not unhide anything by itself: Zalo Web, on the device that
+     * Remove the hidden-conversation PIN. This call does not unhide anything by itself: Zalo, on the device that
      * asks, then deletes every hidden conversation through the ordinary delete (which Zalo syncs), and the other
      * devices only clear their local hidden state on the 601 `hidden_chat` `reset` control. The caller does the
      * deletes.

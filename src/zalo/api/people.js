@@ -4,46 +4,45 @@
  *
  * Every call is one request on the session envelope (kernel/endpoint.js): a JSON body sealed with the session key
  * into `params`, in the query of a GET or the form of a POST, next to `zpw_ver` and `zpw_type`. The wire follows
- * Zalo Web 26.11.10 (agent/docs/zca-replace/spec-people.md, spec-sweep.md 1.2/1.3); where it differs from what
+ * what the server expects (agent/docs/zca-replace/spec-people.md, spec-sweep.md 1.2/1.3); where it differs from what
  * the previous engine sent, the difference is pinned by tests/unit/wire-people.test.js and its golden records:
  *
- * - profiles and the friend list ask for 160 px avatars, the Web's one profile size (not 120);
- * - `getprofiles/v2` always says `language: "vi"`, as every Web caller does, and sends phonebook version 0 when the
+ * - profiles and the friend list ask for 160 px avatars, Zalo's one profile size (not 120);
+ * - `getprofiles/v2` always says `language: "vi"`, and sends phonebook version 0 when the
  *   login carried none (the key is never left out);
  * - a phone lookup sends `params` once (not twice in the query) and turns a leading `0` into `84`
  *   whatever the session's language (for the multi-phone lookup that rule is ours, see MULTI_BY_PHONES);
- * - a username lookup puts `params` before `zpw_ver`/`zpw_type`, the one Web call in this area that does;
+ * - a username lookup puts `params` before `zpw_ver`/`zpw_type`, the one call in this area that does;
  * - "no sent requests" (code 112) answers `{}` instead of throwing;
  * - code 212 on a later alias page is the end of the list, answered as an empty page;
  * - 1-1 pin topics that arrive as JSON strings are parsed to objects;
- * - the close-friends list is asked with no `params` at all, as the Web asks it.
+ * - the close-friends list is asked with no `params` at all.
  *
  * Two endpoints answer HTTP 404 on live accounts since 2026-09-29 (`getFriendOnlines`, `getCloseFriends`); they are
- * ported as the Web still has them and marked `verified: false` (design 6.1 item 13). The Web's Friends tab
- * (bundle 2026-11-06, its `FriendsOnline` store) still asks `friend/onlines` with `{imei}`, at most once a minute
- * (`list_friend_online_time`), and nothing newer replaced it; what it does that this client did not is move to the
- * service map's next profile host after an HTTP 4xx/5xx (`switchDomain`), so `getFriendOnlines` now does the same.
+ * kept and marked `verified: false` (design 6.1 item 13). Zalo's Friends tab still asks `friend/onlines` with
+ * `{imei}`, at most once a minute (`list_friend_online_time`), and nothing newer replaced it; on an HTTP 4xx/5xx it
+ * moves to the service map's next profile host, so `getFriendOnlines` now does the same.
  *
  * Ids stay strings throughout: no id is ever converted to a number.
  */
 import { AVATAR_SIZE } from "../profile.js";
 import { ZaloApiError } from "../errors.js";
 
-/** The avatar size of the Web's phone and username search. */
+/** The avatar size of the phone and username search. */
 export const SEARCH_AVATAR_SIZE = 240;
 
-/** The Web's friend-request source for its "find friend" form (`FRIEND_REQUEST_SRC_FIND_FRIEND_FORM`). */
+/** The friend-request source for the "find friend" form. */
 export const REQ_SRC_FIND_FRIEND_FORM = 40;
 
-/** The Web's friend-request source for "add friend" from a 1-1 chat. */
+/** The friend-request source for "add friend" from a 1-1 chat. */
 export const REQ_SRC_CHAT = 30;
 
-/** Phone-search codes the Web reads as "too many lookups" (its find-friend form). */
+/** Phone-search codes that mean "too many lookups". */
 export const PHONE_SEARCH_LIMIT_CODES = Object.freeze([312, 313]);
 
 /**
- * A phone number as the Web's lookups send it: a leading `0` becomes the Vietnamese country code `84`, whatever the
- * session's language (the Web's "open conversation by phone" paths do the same).
+ * A phone number as Zalo's lookups send it: a leading `0` becomes the Vietnamese country code `84`, whatever the
+ * session's language.
  *
  * @param {string} phone
  * @returns {string}
@@ -121,7 +120,7 @@ export function parseOnlineStatuses(data) {
 
 // ── Endpoint definitions (design 1.2) ──────────────────────────────────────────────────────────────────────────
 
-/** `POST {profile}/api/social/friend/getprofiles/v2`: Web `getFriendProfilev2`. */
+/** `POST {profile}/api/social/friend/getprofiles/v2`. */
 export const GET_PROFILES = Object.freeze({
     host: "profile",
     path: "/api/social/friend/getprofiles/v2",
@@ -138,7 +137,7 @@ export const GET_PROFILES = Object.freeze({
     reply: "session",
 });
 
-/** `GET {profile}/api/social/friend/getfriends`: Web `getFriendsList` (without its cold-start `init=1`). */
+/** `GET {profile}/api/social/friend/getfriends` (without its cold-start `init=1`). */
 export const GET_FRIENDS = Object.freeze({
     host: "profile",
     path: "/api/social/friend/getfriends",
@@ -155,7 +154,7 @@ export const GET_FRIENDS = Object.freeze({
     reply: "session",
 });
 
-/** `GET {friend}/api/friend/profile/get`: Web `getUserByPhone` from its find-friend form. */
+/** `GET {friend}/api/friend/profile/get`, the find-friend lookup. */
 export const FIND_BY_PHONE = Object.freeze({
     host: "friend",
     path: "/api/friend/profile/get",
@@ -171,7 +170,7 @@ export const FIND_BY_PHONE = Object.freeze({
     reply: "session",
 });
 
-/** `GET {friend}/api/friend/search/by-user-name`: Web `getUserByUsername`, `params` first in the query. */
+/** `GET {friend}/api/friend/search/by-user-name`, `params` first in the query. */
 export const FIND_BY_USERNAME = Object.freeze({
     host: "friend",
     path: "/api/friend/search/by-user-name",
@@ -182,7 +181,7 @@ export const FIND_BY_USERNAME = Object.freeze({
     reply: "session",
 });
 
-/** `GET {alias}/api/alias/list`: Web `getAlias` (v1, the Web's default while `enable_feature_alias_v2` is 0). */
+/** `GET {alias}/api/alias/list` (v1, the default while `enable_feature_alias_v2` is 0). */
 export const ALIAS_LIST = Object.freeze({
     host: "alias",
     path: "/api/alias/list",
@@ -192,10 +191,10 @@ export const ALIAS_LIST = Object.freeze({
     reply: "session",
 });
 
-/** `GET {alias}/api/alias/list` past page 1: code 212 there means the list has ended (the Web's alias repo). */
+/** `GET {alias}/api/alias/list` past page 1: code 212 there means the list has ended. */
 export const ALIAS_LIST_LATER = Object.freeze({ ...ALIAS_LIST, emptyOn: { 212: { items: [] } } });
 
-/** `GET {alias}/api/alias/update`: Web `updateAlias` (a change made with a GET, as the Web makes it). */
+/** `GET {alias}/api/alias/update` (a change made with a GET, as the server expects). */
 export const ALIAS_UPDATE = Object.freeze({
     host: "alias",
     path: "/api/alias/update",
@@ -205,7 +204,7 @@ export const ALIAS_UPDATE = Object.freeze({
     reply: "session",
 });
 
-/** `GET {alias}/api/alias/remove`: Web `removeAlias`. */
+/** `GET {alias}/api/alias/remove`. */
 export const ALIAS_REMOVE = Object.freeze({
     host: "alias",
     path: "/api/alias/remove",
@@ -215,7 +214,7 @@ export const ALIAS_REMOVE = Object.freeze({
     reply: "session",
 });
 
-/** `POST {friend}/api/friend/sendreq`: Web `sendFriendRequest` with the 1-1 chat source (`{src: 30, srcParams}`). */
+/** `POST {friend}/api/friend/sendreq` with the 1-1 chat source (`{src: 30, srcParams}`). */
 export const SEND_REQUEST = Object.freeze({
     host: "friend",
     path: "/api/friend/sendreq",
@@ -227,13 +226,13 @@ export const SEND_REQUEST = Object.freeze({
         reqsrc: REQ_SRC_CHAT,
         imei: ctx.imei,
         language: ctx.language,
-        // A JSON string inside the JSON body, as the Web sends it.
+        // A JSON string inside the JSON body, as the server expects it.
         srcParams: JSON.stringify({ uidTo: userId }),
     }),
     reply: "session",
 });
 
-/** `POST {friend}/api/friend/accept`: Web `acceptFriendRequest`. */
+/** `POST {friend}/api/friend/accept`. */
 export const ACCEPT_REQUEST = Object.freeze({
     host: "friend",
     path: "/api/friend/accept",
@@ -243,7 +242,7 @@ export const ACCEPT_REQUEST = Object.freeze({
     reply: "session",
 });
 
-/** `POST {friend}/api/friend/reject`: Web `rejectFriendRequest`. */
+/** `POST {friend}/api/friend/reject`. */
 export const REJECT_REQUEST = Object.freeze({
     host: "friend",
     path: "/api/friend/reject",
@@ -253,7 +252,7 @@ export const REJECT_REQUEST = Object.freeze({
     reply: "session",
 });
 
-/** `POST {friend}/api/friend/undo`: Web `undoFriendRequest`. */
+/** `POST {friend}/api/friend/undo`. */
 export const UNDO_REQUEST = Object.freeze({
     host: "friend",
     path: "/api/friend/undo",
@@ -263,7 +262,7 @@ export const UNDO_REQUEST = Object.freeze({
     reply: "session",
 });
 
-/** `GET {friend}/api/friend/requested/list`: Web `getRequestedFriends`; code 112 is "none sent", answered `{}`. */
+/** `GET {friend}/api/friend/requested/list`; code 112 is "none sent", answered `{}`. */
 export const SENT_REQUESTS = Object.freeze({
     host: "friend",
     path: "/api/friend/requested/list",
@@ -274,7 +273,7 @@ export const SENT_REQUESTS = Object.freeze({
     reply: "session",
 });
 
-/** `GET {friend}/api/friend/reqstatus`: Web `getFriendRequestStatus`. */
+/** `GET {friend}/api/friend/reqstatus`. */
 export const REQUEST_STATUS = Object.freeze({
     host: "friend",
     path: "/api/friend/reqstatus",
@@ -284,7 +283,7 @@ export const REQUEST_STATUS = Object.freeze({
     reply: "session",
 });
 
-/** `GET {friend}/api/friend/recommendsv2/list`: Web `getRecommendedFriendsV2`. */
+/** `GET {friend}/api/friend/recommendsv2/list`. */
 export const RECOMMENDATIONS = Object.freeze({
     host: "friend",
     path: "/api/friend/recommendsv2/list",
@@ -294,7 +293,7 @@ export const RECOMMENDATIONS = Object.freeze({
     reply: "session",
 });
 
-/** `GET {friend_board}/api/friendboard/list`: Web `getListOneOnOnePinTopics`; string topics parsed to objects. */
+/** `GET {friend_board}/api/friendboard/list`; string topics parsed to objects. */
 export const FRIEND_BOARD = Object.freeze({
     host: "friend_board",
     path: "/api/friendboard/list",
@@ -309,9 +308,9 @@ export const FRIEND_BOARD = Object.freeze({
 });
 
 /**
- * `GET {profile}/api/social/friend/onlines`: Web `requestGetFriendOnlines`, what its Friends tab asks. HTTP 404 live
- * since 2026-09-29 on the first profile host; an HTTP 4xx/5xx moves on to the next host of the service map, as the
- * Web's `switchDomain` does. Unverified until a capture of the Web's Friends tab.
+ * `GET {profile}/api/social/friend/onlines`, what Zalo's Friends tab asks. HTTP 404 live
+ * since 2026-09-29 on the first profile host; an HTTP 4xx/5xx moves on to the next host of the service map.
+ * Unverified.
  */
 export const FRIEND_ONLINES = Object.freeze({
     host: "profile",
@@ -325,7 +324,7 @@ export const FRIEND_ONLINES = Object.freeze({
     transform: parseOnlineStatuses,
 });
 
-/** `GET {profile}/api/social/friend/getclosedfriends`: Web `getCloseFriends`, no `params`. HTTP 404 live. */
+/** `GET {profile}/api/social/friend/getclosedfriends`, no `params`. HTTP 404 live. */
 export const CLOSE_FRIENDS = Object.freeze({
     host: "profile",
     path: "/api/social/friend/getclosedfriends",
@@ -335,7 +334,7 @@ export const CLOSE_FRIENDS = Object.freeze({
     reply: "session",
 });
 
-/** `POST {friend}/api/friend/remove`: Web `removeFriend`. */
+/** `POST {friend}/api/friend/remove`. */
 export const REMOVE_FRIEND = Object.freeze({
     host: "friend",
     path: "/api/friend/remove",
@@ -345,7 +344,7 @@ export const REMOVE_FRIEND = Object.freeze({
     reply: "session",
 });
 
-/** `POST {friend}/api/friend/block`: Web `setBlockFriend` (set). */
+/** `POST {friend}/api/friend/block` (set). */
 export const BLOCK_USER = Object.freeze({
     host: "friend",
     path: "/api/friend/block",
@@ -355,7 +354,7 @@ export const BLOCK_USER = Object.freeze({
     reply: "session",
 });
 
-/** `POST {friend}/api/friend/unblock`: Web `setBlockFriend` (unset). */
+/** `POST {friend}/api/friend/unblock` (unset). */
 export const UNBLOCK_USER = Object.freeze({
     host: "friend",
     path: "/api/friend/unblock",
@@ -366,8 +365,7 @@ export const UNBLOCK_USER = Object.freeze({
 });
 
 /**
- * `GET {profile}/api/social/profile/lastOnline`: Web `getOnlinStatus` (sic). A GET in the Web method's body
- * (`this._get(..., 12090)`). `conv_type` is the Web's `getLastOnlStatus` value: 1 for a user who is not an OA, 2 for
+ * `GET {profile}/api/social/profile/lastOnline`, a GET (cmd 12090). `conv_type`: 1 for a user who is not an OA, 2 for
  * an OA (a profile whose `type` is 1 or more), 0 for a group; 1 when the caller names none.
  */
 export const LAST_ONLINE = Object.freeze({
@@ -380,9 +378,9 @@ export const LAST_ONLINE = Object.freeze({
 });
 
 /**
- * `GET {friend}/api/friend/profile/multiget`: Web `getMultiUsersByPhones`.
+ * `GET {friend}/api/friend/profile/multiget`.
  *
- * The leading `0` -> `84` of {@link webPhone} is our rule here, not one read from the Web's callers of this
+ * The leading `0` -> `84` of {@link webPhone} is our rule here, not a confirmed one for this
  * endpoint: it keeps what the CLI has always sent for a Vietnamese session (the previous engine made the same change when the
  * session language was `vi`), and applies it whatever the language, as `findUser` does.
  */
@@ -399,7 +397,7 @@ export const MULTI_BY_PHONES = Object.freeze({
     reply: "session",
 });
 
-/** `POST {friend}/api/friend/mget-qr`: Web `getQRProfileUser`. */
+/** `POST {friend}/api/friend/mget-qr`. */
 export const GET_QR = Object.freeze({
     host: "friend",
     path: "/api/friend/mget-qr",
@@ -409,7 +407,7 @@ export const GET_QR = Object.freeze({
     reply: "session",
 });
 
-/** `POST {friend}/api/friend/group/related`: Web `getRelatedGroup`; the ids go as a JSON string. */
+/** `POST {friend}/api/friend/group/related`; the ids go as a JSON string. */
 export const RELATED_GROUPS = Object.freeze({
     host: "friend",
     path: "/api/friend/group/related",
@@ -419,7 +417,7 @@ export const RELATED_GROUPS = Object.freeze({
     reply: "session",
 });
 
-/** `POST {profile}/api/social/friend/get-bizacc`: Web `getBizProfileInfo`. */
+/** `POST {profile}/api/social/friend/get-bizacc`. */
 export const BIZ_ACCOUNT = Object.freeze({
     host: "profile",
     path: "/api/social/friend/get-bizacc",
@@ -429,7 +427,7 @@ export const BIZ_ACCOUNT = Object.freeze({
     reply: "session",
 });
 
-/** `POST {friend}/api/friend/feed/block`: Web `updateBlockStoriesStatus`. */
+/** `POST {friend}/api/friend/feed/block`. */
 export const BLOCK_FEED = Object.freeze({
     host: "friend",
     path: "/api/friend/feed/block",
@@ -691,8 +689,8 @@ export function peopleMethods(s) {
 }
 
 /**
- * Every alias of the account, page by page, the way the Web's alias list pages (its alias repo, bundle offset
- * 9214260): on while the reply's `hasMore` is true when it has that field, otherwise while a page comes back exactly
+ * Every alias of the account, page by page, the way Zalo pages the alias list: on while the reply's `hasMore` is
+ * true when it has that field, otherwise while a page comes back exactly
  * full; code 212 after the first page ends the list (getAliasList answers it as an empty page). An empty page ends
  * it too, so a server that keeps saying `hasMore` cannot loop.
  *

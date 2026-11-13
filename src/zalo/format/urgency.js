@@ -1,7 +1,7 @@
 /**
  * Zalo's message urgency, as the apps' Important/Urgent option sends it.
  *
- * Zalo Web marks a text message `metaData: {urgency: 1}` (important) or
+ * Zalo marks a text message `metaData: {urgency: 1}` (important) or
  * `metaData: {urgency: 2}` (urgent) on the ordinary send endpoints, group and
  * 1-1 alike; the session builds that object from `sendMessage({msg, urgency})` and
  * ignores any other value. `msg send --urgency` and `zalo_send_message`'s

@@ -5,27 +5,24 @@
  *
  * Without it, a conversation the human already read on the phone still looks
  * unread to the cache, to `conv` and to the MCP, and a bot answers or
- * escalates a thread the human has handled. Two server messages carry it,
- * both read from Zalo Web's bundle (1.e0ef5e98…) and the first captured live
- * (agent/work/zalo-web-capture-2026-09-29/live/socket.L2_group_reaction.json):
+ * escalates a thread the human has handled. Two server messages carry it:
  *
  * 1. `clearUnreads` rows, `{idTo, isGroup, lastMsgId, lastCliMsgId, type, sct, ts}`.
  *    They arrive on their own cmds -- 504 CLEAR_UNREADS_1_1 and 524
- *    CLEAR_UNREADS_GROUP (@~6435615) -- and as a field of every chat envelope
+ *    CLEAR_UNREADS_GROUP -- and as a field of every chat envelope
  *    (501/502/521/522) and offline-queue page (510/511). A row says the
  *    account has read conversation `idTo` through message `lastMsgId`, on some
- *    device: the web keys it `isGroup ? "g" + idTo : idTo` and treats every
- *    message at or before `lastMsgId` as read (@~10578566). A row with `type`
+ *    device: it is keyed `isGroup ? "g" + idTo : idTo`, and every
+ *    message at or before `lastMsgId` is read. A row with `type`
  *    2 and `sct` 1, 2 or 3 reports a folder or the message-request box as
- *    seen, not a conversation, and a `lastMsgId` of 0 reads nothing; the web
- *    skips both, and so does this.
+ *    seen, not a conversation, and a `lastMsgId` of 0 reads nothing; both
+ *    are skipped.
  *
  * 2. The 601 control push with `act_type: "mark_unread"`: the manual unread
  *    flag, set on another device (`act: "add"`, content
  *    `{convsGroup: [{id, cliMsgId, fromUid, ts}], convsUser: [...]}`) or
  *    cleared (`act: "remove"`, content `{convsGroup: [id], convsUser: [id]}`).
- *    The content is a JSON string on the control's `content` (the web's
- *    MarkUnreadManager, @~6215256). The listener's 601 events cover only
+ *    The content is a JSON string on the control's `content`. The listener's 601 events cover only
  *    the upload, `group` and `fr` controls.
  *
  * Cmd 613 carries `clearUnreads` too, on the reaction path: reactions seen,
@@ -33,8 +30,8 @@
  *
  * 3. Unread reactions, for `conv read`'s react_seen (src/core/receipts.js). A reaction someone else makes
  *    (612 live, 610/611 the offline queues; `uidFrom` not "0") moves the conversation's `reactUnreadId` to the
- *    reaction's own msgId; a 613 `clearUnreads` row moves `reactSeenId`. Zalo Web keeps the same pair per
- *    conversation (its unread-reaction store). Unverified: no live 613 after a react_seen has been captured.
+ *    reaction's own msgId; a 613 `clearUnreads` row moves `reactSeenId`. Unverified: no live 613 after a react_seen has
+ *    been captured.
  *
  * What is stored: `conv_state.lastReadMsgId`/`lastReadTs`, which only move
  * forward (db.js `recordReadWatermark`), and `unreadMarked`/`unreadMarkedAt`,
@@ -144,7 +141,7 @@ export function readMarksFrom(data, threads = lazyThreads()) {
     const out = [];
     for (const row of rows) {
         if (!row || typeof row !== "object") continue;
-        // A folder or the request box being seen, not a conversation (the web's @~10578566).
+        // A folder or the request box being seen, not a conversation.
         if (Number(row.type) === 2 && [1, 2, 3].includes(Number(row.sct))) continue;
         const lastMsgId = String(row.lastMsgId ?? "");
         if (!/^\d+$/.test(lastMsgId) || BigInt(lastMsgId) === 0n) continue;
@@ -206,9 +203,9 @@ export function unreadMarksFrom(data, threads = lazyThreads()) {
 /**
  * The pins and unpins of a `pinned_convers` control (act `update`, data `{tab, action, pinIds, ts}`).
  *
- * The Web client reads `pinIds` as the web's own conversation ids: `g` + the group id, or one letter + the user id.
+ * `pinIds` are conversation ids: `g` + the group id, or one letter + the user id.
  * `action` 1 pins the conversation, anything else unpins it. When one frame names a conversation twice the last one
- * stands, as in the Web client (it walks the controls newest first and keeps the first it meets).
+ * stands (the controls are walked newest first, keeping the first one met).
  *
  * @param {object|null|undefined} data - a decoded 601 frame's `data`
  * @returns {Array<{threadId: string, isGroup: boolean, pinned: boolean, ts: number|null}>}
@@ -248,8 +245,8 @@ export function pinMarksFrom(data) {
 
 /**
  * A conversation's read state as `conv recent` and the MCP report it: the
- * account's own reading on Zalo -- what the human read on the phone or Zalo
- * Web -- not any bot's cursor.
+ * account's own reading on Zalo -- what the human read on the phone or in
+ * another Zalo session -- not any bot's cursor.
  *
  * @param {{lastReadMsgId: string|null, lastReadTs: number|null, unreadMarked: boolean,
  *   unreadAfter: number|null}|undefined} st - one entry of db.js `getReadStates`

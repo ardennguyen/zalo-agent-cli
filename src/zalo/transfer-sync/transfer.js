@@ -22,19 +22,18 @@
  * as an empty window that was settled: the run recorded success and closed the
  * coverage gap it was meant to repair. Only 4 and 5 are confirmation.
  *
- * Statuses 6 to 10 are fatal in the official worker's code; their numbers and
- * meanings come from reading it, and the one decline captured on the wire
+ * Statuses 6 to 10 are fatal to Zalo's own client, and the one decline seen on the wire
  * (a request, two status frames, then an immediate release, and no downloads)
  * fits it.
  */
-/** How long the phone may take to confirm. The official client waits ten minutes. */
+/** How long the phone may take to confirm. Zalo's own app waits ten minutes. */
 export const CONFIRM_WAIT_MS = 600_000;
 
 /** How long the phone may stay idle (status 1 or 2) while a sync runs. */
 export const IDLE_TIMEOUT_MS = 600_000;
 
 /**
- * How long a message session may stay incomplete once the phone has said it is idle. Web waits the whole
+ * How long a message session may stay incomplete once the phone has said it is idle. Zalo's own client waits the whole
  * {@link IDLE_TIMEOUT_MS} and then fails that one session. A phone that went idle with a batch of a session never
  * sent does not send it later (live, 2026-10-28: 29 of 30 conversations covered, the last batch seen, one index
  * missing, the phone idle for ten minutes and then some), so the session is given a minute and then treated as failed.
@@ -48,8 +47,8 @@ export const MAX_FAILED_BATCHES = 10;
 export const MAX_FAILED_RATIO = 0.5;
 
 /**
- * The phone's error code for "I no longer have this partition" (the conversation was deleted there). Read from the
- * Web sync worker's error table (`PartitionNotFound: 502`); seen on the wire 2026-10-28. Such a range is dropped, not retried.
+ * The phone's error code for "I no longer have this partition" (the conversation was deleted there); seen on the
+ * wire 2026-10-28. Such a range is dropped, not retried.
  */
 export const PARTITION_NOT_FOUND = 502;
 
@@ -317,7 +316,7 @@ export function recordDownloadFailure(session, batch, error) {
  * Is this session finished?
  *
  * A session with an `isLast` batch is finished once every index up to it has
- * arrived. Without one (the captured Zalo Web run ends its last message session
+ * arrived. Without one (an observed run ends its last message session
  * with `isLast` 0) it is finished when every partition it asked for has either
  * come back or failed. The conversation round asks for no partitions, so only
  * its last batch ends it.

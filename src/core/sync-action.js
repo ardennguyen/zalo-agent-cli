@@ -1,24 +1,24 @@
 /**
- * The Web's `sync_action` media reports (D31, research row ZP-13), built and kept unwired.
+ * Zalo's `sync_action` media reports (D31, research row ZP-13), built and kept unwired.
  *
- * What Zalo Web does (read in its bundle, 2026-11-06): when the person opens a media message (`onInteractMedia`), it
- * tells the `sync_action` host that this media was taken on this device, so the account's other devices can pull the
- * list (`pullSyncResource`) and fetch the same files. Each entry is `{fromUid, destId, isGroup, cmi}`: the sender (the
- * account itself for its own messages), the conversation without the group prefix, 1 for a group, and the client
- * message id as a number. Entries are de-duplicated on `fromUid_destId_cmi`, sent at most 50 per request through
- * `POST /api/sync_action/media` (`{syncList: JSON, imei}`, cmd 16213; this client's `sync-action-media` write), with a
- * trailing throttle (`syncActionMedia.submitActionThrottle`), and put back for a retry when the request fails. It runs
- * only when the server's `syncActionMedia.enable` is on and the person has automatic downloads turned on. The Web's
- * own automatic downloads report nothing: only an opened media message does.
+ * What they are: when the person opens a media message, the client tells the `sync_action` host that this media was
+ * taken on this device, so the account's other devices can pull the list (`pullSyncResource`) and fetch the same files.
+ * Each entry is `{fromUid, destId, isGroup, cmi}`: the sender (the account itself for its own messages), the
+ * conversation without the group prefix, 1 for a group, and the client message id as a number. Entries are
+ * de-duplicated on `fromUid_destId_cmi`, sent at most 50 per request through `POST /api/sync_action/media` (`{syncList:
+ * JSON, imei}`, cmd 16213; this client's `sync-action-media` write), with a trailing throttle
+ * (`syncActionMedia.submitActionThrottle`), and put back for a retry when the request fails. It runs only when the
+ * server's `syncActionMedia.enable` is on and the person has automatic downloads turned on. Automatic downloads
+ * themselves report nothing: only an opened media message does.
  *
  * Why nothing calls this yet: the endpoint answers an empty list (verified), but what a non-empty list makes the
  * account's other devices do has never been captured, and this client's only "opened" media path (`zalo_view_media`)
- * downloads a whole conversation's pending media rather than one item. Until a capture of the Web opening media shows
- * the request and its effect, this module is the tested half: the entry, the gate and the batching.
+ * downloads a whole conversation's pending media rather than one item. Until the request and its effect are seen
+ * live, this module is the tested half: the entry, the gate and the batching.
  */
 import { callWrite } from "../zalo/writes.js";
 
-/** The Web's batch size. */
+/** Entries per request. */
 export const BATCH_MAX = 50;
 /** The throttle used when the server names none (the paid account's setting, 2026-10-28). */
 export const DEFAULT_THROTTLE_MS = 5000;
@@ -44,7 +44,7 @@ export function syncActionSettings(api) {
 }
 
 /**
- * One report entry, as the Web builds it (`convertMediaDataToSubmit`).
+ * One report entry.
  *
  * @param {{threadId: string, isGroup: boolean, senderId?: string|null, cliMsgId: string|number}} msg
  * @param {string} ownId - stands in for the sender of the account's own messages

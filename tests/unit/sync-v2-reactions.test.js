@@ -3,7 +3,7 @@
  *
  * Reactions were documented in this repo as unrecoverable, which conflated two
  * different things: the Sync2 transfer payload genuinely has no reaction field,
- * but the socket serves them on cmd 610 (1-1) and cmd 611 (group), and Zalo Web
+ * but the socket serves them on cmd 610 (1-1) and cmd 611 (group), and a client
  * asks for both on every connect. Measured live: one request pair returned 28
  * direct and 62 group reactions while the cache held one row.
  *

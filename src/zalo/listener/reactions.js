@@ -3,10 +3,9 @@
  *
  * Reactions are the one thing a transfer sync cannot restore — the Sync2
  * payload has no reaction field — which this project long read as "a reaction
- * not captured live is gone for good". That conclusion was wrong: Zalo Web
- * fetches them over the SAME socket with cmd 610 (1-1) and cmd 611 (group),
- * and fires both within ~1.4s of every connect (see the boot capture in
- * agent/work/transfer-sync-v2). Measured live on a real account, one request
+ * not captured live is gone for good". That conclusion was wrong: they can be
+ * fetched over the SAME socket with cmd 610 (1-1) and cmd 611 (group), asked
+ * right after every connect. Measured live on a real account, one request
  * pair returned 28 DM and 50 group reactions with full detail — target msgId,
  * icon, rType and the reacting user — while the local cache held one row.
  *

@@ -1549,7 +1549,7 @@ describe("Tier 1 & Tier 2 MCP tools", () => {
         assert.equal(listed.count, 1);
     });
 
-    it("zalo_note list page 2 carries the cursor of page 1's last item, as Zalo Web pages the board", async () => {
+    it("zalo_note list page 2 carries the cursor of page 1's last item, as the board is paged", async () => {
         const calls = [];
         const { server } = register({
             api: {
@@ -2226,7 +2226,7 @@ describe("zalo_group", () => {
         assert.match(other.content[0].text, /boom \(500\)/);
     });
 
-    describe("leave and disperse as Zalo PC (src/core/group-departure.js)", () => {
+    describe("leave and disperse as Zalo expects (src/core/group-departure.js)", () => {
         const OWN = "9100000000000000009";
         /** Group G with this account (OWN) as its owner, U1 and U2 the other members. */
         const AS_OWNER = {

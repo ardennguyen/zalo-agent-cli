@@ -1,7 +1,7 @@
 /**
  * The one confirmation guard for destructive actions, shared by the CLI and the MCP server.
  *
- * Which actions are guarded follows Zalo Web's own confirm dialogs: leaving or breaking up a group, removing a
+ * Which actions are guarded follows Zalo's own confirm dialogs: leaving or breaking up a group, removing a
  * member or a friend, recalling or deleting a message, removing a reminder, closing a poll, and the like. Each
  * guarded action is one entry in GUARDS, and the sentence that says what it would do is built there once, so
  * `group leave` on the command line and `zalo_group leave` over MCP refuse, preview and ask in the same words.
@@ -157,7 +157,7 @@ export const GUARDS = Object.freeze({
         mcp: "zalo_conversation hidden_pin_reset",
         irreversible: true,
         what: () =>
-            "remove the PIN that protects this account's hidden conversations and, as Zalo Web does, delete every " +
+            "remove the PIN that protects this account's hidden conversations and, as Zalo does, delete every " +
             "hidden conversation's history for this account",
     },
     "conv.unhide": {

@@ -36,14 +36,14 @@ export function parsePinnedId(raw) {
 }
 
 /**
- * The pinned-list entry that is not a conversation: Zalo Web skips `m1` when it reads the list (spec-actions 7.3),
- * so it is neither a pin nor an unresolved id here.
+ * The pinned-list entry that is not a conversation: `m1` is skipped when the list is read (spec-actions
+ * 7.3), so it is neither a pin nor an unresolved id here.
  */
 export const PINNED_NOT_A_CONVERSATION = "m1";
 
 /**
  * The entries of a pinned-conversation list that are conversations: the list without {@link
- * PINNED_NOT_A_CONVERSATION}, as Zalo Web reads it. `conv pinned` and the pin sync both read the list through this.
+ * PINNED_NOT_A_CONVERSATION}. `conv pinned` and the pin sync both read the list through this.
  *
  * @param {unknown} list - `getPinConversations().conversations`
  * @returns {Array<string|number>} the entries kept, in order ([] for anything not an array)

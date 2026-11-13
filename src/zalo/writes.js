@@ -1,9 +1,9 @@
 /**
- * The state-changing endpoints Zalo Web calls and this client did not (plan track S, 6.2), built on the same request
- * path as the reads (./web-call.js, ./reads.js).
+ * The state-changing endpoints Zalo offers that this client did not call (plan track S, 6.2), built on the same
+ * request path as the reads (./web-call.js, ./reads.js).
  *
- * Every entry is one request of the web client's API module (`fBUP`, 2026-10-23 bundle), with the host, path, command
- * id and body written out from the method of the same purpose. Unlike the reads, **each of these changes something**:
+ * Every entry is one request of Zalo's API, with the host, path, command id and body written out. Unlike the reads,
+ * **each of these changes something**:
  * who sees a pin or a reminder, who is in a group, what a friend list or a block list says.
  * So:
  *
@@ -14,17 +14,17 @@
  * - {@link callWrite} sends nothing under `dryRun`: it returns the request it would have sent, with the body decrypted.
  *   The command and the MCP tool both make a person or an agent say yes (`--yes`, `confirm: true`) before a real call.
  *
- * Not here, on purpose, and why (traced in the 2026-10-23 bundles during the closing sweep):
- * - `sendpt`, `sharefile`, `sendmp3`/`voicemp3`, `upthumb` and the local-GIF chunk send: the web client never calls them
- *   (dead code) or the engine already makes the same request (`asyncfile/*`, `photo_original/*`, the `upthumb` + `gif` chunks);
+ * Not here, on purpose, and why (decided during the closing sweep, 2026-10-23):
+ * - `sendpt`, `sharefile`, `sendmp3`/`voicemp3`, `upthumb` and the local-GIF chunk send: Zalo does not use them
+ *   or the engine already makes the same request (`asyncfile/*`, `photo_original/*`, the `upthumb` + `gif` chunks);
  * - `photo_url`: it only lets a forward skip the download and re-upload; `msg forward` reaches the same result;
- * - the video chunk uploads: the web composer sends a local video as a file (`msg send-file`); only its forward-with-
- *   reupload flow uses them;
+ * - the video chunk uploads: a local video is sent as a file (`msg send-file`); only a forward-with-reupload flow
+ *   uses them;
  * - the receipts (`seen`, `delivered` legacy forms, reaction receipts, `subtab/seen`): they change what other people
  *   see, and the v2 forms are already sent;
- * - `closefr/update` and `profile/mode`: Zalo answers 404, and the web client's own toggle is an empty function;
+ * - `closefr/update` and `profile/mode`: Zalo answers 404, and Zalo's own toggle for them does nothing;
  * - `mediastore/remove` and `media/oneone/remove` (they need ids only the media store's own list gives),
- *   `sticker/personalized/update` (an ordering of the sticker packs), the v1 variants the web client has replaced
+ *   `sticker/personalized/update` (an ordering of the sticker packs), the v1 variants Zalo has replaced
  *   (`pin`, `topic/create`, `group/create`, `group/invite`), `action/query` (an analytics hook): no use for them here;
  * - credential and account flows (password, 2FA, `exta/rnw`, login), the zBusiness and eKYC calls, LAN friends (off by
  *   default), voice and video calls, the E2EE message stack, and the zCloud calls that spend money or acknowledge the
@@ -34,8 +34,7 @@
 import { CallUsageError, arg, buildCall, enumNum, list, num, runCall } from "./web-call.js";
 
 /**
- * The enums behind the numbers the web client sends, read from its constant modules (2026-10-23 bundle). A name or the
- * number is accepted for each.
+ * The enums behind the numbers Zalo expects. A name or the number is accepted for each.
  */
 export const ENUMS = {
     /** A board item's type (a topic's `type`, and what a pin names). */
@@ -51,7 +50,7 @@ const named = (values) =>
         .map(([k, v]) => `${k}=${v}`)
         .join(", ");
 
-/** Strip the web's `g` prefix from a group conversation id. */
+/** Strip Zalo's `g` prefix from a group conversation id. */
 const bareGroupId = (id) => (String(id).startsWith("g") ? String(id).slice(1) : String(id));
 
 /** The repeat frequencies of a reminder, and the legacy `repeat` code the client sends beside the rule. */
@@ -66,7 +65,7 @@ function repeatFreq(rule) {
     return freq;
 }
 
-/** A repeat rule as the web client serializes it: a JSON array of one RRULE string (the interval is always 1). */
+/** A repeat rule as Zalo expects it: a JSON array of one RRULE string (the interval is always 1). */
 function serializeRepeatRule(rule) {
     const freq = repeatFreq(rule);
     const days =
@@ -79,7 +78,7 @@ function serializeRepeatRule(rule) {
     return JSON.stringify([`RRULE:FREQ=${freq};INTERVAL=1;${ordered.length ? `BYDAY=${ordered.join(",")};` : ""}`]);
 }
 
-/** What a topic (note, reminder) body carries, as the web client's revamp builder writes it. */
+/** What a topic (note, reminder) body carries, as Zalo expects it. */
 function topicBody(a, ctx, { update }) {
     const body = {
         grid: bareGroupId(a.groupId),
@@ -119,7 +118,7 @@ const GIF_ARGS = (group) => [
     arg("src", "number", "where it was picked (the client's own source code; left out when not given)"),
 ];
 
-/** What a GIF send carries, as the web client's sender writes it. */
+/** What a GIF send carries, as Zalo expects it. */
 function gifBody(a, group) {
     const body = {
         thumb: String(a.thumb),
@@ -440,7 +439,7 @@ export const WRITES = {
         args: [arg("oaId", "string", "the OA's id", true)],
         body: (a) => ({ oaid: String(a.oaId) }),
         verified: true,
-        note: 'seen to take effect (2026-10-27, Zalo Web as the witness): the block makes Zalo Web show "unblock to send messages to this OA" after a reload and mark a later message "cannot send, you blocked this OA"; the unblock lifts a block made in the web. No profile, mini-profile or block-list read shows the state, and the server still answers the send with success, so only Zalo Web shows it',
+        note: 'seen to take effect (2026-10-27, checked in Zalo): the block makes Zalo show "unblock to send messages to this OA" after a reload and mark a later message "cannot send, you blocked this OA"; the unblock lifts a block made in Zalo. No profile, mini-profile or block-list read shows the state, and the server still answers the send with success, so only the Zalo apps show it',
     },
     "oa-unblock": {
         host: "profile",
@@ -452,7 +451,7 @@ export const WRITES = {
         args: [arg("oaId", "string", "the OA's id", true)],
         body: (a) => ({ oaid: String(a.oaId) }),
         verified: true,
-        note: 'seen to take effect (2026-10-27, Zalo Web as the witness): the block makes Zalo Web show "unblock to send messages to this OA" after a reload and mark a later message "cannot send, you blocked this OA"; the unblock lifts a block made in the web. No profile, mini-profile or block-list read shows the state, and the server still answers the send with success, so only Zalo Web shows it',
+        note: 'seen to take effect (2026-10-27, checked in Zalo): the block makes Zalo show "unblock to send messages to this OA" after a reload and mark a later message "cannot send, you blocked this OA"; the unblock lifts a block made in Zalo. No profile, mini-profile or block-list read shows the state, and the server still answers the send with success, so only the Zalo apps show it',
     },
     "blocksharing-update": {
         host: "conversation",
@@ -476,7 +475,7 @@ export const WRITES = {
         verified: false,
         note:
             "unverified: needs zBusiness Max. It answers 829 (this feature is for zBusiness accounts only) on a " +
-            "personal account, so no success was seen; the list read answers. The Web names its other refusals: 273 " +
+            "personal account, so no success was seen; the list read answers. Zalo's other refusals: 273 " +
             "the server could not save the setting, 275 only group admins may change it, 277 and 278 this account's " +
             "or the other side's limit of such settings is reached, 280 this account blocks the other side",
     },
@@ -486,12 +485,12 @@ export const WRITES = {
         cmd: 12163,
         method: "post",
         risk: "private",
-        what: "Create a conversation label, and tag conversations with it (the granular label calls of this build)",
+        what: "Create a conversation label, and tag conversations with it (the granular label calls)",
         args: [
             arg("text", "string", "the label's name (1 to 30 characters)", true),
             arg("color", "string", "colour, a palette hex such as #0068FF", true),
-            arg("emoji", "string", "emoji (the web client never sends one)"),
-            arg("conversations", "json", "conversation ids to tag (a group's id as the web names it, `g` + id)"),
+            arg("emoji", "string", "emoji (Zalo's own apps never send one)"),
+            arg("conversations", "json", "conversation ids to tag (a group's id as Zalo names it, `g` + id)"),
         ],
         body: (a) => ({
             labelInfo: JSON.stringify({
@@ -607,7 +606,7 @@ export const WRITES = {
     },
 };
 
-/** A search-history item as the web client submits it: `{id, type[, last_update_time]}`, a group without its `g`. */
+/** A search-history item as Zalo expects it: `{id, type[, last_update_time]}`, a group without its `g`. */
 function recentItem(x) {
     const raw = String(x.id ?? x.userId);
     const id = raw.startsWith("g") ? raw.slice(1) : raw;
@@ -615,7 +614,7 @@ function recentItem(x) {
     return x.last_update_time ? { id, type, last_update_time: x.last_update_time } : { id, type };
 }
 
-/** A pinned item as the web client names it to the pin endpoints: its id and its type. */
+/** A pinned item as the pin endpoints expect it: its id and its type. */
 function topicRef(topic, type) {
     if (topic && typeof topic === "object") {
         return {

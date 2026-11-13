@@ -1,5 +1,5 @@
 /**
- * TIER 1 — every registered read of Zalo Web, asked of a live account.
+ * TIER 1 — every registered read, asked of a live account.
  *
  * The table in src/zalo/reads.js says which reads a live account has answered (`verified`). This is the check that keeps
  * it true: each read goes out as the CLI sends it and has to come back as an answer, so a read Zalo retires (it answers
@@ -63,7 +63,7 @@ const ANSWERED_WITH_ERROR = {
     "group-message-status": /Lỗi không xác định|unknown/i,
 };
 
-describe("tier 1 · every read of the Zalo Web table answers", { skip }, () => {
+describe("tier 1 · every read of the read table answers", { skip }, () => {
     let names = [];
     before(async () => {
         const r = await runJson(["read", "list"], live(T, { timeout: 60_000 }));

@@ -22,7 +22,7 @@ export const EARLY_SETTLE_TTL_MS = 60 * 1000;
  * A new session context. Nothing is logged in yet: `secretKey` is null until a login sets it.
  *
  * @param {object} p
- * @param {number} p.apiType - the client type announced (30 for Web)
+ * @param {number} p.apiType - the client type announced (30)
  * @param {number} p.apiVersion - the client version announced (from `src/zalo/profile.js`)
  * @param {string} [p.userAgent]
  * @param {string} [p.imei]
@@ -246,7 +246,7 @@ export function createUploadRegistry() {
 
 /**
  * A per-session source of client ids (`clientId`, echoed back as a message's `cliMsgId`): the clock, but never the
- * same value twice and never going back, as Zalo Web's generator does. Two sends in one millisecond get two ids.
+ * same value twice and never going back. Two sends in one millisecond get two ids.
  *
  * @param {() => number} [now]
  * @returns {() => number} each call returns `max(now(), last + 1)`

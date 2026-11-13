@@ -4,7 +4,7 @@
  * `my_settings` control, typing (self dropped, `fsending`, the stranger rule) and quick messages on/off.
  *
  * The CLI and MCP surfaces call the same src/core functions; where a surface is exercised here, it is to show both
- * answer the same JSON. Ids are throwaway constants; payloads are written from the key names Zalo Web reads.
+ * answer the same JSON. Ids are throwaway constants; payloads are written from the key names Zalo uses.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, beforeEach, after } from "node:test";
@@ -110,7 +110,7 @@ describe("settings: one map, one reply for `profile settings` and zalo_profile `
         assert.deepEqual(r.other, { some_new_key: "x" });
     });
 
-    it("writes focused-tabs under the key Zalo Web writes (archivedChatStatus), not the one it reads", async () => {
+    it("writes focused-tabs under the key Zalo expects (archivedChatStatus), not the one it reports", async () => {
         const api = fakeApi({ updateSettings: "" });
         const r = await updateSetting(api, "focused-tabs", "0");
         assert.deepEqual(api.calls, [{ name: "updateSettings", args: ["archivedChatStatus", 0] }]);
@@ -196,7 +196,7 @@ describe("602 actions: typing, file sending, presence", () => {
         ...extra,
     });
 
-    it("drops our own devices' typing, as Zalo Web does, and marks the rest not self", () => {
+    it("drops our own devices' typing, and marks the rest not self", () => {
         const steps = dispatchAction({ actions: [typing(OWN), typing(PEER)] }, OWN);
         assert.equal(steps.length, 1, "red if our own typing reaches subscribers");
         const [ev] = steps[0].args;
@@ -287,7 +287,7 @@ describe("the presence cache: attachLastOnline and friend last-online --cached",
     });
 });
 
-describe("friend last-online: Zalo Web's rules", () => {
+describe("friend last-online: Zalo's rules", () => {
     it("asks nothing when our own online status is hidden, and says hiddenBy you", async () => {
         const api = fakeApi({ getSettings: { show_online_status: false } });
         const r = await lastOnlineStatus(api, PEER);

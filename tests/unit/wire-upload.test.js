@@ -438,7 +438,7 @@ describe("wire: attachments", () => {
         );
         const send = ofKind(rec.own.requests, "file")[0];
         assert.equal(send.params.fileUrl, fileUrlOf("data.csv"));
-        assert.equal(send.params.imei, undefined, "the Web's group file send has no imei");
+        assert.equal(send.params.imei, undefined, "a group file send has no imei");
     });
 
     it("an mp4 goes as a file", async () => {
@@ -479,10 +479,10 @@ describe("wire: attachments", () => {
         );
     });
 
-    it("a GIF over one chunk goes in 512000-byte chunks, the last one after the others, as the Web sends it", async () => {
+    it("a GIF over one chunk goes in 512000-byte chunks, the last one after the others", async () => {
         const answers = {
             ...replies(),
-            // A chunk taken while the upload goes on answers 220 (the Web reads 0, 1 and 220 as success); the last
+            // A chunk taken while the upload goes on answers 220 (0, 1 and 220 are success); the last
             // one carries the message. Not seen live: every GIF sent so far was one chunk.
             "/gif": (r) =>
                 r.params.chunkId < r.params.totalChunk
@@ -497,7 +497,7 @@ describe("wire: attachments", () => {
         );
         const chunks = ofKind(rec.own.requests, "gif");
         const bytes = readFileSync(made.bigGif);
-        // Red if a big GIF went up whole again, or in another chunking than the Web's.
+        // Red if a big GIF went up whole again, or in another chunking.
         assert.deepEqual(
             chunks.map((c) => [c.params.chunkId, c.params.totalChunk, c.parts[0].size]),
             [
@@ -1015,7 +1015,7 @@ describe("wire: waiting for the upload's URL (bounded, never forever)", () => {
         assert.equal(ofKind(rec.requests, "file")[0].params.fileName, basename(made.spaced));
     });
 
-    it("the replay delay grows with the size, in 30 MB steps, and the server's table replaces the Web's", () => {
+    it("the replay delay grows with the size, in 30 MB steps, and the server's table replaces the default", () => {
         assert.equal(replayDelayMs(0), 30000);
         assert.equal(replayDelayMs(REPLAY_SIZE_STEP - 1), 30000);
         assert.equal(replayDelayMs(REPLAY_SIZE_STEP), 35000);

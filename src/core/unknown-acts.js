@@ -2,8 +2,8 @@
  * The control actions this client has no handler for, collected (plan item X10).
  *
  * The server pushes actions to a connected client as `602` frames (`data.actions[{act_type, act, data}]`) and as the
- * `controls[]` of a `601` frame. The listener reads one kind of 602 (`typing`); a build of Zalo Web handles dozens more, and a
- * new one can appear with any server release. Nothing here changes how a frame is handled. It only notices a name this
+ * `controls[]` of a `601` frame. The listener reads one kind of 602 (`typing`); Zalo sends dozens more, and a new one
+ * can appear with any server release. Nothing here changes how a frame is handled. It only notices a name this
  * client does not know, once, and keeps a small local file so that a person (or the next release) can see which actions
  * the server is sending that nobody handles.
  *
@@ -26,12 +26,12 @@ const KNOWN_ACTIONS = new Set(["typing", "profile/online_status"]);
 
 /**
  * 602 actions that are known and need nothing from this client, by `act_type` or `act_type/act`, each with why (what
- * Zalo PC 26.10.20 does with it).
+ * it is for).
  */
 export const IGNORED_ACTIONS = new Map([
     [
         "recent_search",
-        "Zalo PC's list of recent searches, kept on each device for its search box; this client has no such list",
+        "Zalo's list of recent searches, kept on each device for its search box; this client has no such list",
     ],
 ]);
 
@@ -47,14 +47,14 @@ export const KNOWN_COMMANDS = new Set([
 ]);
 
 /**
- * Commands that are known and need nothing from this client, each with why (what Zalo PC 26.10.20 does with it).
+ * Commands that are known and need nothing from this client, each with why (what it is for).
  * Every one is also in {@link KNOWN_COMMANDS}.
  */
 export const IGNORED_COMMANDS = new Map([
     [
         530,
-        "PUSH_LIST_INTERACTIVE_FILE: Zalo PC syncs its record of which shared files were downloaded or opened " +
-            "(its download-resource store); this client keeps no such record",
+        "PUSH_LIST_INTERACTIVE_FILE: Zalo syncs a record of which shared files were downloaded or opened " +
+            "on each device; this client keeps no such record",
     ],
 ]);
 

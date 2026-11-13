@@ -107,7 +107,7 @@ describe("the login cipher", () => {
         assert.notEqual(signKey("getserverinfo", login), signKey("getlogininfo", login));
     });
 
-    it("draws zcid_ext as 6 to 12 lowercase hex characters, like the Web's randomString", () => {
+    it("draws zcid_ext as 6 to 12 lowercase hex characters", () => {
         const lengths = new Set();
         for (let i = 0; i < 400; i++) {
             const ext = makeZcidExt();

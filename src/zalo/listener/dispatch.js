@@ -1,7 +1,7 @@
 /**
  * The chat socket's decoded payloads -> the typed events the engine subscribes to.
  *
- * Routing follows Zalo Web's socket handlers (agent/docs/zca-replace/spec-listener.md 3, "Routing"): one chat path
+ * Routing follows Zalo's socket handler families (agent/docs/zca-replace/spec-listener.md 3, "Routing"): one chat path
  * for the message pushes, one control path for the controls and reactions, one action path for typing. Each
  * function here takes one frame's decoded `data` and returns the steps the listener carries out, in order:
  *
@@ -9,8 +9,8 @@
  *   {settle: {fileId, url, kind, fileUrl, control}}   an upload the server finished (a 601 control)
  *   {error: Error}                                  one item of the frame could not be read
  *
- * An item that cannot be read costs that item only: the rest of the frame is still read (Web parses each reaction
- * and each control on its own; the previous engine lost every item after a bad one).
+ * An item that cannot be read costs that item only: the rest of the frame is still read (each reaction and each
+ * control is parsed on its own; the previous engine lost every item after a bad one).
  *
  * Pure functions apart from the documented in-place rewrites of the message objects (./models.js): no socket, no
  * output, nothing logged.
@@ -36,9 +36,9 @@ const USER = 0;
 const GROUP = 1;
 
 /**
- * Chat pushes Web reads through one path, any of which may carry messages, receipts and read state: the live
+ * Chat pushes read through one path, any of which may carry messages, receipts and read state: the live
  * pushes 501 (1-1), 521 (group), 502/522 (receipts), the mixed offline push 504 and 524, 570, the server re-push
- * 534, and the Signal pushes 551 (1-1), 552 (group) and 535 (missed), which Web decrypts first and then reads the
+ * 534, and the Signal pushes 551 (1-1), 552 (group) and 535 (missed), which are decrypted first and then read the
  * same way.
  */
 export const CHAT_PUSH_CMDS = Object.freeze([501, 521, 502, 522, 504, 524, 570, 534, 551, 552, 535]);
@@ -269,18 +269,18 @@ function controlSteps(uid, control) {
         const ev = friendControlEvent(uid, content);
         return ev ? [{ emit: "friend_event", args: [ev] }] : [];
     }
-    // The owner set, changed or removed an alias (on any device). It names no alias: Zalo Web refetches its alias
-    // list on it (`_processProfileCtrl`, `forceRequestAlias(UPDATE_SIGNAL)`), and so does the engine.
+    // The owner set, changed or removed an alias (on any device). It names no alias: the alias list is refetched
+    // on it, and so does the engine.
     if (actType === "alias") return [{ emit: "alias_change", args: [{ act: content.act ?? null }] }];
     // The account's own profile changed on another device (`update`: name or avatar; `update_status`, `phonebook`,
-    // `mode`, `biz`): Zalo Web's `_processProfileCtrl` refetches its own profile on `update`.
+    // `mode`, `biz`): the own profile is refetched on `update`.
     if (actType === "profile") return [{ emit: "profile_change", args: [{ act: content.act ?? null }] }];
     return [];
 }
 
 /**
- * A control push (601) or a reaction push (612): every control in order, then every reaction (Web's
- * `processControl` reads `controls`, `reacts` and `reactGroups` from either).
+ * A control push (601) or a reaction push (612): every control in order, then every reaction (`controls`, `reacts`
+ * and `reactGroups` are read from either).
  *
  * @param {string} uid
  * @param {number} cmd - 601 or 612
@@ -335,7 +335,7 @@ const TYPING_ACTS = Object.freeze({
 
 /**
  * One 602 action's `data`: a typing action's is a JSON fragment without its braces, a file-sending action's is whole
- * JSON text (Zalo Web's `_processRawMessages`).
+ * JSON text.
  *
  * @param {object} action
  * @returns {object}
@@ -347,8 +347,8 @@ function actionData(action) {
 }
 
 /**
- * A 602 `profile` / `online_status` action as `{userId, lastOnline}`, or null for any other action. Zalo Web reads it
- * as "this user was last online at `lastOnline`" (`data` is JSON text `{uid, lastOnline}`). A malformed one throws.
+ * A 602 `profile` / `online_status` action as `{userId, lastOnline}`, or null for any other action. It means
+ * "this user was last online at `lastOnline`" (`data` is JSON text `{uid, lastOnline}`). A malformed one throws.
  *
  * @param {object} action - one entry of a 602 frame's `actions`
  * @returns {{userId: string, lastOnline: number}|null}
@@ -363,7 +363,7 @@ export function onlineStatusOf(action) {
 
 /**
  * An action push (602): the typing and file-sending actions, as `typing` events (`action` "typing" or "fsending").
- * One from this account's own uid (another of its devices) is dropped, as Zalo Web drops it. Other action kinds
+ * One from this account's own uid (another of its devices) is dropped, as Zalo drops it. Other action kinds
  * (`online_status` among them, read by src/core/last-online.js through the socket tap) reach the raw taps only.
  *
  * @param {object} data

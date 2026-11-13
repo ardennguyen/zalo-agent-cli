@@ -163,7 +163,7 @@ describe("the list readers", () => {
         );
     });
 
-    it("allProducts: later pages carry the first product id of the page before, as Zalo PC asks", async () => {
+    it("allProducts: later pages carry the first product id of the page before", async () => {
         const asked = [];
         const api = {
             getProductCatalogList: async (o) => {

@@ -3,37 +3,35 @@
  * status, the language, the "tab lost focus" signal, and the list of linked devices
  * (agent/docs/zca-replace/spec-sweep.md 1.2, "Own profile, avatars, status, settings" and "Account").
  *
- * Every call is one session request on the ordinary envelope (kernel/endpoint.js), shaped the way Zalo Web 26.11.10
- * shapes it (`1.c72c0957b455ab70b73c.js`, the API module; the avatar gallery calls are in
- * `web-startup.a00a02c532982ab4915a.js`). Where the Web differs from what the engine sent before, the Web wins:
+ * Every call is one session request on the ordinary envelope (kernel/endpoint.js), shaped the way the server
+ * expects it. Where that differs from what the engine sent before:
  *
- * - `changeAccountAvatar`: `avatarSize` 160 (updateProfileAvatar's callers always pass 160), a 60 s timeout.
- * - `updateProfileBio`: the sealed `params` only in the form body, not in the query too (updateStatus).
- * - `updateProfile`: the inner `profile` JSON in the Web's order `{name, gender, dob}` (the profile editor).
- * - `getSettings`: a GET with the common query only, no `params` (getSettings).
- * - `getAvatarList`, `deleteAvatar`, `reuseAvatar`: no `imei` (getAvatarHistory, deleteAvatarHistory, reuseAvatar).
- * - `getAvatarUrlProfile`: a POST, `avatar_size` 160 by default (getAvatarUrlProfile).
- * - `updateActiveStatus(false)`: `{imei}` only (deactive).
- * - `lostFocus`: a POST with no body at all (lostFocus).
+ * - `changeAccountAvatar`: `avatarSize` 160 and a 60 s timeout.
+ * - `updateProfileBio`: the sealed `params` only in the form body, not in the query too.
+ * - `updateProfile`: the inner `profile` JSON in the order `{name, gender, dob}`.
+ * - `getSettings`: a GET with the common query only, no `params`.
+ * - `getAvatarList`, `deleteAvatar`, `reuseAvatar`: no `imei`.
+ * - `getAvatarUrlProfile`: a POST, `avatar_size` 160 by default.
+ * - `updateActiveStatus(false)`: `{imei}` only.
+ * - `lostFocus`: a POST with no body at all.
  *
- * The settings calls go to Web's `authDomain` (`https://wpa.chat.zalo.me`), not to a service-map host. Every id
+ * The settings calls go to the auth domain (`https://wpa.chat.zalo.me`), not to a service-map host. Every id
  * stays a string. Nothing here writes to stdout or logs.
  */
 import { readFile } from "node:fs/promises";
 import { ZaloApiError } from "../errors.js";
 
-/** The avatar size Zalo Web asks for in its own-profile and avatar-url calls. */
+/** The avatar size asked for in the own-profile and avatar-url calls. */
 export const WEB_AVATAR_SIZE = 160;
 
-/** Zalo Web's timeout for an avatar upload. */
+/** The timeout for an avatar upload. */
 const AVATAR_UPLOAD_TIMEOUT_MS = 60_000;
 
 /** The width and height an avatar's metadata says when the image's own are unknown. */
 const DEFAULT_SIDE = 1080;
 
 /**
- * A local time as `HH:MM DD/MM/YYYY`, the stamp Zalo Web puts after the uid in an avatar's `clientId`
- * (getFullTimeFromMilisecond).
+ * A local time as `HH:MM DD/MM/YYYY`, the stamp Zalo expects after the uid in an avatar's `clientId`.
  *
  * @param {number} ms - milliseconds since the epoch
  * @returns {string}
@@ -321,7 +319,7 @@ export function profileMethods(s) {
          * Avatar URLs of users.
          *
          * @param {string|string[]} friendIds - one id or several
-         * @param {number} [avatarSize] - the size asked for (160, as Zalo Web asks)
+         * @param {number} [avatarSize] - the size asked for (160 by default)
          * @returns {Promise<object>}
          */
         getAvatarUrlProfile: (friendIds, avatarSize = WEB_AVATAR_SIZE) =>
@@ -360,7 +358,7 @@ export function profileMethods(s) {
         updateLang: (language = "VI") => s.call(UPDATE_LANGUAGE, { language }),
 
         /**
-         * Tell Zalo this client went to the background (what Zalo Web sends when its tab loses focus).
+         * Tell Zalo this client went to the background (the signal for a tab that lost focus).
          *
          * @returns {Promise<object>}
          */

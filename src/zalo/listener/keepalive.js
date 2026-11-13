@@ -12,7 +12,7 @@
  * `cmd 2 / subCmd 1` carrying `{eventId}`, which the server echoes back
  * verbatim. The listener already sends it, on an interval the server hands out at
  * login (`settings.features.socket.ping_interval`, measured at **180000 ms**
- * for this account -- the same value a captured Zalo Web session used).
+ * for this account).
  *
  * So the socket is not unpinged. It is pinged every three minutes, which leaves
  * two problems this module fixes:
@@ -25,7 +25,7 @@
  *      re-phased.** `setInterval` also queues catch-up work when the event loop
  *      blocks -- and the decode/store phase does block it.
  *
- * This sends the same frame Zalo Web sends, on a shorter interval, using a
+ * This sends the same frame, on a shorter interval, using a
  * self-rescheduling timer (no catch-up burst after a blocked loop), and counts
  * the echoes so a caller can say how long the socket had been silent before it
  * dropped. It never closes the socket on its own: a missed echo is evidence,
@@ -36,15 +36,15 @@
 export const PING_CMD = 2;
 export const PING_SUBCMD = 1;
 
-/** What the server advises, and what the listener and Zalo Web both use. */
+/** What the server advises, and what the listener uses. */
 export const SERVER_PING_INTERVAL_MS = 180000;
 
 /**
- * The interval used when the caller names none: the one the server advises, as Zalo Web does (Y11).
+ * The interval used when the caller names none: the one the server advises (Y11).
  *
  * This used to be a third of it (60 s), on the argument that one late ping meant six silent minutes. A live
- * `listen` on the test account then held its socket for 274 s on the server's own interval alone, and Web
- * waits the same 180 s, so the extra frames bought no safety and made this client's traffic unlike Web's.
+ * `listen` on the test account then held its socket for 274 s on the server's own interval alone, so the extra
+ * frames bought no safety and only made this client's traffic unusual.
  * The echo count stays, so a caller can still say how long the socket had been silent when it dropped.
  */
 export const DEFAULT_KEEPALIVE_MS = SERVER_PING_INTERVAL_MS;
@@ -149,7 +149,7 @@ export function startKeepAlive(listener, opts = {}) {
         if (!listener?.ws || listener.ws.readyState > 1) return;
         retap();
         // The listener pings on the server's interval from the hello on. A second timer at the same cadence only doubled
-        // every ping (two 2/1 frames in one millisecond; Web sends one), so on the default cadence this one just
+        // every ping (two 2/1 frames in one millisecond; one is expected), so on the default cadence this one just
         // keeps counting echoes. A caller that asks for its own interval still gets its own pings.
         const listenerPings = !opts.intervalMs && Boolean(listener.pingInterval);
         try {

@@ -383,10 +383,10 @@ media hàng loạt, board, cloud và trạng thái hội thoại vẫn dùng CLI
 1. Local client → stdio transport, no `--http`
 2. Command is `zalo-agent mcp start`
 3. Give the client config for `.claude/settings.json` with `command: "zalo-agent"`, `args: ["mcp", "start"]`
-4. Warn: only one WebSocket per account — stop any `listen` daemon for the account first; and Zalo keeps one web login per account, so a QR login into Zalo Web logs the server out: use the phone or Zalo PC beside it, not Zalo Web
+4. Warn: only one WebSocket per account — stop any `listen` daemon for the account first; and Zalo keeps one web login per account, so a QR login into Zalo in a browser logs the server out: use the phone or the Zalo desktop app beside it, not a browser
 5. Note the buffer starts empty — it only holds messages received after the server starts
 
-**Must include:** `mcp start` without `--http`, mcpServers JSON config, 1-WebSocket-per-account warning, no Zalo Web beside it
+**Must include:** `mcp start` without `--http`, mcpServers JSON config, 1-WebSocket-per-account warning, no browser login beside it
 **Must NOT:** Suggest `--auth` for stdio, claim messages before startup are in the buffer
 
 ---
@@ -510,7 +510,7 @@ media hàng loạt, board, cloud và trạng thái hội thoại vẫn dùng CLI
 1. On its next start the daemon self-heals: it pulls what it missed from Zalo's offline queue on its own socket, no phone tap. Check what is still pending (`zalo_coverage`, or the gap lines `listen`/`mcp start` print); only that needs a restore. A gap marked `new-device` (a login with a new device id) or a `queue_overflow` for 1-1 chats is one the queue cannot fill
 2. **For what stays pending, `zalo-agent sync --from <YYYY-MM-DD>` is the answer** — that is the exact command `listen` itself prints when it reports the gap. `sync-mobile` restores messages alone; `sync` runs that plus reactions, conversation state, boards, zCloud and media
 3. Say up front that the phone **will** show a sync request and the owner must tap **"ĐỒNG BỘ NGAY"** — that is how the command works, not a malfunction. One tap covers the whole run
-4. **Do not stop the daemon.** A running `listen`/`mcp` publishes a sync channel and the restore runs on its socket, so live capture continues throughout. Stopping it would open a fresh gap — the very thing being repaired. Zalo's one-web-login rule still applies: a QR login into Zalo Web logs the server out, so do not use Zalo Web beside it
+4. **Do not stop the daemon.** A running `listen`/`mcp` publishes a sync channel and the restore runs on its socket, so live capture continues throughout. Stopping it would open a fresh gap — the very thing being repaired. Zalo's one-web-login rule still applies: a QR login into Zalo in a browser logs the server out, so do not use a browser beside it
 5. Afterwards read the messages with `zalo-agent msg history <threadId>` (served from the cache)
 6. `--wait <seconds>` bounds each phase (default 30s, floored at 180s on the restore path); `--force` skips the one-hour "already synced" debounce
 7. Mention the caveats honestly: the phone-backed restore is the **default**, so `--transfer` is accepted but does nothing; `--socket` opts out to the old server probe that usually returns empty; conversations with non-friends and OAs may land under an opaque id rather than a real name
@@ -610,12 +610,12 @@ media hàng loạt, board, cloud và trạng thái hội thoại vẫn dùng CLI
 **Prompt:** "Why can't you read my messages anymore?" (every call returns `SIGNED_OUT`)
 
 **Expected reasoning:**
-1. Zalo ended this login; the server stays up but cannot act for the account. The usual cause: someone logged into Zalo Web by QR with this account, and Zalo keeps one web login per account
+1. Zalo ended this login; the server stays up but cannot act for the account. The usual cause: someone logged into Zalo in a browser by QR with this account, and Zalo keeps one web login per account
 2. Tell the user the account must be added again by QR (`zalo-agent login`, or the fleet controller's QR add on a server)
-3. Advise using the phone or Zalo PC beside the server, not Zalo Web, so it does not happen again
+3. Advise using the phone or the Zalo desktop app beside the server, not a browser, so it does not happen again
 4. After the new login, the daemon's catch-up and, for a new device id, `zalo-agent sync --from <date>` restore what was missed
 
-**Must include:** re-add by QR, the one-web-login cause, no Zalo Web beside the server
+**Must include:** re-add by QR, the one-web-login cause, no browser login beside the server
 **Must NOT:** Retry calls hoping it recovers, or tell the user to restart the server as the fix
 
 ---
@@ -626,7 +626,7 @@ media hàng loạt, board, cloud và trạng thái hội thoại vẫn dùng CLI
 
 **Expected reasoning:**
 1. `group leave` (or `zalo_group` `leave`) is guarded: ask the user first
-2. Say before confirming: by default (`groups.onLeave: "purge"`) the group's history on this machine (messages, media, pins, reminders) is deleted at once, as Zalo Web and PC do, and cannot come back; `groups.onLeave: "keep"` keeps it, flagged gone
+2. Say before confirming: by default (`groups.onLeave: "purge"`) the group's history on this machine (messages, media, pins, reminders) is deleted at once, as Zalo's own apps do, and cannot come back; `groups.onLeave: "keep"` keeps it, flagged gone
 3. After the user agrees: `zalo-agent group leave <groupId> --yes` (or `confirm: true`)
 4. A `group_gone` event (also sent when the account is removed or blocked, or the group is disbanded) reports the reason and what was purged
 
@@ -668,7 +668,7 @@ media hàng loạt, board, cloud và trạng thái hội thoại vẫn dùng CLI
 **Prompt:** "Search all my chats, including hidden ones, for 'invoice'"
 
 **Expected reasoning:**
-1. Hidden chats are left out of every list, search and history, as Zalo Web leaves them out: `msg search` and `zalo_search_messages` never search them
+1. Hidden chats are left out of every list, search and history, as Zalo's own apps leave them out: `msg search` and `zalo_search_messages` never search them
 2. Search what is visible (`zalo-agent --json msg search invoice`) and say hidden chats were left out
 3. For a hidden chat the user names, its history opens with the hidden-chat PIN: `msg history <threadId> --include-hidden` (or `db query ... --include-hidden`), the PIN typed by the user at the prompt or given on standard input (`--pin-stdin`); over MCP the server's `hiddenChats` policy and its secure PIN page decide
 4. The PIN is never a command-line argument; never ask the user to paste it into the chat with the agent, never log or repeat it

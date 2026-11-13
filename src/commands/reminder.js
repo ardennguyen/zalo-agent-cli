@@ -93,8 +93,8 @@ export function registerReminderCommands(program) {
                         result = all.reminders;
                         note = all.paging.note;
                     } else {
-                        // A group's page 2 and later carry the last id of the page before, as Zalo Web pages them (and
-                        // as zalo_reminder does); a DM's have no cursor (the Web always sends 0 there).
+                        // A group's page 2 and later carry the last id of the page before, as Zalo pages them (and
+                        // as zalo_reminder does); a DM's have no cursor (Zalo always sends 0 there).
                         result =
                             Number(opts.type) === THREAD_TYPE.GROUP
                                 ? await groupReminderPage(getApi(), threadId, page, count)
@@ -218,7 +218,7 @@ export function registerReminderCommands(program) {
                 error(`Remove reminder failed: ${e.message}`);
             }
         });
-    // Asked about first, as Zalo Web does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    // Asked about first, as Zalo does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
     guardSubcommand(reminder, "remove", "reminder.remove", {
         target: (reminderId, threadId) => ({ reminderId, threadId }),
     });

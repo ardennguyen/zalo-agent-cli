@@ -120,7 +120,7 @@ describe("current user labels", () => {
         assert.equal(messages[0].senderName, "Historical Name");
     });
 
-    it("falls back to a profile's displayName only when it has no Zalo name (Web's zaloName || dName)", async () => {
+    it("falls back to a profile's displayName only when it has no Zalo name (zaloName || dName)", async () => {
         const names = await resolveCurrentUserNames(
             {
                 getUserInfo: async () => ({
@@ -195,7 +195,7 @@ describe("current user labels", () => {
         ...extra,
     });
 
-    it("stops at a full page that says hasMore: false, as Zalo Web does", async () => {
+    it("stops at a full page that says hasMore: false", async () => {
         const pages = [];
         const aliases = await readUserAliases({
             getAliasList: async (count, page) => {

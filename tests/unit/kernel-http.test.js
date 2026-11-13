@@ -295,7 +295,7 @@ describe("httpRequest: timeout", () => {
     const hang = (_url, init) =>
         new Promise((_, reject) => init.signal?.addEventListener("abort", () => reject(init.signal.reason)));
 
-    it("waits 10 s by default (Zalo Web's), and none when told 0", async () => {
+    it("waits 10 s by default, and none when told 0", async () => {
         assert.equal(DEFAULT_TIMEOUT_MS, 10_000);
         const { ctx, seen } = session();
         await httpRequest(ctx, "https://h.zalo.me/a");

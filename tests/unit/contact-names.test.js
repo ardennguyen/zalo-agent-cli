@@ -146,7 +146,7 @@ describe("the account's alias snapshot", () => {
 });
 
 describe("a live alias change", () => {
-    it("is a control the listener reports, which Zalo Web answers by rereading its alias list", () => {
+    it("is a control the listener reports, answered by rereading the alias list", () => {
         const data = { controls: [{ actionId: "1", content: { act_type: "alias", act: "update", data: "{}" } }] };
         const steps = dispatchCtrl("1", 601, data);
         assert.deepEqual(steps, [{ emit: "alias_change", args: [{ act: "update" }] }]);
@@ -263,7 +263,7 @@ describe("group messages and payloads", () => {
     });
 });
 
-describe("what Zalo Web also names alias first", () => {
+describe("what is also named alias first", () => {
     it("a quoted message's author, keeping the name the quote carried", () => {
         noteAliasSnapshot(new Map([[FRIEND, "Minh Sales"]]));
         const reply = quotedReply({ globalMsgId: "5", ownerId: FRIEND, fromD: "Zalo Profile", msg: "x" });

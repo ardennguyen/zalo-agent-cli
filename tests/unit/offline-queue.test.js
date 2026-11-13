@@ -1,6 +1,6 @@
 /**
- * Draining one offline queue (src/zalo/queues/offline-queue.js): one deadline for the whole drain, as Zalo PC's
- * `offline_timeout` (480 s), a page silent past the page wait ends it (silence is not an empty queue), a socket
+ * Draining one offline queue (src/zalo/queues/offline-queue.js): one deadline for the whole drain
+ * (480 s), a page silent past the page wait ends it (silence is not an empty queue), a socket
  * that closes ends it at once, and an answer is matched by reqId unless it carries none. Driven through the real
  * socket tap and frame decoder with ./support/fake-socket.js; every id is made up.
  */
@@ -50,7 +50,7 @@ describe("offline queue drain — sandbox", () => {
 describe("one deadline for the whole drain", () => {
     afterEach(() => mock.timers.reset());
 
-    it("is Zalo PC's offline_timeout, but a silent queue is not waited out for it", async () => {
+    it("is 480 s for the whole drain, but a silent queue is not waited out for it", async () => {
         assert.equal(DEFAULT_DRAIN_TIMEOUT_MS, 480_000);
         assert.ok(DEFAULT_PAGE_TIMEOUT_MS < DEFAULT_DRAIN_TIMEOUT_MS);
         mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000_000 });
@@ -123,7 +123,7 @@ describe("one deadline for the whole drain", () => {
 });
 
 describe("which answer is ours", () => {
-    it("an answer without a reqId is taken, as PC routes by cmd alone", async () => {
+    it("an answer without a reqId is taken, routed by cmd alone", async () => {
         const { listener, tap } = rig(() => {
             const p = page("", 300, 0);
             delete p.data.reqId;

@@ -1,5 +1,5 @@
 /**
- * A forwarded voice or video is re-sent by its hosted URL (`sendVoice` / `sendVideo`). A voice goes out as Zalo Web
+ * A forwarded voice or video is re-sent by its hosted URL (`sendVoice` / `sendVideo`). A voice goes out as Zalo
  * forwards one: its URL and the m4a URL from `params.m4a`, no size and no HEAD to the file's host. A video still
  * needs a size, which the engine asks the host for with a HEAD unless it is given one; a cached message often knows
  * it already (its params, or the copy the media downloader saved), so `msg forward` and `zalo_forward_message` hand
@@ -74,7 +74,7 @@ function seedMedia(msgId, type, content, localPath = null) {
 const HEADS = (requests) => requests.filter((q) => q.method === "HEAD");
 
 describe("the re-send options read the cache", () => {
-    it("voice: the URL and the m4a from params, nothing else (Web sends no size)", () => {
+    it("voice: the URL and the m4a from params, nothing else (no size)", () => {
         assert.deepEqual(voiceResendOptions({ href: VOICE_URL, params: J({ m4a: M4A_URL, fileSize: 1200 }) }), {
             voiceUrl: VOICE_URL,
             m4aUrl: M4A_URL,
@@ -131,7 +131,7 @@ describe("msg forward of a cached voice or video", () => {
         ["one with a downloaded copy", VOICE_LOCAL, M4A_URL],
         ["one nothing knows the size of, and no m4a", VOICE_BARE, VOICE_URL],
     ]) {
-        it(`a voice (${name}) makes no HEAD and sends no size, as Web does`, async () => {
+        it(`a voice (${name}) makes no HEAD and sends no size`, async () => {
             const r = await runOffline(["msg", "forward", msgId, PEER, "-t", "0"]);
             // Red when sendVoice asks the host for the size again: the bare voice would show a HEAD.
             assert.deepEqual(HEADS(r.requests), [], r.all);
@@ -171,7 +171,7 @@ describe("zalo_forward_message of a cached voice", () => {
         registerTools(server, api, buffer, {}, { limits: {} }, { ready: true, get: () => null, search: () => [] });
         const r = await tools.get("zalo_forward_message")({ msgId: VOICE_LOCAL, threadId: PEER, threadType: "dm" });
         assert.equal(r.isError, undefined, r.content[0].text);
-        // Red when the tool drops the m4a URL (Web forwards params.m4a) or passes size/timeout plumbing again.
+        // Red when the tool drops the m4a URL (a forward carries params.m4a) or passes size/timeout plumbing again.
         assert.deepEqual(calls, [
             {
                 options: { voiceUrl: VOICE_URL, m4aUrl: M4A_URL },

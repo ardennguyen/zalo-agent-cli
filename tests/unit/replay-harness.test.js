@@ -1,14 +1,14 @@
 /**
  * The replay harness (tests/helpers/replay): proof that it goes red when a
  * request drifts, and a pin of exactly how far today's code is from the
- * official Web client.
+ * expected shapes.
  *
  * Part 1 feeds the harness synthetic calls and checks that each kind of drift
  * is reported, and that a conforming sequence is not. A harness that cannot
  * fail proves nothing, so this comes first.
  *
  * Part 2 runs today's code (login, logout, socket requests) through the fake
- * Zalo and compares it with the shapes of the official client:
+ * Zalo and compares it with the expected shapes:
  *   - the differences that exist TODAY are pinned exactly: if one changes, this
  *     test says so, in either direction;
  *   - the target ("conforms") is declared as a `todo` test per v3.0 item, so a
@@ -187,7 +187,7 @@ describe("replay harness: it goes red when a request drifts", () => {
     });
 });
 
-describe("replay harness: today's code against the official Web client", () => {
+describe("replay harness: today's code against the expected shapes", () => {
     let zalo;
     let api;
 
@@ -237,7 +237,7 @@ describe("replay harness: today's code against the official Web client", () => {
             );
         });
 
-        it("sends the v2 logout the way the official client does", () => {
+        it("sends the v2 logout the expected way", () => {
             const v2 = calls.filter((c) => c.path === "/api/v2/login/logOut");
             assert.equal(v2.length, 1);
             assert.equal(v2[0].host, "stg-wpa.chat.zalo.me");

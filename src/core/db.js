@@ -125,10 +125,8 @@ export function initDb(dbPath) {
     );
 
     -- Tracks time windows where we know (or suspect) messages may have been
-    -- missed — mirrors Zalo Web's own client-side "MissingMessageRange" table
-    -- (confirmed live via its IndexedDB schema: id/convId/fromTs/toTs/reason/status)
-    -- but kept account-wide rather than per-conversation, since pullMobileMsg/
-    -- getCrossDB operate on the whole account, not a single thread.
+    -- missed (id/convId/fromTs/toTs/reason/status), kept account-wide rather than per-conversation, since
+    -- pullMobileMsg/getCrossDB operate on the whole account, not a single thread.
     CREATE TABLE IF NOT EXISTS sync_gaps (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       fromTs INTEGER,
@@ -226,7 +224,7 @@ export function initDb(dbPath) {
 
     -- Reactions. NOT in the mobile sync payload at all -- the Sync2 protobuf
     -- has no reaction field. They are NOT unrecoverable, though: the socket
-    -- serves them on cmd 610 (1-1) and 611 (group), which is how Zalo Web shows
+    -- serves them on cmd 610 (1-1) and 611 (group), which is how a client shows
     -- them after a fresh login, so they arrive either live (cmd 612) or from
     -- the sync-reactions command. (No backticks in this SQL: it sits inside a
     -- JS template literal, so one would close it and break the module.)
@@ -449,7 +447,7 @@ export function initDb(dbPath) {
     }
     // Why a group stopped being ours (./group-exit.js): leave, removed, blocked or disbanded. Set with leftAt by a
     // group exit only; a conversation list or `conv delete` leaves it null. While it is set, only a `join` naming us
-    // (or a message dated after leftAt) brings the group back, as Zalo Web's ZGroupLeaveCache rules.
+    // (or a message dated after leftAt) brings the group back.
     try {
         db.exec("ALTER TABLE threads ADD COLUMN goneReason TEXT");
     } catch {}
@@ -463,8 +461,8 @@ export function initDb(dbPath) {
         db.exec("ALTER TABLE conv_state ADD COLUMN lastReadTs INTEGER");
     } catch {}
     // Unread reactions (./read-state.js): the newest reaction someone else made in the conversation (its own msgId,
-    // from the reaction pushes) and the newest one reported seen (cmd 613 clearUnreads). `conv read` sends Zalo
-    // Web's react_seen when the first is newer than the second.
+    // from the reaction pushes) and the newest one reported seen (cmd 613 clearUnreads). `conv read` sends
+    // react_seen when the first is newer than the second.
     try {
         db.exec("ALTER TABLE conv_state ADD COLUMN reactUnreadId TEXT");
     } catch {}
@@ -975,13 +973,10 @@ export function insertMessage(msg) {
 /**
  * Insert a message only if its msgId is not stored yet -- never update one.
  *
- * msg history's write-back (storeHistoryMessage in ./live-store.js). Zalo Web
- * writes the history it fetches the same way, ZStorage.setMessage with
- * replace:false. A stored row keeps every column, which is the point: the
- * listener and later events put things on it that a re-fetch cannot know --
- * the media downloader's localPath, a receipt's msgStatus, a recall's
- * tombstone, the st/at/cmd a seen receipt echoes back. {@link insertMessage},
- * the listener's upsert, would replace most of them.
+ * msg history's write-back (storeHistoryMessage in ./live-store.js). A stored
+ * row keeps every column, which is the point: the listener and later events put things on it that a re-fetch cannot
+ * know -- the media downloader's localPath, a receipt's msgStatus, a recall's tombstone, the st/at/cmd a seen receipt
+ * echoes back. {@link insertMessage}, the listener's upsert, would replace most of them.
  *
  * Same columns and value mapping as insertMessage.
  *
@@ -1045,9 +1040,8 @@ export function getThreadLeftAt(threadId) {
  * The conversation's delete marker: nothing at or before this time may come
  * back from fetched history. Null when there is none.
  *
- * The nearest thing this cache has to Zalo Web's per-conversation delete
- * marker. Set with the gone marker by `conv delete` and by our own leave,
- * removal or block ({@link markThreadGone}), and kept when the account comes
+ * This cache's per-conversation delete marker. Set with the gone marker by
+ * `conv delete` and by our own leave, removal or block ({@link markThreadGone}), and kept when the account comes
  * back -- a deleted DM's old messages stay deleted after the contact writes
  * again, while the conversation itself stops being an orphan.
  *
@@ -2483,7 +2477,7 @@ export function getCloudItemByMsgId(msgId) {
 }
 
 /**
- * The zCloud backup for one message by the key Zalo Web joins on (`cliMsgId_conversation_sender`, see
+ * The zCloud backup for one message by the key Zalo joins on (`cliMsgId_conversation_sender`, see
  * `cloudKeyOf` in sync-v2/zcloud.js). The queue's global message id is the literal "0" for most entries, so this is
  * the lookup that finds them.
  */

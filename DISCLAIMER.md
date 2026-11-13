@@ -2,9 +2,9 @@
 
 ## ⚠️ Cảnh báo quan trọng / Important Warning
 
-**Tool này gọi API Zalo không chính thức — giao thức mà Zalo Web dùng, không có tài liệu công khai. Zalo không hỗ trợ và tài khoản của bạn có thể bị khóa (ban) khi sử dụng.**
+**Tool này gọi API Zalo không chính thức — giao thức riêng của Zalo, không có tài liệu công khai. Zalo không hỗ trợ và tài khoản của bạn có thể bị khóa (ban) khi sử dụng.**
 
-**This tool uses unofficial Zalo APIs — the undocumented protocol Zalo Web uses. Zalo does not support this and your account may be banned.**
+**This tool uses unofficial Zalo APIs — Zalo's own undocumented protocol. Zalo does not support this and your account may be banned.**
 
 ---
 

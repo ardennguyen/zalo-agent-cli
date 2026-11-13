@@ -1,6 +1,5 @@
 /**
- * How a restore treats its socket and its sessions, as Zalo's own clients do (Web and PC; the evidence and the
- * captures are in docs/agent-notes.md, "A restore the way Zalo's clients run it"):
+ * How a restore treats its socket and its sessions, as Zalo's own apps do (the evidence is in docs/agent-notes.md, "A restore in waves"):
  *
  *  - nothing is sent before the server's hello has been processed, and the first frame after it is a ping;
  *  - one ping per interval, not two;
@@ -69,7 +68,7 @@ describe("the socket: the hello first, then a ping", () => {
         );
     });
 
-    it("waits at least two seconds before it reopens a socket, as Web does (2, 3, 5, 8 s)", () => {
+    it("waits at least two seconds before it reopens a socket (2, 3, 5, 8 s)", () => {
         assert.ok(RECONNECT_DELAY_MS >= 2000, `the pause is ${RECONNECT_DELAY_MS} ms`);
     });
 
@@ -130,7 +129,7 @@ describe("the keepalive does not double the ping", () => {
     });
 });
 
-describe("a restore the way Zalo's clients run it", () => {
+describe("a restore in waves, as Zalo runs it", () => {
     let zalo = null;
     let api = null;
     let n = 0;

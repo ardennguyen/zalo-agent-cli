@@ -1,5 +1,5 @@
 /**
- * The Web login (src/zalo/login.js, plan items L2a-e, L5, L7, L8), driven against the offline fake Zalo.
+ * The login (src/zalo/login.js, plan items L2a-e, L5, L7, L8), driven against the offline fake Zalo.
  *
  * What is asserted is what goes over the wire and what lands on disk: the order of the calls, the parameters
  * of each, the `signkey`, the stored disaster-recovery values coming back on the next login, the encryption
@@ -26,7 +26,7 @@ import { browserHeadersFor, fetchSiteOf, secChUaFor, withBrowserHeaders } from "
 import { FAKE, FAKE_CREDENTIALS, installFakeZalo } from "./fake-zalo-session.js";
 
 /**
- * The signkey the official client computes: the MD5 of "zsecure", the call's name and every value in key order,
+ * The signkey Zalo expects: the MD5 of "zsecure", the call's name and every value in key order,
  * each as text (a null as "null").
  */
 function expectedSignKey(kind, fields) {
@@ -67,7 +67,7 @@ describe("the server-info query", () => {
         assert.notEqual(buildServerInfoQuery({ ...base, dr: { supportMaintenance: 1, bucketId: 2 } }).signkey, plain);
         assert.notEqual(buildServerInfoQuery({ ...base, viewerKey: "vk" }).signkey, plain);
         assert.notEqual(buildServerInfoQuery({ ...base, floatMenuPos: true }).signkey, plain);
-        // the key is the md5 the official client computes: "zsecure" + type + the values sorted by key name
+        // the key is the md5 Zalo expects: "zsecure" + type + the values sorted by key name
         const q = buildServerInfoQuery({ ...base, viewerKey: "vk", floatMenuPos: true });
         const { signkey, ...fields } = q;
         assert.equal(signkey, expectedSignKey("getserverinfo", fields));

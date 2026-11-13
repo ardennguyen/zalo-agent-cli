@@ -102,7 +102,7 @@ describe("the kernel's calls on the wire", () => {
     });
 
     describe("fetchAccountInfo", () => {
-        it("asks me-v2 the Web way (params, os, browser) and returns the answer", async () => {
+        it("asks me-v2 the expected way (params, os, browser) and returns the answer", async () => {
             const profile = { profile: { userId: "1000000000000000001" } };
             const rec = await wire.run("fetchAccountInfo", [], {
                 replies: { "/api/social/profile/me-v2": { data: profile } },
@@ -130,7 +130,7 @@ describe("the kernel's calls on the wire", () => {
     });
 
     describe("the bound helpers (makeURL, request, resolve)", () => {
-        it("makeURL: the names and values in the Web's order", async () => {
+        it("makeURL: the names and values in the expected order", async () => {
             const rec = await wire.run("kernelMakeURL", [{ params: "a+b/c=", grid: "fake" }]);
             await check(rec, "makeURL");
             assert.equal(rec.own.result.order, "zpw_ver,zpw_type,params,grid");

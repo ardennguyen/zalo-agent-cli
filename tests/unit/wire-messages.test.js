@@ -10,7 +10,7 @@
  *    against a literal `{message, code}`.
  *
  * Beside those, direct assertions: the reported `cliMsgId` is the `clientId` on the wire for every send, the client ids of 50 sends in one millisecond are all different, the HEAD of a hosted
- * video carries no cookie and times out, a hosted voice makes no HEAD (Web makes none), and a video without geometry
+ * video carries no cookie and times out, a hosted voice makes no HEAD, and a video without geometry
  * sends nothing.
  *
  * Every id here is fake.
@@ -479,7 +479,7 @@ const CASES = [
         args: [{ voiceUrl: VOICE_URL }, USER, 0],
         fixture: sent,
         check(own) {
-            // Web forwards a voice with no HEAD to its host and no fileSize: red if either comes back.
+            // A voice is forwarded with no HEAD to its host and no fileSize: red if either comes back.
             assert.deepEqual(
                 own.requests.map((r) => r.method),
                 ["POST"],
@@ -830,7 +830,7 @@ describe("messages: the session's client ids, the hosted HEAD, the URL scan", ()
         assert.deepEqual(JSON.parse(made[0].params.msgInfo), { voiceUrl: VOICE_URL, m4aUrl: m4a });
     });
 
-    it("gives up on a URL scan Zalo does not answer after 5 s, Web's scanUrl timeout, not the 10 s default", async () => {
+    it("gives up on a URL scan Zalo does not answer after 5 s, the scanUrl timeout, not the 10 s default", async () => {
         wire.fake.clearRoutes();
         wire.fake.routeAnswer("/scanurl", { hang: true });
         const started = Date.now();

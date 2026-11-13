@@ -1,8 +1,8 @@
 /**
  * Zalo requests the engine builds by hand on the session envelope.
  *
- * Some requests Zalo Web makes have no endpoint module of their own (message pin/unpin), and for others the engine
- * needs to send exactly what the web sends (`forwardMessage`'s decorLog `st`). They are built here on the kernel's
+ * Some requests have no endpoint module of their own (message pin/unpin), and for others the engine
+ * needs to send exactly what the server expects (`forwardMessage`'s decorLog `st`). They are built here on the kernel's
  * bound helpers (src/zalo/kernel/bound.js): `makeURL` (`zpw_ver`/`zpw_type` first), the session cipher, the
  * transport (headers, cookies), and the reply decoding in `resolve`, which throws a `ZaloApiError` carrying Zalo's
  * error code. Only the path and the params are the caller's.

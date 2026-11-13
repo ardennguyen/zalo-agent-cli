@@ -28,7 +28,7 @@ Giờ keyring được bọc bằng mật khẩu lưu trữ thay vì DPAPI, nên
 
 ## 3. Sao chép
 
-1. **Dừng mọi thứ trên Windows** đang dùng các tài khoản này: `zalo-agent listen --stop`, `zalo-agent mcp start --stop` cho từng tài khoản, thoát Claude Desktop, Claude Code và mọi service `zalo-mcp`, và đóng mọi tab Zalo Web. Sao lưu nguyên trạng `%USERPROFILE%\.zalo-agent-cli`.
+1. **Dừng mọi thứ trên Windows** đang dùng các tài khoản này: `zalo-agent listen --stop`, `zalo-agent mcp start --stop` cho từng tài khoản, thoát Claude Desktop, Claude Code và mọi service `zalo-mcp`, và đóng mọi tab trình duyệt đang mở Zalo. Sao lưu nguyên trạng `%USERPROFILE%\.zalo-agent-cli`.
 2. **Chỉ đóng gói những gì cần chuyển** (PowerShell; `tar` có sẵn từ Windows 10 trở đi). Thay hai ID bằng ID của bạn:
    ```powershell
    cd $env:USERPROFILE\.zalo-agent-cli
@@ -67,13 +67,13 @@ Sau đó tiếp tục với bước 6 của [README.md](README.md) (`za fleet ge
   (Nếu Windows đã chạy 3.0, `logout` có bước xác nhận: thêm `--yes`.)
   Sau đó xóa tệp nén đã mã hóa và, khi VPS đã chạy được vài ngày, xóa các thư mục cũ trên Windows.
 - **Zalo có thể yêu cầu xác minh một phiên đăng nhập di chuyển** từ địa chỉ gia đình sang địa chỉ datacenter. Nếu một tài khoản chuyển sang `signed_out` (`za presence status` hoặc `journalctl -u zalo-mcp@<id>` báo phiên đăng nhập bị từ chối; daemon vẫn chạy và từ chối yêu cầu), hãy đăng nhập lại tài khoản đó trên VPS bằng `za login` (QR qua đường hầm SSH), rồi `sudo systemctl restart zalo-mcp@<id>`; lịch sử của nó vẫn còn.
-- **Tiếp tục dùng điện thoại hoặc Zalo PC** bên cạnh máy chủ. Đăng nhập tài khoản vào **Zalo Web** sẽ đăng xuất máy chủ (một phiên đăng nhập web cho mỗi tài khoản).
+- **Tiếp tục dùng điện thoại hoặc ứng dụng Zalo trên máy tính** bên cạnh máy chủ. Đăng nhập tài khoản vào **Zalo trên trình duyệt** sẽ đăng xuất máy chủ (một phiên đăng nhập web cho mỗi tài khoản).
 
 ## 6. Các cách khác, và vì sao không dùng
 
 | Cách | Lịch sử | Thiết bị | Khi nào |
 |---|---|---|---|
 | Sao chép thư mục home 2.5.9 (trang này) | giữ lại | giữ nguyên | mặc định |
-| `account export` trên Windows, `za login --credentials <file>` trên VPS | **không giữ lại** (`sync` xác nhận trên điện thoại khôi phục ít hơn nhiều so với kho dữ liệu của PC) | giữ nguyên | tài khoản phụ không cần lịch sử |
+| `account export` trên Windows, `za login --credentials <file>` trên VPS | **không giữ lại** (`sync` xác nhận trên điện thoại khôi phục ít hơn nhiều so với kho dữ liệu trên máy Windows) | giữ nguyên | tài khoản phụ không cần lịch sử |
 | Đăng nhập QR mới trên VPS, rồi thả `zalo.db` và `media/` cũ vào thư mục tài khoản mới trước lần khởi động đầu tiên, và `za account security migrate --all` | giữ lại | mới | bạn muốn một mục thiết bị mới |
 | Nâng cấp Windows lên 3.0, rồi sao chép | chỉ sau mục 2 | giữ nguyên | tránh |

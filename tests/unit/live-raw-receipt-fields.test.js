@@ -3,7 +3,7 @@
  *
  * A seen or delivered receipt names each message by nine fields, and three of
  * them -- `st`, `at`, `cmd` -- exist nowhere but on the socket frame that
- * delivered the message. Zalo Web echoes them back verbatim: the captured
+ * delivered the message. Zalo expects them back verbatim: the captured
  * group seenv2 carried `"st":3,"at":0,"cmd":521`, the DM one `"st":3,"at":9,
  * "cmd":501`, and `at` differs from message to message (5 for plain text, 0
  * for a card, 9 elsewhere). So a value cannot be reconstructed later; it can

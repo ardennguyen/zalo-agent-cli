@@ -239,7 +239,7 @@ describe("downloadSyncedMedia — happy path", () => {
         assert.deepEqual(plainOf(saved.localPath, dir, saved.msgId), PHOTO_BYTES);
     });
 
-    it("fetches a JPEG XL photo as its JPEG twin, the way Zalo Web does without JPEG XL (bug-reports #8)", async () => {
+    it("fetches a JPEG XL photo as its JPEG twin, as Zalo does for a client without JPEG XL (bug-reports #8)", async () => {
         const id = row({}, [photo("/jxl/9/abc.jxl?jxlstatus=1")]);
         const stats = await downloadSyncedMedia({ accountDir: dir, limit: 10 });
         assert.equal(stats.downloaded, 1);
@@ -321,7 +321,7 @@ describe("downloadSyncedMedia — happy path", () => {
         assert.equal(hits["/ok.jpg"], 1);
     });
 
-    it("downloads in the account's own identity: its User-Agent and the Web client's Referer, no cookie", async () => {
+    it("downloads in the account's own identity: its User-Agent and the expected Referer, no cookie", async () => {
         heads = [];
         row({}, [photo("/ok.jpg")]);
         const api = { getContext: () => ({ userAgent: "Test-UA/1.0", options: {} }) };
@@ -340,7 +340,7 @@ describe("downloadSyncedMedia — happy path", () => {
         assert.equal(stats.downloaded, 8);
     });
 
-    it("fetches two at a time unless told otherwise, as Zalo Web does", async () => {
+    it("fetches two at a time unless told otherwise", async () => {
         for (let i = 0; i < 6; i++) row({}, [photo("/slow.jpg")]);
         let live = 0;
         let peak = 0;

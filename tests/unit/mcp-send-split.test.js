@@ -1,5 +1,5 @@
 /**
- * `zalo_send_message` of a text Zalo would refuse as one message: it goes out as several, the way Zalo Web sends it.
+ * `zalo_send_message` of a text Zalo would refuse as one message: it goes out as several, the way Zalo splits it.
  *
  * Measured live (2026-10-29): plain text past 3000 UTF-16 units is refused with 114 ("Tham số không hợp lệ"), and a
  * styled message past roughly 3.1 KB of text plus style JSON with 112 ("Lỗi không xác định"). An agent's Markdown

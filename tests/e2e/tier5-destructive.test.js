@@ -30,7 +30,7 @@
  *       purge code works without costing a QR re-scan.
  *
  *   5e  real logout / real purge         ZALO_TEST_END_SESSION=1
- *       Runs the server logout (Zalo Web's six sign-out calls, then one try
+ *       Runs the server logout (the six sign-out calls, then one try
  *       of the saved login) and deletes the credentials. NOTHING RESTORES
  *       THIS: the account needs a QR re-scan on the phone. (Before v3.0 the
  *       calls ended only this device's session key, measured 2026-09-30;

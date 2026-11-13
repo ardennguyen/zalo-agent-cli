@@ -5,21 +5,21 @@
 # zalo-agent-cli
 
 Công cụ CLI tự động hóa Zalo — đa tài khoản, proxy, chuyển khoản ngân hàng, thanh toán QR, Official Account API v3.0, và MCP server cho AI agent.
-Engine do dự án tự viết theo giao thức mà Zalo Web dùng (từ 3.0, không còn zca-js): mỗi request được dựng như Zalo Web dựng, và engine theo sát giao thức Zalo Web hiện hành nên không phải chờ một thư viện bên thứ ba cập nhật.
+Engine do dự án tự viết theo giao thức của Zalo (từ 3.0, không còn zca-js): mỗi request được dựng đúng định dạng Zalo yêu cầu, và engine theo sát giao thức hiện hành nên không phải chờ một thư viện bên thứ ba cập nhật.
 
 [![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc-sa/4.0/)
 
 **[Tiếng Việt](#bắt-đầu-nhanh)** | **[English](#english)**
 
 > [!WARNING]
-> Tool này sử dụng API Zalo **không chính thức** (giao thức của Zalo Web, không có tài liệu công khai). Zalo không hỗ trợ và **tài khoản của bạn có thể bị khóa hoặc ban**. Tự chịu trách nhiệm. Không liên kết với Zalo hay VNG. Xem [DISCLAIMER.md](DISCLAIMER.md).
+> Tool này sử dụng API Zalo **không chính thức** (giao thức riêng của Zalo, không có tài liệu công khai). Zalo không hỗ trợ và **tài khoản của bạn có thể bị khóa hoặc ban**. Tự chịu trách nhiệm. Không liên kết với Zalo hay VNG. Xem [DISCLAIMER.md](DISCLAIMER.md).
 
 > [!IMPORTANT]
 > **Zalo chỉ giữ một phiên đăng nhập web cho mỗi tài khoản — CLI (và server) này chính là phiên đó.**
-> Quét QR đăng nhập Zalo Web ở nơi khác sẽ đăng xuất server ngay ở phía Zalo, kể cả khi không có tiến trình
+> Quét QR đăng nhập Zalo trên trình duyệt ở nơi khác sẽ đăng xuất server ngay ở phía Zalo, kể cả khi không có tiến trình
 > nào đang chạy: daemon đang chạy chuyển sang `signed_out` và chờ bạn thêm lại tài khoản bằng QR. Ngược lại,
-> `zalo-agent login` đăng xuất Zalo Web. **Ứng dụng điện thoại và Zalo PC là các phiên riêng, chạy song song với
-> server được** — muốn xem tin nhắn bên cạnh server thì dùng hai ứng dụng này, đừng dùng Zalo Web.
+> `zalo-agent login` đăng xuất Zalo trên trình duyệt. **Ứng dụng điện thoại và ứng dụng Zalo trên máy tính là các phiên
+> riêng, chạy song song với server được** — muốn xem tin nhắn bên cạnh server thì dùng hai ứng dụng này, đừng dùng trình duyệt.
 > Mỗi lần đăng nhập QR, điện thoại hiện thêm một mục trong danh sách thiết bị (các mục cũ của server bị đăng xuất),
 > nhưng hàng đợi tin nhắn offline vẫn còn, vì CLI giữ nguyên mã thiết bị của tài khoản khi đăng nhập lại.
 > Lệnh `oa` là ngoại lệ — chúng dùng **API chính thức** của Zalo OA, không có rủi ro ban.
@@ -81,8 +81,8 @@ Muốn cài kèm MCP server dạng sandbox (khuyến nghị cho AI client) → x
 - **MCP:** các thao tác tương ứng cần `confirm: true`; `confirmMode` của từng triển khai quyết định ai xác nhận (`agent` mặc định, `human` hỏi người dùng qua MCP elicitation hoặc một trang duyệt dùng một lần, `off`). Mỗi id có một tên: `msgId` (không còn `id`/`messageId`), `userId` (không còn `uid`); `threadType` là `"dm"` hoặc `"group"`; mọi id là chuỗi. Các tool mới, `zalo_friend`, `zalo_group` và `zalo_send_message` từ chối tham số không nhận.
 - **Hiện diện on-demand là mặc định** của `mcp start --http` và `listen --daemon`: socket chỉ mở khi có việc và tạm nghỉ sau 5 phút rảnh; tin đến lúc nghỉ được lấy lại từ hàng đợi offline của Zalo ở lần kết nối sau (`catchUp: true`). Cần webhook thời gian thực thì đặt `presence.mode: "always-on"`. MCP qua stdio và `listen` chạy foreground vẫn luôn kết nối.
 - **Daemon on-demand bị phiên khác chiếm tài khoản thì nhường (`yielded`)** thay vì thoát: mọi yêu cầu bị từ chối với `YIELDED` cho tới khi bạn chạy `zalo-agent presence resume --yes`. Chế độ always-on vẫn thoát với mã 3.
-- **Bị Zalo từ chối đăng nhập (ví dụ vì ai đó đăng nhập Zalo Web) thì daemon vẫn chạy ở trạng thái `signed_out`** và chờ thêm lại tài khoản bằng QR, không còn thoát với mã 4; muốn giữ mã 4 thì đặt `ZALO_EXIT_ON_SIGNED_OUT=1`.
-- **Rời nhóm (hoặc bị xóa, bị chặn, nhóm bị giải tán) thì lịch sử nhóm trên máy bị xóa**, như Zalo Web và PC; `groups.onLeave: "keep"` giữ lại.
+- **Bị Zalo từ chối đăng nhập (ví dụ vì ai đó đăng nhập Zalo trên trình duyệt) thì daemon vẫn chạy ở trạng thái `signed_out`** và chờ thêm lại tài khoản bằng QR, không còn thoát với mã 4; muốn giữ mã 4 thì đặt `ZALO_EXIT_ON_SIGNED_OUT=1`.
+- **Rời nhóm (hoặc bị xóa, bị chặn, nhóm bị giải tán) thì lịch sử nhóm trên máy bị xóa**, như ứng dụng Zalo; `groups.onLeave: "keep"` giữ lại.
 - **`senderName` giờ ưu tiên tên gợi nhớ (alias)** mà chủ tài khoản đặt; tên Zalo gốc nằm ở `senderZaloName`.
 - **`ZALO_QR_FLOW=legacy` đã bị bỏ** — xóa khỏi môi trường hoặc `.env`.
 - **`logout` đăng xuất thiết bị** ở phía Zalo; `--keep-session` giữ cách cũ.
@@ -146,8 +146,8 @@ Tất cả lệnh hỗ trợ `--json`. Tài liệu đầy đủ: **[Wiki](https:
 | `reminder` | 6 | Tạo, sửa, xóa nhắc nhở | [Nhắc nhở](https://github.com/ardennguyen/zalo-agent-cli/wiki/Nh%E1%BA%AFc-Nh%E1%BB%9F) |
 | `auto-reply` | 4 | Quản lý trả lời tự động | [Trả lời tự động](https://github.com/ardennguyen/zalo-agent-cli/wiki/Tr%E1%BA%A3-L%E1%BB%9Di-T%E1%BB%B1-%C4%90%E1%BB%99ng) |
 | `quick-msg` | 6 | Tin nhắn nhanh đã lưu, bật/tắt tính năng | [Tin nhắn nhanh](https://github.com/ardennguyen/zalo-agent-cli/wiki/Tin-Nh%E1%BA%AFn-Nhanh) |
-| `read` | 2 | Các endpoint chỉ-đọc của Zalo Web chưa có lệnh riêng: sticker, GIF, hạng hồ sơ, danh sách chặn, biệt danh… (chỉ đọc, không thay đổi gì) | [Tham chiếu lệnh](skill/references/command-reference.md) |
-| `write` | 2 | Các endpoint thay đổi trạng thái của Zalo Web chưa có lệnh riêng: ghim, RSVP nhắc hẹn, thu hồi nhiều tin… (`--dry-run` để xem yêu cầu, `--yes` mới gửi thật) | [Tham chiếu lệnh](skill/references/command-reference.md) |
+| `read` | 2 | Các endpoint chỉ-đọc của Zalo chưa có lệnh riêng: sticker, GIF, hạng hồ sơ, danh sách chặn, biệt danh… (chỉ đọc, không thay đổi gì) | [Tham chiếu lệnh](skill/references/command-reference.md) |
+| `write` | 2 | Các endpoint thay đổi trạng thái của Zalo chưa có lệnh riêng: ghim, RSVP nhắc hẹn, thu hồi nhiều tin… (`--dry-run` để xem yêu cầu, `--yes` mới gửi thật) | [Tham chiếu lệnh](skill/references/command-reference.md) |
 | `label` | 2 | Nhãn hội thoại | [Nhãn](https://github.com/ardennguyen/zalo-agent-cli/wiki/Nh%C3%A3n) |
 | `catalog` | 11 | zBusiness — danh mục sản phẩm | [zBusiness](https://github.com/ardennguyen/zalo-agent-cli/wiki/zBusiness) |
 | `bank` | 5 | Tài khoản ngân hàng đã lưu, danh sách ngân hàng được hỗ trợ | [Ngân hàng](https://github.com/ardennguyen/zalo-agent-cli/wiki/Ng%C3%A2n-H%C3%A0ng) |
@@ -177,8 +177,8 @@ Xem thêm: [Đa tài khoản & Proxy](https://github.com/ardennguyen/zalo-agent-
 - **Hạn mức dung lượng kiểu zCloud** — vượt hạn mức vẫn lưu tiếp, gửi sự kiện `storage_quota` (webhook, `listen`, MCP) và chỉ xóa (media cũ trước) sau **45 ngày** ân hạn; quy tắc thời hạn lưu `retention.*`; `db usage`, `db purge`, `fleet purge` cho timer
 - **Xuất dữ liệu cho CRM** — `POST /zalo/admin/export/<ownId>` tạo file xuất mã hóa bằng mật khẩu của người dùng (hoặc plaintext khi xác nhận) qua link tải có hạn; chat ẩn chỉ có khi chủ tài khoản nhập PIN trên trang bảo mật. CLI: `db export --password`
 - **Trang duyệt dùng một lần** cho `confirmMode: "human"` và PIN chat ẩn, link media có hạn (`inline` / `link` / `tempfile`), tất cả dựng từ một địa chỉ công khai `publicUrl`
-- **Tên gợi nhớ (alias) trước tiên ở mọi nơi** — mọi output gọi một người theo tên chủ tài khoản đặt cho họ, như Zalo Web và PC (`senderAlias`, `senderZaloName` đi kèm); đổi alias trên thiết bị nào cũng tới daemon trong vài giây (log của daemon ghi `aliases: N changed`)
-- **Rời nhóm thì xóa lịch sử nhóm trên máy**, như Zalo Web và PC (sự kiện `group_gone`); `groups.onLeave: "keep"` giữ lại
+- **Tên gợi nhớ (alias) trước tiên ở mọi nơi** — mọi output gọi một người theo tên chủ tài khoản đặt cho họ, như ứng dụng Zalo (`senderAlias`, `senderZaloName` đi kèm); đổi alias trên thiết bị nào cũng tới daemon trong vài giây (log của daemon ghi `aliases: N changed`)
+- **Rời nhóm thì xóa lịch sử nhóm trên máy**, như ứng dụng Zalo (sự kiện `group_gone`); `groups.onLeave: "keep"` giữ lại
 - **Bộ nhớ đệm cục bộ (SQLite mã hóa)** — `listen` ghi mọi tin nhắn vào `zalo.db`, `msg history` đọc từ cache, `sync` (hoặc `sync-mobile`) khôi phục toàn bộ lịch sử từ điện thoại vào `zalo.db` (giải mã transfer-sync-v2; xác nhận một lần trên điện thoại), mặc định lấy **toàn bộ** lịch sử (không còn mốc chặn 2024-01-01); thêm `--days <n>` hoặc `--from <YYYY-MM-DD>` nếu chỉ cần một khoảng. Dọn dẹp: `sync-media --prune <days|all>` giải phóng dung lượng nhưng giữ nguyên nội dung tin nhắn, `--prune-orphans` nhắm vào hội thoại tài khoản không còn, và `conv forget` xoá hẳn bản sao cục bộ của một hội thoại — không cái nào gửi gì tới Zalo. Luồng đồng bộ chỉ mang **liên kết** media chứ không mang file, nên sau khi lưu tin nhắn, `sync-mobile` **tự động tải media về** (thêm `--messages-only` nếu chỉ muốn tin nhắn); `sync-media` chạy lại/tiếp tục bước tải này, không cần xác nhận trên điện thoại. Ghi chú, tin ghim, bình chọn và nhắc hẹn nằm ngoài luồng tin nhắn — dùng `sync-boards`
 - Tự động tải media (ảnh/audio/video) — một downloader duy nhất cho `listen`, `msg history`, `mcp start` và các lệnh sync, lưu vào `~/.zalo-agent-cli/accounts/<id>/media/<threadId>/` (hoặc tách riêng credentials, database `zalo.db`, media và OA sang các ổ đĩa/mount khác nhau qua `--credentials-dir`, `--data-dir`, `--media-dir`, `--oa-dir` / biến môi trường `ZALO_*_DIR` trong `~/.zalo-agent-cli/.env`; nếu dùng kèm `zalo-mcp`, chỉ nên giữ cấu hình PORT trong `zalo-mcp/.env` và đặt toàn bộ đường dẫn lưu trữ vào `<CONFIG_DIR>/.env`)
 - Thẻ chuyển khoản (55+ ngân hàng VN) & QR VietQR
@@ -227,14 +227,14 @@ zalo-agent-cli © 2026 Arden Nguyen Duc Huy được cấp phép theo [CC BY-NC-
 ## English
 
 CLI tool for Zalo automation — multi-account, proxy support, bank transfers, QR payments, Official Account API v3.0, and an MCP server for AI agents.
-Its engine is this project's own implementation of the protocol Zalo Web uses (since 3.0, no zca-js): requests are built the way Zalo Web builds them, and the engine tracks the current Zalo Web protocol instead of waiting for a third-party library.
+Its engine is this project's own implementation of Zalo's protocol (since 3.0, no zca-js): requests are built in the wire format Zalo expects, and the engine tracks the current protocol instead of waiting for a third-party library.
 
 > [!IMPORTANT]
 > **Zalo keeps one web login per account — this CLI (and its server) is that login.**
-> A QR login into Zalo Web anywhere else signs the server out at Zalo, instantly, even with nothing
+> A QR login into Zalo in a browser anywhere else signs the server out at Zalo, instantly, even with nothing
 > running: a running daemon goes `signed_out` and waits for the account to be added again by QR. The
-> reverse is also true: `zalo-agent login` signs Zalo Web out. **The phone app and Zalo PC are separate
-> logins that run beside the server** — use them to read along, never Zalo Web.
+> reverse is also true: `zalo-agent login` signs Zalo in the browser out. **The phone app and the Zalo desktop app
+> are separate logins that run beside the server** — use them to read along, never a browser.
 > Each QR login adds a new entry to the phone's device list (the server's older entries show as logged
 > out), but Zalo's offline queue survives, because the CLI keeps the account's device id across re-logins.
 
@@ -299,8 +299,8 @@ For the sandboxed MCP-server install (recommended for AI clients), see [INSTALLA
 - **MCP:** the matching actions need `confirm: true`; each deployment's `confirmMode` decides who confirms (`agent` by default, `human` asks the user through MCP elicitation or a one-time approve page, `off`). Every id has one name: `msgId` (not `id`/`messageId`), `userId` (not `uid`); `threadType` is `"dm"` or `"group"`; every id is a string. The new tools, `zalo_friend`, `zalo_group` and `zalo_send_message` refuse an input they do not take.
 - **On-demand presence is the default** for `mcp start --http` and `listen --daemon`: the socket opens only while there is work and parks after 5 idle minutes; what arrives meanwhile comes back from Zalo's offline queue on the next connect (`catchUp: true`). For real-time webhooks set `presence.mode: "always-on"`. stdio MCP and a foreground `listen` stay connected.
 - **An on-demand daemon whose account another session takes yields** (`yielded`) instead of exiting: every request is refused with `YIELDED` until you run `zalo-agent presence resume --yes`. Always-on still exits 3.
-- **A login Zalo keeps refusing (for example after a Zalo Web login) leaves the daemon up, `signed_out`**, waiting for the account to be added again by QR, instead of exiting 4; `ZALO_EXIT_ON_SIGNED_OUT=1` keeps exit 4.
-- **Leaving a group (or being removed or blocked, or a disband) deletes the group's local history**, as Zalo Web and PC do; `groups.onLeave: "keep"` keeps it.
+- **A login Zalo keeps refusing (for example after a Zalo login in a browser) leaves the daemon up, `signed_out`**, waiting for the account to be added again by QR, instead of exiting 4; `ZALO_EXIT_ON_SIGNED_OUT=1` keeps exit 4.
+- **Leaving a group (or being removed or blocked, or a disband) deletes the group's local history**, as Zalo's own apps do; `groups.onLeave: "keep"` keeps it.
 - **`senderName` is now alias first** (the name the account owner set); the Zalo name itself is `senderZaloName`.
 - **`ZALO_QR_FLOW=legacy` is removed** — take it out of your environment or `.env`.
 - **`logout` signs the device out** at Zalo; `--keep-session` keeps the old behavior.
@@ -326,8 +326,8 @@ Full docs: **[Wiki](https://github.com/ardennguyen/zalo-agent-cli/wiki)** · [Fu
 | `reminder` | 6 | Create, edit, remove reminders | [Reminders](https://github.com/ardennguyen/zalo-agent-cli/wiki/Reminders) |
 | `auto-reply` | 4 | Auto-reply rules | [Auto-Reply](https://github.com/ardennguyen/zalo-agent-cli/wiki/Auto-Reply) |
 | `quick-msg` | 6 | Saved quick messages, the feature's on/off switch | [Quick Messages](https://github.com/ardennguyen/zalo-agent-cli/wiki/Quick-Messages) |
-| `read` | 2 | Zalo Web's read-only endpoints with no command of their own: stickers, GIFs, profile rank, block list, nicknames… (reads only, changes nothing) | [Command reference](skill/references/command-reference.md) |
-| `write` | 2 | Zalo Web's state-changing endpoints with no command of their own: pins, reminder RSVP, multi-recall… (`--dry-run` shows the request, `--yes` sends it) | [Command reference](skill/references/command-reference.md) |
+| `read` | 2 | Zalo's read-only endpoints with no command of their own: stickers, GIFs, profile rank, block list, nicknames… (reads only, changes nothing) | [Command reference](skill/references/command-reference.md) |
+| `write` | 2 | Zalo's state-changing endpoints with no command of their own: pins, reminder RSVP, multi-recall… (`--dry-run` shows the request, `--yes` sends it) | [Command reference](skill/references/command-reference.md) |
 | `label` | 2 | Conversation labels | [Labels](https://github.com/ardennguyen/zalo-agent-cli/wiki/Labels) |
 | `catalog` | 11 | zBusiness catalogs & products | [Catalog](https://github.com/ardennguyen/zalo-agent-cli/wiki/Catalog) |
 | `bank` | 5 | Saved bank accounts, supported banks | [Bank](https://github.com/ardennguyen/zalo-agent-cli/wiki/Bank) |
@@ -355,8 +355,8 @@ See also: [Multi-Account & Proxy](https://github.com/ardennguyen/zalo-agent-cli/
 - **Storage quotas, the zCloud way** — over a limit, caching goes on, `storage_quota` events go out (webhook, `listen`, MCP), and only after a **45-day** grace period is anything deleted (oldest media first); `retention.*` rules; `db usage`, `db purge`, `fleet purge` for a timer
 - **Export for a CRM** — `POST /zalo/admin/export/<ownId>` builds an export encrypted under the user's password (or plaintext when confirmed) behind an expiring download link; hidden chats only when the owner types the PIN on the secure page. CLI: `db export --password`
 - **One-time approve pages** for `confirmMode: "human"` and the hidden-chat PIN, expiring media links (`inline` / `link` / `tempfile`), all built from one public address, `publicUrl`
-- **Alias first, everywhere** — every output names a person by the alias the account owner set, as Zalo Web and PC do (`senderAlias`, `senderZaloName` beside it); an alias changed on any device reaches the daemon within seconds (the daemon log says `aliases: N changed`)
-- **Leaving a group deletes its local history**, as Zalo Web and PC do (a `group_gone` event); `groups.onLeave: "keep"` keeps it
+- **Alias first, everywhere** — every output names a person by the alias the account owner set, as Zalo's own apps do (`senderAlias`, `senderZaloName` beside it); an alias changed on any device reaches the daemon within seconds (the daemon log says `aliases: N changed`)
+- **Leaving a group deletes its local history**, as Zalo's own apps do (a `group_gone` event); `groups.onLeave: "keep"` keeps it
 - **Local encrypted SQLite cache** — `listen` writes every message to `zalo.db`, `msg history` reads from it, and `sync` (or `sync-mobile`) restores full history from the phone into `zalo.db` (transfer-sync-v2 decrypt; one confirmation on the phone), defaulting to **all** history (the old 2024-01-01 floor is gone), with `--days <n>` or `--from <YYYY-MM-DD>` to narrow it. Housekeeping: `sync-media --prune <days|all>` reclaims disk while keeping message text, `--prune-orphans` targets conversations the account no longer has, and `conv forget` removes a conversation's local copy entirely — none of which contact Zalo. The sync stream carries media **links**, not files, so a `sync-mobile` run **downloads its attachments automatically** once the messages are stored (`--messages-only` skips it); `sync-media` re-runs or resumes that fetch on its own, with no phone confirmation. Notes, pinned messages, polls and reminders live outside the message stream — `sync-boards` fetches those
 - Automatic media download — one downloader shared by `listen`, `msg history`, `mcp start` and the sync commands, saving to `~/.zalo-agent-cli/accounts/<id>/media/<threadId>/` (or separate credentials, `zalo.db`, media, and OA credentials onto independent volumes/mounts via `--credentials-dir`, `--data-dir`, `--media-dir`, `--oa-dir` / `ZALO_*_DIR` in `~/.zalo-agent-cli/.env`; when using `zalo-mcp`, keep `zalo-mcp/.env` for PORT settings only and place all storage/engine settings in `<CONFIG_DIR>/.env`)
 - Bank cards (55+ VN banks) and VietQR payment images

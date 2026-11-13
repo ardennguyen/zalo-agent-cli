@@ -52,7 +52,7 @@ export class ThreadNameCache {
                 const batch = groupIds.slice(i, i + batchSize);
                 try {
                     const info = await api.getGroupInfo(batch);
-                    // Disbanded: the group fetch lists it in removedsGroup (Zalo Web's version-map rule).
+                    // Disbanded: the group fetch lists it in removedsGroup (Zalo's version-map rule).
                     if (ownId && info?.removedsGroup?.length) {
                         for (const e of await noteGroupInfo({ ownId, result: info, groupIds: batch }))
                             this._cache.delete(e.threadId);
@@ -63,7 +63,7 @@ export class ThreadNameCache {
                             name: g.name || "?",
                             type: "group",
                             memberCount: g.totalMember || 0,
-                            // A group recall sends it, as Zalo Web's does (src/zalo/custom/group-visibility.js).
+                            // A group recall sends it, as Zalo's does (src/zalo/custom/group-visibility.js).
                             ...(g.visibility !== undefined && g.visibility !== null && { visibility: g.visibility }),
                         });
                         groupCount++;

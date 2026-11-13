@@ -3,14 +3,11 @@
  *
  * `group history`, `msg history -t 1` and `conv delete`'s anchor lookup all
  * called the previous engine getGroupChatHistory, which asks {group}/api/group/history --
- * an endpoint Zalo answers with 404. Zalo Web reads a group's history from the
+ * an endpoint Zalo answers with 404. A group's history is read from the
  * cloud-message store instead:
  *
  *   GET {group_cloud_message}/api/cm/getrecentv2?nretry=0
  *       params = AES({groupId, globalMsgId, count, msgIds, imei, src})
- *
- * (agent/work/zalo-web-capture-2026-09-29: the capture's comparison notes §3e and
- * §5.30, FINDINGS.md §13; the web client's own getCM in bundle 1 @11028626.)
  *
  * Each test runs the real command, in-process, on a real session whose
  * transport is ./fake-zalo-session.js, then asserts what went out on the wire
@@ -32,7 +29,7 @@ import { FAKE, installFakeZalo, loginFake, runCommand, serviceHost } from "./fak
 
 const GID = "7000000000000000001";
 const MEMBER = "2000000000000000002";
-/** Zalo Web's MessageConstants.MAX_MSG_ID, (BigInt(2) ** BigInt(63)).toString(). */
+/** Zalo's newest-message id, (BigInt(2) ** BigInt(63)).toString(). */
 const NEWEST = "9223372036854775808";
 
 /** One group message row in the socket/cloud shape (see live/socket.L1_group_echo.json). */
@@ -74,7 +71,7 @@ function cloudPage(groupMsgs, extra = {}) {
     });
 }
 
-/** Assert the one request the web makes when a group is opened. */
+/** Assert the one request made when a group is opened. */
 function assertNewestPageRequest(req) {
     assert.ok(req, "no request reached the cloud-message store");
     assert.equal(req.method, "GET");
@@ -174,9 +171,9 @@ describe("group history commands read Zalo's cloud-message store", () => {
     });
 
     it("msg history -t 1 still scans the socket when the store has nothing", async () => {
-        // An empty cloud page does not prove an empty group: Zalo Web gates
-        // cloud history on server config (cloud.enable and a flag per load
-        // kind, `apiEnable` in its bundle), so the old socket fallback stays.
+        // An empty cloud page does not prove an empty group: cloud history is
+        // gated on server config (cloud.enable and a flag per load
+        // kind, `apiEnable`), so the old socket fallback stays.
         // The harness refuses the socket, which is how this proves the
         // fallback was attempted.
         fake.route("/api/cm/getrecentv2", () => cloudPage([]));

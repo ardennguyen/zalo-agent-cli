@@ -39,7 +39,7 @@ describe("non-friend name refresh (refreshProfiles)", () => {
     it("asks for every uid, in requests of 500, one after another", async () => {
         const api = profileApi();
         const res = await refreshProfiles(api, uids(1203), { stateFile, gapMs: 0 });
-        // Red if a cap comes back (fewer than 1203 asked) or the chunk size drifts from Zalo PC's 500.
+        // Red if a cap comes back (fewer than 1203 asked) or the chunk size drifts from 500.
         assert.equal(PROFILE_CHUNK_SIZE, 500);
         assert.deepEqual(
             api.calls.map((c) => c.length),

@@ -390,7 +390,7 @@ export function registerMCPCommands(program) {
         )
         .option(
             "--no-self-heal",
-            "Do not pull what a dropped socket missed from Zalo's offline queue on reconnect (the default does, as Zalo Web does, on this socket and with no phone tap)",
+            "Do not pull what a dropped socket missed from Zalo's offline queue on reconnect (the default does, as Zalo does, on this socket and with no phone tap)",
         )
         .option(
             "--log-level <level>",
@@ -1537,7 +1537,7 @@ export function registerMCPCommands(program) {
                 api.listener.on("group_event", (event) => {
                     noteBoardChange(event);
                     // Same call as `listen`: our uid tells being removed from removing someone else. A gone group's
-                    // later events are skipped until a join names us (Zalo Web's ZGroupLeaveCache).
+                    // later events are skipped until a join names us (as Zalo does).
                     const gone = storeGroupEvent(event, { ownId: activeAcc.ownId });
                     if (gone.ignored) return;
                     if (gone.gone) {

@@ -50,7 +50,7 @@ Two separate API surfaces live in one binary, and **must never be conflated**:
 
 | Surface | API | Credentials | Risk |
 |---|---|---|---|
-| Personal (`msg`, `friend`, `group`, `listen`, `mcp`, …) | **Unofficial** (own protocol layer, from Zalo Web's wire format), QR login | `~/.zalo-agent-cli/` | Account can be banned |
+| Personal (`msg`, `friend`, `group`, `listen`, `mcp`, …) | **Unofficial** (own protocol layer, from Zalo's wire format), QR login | `~/.zalo-agent-cli/` | Account can be banned |
 | Official Account (`oa …`) | **Official** Zalo OA REST v3.0, OAuth 2.0 | `~/.zalo-agent/` (no `-cli`) | None — sanctioned |
 
 One parent folder (locally `F:/Coding/zalo-mcp/`, its `README.md` is the map): **`zalo-agent-cli`** (this repo, the engine), **`zalo-mcp`** (thin wrapper, no engine code, pins a *published* version — §13), **`zalo-agent-cli-wiki`** (public wiki, EN + VN pairs). Live account state lives **outside** the workspace (`F:/zalo-live-state/`) — never copy from it.
@@ -201,7 +201,7 @@ Full checklist, including the wrapper and wiki steps after an engine release: **
 
 ### Numbers quoted across many docs
 
-CLI commands (**259**), command groups (**31** containers), MCP tools (**36**), OA commands (**32**), offline tests (**5952** as of 2026-11-13). Changing the code behind one means changing every doc that quotes it. **Re-measure with `node scripts/count-surface.mjs`; never trust a written number** — method and pitfalls: [`docs/agent-notes.md`](docs/agent-notes.md).
+CLI commands (**259**), command groups (**31** containers), MCP tools (**36**), OA commands (**32**), offline tests (**5954** as of 2026-11-13). Changing the code behind one means changing every doc that quotes it. **Re-measure with `node scripts/count-surface.mjs`; never trust a written number** — method and pitfalls: [`docs/agent-notes.md`](docs/agent-notes.md).
 
 **Every MCP tool list must match `src/mcp/mcp-tools.js`**: `zalo_get_messages`, `zalo_send_message`, `zalo_list_threads`, `zalo_search_threads`, `zalo_mark_read`, `zalo_get_history`, `zalo_view_media`, `zalo_react`, `zalo_undo`, `zalo_get_group_members`, `zalo_list_conversations`, `zalo_coverage`, `zalo_sync`, `zalo_sync_status`, `zalo_search_messages`, `zalo_lookup_user`, `zalo_forward_message`, `zalo_delete_message`, `zalo_reminder`, `zalo_note`, `zalo_poll`, `zalo_wait_for_message`, `zalo_label`, `zalo_friend`, `zalo_group`, `zalo_read`, `zalo_write`, `zalo_conversation`, `zalo_profile`, `zalo_auto_reply`, `zalo_quick_message`, `zalo_catalog`, `zalo_bank`, `zalo_cloud`, `zalo_sticker`, `zalo_link`.
 
@@ -260,11 +260,11 @@ Every entry here has its diagnosis, measurements and recovery steps in [`docs/ag
 - **MCP names are one vocabulary.** One concept, one name in every tool input and reply (`msgId`, `userId`, `senderId`, `threadId`, `cliMsgId`); the table is in `docs/agent-notes.md`, `tests/unit/mcp-naming.test.js` enforces it.
 - **Never run `zalo-agent login` from an elevated shell**: admin-owned credentials make `logout --purge` and `account remove` fail with `EPERM`.
 - **A kick is terminal, and the socket supervisor owns every retry.** `src/zalo/socket.js` and `src/core/socket-host.js` keep the socket by Zalo's own table; a duplicate session exits 3 (leaving `kicked.json`) or, on-demand, yields until `presence resume`; a refused login stays up signed out. Add no reconnect loop, take-back or restart on those codes.
-- **`src/zalo/` is the whole protocol layer** (kernel, endpoint modules, listener), written from Zalo Web's wire format: a request must match what Zalo Web sends, and a deliberate difference is an `allow` row with its reason (`tests/helpers/wire-diff/`). Zalo's own Web/PC code is a comparison oracle: read it, never run or copy it.
+- **`src/zalo/` is the whole protocol layer** (kernel, endpoint modules, listener), written to Zalo's wire format: a request must match it, and a deliberate difference is an `allow` row with its reason (`tests/helpers/wire-diff/`). Zalo's own client code is a comparison reference: read it, never run or copy it (private notes: `agent/docs/`).
 - **Honest identity.** What identifies this client (version, type 30, device label, headers) lives only in `src/zalo/profile.js` (D3, D4).
-- **Capture findings stay local** (D11): HARs, bundles and probe output live in `agent/`; tests use hand-written shapes.
+- **Capture findings stay local** (D11): HARs, client code, probe output live in `agent/`; tests use hand-written shapes.
 - **Line endings are pinned by `.gitattributes`** (`tests/fixtures/** -text`, else LF). **Never fix a mangled fixture with `git add --renormalize .` or a broad `git add`**: it stages the corruption.
-- **One WebSocket per account — including uploads, `sync` and history scans.** `listen`, `mcp start` and a browser Zalo Web session cannot coexist; a duplicate closes with code 3000. A running daemon publishes `daemon-channel.json` and serves uploads, sync stages and history on its own socket. **Never add a code path that opens a second listener without checking that file first** — `tests/unit/sync-socket-rules.test.js` and `listener-lifecycle-rules.test.js` enforce parts of this.
+- **One WebSocket per account — including uploads, `sync` and history scans.** `listen`, `mcp start` and a browser Zalo session cannot coexist; a duplicate closes with code 3000. A running daemon publishes `daemon-channel.json` and serves uploads, sync stages and history on its own socket. **Never add a code path that opens a second listener without checking that file first** — `tests/unit/sync-socket-rules.test.js` and `listener-lifecycle-rules.test.js` enforce parts of this.
   - **Keep `src/core/daemon-channel.js` a transport** — stage bodies belong in `daemon-sync.js`, or the whole SyncV2 stack loads on every `msg` invocation.
   - **A daemon-routed sync still taps the phone.** Routing removes the second WebSocket, not the confirmation. The daemon must never start a phone-backed stage on its own.
 - **`listen` and `mcp start` are two entry points to the same socket. Any asymmetry between them is a defect.** Both track coverage gaps through `src/core/listener-lifecycle.js` and self-heal them (`src/core/self-heal.js`); down-ness is observed, never inferred from a counter, and a deliberate stop is not a drop.

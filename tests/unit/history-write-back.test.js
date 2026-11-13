@@ -1,12 +1,10 @@
 /**
  * `msg history` writes what it fetched into zalo.db -- insert-if-absent.
  *
- * Arden's rule (2026-09-30): msg history may cache fetched history if Zalo
- * Web does, and it does. Zalo Web writes getrecentv2/getoldv2 rows into the
- * same local message table as live messages, through the same writer
- * (ZStorage.setMessage -> Core.Message.insertMulti), but only rows it does not
- * already hold, and with replace:false -- a stored row is never overwritten
- * (findMsgsAddDb / addMessageAndUpdateConvDb in its bundle).
+ * Arden's rule (2026-09-30): msg history may cache fetched history if Zalo's
+ * own apps do, and they do: getrecentv2/getoldv2 rows go into the
+ * same local message table as live messages, through the same writer,
+ * but only rows not already held -- a stored row is never overwritten.
  *
  * So both fetch paths -- the cloud-message store and the socket scan -- go
  * through one write-back that inserts a row only when its msgId is new. A row

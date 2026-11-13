@@ -1,10 +1,10 @@
 /**
- * Zalo Web's own logout, call for call (plan items L13a-c and X1).
+ * Zalo's own logout, call for call (plan items L13a-c and X1).
  *
  * Ending the session key is not the same as signing a device out. Until now `logout` sent the production
  * `GET api/login/logOut` and the staging `logoutV2`; both end only the key this process holds. The saved
  * login (the cookie) kept working, and the phone kept listing the device (measured 2026-09-30). The official
- * client signs out in six steps, observed in the captures and proven on a test account, where the saved
+ * client signs out in six steps, proven on a test account, where the saved
  * cookie was rejected afterwards:
  *
  *  1. `POST id.zalo.me/jr/logout-token`, form `continue`: answers a one-time token.
@@ -17,7 +17,7 @@
  *  6. `GET id.zalo.me/account?continue=...`: the login page the browser lands on.
  *
  * The same six steps run whether local data is kept or deleted: that choice is local. The production
- * `GET logOut` is not part of them; the official client never sends it.
+ * `GET logOut` is not part of them; Zalo's own app never sends it.
  *
  * A step that fails does not stop the ones that can still run (the key can be ended without the token, and
  * the token is useless without the key). Steps 4 and 5 need what step 1 and 4 return. What each step did is
@@ -67,10 +67,10 @@ async function send(ctx, url, init) {
 }
 
 /**
- * The request that ends the session key (`POST stg-wpa.chat.zalo.me/api/v2/login/logOut`), as Zalo Web sends it
- * (`logoutV2`, `1.c72c0957b455ab70b73c.js` @11580968): `params` sealed with the session key, `{time (unix seconds),
- * imei, computer_name, language}`, `language` being the session's ("vi" when it has none, the Web's default). The
- * Web's optional `compId` is never sent: it names a company account this client does not have.
+ * The request that ends the session key (`POST stg-wpa.chat.zalo.me/api/v2/login/logOut`), as the server expects
+ * it: `params` sealed with the session key, `{time (unix seconds), imei, computer_name, language}`, `language`
+ * being the session's ("vi" when it has none, the default). The optional `compId` is never sent: it names a
+ * company account this client does not have.
  *
  * @param {object} ctx
  * @returns {{url: string, init: object}}
@@ -191,7 +191,7 @@ export async function officialLogout(api) {
             : { ok: false, status, error: a.message || `HTTP ${status}` };
     });
 
-    // 3: ends the session key (unix seconds, as the web sends it).
+    // 3: ends the session key (unix seconds, as the server expects).
     await run("v2 logout", async () => {
         const { url, init } = logoutV2Request(ctx);
         const { status, text } = await send(ctx, url, init);

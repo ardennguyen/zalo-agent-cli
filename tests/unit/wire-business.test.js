@@ -3,7 +3,7 @@
  * product photo upload, quick messages and auto-reply rules, src/zalo/api/business.js on one logged-in fake.
  *
  * Each case has two parts: (1) our record against its reviewed golden record; (2) the error answers, each checked
- * against a literal `{message, code}`. The Web behavior is also asserted outright.
+ * against a literal `{message, code}`. The expected behavior is also asserted outright.
  *
  * Every id here is fake (tests/unit/no-real-ids.test.js).
  */
@@ -116,7 +116,7 @@ describe("wire: business (src/zalo/api/business.js)", () => {
             assert.deepEqual(rec.own.result, reply);
         });
 
-        it("getListBankAccount: a page below 0 and a limit below 1 are clamped as the Web clamps them", async () => {
+        it("getListBankAccount: a page below 0 and a limit below 1 are clamped", async () => {
             const rec = await ok("bank-accounts-clamp", "getListBankAccount", [-1, 0], { reply: { myBanks: [] } });
             assert.deepEqual(rec.own.requests[0].params, { page: 0, limit: 1 });
         });
@@ -213,7 +213,7 @@ describe("wire: business (src/zalo/api/business.js)", () => {
             });
         });
 
-        it("getProductInfo: POST {catalog}/prodcatalog/product/view {product_id} (Web getProductInfo, 12057)", async () => {
+        it("getProductInfo: POST {catalog}/prodcatalog/product/view {product_id} (12057)", async () => {
             const reply = { product_id: PRODUCT, product_name: "Tea" };
             const rec = await ok("product-view", "getProductInfo", [PRODUCT], { reply });
             const [req] = rec.own.requests;
@@ -359,7 +359,7 @@ describe("wire: business (src/zalo/api/business.js)", () => {
             assert.deepEqual(rec.own.result, UPLOADED);
         });
 
-        it("uploadProductPhoto is marked not verified until a live run (no Web method shows its fields)", () => {
+        it("uploadProductPhoto is marked not verified until a live run (its fields are not known)", () => {
             assert.equal(PRODUCT_PHOTO.verified, false);
         });
 
@@ -394,7 +394,7 @@ describe("wire: business (src/zalo/api/business.js)", () => {
             });
         });
 
-        it("addQuickMessage with a photo: uploads it, then sends it as media in the Web's key order", async () => {
+        it("addQuickMessage with a photo: uploads it, then sends it as media in the expected key order", async () => {
             const rec = await ok(
                 "quick-add-media",
                 "addQuickMessage",
@@ -440,7 +440,7 @@ describe("wire: business (src/zalo/api/business.js)", () => {
             });
         });
 
-        it("updateQuickMessage with a photo: uploads it, then sends media before type, in the Web's order", async () => {
+        it("updateQuickMessage with a photo: uploads it, then sends media before type, in the expected order", async () => {
             const rec = await ok(
                 "quick-update-media",
                 "updateQuickMessage",
@@ -457,7 +457,7 @@ describe("wire: business (src/zalo/api/business.js)", () => {
                 ["/api/product/upload/photo", "/api/quickmessage/update"],
             );
             const update = rec.own.requests[1];
-            // Red if media moves after type (the previous engine's order): Web updateQuickReplyItem writes media first.
+            // Red if media moves after type (the previous engine's order): media goes first.
             assert.deepEqual(update.paramsOrder, ["itemId", "keyword", "message", "media", "type"]);
             assert.equal(update.params.type, 1);
             assert.equal(update.params.media.items[0].photoId, UPLOADED.photoId);
@@ -466,7 +466,7 @@ describe("wire: business (src/zalo/api/business.js)", () => {
 
         it("removeQuickMessage: GET {itemIds}; one id becomes a list", async () => {
             let rec = await ok("quick-remove", "removeQuickMessage", [[7, 8]], { reply: {} });
-            // GET, as Web's deleteQuickReplyItem (@11694122) sends it (spec-sweep 1.3 read it as post).
+            // GET, as Zalo expects (spec-sweep 1.3 read it as post).
             assert.equal(rec.own.requests[0].method, "GET");
             assert.deepEqual(rec.own.requests[0].params, { itemIds: [7, 8] });
             rec = await ok("quick-remove-one", "removeQuickMessage", [7], { reply: {} });

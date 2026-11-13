@@ -1,7 +1,7 @@
 /**
  * The transport every Zalo call goes through: URLs, headers, cookies, redirects, timeouts, and the reply envelope.
  *
- * Wire facts this follows (spec-kernel 6-8; Zalo Web's HTTP client `fBUP`), with the points where the previous engine differed:
+ * Wire facts this follows (spec-kernel 6-8), with the points where the previous engine differed:
  *
  * - URL (D1): `zpw_ver` and `zpw_type` come first, then the endpoint's own parameters in insertion order, each value
  *   escaped with `encodeURIComponent`. The login host's calls carry no version pair (`{version: false}`).
@@ -16,7 +16,7 @@
  *   hop's cookies stored, each hop sent with navigation headers. The `Referer` stays the page that started the
  *   navigation (cut to its origin on a cross-origin hop) and `sec-fetch-site` is the initiator's relation to each
  *   hop, never better than an earlier hop's, as the Fetch standard has it.
- * - Timeout: 10 s unless the caller says otherwise (Web's default); `timeoutMs: 0` waits as long as it takes.
+ * - Timeout: 10 s unless the caller says otherwise; `timeoutMs: 0` waits as long as it takes.
  * - The reply: HTTP 2xx, outer `error_code` 0, then (for a session reply) the `data` opened with the session key and
  *   its inner `error_code` 0; the answer is the inner `data`. Errors are thrown as `ZaloApiError(message, code)`.
  *
@@ -29,13 +29,13 @@ import { openSession, sealSession } from "./cipher.js";
 import { cookieHeader, newJar, storeSetCookies } from "./cookies.js";
 import { ACCEPT_LANGUAGE } from "../profile.js";
 
-/** Zalo Web's default request timeout. */
+/** The default request timeout. */
 export const DEFAULT_TIMEOUT_MS = 10_000;
 
 /** The most redirects a navigation follows. */
 export const MAX_REDIRECTS = 10;
 
-/** Where Zalo Web's page lives: the origin of every API call it makes. */
+/** The origin every API call carries. */
 const CHAT_ORIGIN = "https://chat.zalo.me";
 
 /** The `Accept-Language` of every call, from the client's identity in `src/zalo/profile.js` (spec-kernel D3). */

@@ -49,9 +49,9 @@ nó và đánh thức socket khi cần; không bao giờ mở socket thứ hai b
 credentials cùng lúc (cùng lần đăng nhập trên hai máy, hoặc thư mục cấu hình bị sao
 chép): phiên thứ hai lấy socket (mã đóng 3000), và daemon on-demand khi đó chờ ở
 trạng thái `yielded` cho đến khi có `zalo-agent presence resume --yes`. Zalo cũng chỉ
-giữ một lần đăng nhập web cho mỗi tài khoản: đăng nhập Zalo Web bằng QR ở nơi khác sẽ
-đăng xuất máy chủ (`signed_out`). Bên cạnh máy chủ, hãy dùng điện thoại hoặc Zalo PC,
-không dùng Zalo Web.
+giữ một lần đăng nhập web cho mỗi tài khoản: đăng nhập Zalo trên trình duyệt bằng QR ở nơi khác sẽ
+đăng xuất máy chủ (`signed_out`). Bên cạnh máy chủ, hãy dùng điện thoại hoặc ứng dụng Zalo
+trên máy tính, không dùng trình duyệt.
 
 ## Chạy nhiều tài khoản live cùng lúc
 

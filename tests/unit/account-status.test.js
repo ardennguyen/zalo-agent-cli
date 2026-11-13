@@ -301,7 +301,7 @@ describe("reading an account with no package and no zCloud plan", () => {
         assert.deepEqual(status.zcloud.optIn, { media: false, mycloud: false, backup: true });
         assert.deepEqual(status.zcloud.keyBackup, []);
         assert.equal(status.zcloud.localIndex, null);
-        assert.ok(!r.called.includes("subscription"), "a free plan has no subscription to read, as in Zalo Web");
+        assert.ok(!r.called.includes("subscription"), "a free plan has no subscription to read");
         const text = describeAccountStatus(status).join("\n");
         assert.match(text, /zBusiness: no package \(package 0\)\./);
         assert.match(text, /zCloud: free plan \(no subscription\)\./);

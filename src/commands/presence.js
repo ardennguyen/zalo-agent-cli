@@ -167,7 +167,7 @@ export function registerPresenceCommands(program) {
             delete result.ok;
             output(result, jsonMode, () => success(`Resumed: ${result.state ?? "waking"}`));
         });
-    // Taking the account back closes the other session's socket if it is still open: asked first, as Zalo Web asks.
+    // Taking the account back closes the other session's socket if it is still open: asked first, as Zalo asks.
     guardSubcommand(presence, "resume", "presence.resume", { target: () => ({ ownerId: activeOwnId() }) });
 
     for (const cmd of [status, wake, park, resume]) cmd.zaloLocalOnly = true;

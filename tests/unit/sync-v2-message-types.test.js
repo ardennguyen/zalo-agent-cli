@@ -267,7 +267,7 @@ describe("extractSyncAttachments", () => {
     });
 
     it("keeps mobile-only renewal hints", () => {
-        // These never appear in Zalo Web; they are the phone's re-upload
+        // These never appear outside a phone backup; they are the phone's re-upload
         // breadcrumbs and the only lead once a CDN copy has aged out.
         const a = extractSyncAttachments(msg(22, "", FILE), "file")[0];
         assert.ok(a.urlToRenew.includes("/renew/"));

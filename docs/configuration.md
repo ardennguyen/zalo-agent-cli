@@ -130,8 +130,8 @@ mount). `ZALO_MCP_ADMIN_TOKEN` is for development.
 
 ### Leaving a group (`groups.onLeave`)
 
-When the account **leaves** a group, is **removed** or **blocked** from it, or the group is **disbanded**, Zalo Web and
-PC delete that group's local history at once. So does this engine by default:
+When the account **leaves** a group, is **removed** or **blocked** from it, or the group is **disbanded**, Zalo's own
+apps delete that group's local history at once. So does this engine by default:
 
 | Value | What happens |
 |---|---|
@@ -141,7 +141,7 @@ PC delete that group's local history at once. So does this engine by default:
 Either way the group keeps a **delete marker** (`threads.deleteMarkerAt`, like Zalo's `deleteAllPrior` tombstone): no
 writer -- the listener, a phone restore (`sync`), `msg history`, the offline catch-up or a cloud pull -- stores a
 message of the group dated at or before it again. While a group is gone its later group events are ignored until a
-`join` that names this account (Zalo Web's rule); a chat message dated after the exit, or a restore's conversation
+`join` that names this account (Zalo's own rule); a chat message dated after the exit, or a restore's conversation
 list that holds the group, also proves the account is back. A rejoin never brings back what was purged.
 
 What is detected: our own `leave` / `remove_member` / `block_member` event (a running `listen` or `mcp start`); our
@@ -217,15 +217,15 @@ while it waits (`waitHoldsSocket`). A CLI request routed to the daemon behaves a
 middle of a running sync stage.
 
 **Yielded and signed out.** Zalo keeps one web login per account: a QR login on any browser revokes the previous one,
-while the phone and Zalo PC coexist with the server. **Do not open the account in Zalo Web while a server holds it**;
-read and reply on the phone or in Zalo PC beside it. There are two states nothing recovers from on its own, and in
+while the phone and the Zalo desktop app coexist with the server. **Do not open the account in a browser while a server holds it**;
+read and reply on the phone or in the desktop app beside it. There are two states nothing recovers from on its own, and in
 both the daemon **stays up** (status, the admin API, a QR re-add keep working) and **refuses** every tool call, lease,
 wait and CLI request:
 
 | State (`account_state`) | When | Refusal | Ends with |
 |---|---|---|---|
 | `yielded` | on-demand, `onKick: "yield"`: another session of the same login took the socket (close 3000) | `YIELDED` | the user closes that session and confirms: `zalo-agent presence resume --yes`, `POST /zalo/admin/presence/resume`, the fleet controller's `POST /zalo/admin/accounts/<ownId>/presence/resume`, or MCP `zalo_profile` `presence_resume` (confirmMode applies) |
-| `signed_out` (presence `signed-out`) | any mode: Zalo refuses the saved login three times (another browser QR-logged into Zalo Web) | `SIGNED_OUT` | adding the account again by QR (`zalo-agent login`, or the fleet controller's QR add, which restarts the daemon) |
+| `signed_out` (presence `signed-out`) | any mode: Zalo refuses the saved login three times (another browser QR-logged into Zalo) | `SIGNED_OUT` | adding the account again by QR (`zalo-agent login`, or the fleet controller's QR add, which restarts the daemon) |
 
 Both go to the webhook, the MCP buffer, `/status` (`socket.state` `yielded` / `signed-out`, a warning), `/metrics` and
 `presence status`. A signed-out daemon used to end with exit 4; `ZALO_EXIT_ON_SIGNED_OUT=1` keeps that ending (the
@@ -277,7 +277,7 @@ Both take an `_<ownId>` form. `/status` and `/metrics` carry `lastWakeMs` / `las
 | `ZALO_MCP_ADMIN_CLIENT_CA` | yes | a CA certificate (PEM): a client certificate it signed admits to the admin API (mTLS). Needs `--cert`/`--key` | | `admin.clientCa` |
 | `ZALO_MCP_TRUSTED_PROXIES` | yes | comma list of reverse-proxy addresses whose `X-Forwarded-For` is believed (`127.0.0.1`, or `loopback`). Default none: the client address is the connection's peer | | `trustedProxies` |
 | `ZALO_MCP_GROUP_CONFIRM` |  | deprecated: `0` means confirm mode `off`, `1` means `agent`; an explicit confirm mode wins | | `groupConfirm` |
-| `ZALO_SYNC_NAME_REFRESH_MAX` |  | opt-in cap on the non-friend DM names one sync restore looks up. Unset (default) = all of them, in requests of 500 like Zalo PC; a 221 refusal stops the refresh for that run and parks the refused ids for an hour (or until the server's `nextTs`) | | |
+| `ZALO_SYNC_NAME_REFRESH_MAX` |  | opt-in cap on the non-friend DM names one sync restore looks up. Unset (default) = all of them, in requests of 500 as Zalo does; a 221 refusal stops the refresh for that run and parks the refused ids for an hour (or until the server's `nextTs`) | | |
 | `ZALO_SEND_FORMAT` |  | `markdown` or `plain`: the default format of a text send. Unset: `msg send` sends plain (a person typed it), `zalo_send_message` converts Markdown (a model wrote it). An explicit `--md`/`--markdown` or the tool's `format` wins | | |
 | `ZALO_START_JITTER` | yes | wait a random time up to this many seconds (0–600, default 0) before logging in, so a fleet restarting together does not log in together | | |
 | `ZALO_LOGIN_SLOTS` | yes | at most this many daemons on the machine logging in and loading their lists at once (0–64; default 0, no cap); the rest wait for a slot. `ZALO_LOGIN_SLOT_WAIT` (seconds, default 900) is how long one waits before going ahead anyway | | |
@@ -293,7 +293,7 @@ Both take an `_<ownId>` form. `/status` and `/metrics` carry `lastWakeMs` / `las
 | `ZALO_LOG_MAX_SIZE`, `ZALO_LOG_KEEP` | yes | rotate `daemon.log` at this size (default `50m`, at least `4k`) and keep this many files (default 3) | | |
 | `ZALO_AGENT_NO_UPDATE_CHECK` |  | any value: never run the `npm view` update check | | |
 | `ZALO_API_VERSION` |  | protocol version announced to Zalo. Default 695 | | |
-| `ZALO_QR_FLOW` |  | which QR login `login` uses: `official` (default: the sequence Zalo Web makes, no `verify-client`, `continue=https://chat.zalo.me/`, the redirects through `jr.zaloapp.com` and `jr.chat.zalo.me`, and the second QR an account with a trusted device is asked to scan, which makes this client a trusted companion device), the only QR login. `legacy` was removed in 3.0.0; it and any other value are refused before Zalo is contacted | | |
+| `ZALO_QR_FLOW` |  | which QR login `login` uses: `official` (default: Zalo's own login sequence, no `verify-client`, `continue=https://chat.zalo.me/`, the redirects through `jr.zaloapp.com` and `jr.chat.zalo.me`, and the second QR an account with a trusted device is asked to scan, which makes this client a trusted companion device), the only QR login. `legacy` was removed in 3.0.0; it and any other value are refused before Zalo is contacted | | |
 | `ZALO_NET_PROBE` |  | what a daemon asks to learn whether the network is up while its socket is down (every 10 s): a URL, default a global search engine's lightweight page, or `off` to assume the network is always up and contact nothing but Zalo | | |
 | `ZALO_STORAGE_PROVIDER` |  | key provider that protects the saved files at rest: `dpapi`, `keychain`, `secret-service`, `systemd-creds`, `kms`, `passphrase`, `env`. Default by platform; a Linux server without a desktop keyring must set one. See [security.md](security.md) | | |
 | `ZALO_RETENTION_MESSAGES`, `ZALO_RETENTION_MEDIA` | yes | `keep` or `<N>d`: the age rules of the local cache, over `storage.json`'s `retention.messages` / `retention.media` (see [Storage quotas and retention](#storage-quotas-and-retention)) | | |
@@ -413,7 +413,7 @@ A CRM needs three things from an account: to **hear** new messages, to **send**,
 
 **Catch up.** After downtime, ask for what was missed: `zalo_get_history` per thread, or `zalo-agent sync --from <date>` (which can ask the owner's phone to confirm).
 
-**Hidden chats and the secure input page.** The account's hidden chats are left out of everything a CRM reads (`hiddenChats: "exclude"`); `contentless` sends a webhook event `{event: "message", hidden: true, accountId}` with no thread id or content, the unread dot Zalo Web shows. Anything a person must type or approve (the hidden-chat PIN, a `confirmMode: "human"` approval) is a one-time page on the server's own port, `/zalo/secure/<token>`: the tool reply carries `secureUrl`, `ticketExpiresAt` (5 minutes) and `retryWith.ticket`; the CRM shows the link to the account owner and repeats the call with `ticket` once they are done. Route `/zalo/secure/` through the same proxy as `/mcp` and set `publicUrl` to its public address (links are never built from a request's `Host` header). The page needs no bearer token (its token is the key), sends `Cache-Control: no-store`, loads nothing from elsewhere, and its token is masked in the request log. See [`docs/deployment.md`](deployment.md) §5.6.
+**Hidden chats and the secure input page.** The account's hidden chats are left out of everything a CRM reads (`hiddenChats: "exclude"`); `contentless` sends a webhook event `{event: "message", hidden: true, accountId}` with no thread id or content, the unread dot Zalo shows. Anything a person must type or approve (the hidden-chat PIN, a `confirmMode: "human"` approval) is a one-time page on the server's own port, `/zalo/secure/<token>`: the tool reply carries `secureUrl`, `ticketExpiresAt` (5 minutes) and `retryWith.ticket`; the CRM shows the link to the account owner and repeats the call with `ticket` once they are done. Route `/zalo/secure/` through the same proxy as `/mcp` and set `publicUrl` to its public address (links are never built from a request's `Host` header). The page needs no bearer token (its token is the key), sends `Cache-Control: no-store`, loads nothing from elsewhere, and its token is masked in the request log. See [`docs/deployment.md`](deployment.md) §5.6.
 
 **Approvals in the CRM's own UI.** With `approval.deliver: "webhook"` the link never goes through the agent: the server POSTs `{event: "approval_requested", accountId, kind, action, wouldDo, target, secureUrl, expiresAt, approverSecret}` to the webhook (queued and signed like a message event), the CRM shows `wouldDo` and the link to a person, and the tool result carries only `{confirmationRequired or pinRequired: true, approvalPending: true, ticket, ticketExpiresAt, deliveredTo: "webhook"}`. The CRM repeats the call with that `ticket` once the person is done; the ticket is not the page's token, so nothing in the result opens the page. Where the link must go through the agent, set an approver password (`zalo-agent mcp approver set`) or `approval.secret: "pin"`, so the page asks for something only the person knows.
 
@@ -445,7 +445,7 @@ One account is one process, one WebSocket, one SQLite file and one port: there i
 | TLS terminates at the proxy, or `--cert`/`--key` are set | a bearer token over plain HTTP is readable on the wire |
 | the proxy does not log `Authorization` and does not buffer `/events/wait` | tokens in logs; long-polls cut at the proxy's timeout |
 | `GET /health` and `GET /ready` are the only unauthenticated routes | they say whether the process answers and whether it can serve the account (`/ready` is 200 while the socket is connected or parked, 503 while it is down, yielded or signed out), nothing about the account itself. `/status` and `/metrics` are behind the token: do not publish them through the proxy |
-| one process per account, never two for the same account, and no Zalo Web login for an account a server holds | a second session of the same login closes the first (code 3000); a QR login into Zalo Web revokes the server's login (`signed_out`). The phone and Zalo PC are fine |
+| one process per account, never two for the same account, and no browser login for an account a server holds | a second session of the same login closes the first (code 3000); a QR login into Zalo in a browser revokes the server's login (`signed_out`). The phone and the Zalo desktop app are fine |
 
 ## 5. Verify a setup
 

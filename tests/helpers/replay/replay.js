@@ -1,6 +1,5 @@
 /**
- * The replay harness: does what our code sent look like what the official Zalo
- * Web client sends?
+ * The replay harness: does what our code sent look like what Zalo expects?
  *
  * Two kinds of comparison, both against hand-written shapes (see ./shapes.js):
  *
@@ -17,7 +16,7 @@
  * mismatch, so a drift is read off the failure message instead of debugged.
  *
  * The harness decides nothing about whether a difference is a bug: the shapes
- * say what the official client does, and a test says which differences are
+ * say what Zalo expects, and a test says which differences are
  * known today (pinned) and which must disappear (a `todo` target).
  */
 import assert from "node:assert/strict";

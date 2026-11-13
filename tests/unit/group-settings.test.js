@@ -8,8 +8,7 @@
  * `addMemberOnly`, and hard-coded `bannFeature: 0, dirtyMedia: 0,
  * banDuration: 0, blocked_members: []` on every call.
  *
- * Zalo Web does a read-modify-write (bundle 1.e0ef5e98f8f9d8970e2c.js of the
- * 2026-09-29 capture). Its settings panel keeps the group's whole `setting`
+ * The settings are a read-modify-write. A settings panel keeps the group's whole `setting`
  * object in state and sends `Object.assign({}, state)` with one key flipped;
  * its member-list toggle sends `{...getSettingsGroup(gid), lockViewMember}`,
  * and sends nothing at all when it has no settings to spread.
@@ -50,7 +49,7 @@ const GROUP_HOST = "https://tt-group-test.invalid";
  * about goes red; `lockCreatePoll` is OFF, so one that sets everything ON
  * goes red too. The ban fields are non-zero for the same reason: they are
  * Zalo's media-ban state (`dirtyMedia` 1 or 2 = banned, `banDuration` in
- * seconds, read by the web's banned-group manager), which a client must never
+ * seconds, read by the banned-group manager), which a client must never
  * reset.
  */
 const CURRENT = Object.freeze({
@@ -72,7 +71,7 @@ const CURRENT = Object.freeze({
 /**
  * Flag -> the GroupSetting key it must change. Written out here rather than
  * imported, so the command's mapping is checked against something other than
- * itself. Sources: each flag's help text and Zalo Web's ParamsSettingGroup map (ONLY_ADMIN_SET_TOPIC is
+ * itself. Sources: each flag's help text and the server's settings key map (ONLY_ADMIN_SET_TOPIC is
  * `setTopicOnly`).
  */
 const EXPECTED_FLAGS = {
@@ -258,7 +257,7 @@ describe("group settings changes only what was named", () => {
     });
 
     it("everything but the named flag is exactly what Zalo reported, even a key this CLI does not know", async () => {
-        // The web spreads the whole setting object, so a setting Zalo adds
+        // A client spreads the whole setting object, so a setting Zalo adds
         // later survives a toggle. Red if any field is added (blocked_members),
         // dropped (addMemberOnly, the unknown key) or altered besides joinAppr.
         const { writes } = await run(["--join-appr"], { setting: { ...CURRENT, futureSetting: 7 } });
@@ -271,8 +270,8 @@ describe("group settings changes only what was named", () => {
 
     it("sends no blocked_members at all", async () => {
         // Decision pinned here, evidence in src/zalo/custom/group-settings.js: the
-        // web's member-list toggle omits the key, its settings panel sends
-        // `[]`, and nothing in the web ever sends a populated list. Omitting
+        // member-list toggle omits the key, the settings panel sends
+        // `[]`, and no client ever sends a populated list. Omitting
         // it is safe under every server reading that `[]` is safe under, and
         // under one more. Red if the request goes back to a hard-coded
         // `blocked_members: []`.
@@ -281,9 +280,9 @@ describe("group settings changes only what was named", () => {
         assert.ok(!("blocked_members" in writes[0].params), "blocked_members must not be sent");
     });
 
-    it("is the web's request: GET {group}/api/group/setting/update, AES params in the query", async () => {
+    it("is the expected request: GET {group}/api/group/setting/update, AES params in the query", async () => {
         // Red if the endpoint, the method, or where the params travel changes
-        // from what Zalo Web sends (cmd 11816).
+        // from what Zalo expects (cmd 11816).
         const { writes } = await run(["--join-appr"]);
         assert.equal(writes.length, 1, "exactly one update request");
         const w = writes[0];

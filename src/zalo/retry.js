@@ -41,7 +41,7 @@ const MAX_RECORDED_ERRORS = 100;
 /**
  * What the client does when the server omits a socket setting.
  *
- * These are this client's own defaults, chosen to match how the official Web
+ * These are this client's own defaults, chosen to match how Zalo's own
  * client behaves, and they apply only to what the server leaves out: the
  * server's value always wins. The keys are the server's.
  */

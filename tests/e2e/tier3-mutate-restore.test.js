@@ -689,11 +689,10 @@ describe("tier 3 · local cache and the --no-cache flag", { skip }, () => {
 // invocation here would wake the owner's phone and block on a human tapping
 // "ĐỒNG BỘ NGAY" -- in a tier that runs under plain ZALO_TEST_LIVE=1.
 // --socket opens a WebSocket and asks the server for recent history
-// (cmd 510/511), which is what the real
-// Zalo Web client does — see agent/work/transfer-sync-v2/NOTES.md § Mobile sync. It is still gated
+// (cmd 510/511) — see agent/work/transfer-sync-v2/NOTES.md § Mobile sync. It is still gated
 // as a live test for a different reason: Zalo permits ONE web session per
-// account, so running it will close a `listen` daemon or a browser Zalo Web
-// session on the same account.
+// account, so running it will close a `listen` daemon or Zalo in a browser
+// on the same account.
 //
 // The rest of the surface (flag parsing, the no-account guard) is covered
 // offline in tests/cli/, and the backfill itself is unit-tested against a fake

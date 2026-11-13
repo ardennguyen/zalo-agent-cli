@@ -4,21 +4,21 @@
  * `sendAttachments(message, threadId, type)` is the half of `sendMessage` that `createApi` calls when
  * `message.attachments` is non-empty; `uploadAttachment(paths, threadId, type)` is the upload alone.
  *
- * What goes on the wire, as Zalo Web sends it (the legacy upload path, design 6.1 item 9):
+ * What goes on the wire, as the server expects it (the legacy upload path, design 6.1 item 9):
  *
  * - Routing by lowercase extension: `jpg jpeg png webp` are photos (`photo_original/*`), `gif` its own path
- *   (`upthumb`, then `gif` in chunks of 512000 bytes, up to six in flight, as the Web's `sendGifByChunk`), everything
+ *   (`upthumb`, then `gif` in chunks of 512000 bytes, up to six in flight), everything
  *   else, `mp4` included, a file (`asyncfile/*`).
- * - A local video sent as a video (`sendVideoFile`, the Web's `uploadVideoMessage`): the video goes up as a file
+ * - A local video sent as a video (`sendVideoFile`): the video goes up as a file
  *   (its URL arrives as the `video_done`/`file_done` push), the thumbnail as a photo unless a URL is given, and the
- *   message is the forward-video send of `sendVideo`. Not verified live: the Web uploads the thumbnail through its
- *   async-file path and reads `oriUrl`/`hdUrl` from it; this sends it as a photo and reads the same names.
+ *   message is the forward-video send of `sendVideo`. Not verified live: Zalo's own apps upload the thumbnail through
+ *   the async-file path and read `oriUrl`/`hdUrl` from it; this sends it as a photo and reads the same names.
  * - Limits from the login's `settings.features.sharefile`, all checked before the first request (the caption
  *   included): `max_file` (count), `max_size_share_file_v3` (MB), `restricted_ext_file` (denied extensions).
  * - Upload: `POST {file}/api/{message|group}/{photo_original|asyncfile}/upload?zpw_ver&zpw_type&params&type`, `type`
  *   2 for a user and 11 for a group, a multipart body with one part `chunkContent` (the chunk's bytes, named after
  *   the file). `params` per chunk: `{totalChunk, fileName, clientId, totalSize, imei, chunkId, toid|grid}`, without
- *   the `isE2EE: 0`/`jxl: 0` the previous engine added (the Web's non-E2EE chunk builder has neither). The chunk size is
+ *   the `isE2EE: 0`/`jxl: 0` the previous engine added (a non-E2EE chunk carries neither). The chunk size is
  *   `chunk_size_file` when it is a number of at least 64000, else 256000. At most three chunks are in flight; the
  *   last chunk goes once every other one has answered, so its reply is the one that says whether the upload
  *   finished. An inner `error_code` 1 on a chunk is Zalo's "already uploaded", an answer, not an error.
@@ -27,19 +27,19 @@
  *   `ctx.uploadCallbacks.settle(fileId, {url, kind, data})` (kernel/session.js). A settlement that came before the
  *   wait is kept for it. While a file waits, a callback stands under its id in `ctx.uploadCallbacks` too, so a
  *   listener that only calls the entry it finds with `{fileUrl, fileId}` settles it as well. When nothing comes,
- *   the last chunk is sent again after the Web's size-bucketed delay (a valid reply carries the URL), and once more
+ *   the last chunk is sent again after a size-bucketed delay (a valid reply carries the URL), and once more
  *   at the overall wait (120 s); the upload fails when that replay gives nothing, or at the latest
  *   {@link FINAL_REPLAY_GRACE_MS} later. No chunk request waits longer than {@link CHUNK_TIMEOUT_MS}.
  * - Send: `photo_original/send` with `{photoId, clientId, desc, width, height, rawUrl, thumbUrl, hdUrl,
  *   normalUrl|oriUrl, (layout), toid|grid, language, (extMsgProp), zsource, ttl, imei}`; `asyncfile/msg` with
  *   `{fileId, checksum, checksumSha, extension, totalSize, fileName, clientId, fType, fileCount, fdata, toid|grid,
- *   fileUrl, zsource, ttl, imei (to a user)}`, spelled `extension` as the Web does (not `extention`).
+ *   fileUrl, zsource, ttl, imei (to a user)}`, spelled `extension` (not `extention`).
  * - A caption rides on a single photo as its `desc`; otherwise it goes first, as its own text message through
  *   `s.api.sendMessage`. The reply is `{message, attachment}`, `attachment[i]` carrying the `cliMsgId` it was sent
  *   with, files in the order given and GIFs last.
  *
  * Every message clientId comes from the session's monotonic generator (`s.nextClientId()`), so no two sends of one
- * session share one: a photo's upload and its send use the same id, as the Web's do.
+ * session share one: a photo's upload and its send use the same id.
  *
  * Waits read the session clock (`s.now()`), checked every {@link TICK_MS}, so a test moves them by moving the clock.
  */
@@ -50,20 +50,20 @@ import { imageSizeFromFile } from "image-size/fromFile";
 import { THREAD_TYPE } from "../enums.js";
 import { ZaloApiError } from "../errors.js";
 
-/** The chunk size when the server names none we can use (the Web's fallback). */
+/** The chunk size when the server names none we can use. */
 export const DEFAULT_CHUNK_SIZE = 256000;
 
-/** The smallest server chunk size the Web accepts; anything below falls back to {@link DEFAULT_CHUNK_SIZE}. */
+/** The smallest server chunk size accepted; anything below falls back to {@link DEFAULT_CHUNK_SIZE}. */
 export const MIN_CHUNK_SIZE = 64000;
 
 /** Chunks of one file in flight at once. */
 export const MAX_CHUNKS_IN_FLIGHT = 3;
 
-/** How long to wait for the server's word on an uploaded file before giving up (the Web's default). */
+/** How long to wait for the server's word on an uploaded file before giving up (the default). */
 export const DEFAULT_WAIT_MS = 120000;
 
 /**
- * Seconds before the last chunk is sent again, by `floor(size / 30 MB)` (the Web's default
+ * Seconds before the last chunk is sent again, by `floor(size / 30 MB)` (the default when the server sends no
  * `upload_file_timeout_replay_last_chunk`).
  */
 export const DEFAULT_REPLAY_SECONDS = Object.freeze([30, 35, 40, 45, 50, 60]);
@@ -115,7 +115,7 @@ function routeOf(ext) {
 }
 
 /**
- * The upload settings of the session, with the Web's defaults.
+ * The upload settings of the session, with the defaults.
  *
  * @param {object} ctx
  * @returns {{maxFile: number|null, maxBytes: number|null, maxMb: number|null, denied: string[], chunkSize: number,
@@ -336,15 +336,15 @@ const UPTHUMB = Object.freeze({
     reply: "session",
 });
 
-/** A local GIF's chunk size: the Web's `blobToChunk(file, 512e3)` in `_sendByChunk`. */
+/** A local GIF's chunk size. */
 export const GIF_CHUNK_SIZE = 512000;
 
-/** GIF chunks in flight at once (the Web's `_sendByChunk` sends while fewer than six are waiting). */
+/** GIF chunks in flight at once (sent while fewer than six are waiting). */
 export const GIF_CHUNKS_IN_FLIGHT = 6;
 
 /**
  * `POST {file}/api/{message|group}/gif`: one chunk of a local GIF. An inner code 1 or 220 is a chunk taken while the
- * upload goes on (the Web's `_sendByChunk` reads 0, 1 and 220 as success); the chunk that says `isFinish`, or 0,
+ * upload goes on (0, 1 and 220 all mean success); the chunk that says `isFinish`, or 0,
  * carries the message.
  */
 const gifEndpoint = (group) => ({
@@ -362,7 +362,7 @@ const gifEndpoint = (group) => ({
 });
 
 /**
- * Send a local GIF in chunks, as the Web's `_sendGifByChunk`: every chunk but the last, at most
+ * Send a local GIF in chunks: every chunk but the last, at most
  * {@link GIF_CHUNKS_IN_FLIGHT} at a time, then the last, so its reply is the one that says the message was made.
  *
  * @param {import("../api.js").Session} s
@@ -658,7 +658,7 @@ async function uploadChunks(s, item, { group, threadId, cfg, signal }) {
         return { item, clientId, reply: data, urls: { fileUrl: data.url }, wait: null };
     }
     if (last.duplicate) {
-        // The Web, too, gives up on a duplicate it has no URL for (it would retry under a new clientId).
+        // A duplicate with no URL is given up on (a retry would need a new clientId).
         throw new ZaloApiError(`Zalo reports ${item.fileName} as already uploaded but gave no URL for it`, 1);
     }
     const wait = awaitUrls(s, { route, id, size: item.size, replay, cfg, fileName: item.fileName, signal });
@@ -914,7 +914,7 @@ export function uploadMethods(s) {
     }
 
     /**
-     * Send a local video file as a video message, as the Web's `uploadVideoMessage` then `sendVideoMessage` do: the
+     * Send a local video file as a video message: the
      * video uploaded as a file (its URL comes from the listener's `video_done`/`file_done`), the thumbnail uploaded
      * as a photo when it is a local file, then the forward-video send. Unverified live.
      *

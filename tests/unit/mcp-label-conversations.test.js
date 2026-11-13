@@ -62,7 +62,7 @@ function labelServer(conversations = []) {
     return { call, writes };
 }
 
-describe("zalo_label: conversation ids in the Web's form", () => {
+describe("zalo_label: conversation ids in Zalo's form", () => {
     it("assign: a group known to the cache is stored as g<id>, a user as the bare id", async () => {
         const { call, writes } = labelServer();
         const r = await call({ action: "assign", labelId: 1, threadIds: [GROUP, PEER] });

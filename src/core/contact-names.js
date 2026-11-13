@@ -1,14 +1,14 @@
 /**
- * The one way this client names a person: the account owner's alias first, as Zalo Web and PC show it.
+ * The one way this client names a person: the account owner's alias first, as Zalo shows it.
  *
- * Zalo Web keeps one record per user (`dName`): the owner's alias when one is set, else the phonebook name, else the
+ * Zalo keeps one record per user (`dName`): the owner's alias when one is set, else the phonebook name, else the
  * user's own name (`zaloName || dName`: the Zalo name, then the display name); a friend the owner saved as "Minh Sales" is "Minh Sales" in the chat header, the group member
- * list, a group message's sender line, a mention, a reaction and a quote alike. Web refetches its alias list when the
- * server sends an `alias` control (cmd 601), when its polling is warned, and when the server's alias version is newer
- * than the one it holds. This module is that record for the CLI, `listen` and `mcp start`:
+ * list, a group message's sender line, a mention, a reaction and a quote alike. The alias list is read again when the
+ * server sends an `alias` control (cmd 601), when polling is warned, and when the server's alias version is newer
+ * than the one held. This module is that record for the CLI, `listen` and `mcp start`:
  *
- *  - {@link pickName} is the precedence, `alias ?? phonebook name ?? zaloName ?? displayName ?? uid` (Web's order: a profile's
- *    `displayName` can itself be a stale alias, so the Zalo name comes before it), used by every output;
+ *  - {@link pickName} is the precedence, `alias ?? phonebook name ?? zaloName ?? displayName ?? uid` (Zalo's order: a
+ *    profile's `displayName` can itself be a stale alias, so the Zalo name comes before it), used by every output;
  *  - the alias book is the account's alias snapshot, held in memory (a Map lookup on the hot path, never a scan or a
  *    request), loaded once from the account's database (`user_aliases`) and replaced by every complete alias-list
  *    read, {@link startAliasRefresh} keeps it current in a daemon (an `alias` control, then a bounded periodic read).
@@ -53,7 +53,7 @@ function current() {
  *
  * Accepts the field spellings Zalo uses for a profile (`displayName`/`display_name`/`dName`/`dpn`,
  * `zaloName`/`zalo_name`) and a phonebook name (`pbName`/`phonebookName`: the name the owner's phone contacts give
- * the person, which Zalo Web puts after the alias). This client reads no phonebook today, so it is used only when a
+ * the person, which Zalo puts after the alias). This client reads no phonebook today, so it is used only when a
  * caller passes one.
  *
  * @param {string|number|null} uid
@@ -485,7 +485,7 @@ export function startDaemonAliases({ getApi, log = () => {}, onRetitled, onOwnNa
     return {
         attach(listener) {
             listener?.on?.("alias_change", () => refresher.trigger("alias control"));
-            // Own name or avatar changed on another device (`profile` control, act `update`): reread it, as Zalo Web
+            // Own name or avatar changed on another device (`profile` control, act `update`): reread it, as Zalo
             // does. Its other acts (`update_status`, `phonebook`, `mode`, `biz`) change no name this client shows.
             listener?.on?.("profile_change", (change) => {
                 if (change?.act !== "update" || typeof onOwnName !== "function") return;

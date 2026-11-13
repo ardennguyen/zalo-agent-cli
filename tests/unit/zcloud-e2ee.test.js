@@ -1,9 +1,9 @@
 /**
- * Opening a zCloud item as Zalo Web does (src/zalo/zcloud-e2ee.js, `fetchCloudBlob` in src/zalo/zcloud.js): the
+ * Opening a zCloud item as Zalo does (src/zalo/zcloud-e2ee.js, `fetchCloudBlob` in src/zalo/zcloud.js): the
  * download address and header, and the cloud key's crypto (RSA-OAEP SHA-256 unwrap, AES-256-GCM with a packed
- * key | IV | tag). Read from the Web bundle of 2026-11-06; nothing here was seen working live (ZP-10, D8).
+ * key | IV | tag). Nothing here was seen working live (ZP-10, D8).
  *
- * The key pair is made fresh per run and the items are encrypted here the way the Web's `encryptCloudInfo` does, so
+ * The key pair is made fresh per run and the items are encrypted here the way Zalo encrypts them, so
  * the assertions are about the scheme, not about any real item. Every id and key is a throwaway.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
@@ -27,7 +27,7 @@ const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 20
 const PKCS8 = privateKey.export({ format: "der", type: "pkcs8" }).toString("base64");
 const OTHER = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ format: "der", type: "pkcs8" });
 
-/** Encrypt as the Web's `encryptCloudInfo`: a fresh AES-256-GCM key, the packed key wrapped with RSA-OAEP SHA-256. */
+/** Encrypt as Zalo does: a fresh AES-256-GCM key, the packed key wrapped with RSA-OAEP SHA-256. */
 function seal(plainBytes) {
     const key = randomBytes(32);
     const iv = randomBytes(12);
@@ -48,7 +48,7 @@ describe("zcloud-e2ee: sandbox", () => {
     });
 });
 
-describe("the download address the Web's download layer sends", () => {
+describe("the download address Zalo expects", () => {
     it("adds ?zcloudurl=true and the `&` the cut leaves for a keyed item, and only the viewer-key header", () => {
         const r = cloudBlobRequest({
             downloadUrl: "https://cdn.zalo.invalid/blob/1",
@@ -74,7 +74,7 @@ describe("the download address the Web's download layer sends", () => {
         assert.equal(cloudBlobRequest({ downloadUrl: "https://x.invalid/b", viewerKey: "v" }).encrypted, false);
     });
 
-    it("names the Web's own errors for a missing URL or header", () => {
+    it("names Zalo's own errors for a missing URL or header", () => {
         assert.throws(() => cloudBlobRequest({ viewerKey: "v" }), /NOT_FOUND_DOWNLOAD_URL/);
         assert.throws(() => cloudBlobRequest({ downloadUrl: "https://x.invalid" }), /NOT_FOUND_DOWNLOAD_HEADER/);
     });
@@ -111,7 +111,7 @@ describe("the cloud key: RSA-OAEP SHA-256, then AES-256-GCM", () => {
         assert.throws(() => decryptCloudBlob(data, wrapped, 2, importCloudPrivateKey(PKCS8)), /block by block/);
     });
 
-    it("builds the key request the Web sends, and marks it never sent", () => {
+    it("builds the key request Zalo expects, and marks it never sent", () => {
         assert.deepEqual(cloudKeyRequestShape({ deviceName: "cli", sessionId: "s1" }), {
             host: "zcloud",
             path: "/personalcloud_key/req_cloud_key",
@@ -160,7 +160,7 @@ describe("fetchCloudBlob: the whole open, offline", () => {
         api = { zpwServiceMap: { zcloud: ["https://zcld.invalid"] }, getContext: () => ctx, getOwnId: () => OWN };
     });
 
-    it("asks for the URL, then GETs it as the Web does, and returns the encrypted bytes untouched", async () => {
+    it("asks for the URL, then GETs it, and returns the encrypted bytes untouched", async () => {
         const { data, wrapped } = seal(Buffer.from("the file"));
         const seen = [];
         const blob = await zcloud.fetchCloudBlob(

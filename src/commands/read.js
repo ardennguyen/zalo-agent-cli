@@ -1,8 +1,8 @@
 /**
- * `read`: the read-only endpoints of Zalo Web's API that have no command of their own (plan track S, 6.1).
+ * `read`: the read-only endpoints of Zalo's API that have no command of their own (plan track S, 6.1).
  *
  * `read list` says what there is; `read run <name>` asks Zalo and prints the answer. Both are in `src/zalo/reads.js`,
- * where each read's host, path and request body are written out beside the web client method they come from. Nothing
+ * where each read's host, path and request body are written out beside the method they come from. Nothing
  * here changes anything on the account: the table holds reads only (a test keeps it that way).
  */
 import chalk from "chalk";
@@ -99,9 +99,7 @@ function printList(reads) {
         const mark = r.verified ? chalk.green("✓") : chalk.yellow("?");
         console.log(`  ${mark} ${chalk.bold(r.name.padEnd(width))}  ${r.what}${args ? chalk.dim(`  (${args})`) : ""}`);
     }
-    info(
-        `${chalk.green("✓")} answered by a live account; ${chalk.yellow("?")} request built from the web client, not yet seen answered.`,
-    );
+    info(`${chalk.green("✓")} answered by a live account; ${chalk.yellow("?")} request built, not yet seen answered.`);
 }
 
 /**
@@ -113,7 +111,7 @@ export function registerReadCommands(program) {
     const read = program
         .command("read")
         .description(
-            "Read-only endpoints of Zalo Web's API that have no command of their own (stickers, GIFs, profile rank, …)",
+            "Read-only endpoints of Zalo's API that have no command of their own (stickers, GIFs, profile rank, …)",
         );
 
     const list = read

@@ -4,10 +4,10 @@
  * fake.
  *
  * Each case has two parts: (1) our record against its reviewed golden record; (2) the error answers, each checked
- * against a literal `{message, code}`. The Web behavior is also asserted outright, so a case is red if our side
+ * against a literal `{message, code}`. The expected behavior is also asserted outright, so a case is red if our side
  * drifts from it even where the golden file were re-recorded.
  *
- * The settings calls go to Zalo Web's auth host (`https://wpa.chat.zalo.me`), which is no service-map host of the
+ * The settings calls go to Zalo's auth host (`https://wpa.chat.zalo.me`), which is no service-map host of the
  * fake: this file answers it itself (`answerAuthHost`), opening the sealed params so they are compared decrypted.
  *
  * Every id here is fake (tests/unit/no-real-ids.test.js).
@@ -169,7 +169,7 @@ describe("wire: profile (src/zalo/api/profile.js)", () => {
             assert.deepEqual(req.params, { status: "a new bio" });
         });
 
-        it("updateProfile: profile JSON in the Web's order {name, gender, dob}, biz {} for a personal account", async () => {
+        it("updateProfile: profile JSON in the expected order {name, gender, dob}, biz {} for a personal account", async () => {
             const payload = { profile: { name: "Test Name", dob: "2000-01-02", gender: 1 } };
             const rec = await check("profile-update", "updateProfile", [payload], { reply: {} });
             const [req] = rec.own.requests;
@@ -180,7 +180,7 @@ describe("wire: profile (src/zalo/api/profile.js)", () => {
             assert.equal(req.params.language, "vi");
         });
 
-        it("updateProfile: a business account's details under the Web's short keys", async () => {
+        it("updateProfile: a business account's details under the expected short keys", async () => {
             const payload = {
                 profile: { name: "Shop Name", dob: "1990-03-04", gender: 0 },
                 biz: { description: "d", cate: 3, address: "a", website: "w", email: "e" },

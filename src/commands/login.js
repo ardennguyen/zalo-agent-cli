@@ -61,7 +61,7 @@ async function restoreAdvice(ownId) {
 
 /**
  * The saved cursors of this account's control queues, read from its local cache, as `listen` keeps them
- * (src/core/self-heal.js `cursorKey`). A login that kept its device id reads its control queue from there, as Zalo Web
+ * (src/core/self-heal.js `cursorKey`). A login that kept its device id reads its control queue from there, as Zalo
  * does: the phone's offer is at the end of that queue. No cache, or an unreadable one: no cursor (the queue is then
  * read from its start). Read only.
  *
@@ -330,7 +330,7 @@ export function registerLoginCommands(program) {
     program
         .command("logout")
         .description(
-            "Log out: sign this device out at Zalo (as Zalo Web does) and delete its saved credentials, so the next command needs a new QR login. Chat history is kept unless --delete-history or --purge.",
+            "Log out: sign this device out at Zalo (as Zalo's own apps do) and delete its saved credentials, so the next command needs a new QR login. Chat history is kept unless --delete-history or --purge.",
         )
         .option(
             "--keep-session",
@@ -342,7 +342,7 @@ export function registerLoginCommands(program) {
         )
         .option(
             "--delete-history",
-            'Also delete the local chat cache (zalo.db + downloaded media) for this account — mirrors the web app\'s "Delete chat history on logout" checkbox',
+            'Also delete the local chat cache (zalo.db + downloaded media) for this account — like Zalo\'s own "Delete chat history on logout" checkbox',
         )
         .option("--no-remote", "Skip the server-side logout call (still deletes the saved credentials locally)")
         .action(async (opts) => {
@@ -362,7 +362,7 @@ export function registerLoginCommands(program) {
             // What --json prints: what was ended and deleted, in place of the lines below.
             const done = { loggedOut: true, account: active?.ownId ?? null, remote: null };
 
-            // Sign this device out at Zalo the way Zalo Web does (the six steps in
+            // Sign this device out at Zalo the way Zalo does (the six steps in
             // src/zalo/official-logout.js), then check that the saved login is
             // refused, and report honestly — src/core/logout.js. Measured
             // 2026-09-30: the older calls (kept behind --keep-session) end only the

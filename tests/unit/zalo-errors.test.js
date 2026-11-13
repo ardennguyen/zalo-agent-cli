@@ -18,7 +18,7 @@ import {
 import { EXIT_CODE } from "../../src/core/exit-codes.js";
 
 describe("classifyServerError", () => {
-    it("names every code the official clients act on, with what to do about it", () => {
+    it("names every code Zalo's own apps act on, with what to do about it", () => {
         const expected = {
             70: "maintenance",
             71: "maintenance-notice",

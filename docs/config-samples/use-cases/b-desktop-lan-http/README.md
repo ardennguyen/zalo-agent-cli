@@ -48,9 +48,9 @@ zalo-agent mcp start --account 1000000000000000001 --status
 
 On plain http off loopback the server hands out no media links (they carry one-time tokens and need https): pictures come inline, other media as a temp file. For links on the LAN, give it a certificate (`ZALO_MCP_TLS_CERT` / `ZALO_MCP_TLS_KEY` in `server.env`).
 
-## 4. The phone, Zalo PC and Zalo Web
+## 4. The phone, the desktop app and the browser
 
-Zalo keeps **one web login per account**, and this server is it. A QR login into **Zalo Web** signs the server out: the service stays up but answers every call with `SIGNED_OUT` until you run `zalo-agent login` again and restart the service (`ZALO_EXIT_ON_SIGNED_OUT=1` in `server.env` makes it exit 4 instead). The **phone** and the **Zalo PC app** work beside it. Use those, not Zalo Web. Each QR login adds a new entry to the phone's device list (older web entries show as logged out); a re-login keeps the device id, so Zalo's queue of missed messages survives it.
+Zalo keeps **one web login per account**, and this server is it. A QR login into **Zalo in a browser** signs the server out: the service stays up but answers every call with `SIGNED_OUT` until you run `zalo-agent login` again and restart the service (`ZALO_EXIT_ON_SIGNED_OUT=1` in `server.env` makes it exit 4 instead). The **phone** and the **Zalo desktop app** work beside it. Use those, not a browser. Each QR login adds a new entry to the phone's device list (older web entries show as logged out); a re-login keeps the device id, so Zalo's queue of missed messages survives it.
 
 And run each account in one place only: a second copy of the same login (another machine, or `mcp start` beside the service) takes the socket. This server then **yields**: it stays up, answers `YIELDED`, and takes nothing back on its own. Close the other copy, then `zalo-agent presence resume --yes --account <id>`.
 

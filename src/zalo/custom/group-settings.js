@@ -9,21 +9,15 @@
  * by the CLI) as 0, left `addMemberOnly` out, and hard-coded `bannFeature: 0,
  * dirtyMedia: 0, banDuration: 0, blocked_members: []` on every call.
  *
- * What Zalo Web sends instead (bundle 1.e0ef5e98f8f9d8970e2c.js, 2026-09-29
- * capture; byte offsets into that file):
+ * What the server expects instead:
  *
- *   ~10948180  the request builder: `{...setting, grid, imei}`, AES-encrypted
- *              into `params=` on a GET. The same request the previous engine built.
- *   ~4235006   the settings panel: its state starts as
- *              `{...groupInfo.setting, blocked_members: []}` and is refreshed
- *              from a forced re-read of the group.
- *   ~4238633   `_setGroup`: `Object.assign({}, this.state)`, flip ONE key,
- *              send the lot.
- *   ~6778552   the member-list "hide members" toggle:
- *              `{...getSettingsGroup(gid), lockViewMember}`, and it sends
- *              nothing when there are no settings to spread.
- *   ~4300286   after success the web stores what it sent as the group's new
- *              setting, wholesale. It treats the request as a full replace.
+ *   - the request is `{...setting, grid, imei}`, AES-encrypted into `params=`
+ *     on a GET (the same request the previous engine built);
+ *   - `setting` is the group's whole current setting, freshly re-read, with
+ *     ONE key flipped -- everything else sent back as it was;
+ *   - nothing is sent when there are no settings to spread;
+ *   - after success, what was sent is the group's new setting, wholesale:
+ *     the request is a full replace.
  *
  * So this module does the same: read the current setting, overlay only the
  * changes the user asked for, send everything else back as Zalo reported it —
@@ -33,22 +27,19 @@
  *
  * Two fields needed a decision:
  *
- *   blocked_members — NOT sent. The panel sends `[]` (its state never holds
- *   the real list: that lives in a separate hook, ~4185295); the member-list
- *   toggle omits the key altogether; nothing in the web ever sends a populated
- *   list. So the server accepts a request without it. Omitting it is safe under
+ *   blocked_members — NOT sent. Zalo's own apps send `[]` or omit the key
+ *   altogether, and never send a populated list. So the server accepts a
+ *   request without it. Omitting it is safe under
  *   every reading of the field under which `[]` is safe, and also under the
  *   one where `[]` means "replace the block list with nothing". Unverified live.
  *
- *   addMemberOnly — carried at its current value, as both web paths do.
- *   the previous engine commented it out; the web never changes it
- *   directly, and its panel shows join approval as on when either it or
- *   joinAppr is set.
+ *   addMemberOnly — carried at its current value. The previous engine
+ *   commented it out; Zalo never changes it directly, and shows join approval
+ *   as on when either it or joinAppr is set.
  *
- * `dirtyMedia`/`banDuration` are Zalo's own media-ban state (the web's banned
- * group manager, ~3673605, reads them to hide media: `dirtyMedia` 1 or 2 is
- * banned, `banDuration` is seconds). `bannFeature` never appears in the web
- * bundles by name. All three are sent back exactly as read.
+ * `dirtyMedia`/`banDuration` are Zalo's own media-ban state (`dirtyMedia` 1
+ * or 2 hides the group's media, `banDuration` is seconds). `bannFeature`'s
+ * meaning is unknown. All three are sent back exactly as read.
  */
 import { boundUtils } from "../kernel/bound.js";
 

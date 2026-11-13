@@ -1,7 +1,7 @@
 /**
  * The trusted-device protocol of the Zalo login page, run in Node (plan item L15, second QR layer).
  *
- * An account that has a trusted device (a phone that signs a list of companion devices) is logged in on the web
+ * An account that has a trusted device (a phone that signs a list of companion devices) is logged in from a browser
  * in two steps: the phone scans the first QR, the page then makes a second one itself, from a token the server
  * answered the first scan with, and the phone scans that. The page makes it with a WebAssembly module
  * (`libzproto_wasm_bg.<hash>.wasm`, served next to the login script, Ed25519 plus the linking format) that this
@@ -29,7 +29,7 @@ const require = createRequire(import.meta.url);
 /** The wasm file the login script names, as a full URL. */
 const WASM_URL_PATTERN = /https:\/\/stc-zlogin\.zdn\.vn\/wasm\/libzproto_wasm_bg\.[0-9a-f]+\.wasm/;
 
-/** The platform numbers of the trust library (`Mobile 0, Web 1, Pc 2`): this client is a Web client. */
+/** The platform numbers of the trust library (`Mobile 0, Web 1, Pc 2`): this client announces 1. */
 export const TRUST_PLATFORM_WEB = 1;
 
 /**

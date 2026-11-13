@@ -3,8 +3,8 @@
  *
  * The previous engine sent `Accept`, `Accept-Language`, `Content-Type`, `Cookie`, `Origin`, `Referer` and `User-Agent`.
  * A real browser also sends the Client Hints that match its User-Agent, the three `sec-fetch-*` headers
- * and, in Chromium, `priority`. All of these come from the captured Web client; the capture's other extras
- * (`cache-control`, `pragma`, `dnt`) were DevTools and user settings, not the client, and are not sent.
+ * and, in Chromium, `priority`. Other extras a browser may add (`cache-control`, `pragma`, `dnt`) come from DevTools
+ * and user settings, not the page, and are not sent.
  *
  * Everything is derived from the saved User-Agent, so a session always presents ONE coherent browser. A
  * User-Agent that is not Chromium (an older login made with a Firefox one) gets the `sec-fetch-*` headers

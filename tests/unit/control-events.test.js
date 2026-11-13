@@ -4,7 +4,7 @@
  * (`user_devices/update_user_devices`).
  *
  * Only the key names of these controls were ever seen live (never values), so every payload here is synthetic, built
- * from those key names and from what Zalo Web's handlers read; ids are throwaway constants.
+ * from those key names and from the fields each control carries; ids are throwaway constants.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, after, beforeEach } from "node:test";
@@ -118,7 +118,7 @@ describe("the three controls are known", () => {
 });
 
 describe("a catalog changed on another device", () => {
-    it("reports the ids the Web reads for each act, and the control's data whole", () => {
+    it("reports the ids each act carries, and the control's data whole", () => {
         const events = applyControlEvents({
             data: frameData(
                 ["1", "prod_catalog", "edit_catalog", { item: { id: "c-1", name: "Shop" }, version_catalog: 3 }],
@@ -444,7 +444,7 @@ describe("a conversation muted or unmuted on another device", () => {
         );
     });
 
-    it("gives a timed mute its end, and drops a set whose time already ran out, as Zalo PC does", () => {
+    it("gives a timed mute its end, and drops a set whose time already ran out", () => {
         const [timed] = muteEvents(
             [{ act: "set", data: { toId: PEER, muteType: 1, duration: 3600, startTime: sec, systemTime: sec } }],
             NOW,
@@ -477,7 +477,7 @@ describe("a conversation muted or unmuted on another device", () => {
 });
 
 describe("labels, the archived list, quick messages and auto-delete changed on another device", () => {
-    it("reports each with the fields Zalo PC reads", () => {
+    it("reports each with the fields it carries", () => {
         const events = applyControlEvents({
             data: frameData(
                 ["1", "label_convers", "update", {}],

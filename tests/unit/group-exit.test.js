@@ -1,6 +1,6 @@
 /**
  * A group stops being ours (src/core/group-exit.js): the account left it, was removed or blocked from it, or it was
- * disbanded. Zalo Web and PC delete the group's local history at once in all four cases; `groups.onLeave: "keep"`
+ * disbanded. Zalo's own apps delete the group's local history at once in all four cases; `groups.onLeave: "keep"`
  * keeps it, flagged gone, with sends refused. Either way a delete marker keeps a restore, a history fetch or a cloud
  * pull from bringing older messages back, and only a `join` naming us (or a newer chat message) ends the exit.
  *

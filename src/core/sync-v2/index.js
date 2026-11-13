@@ -108,17 +108,17 @@ const STALL_NOTE_MS = 60_000;
 /**
  * How many message sessions are asked for before the first of them has been served.
  *
- * Web and PC send every session of a run (98 partitions at 30 each is four of them, which is why a capture shows
- * four; PC has no cap either) one after the other, each after the previous one was acknowledged, then consume them
- * and release them together at the end. Fifty at once, with no waiting for acks, once got our socket dropped with no
- * error frame; the requests are ack-paced now. The phone stops serving at about 32 sessions that are open together
- * (live, 2026-10-25), so a wave is at most 30, which is also the most the restore takes (see `waveSize`): a run
- * of 79 sessions is three waves, and the sessions of a wave are released together when the wave is done.
+ * Every session of a run (98 partitions at 30 each is four of them) goes out one after the other, each after the
+ * previous one was acknowledged; they are then consumed and released together at the end. Fifty at once, with no
+ * waiting for acks, once got our socket dropped with no error frame; the requests are ack-paced now. The phone stops
+ * serving at about 32 sessions that are open together (live, 2026-10-25), so a wave is at most 30, which is also the
+ * most the restore takes (see `waveSize`): a run of 79 sessions is three waves, and the sessions of a wave are released
+ * together when the wave is done.
  */
 const DEFAULT_WAVE_SIZE = 30;
 /**
- * Sessions released at once. One: each release goes out after the previous one was acknowledged. Web sends four 591
- * within 3 ms and gets four acks, but this client's bursts were answered only in part (live, 2026-10-28: two acks for
+ * Sessions released at once. One: each release goes out after the previous one was acknowledged. Four 591 within 3 ms
+ * can get four acks, but this client's bursts were answered only in part (live, 2026-10-28: two acks for
  * thirty releases, two for each burst of four, the rest unanswered for 3 s and then released fine one at a time),
  * while one at a time was acknowledged every time.
  */
@@ -169,7 +169,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  *  - a CONFIRMED empty window (the phone answered: nothing in this range was
  *    missed) returned before the success markers were written, so it never
  *    counted. That is the common case over any window a listener was
- *    connected for: the phone hands a sync only what a web session missed.
+ *    connected for: the phone hands a sync only what this client's session missed.
  *  - checkSyncFreshness never skips while any gap is pending, and nothing
  *    resolved gaps (resolveSyncGap had only test callers), so after the first
  *    listener reconnect every later run pinged the phone forever.
@@ -269,18 +269,18 @@ function decompress(p) {
 }
 
 /**
- * Decode a Zalo WebSocket frame body (the `{encrypt, data}` envelope) with the per-session cipher key (the `key` of
- * the cmd 1/1 handshake frame): encrypt 0 plain JSON, 1 inflate only, 2 AES-GCM then inflate, 3 AES-GCM only. The
- * decoder lives with the listener (src/zalo/listener/frames.js) and is re-exported here, so the listener, the raw
- * tap and sync-v2 share one copy.
+ * Decode a WebSocket frame body from Zalo (the `{encrypt, data}` envelope) with the per-session cipher key (the `key`
+ * of the cmd 1/1 handshake frame): encrypt 0 plain JSON, 1 inflate only, 2 AES-GCM then inflate, 3 AES-GCM only. The
+ * decoder lives with the listener (src/zalo/listener/frames.js) and is re-exported here, so the listener, the raw tap
+ * and sync-v2 share one copy.
  */
 export { decodeFrame };
 
 /**
  * Has a sync session delivered everything it was asked for?
  *
- * `isLast` looks like the end marker and mostly is, but a captured Zalo Web run
- * ends its final message session with `isLast=0` and disposes it anyway. What
+ * `isLast` looks like the end marker and mostly is, but a run can
+ * end its final message session with `isLast=0` and dispose it anyway. What
  * actually completes a message session is coverage: every partition in the
  * cmd 590 request has come back inside some batch's `scopes`. The conversation
  * round asks for the empty partition and its batches carry no scopes, so there
@@ -544,7 +544,7 @@ export class SyncV2 {
     /**
      * Refresh existing DM peers outside the requested message window, including non-friends.
      *
-     * Every non-friend DM peer in the cache is looked up, the way Zalo PC refreshes profiles: up to 500 uids per
+     * Every non-friend DM peer in the cache is looked up: up to 500 uids per
      * request, one request at a time (../name-refresh.js). Peers whose cached title is missing or just their id go
      * first, because those are the ones a restore can actually improve. When Zalo answers 221 (too many requests)
      * the refresh stops for this run, the refused request's uids are parked for an hour (or until the server's
@@ -637,7 +637,7 @@ export class SyncV2 {
      * @param {number|null} [opts.days=null] only sync the last N days; falsy = full history.
      * @param {string|number} [opts.from] explicit lower bound (date string or epoch ms); beats `days`.
      * @param {number} [opts.shardSize=30] partitions per message round (server caps ~30).
-     * @param {number} [opts.waveSize=4] message sessions open at once (Zalo Web uses 4).
+     * @param {number} [opts.waveSize=4] message sessions open at once.
      * @param {number} [opts.waitMs=120000] per-phase wait budget.
      * @param {(s: {phase: string, detail?: string}) => void} [opts.onStatus]
      * @param {boolean} [opts.liveStore=true] false when the caller already taps live traffic
@@ -663,8 +663,8 @@ export class SyncV2 {
      * @returns {Promise<{conversations:number, messagesSaved:number, threadsMapped:number, threadsUnmapped:number, reason:string, days:number|null, from:number, confirmed:boolean, resumes:number, rePrompted:boolean}>}
      */
     async restore(opts = {}) {
-        // The server decides whether this account may sync from the phone at all: the web client reads
-        // `settings.features.sync_2_web.enable` and shows no sync when it is false. (Live, 2026-10-28: true on a paid
+        // The server decides whether this account may sync from the phone at all:
+        // `settings.features.sync_2_web.enable` false means no sync. (Live, 2026-10-28: true on a paid
         // and on a free account alike, with the same 300 s timeouts; the block does not depend on the zCloud plan.)
         if (this.api.getContext?.()?.settings?.features?.sync_2_web?.enable === false) {
             throw new Error(
@@ -762,7 +762,7 @@ export class SyncV2 {
             }
         };
 
-        // Zalo Web does not freeze while a sync runs: new messages keep arriving
+        // A sync does not freeze the socket: new messages keep arriving
         // on the same socket and keep being stored. A full-history run holds this
         // socket for many minutes, so without this everything that landed during
         // it was dropped -- a hole precisely where the sync promises completeness.
@@ -825,7 +825,7 @@ export class SyncV2 {
             if (opts.keepAlive !== false) {
                 keeper = startKeepAlive(L, {
                     intervalMs: typeof opts.keepAlive === "number" ? opts.keepAlive : undefined,
-                    // The interval the server gave this session at login, as Web uses it.
+                    // The interval the server gave this session at login.
                     advisedMs: Number(this.api.getContext?.()?.settings?.features?.socket?.ping_interval),
                 });
             }
@@ -893,8 +893,8 @@ export class SyncV2 {
         /**
          * Wait for one session to finish.
          *
-         * `isLast` is NOT a reliable end marker -- a captured Zalo Web run ends
-         * its final message session with isLast=0 and disposes it anyway. What
+         * `isLast` is NOT a reliable end marker -- a run can end
+         * its final message session with isLast=0 and dispose it anyway. What
          * actually marks a message session complete is that every requested
          * partition has appeared in a batch's `scopes`. The conversation round
          * asks for the empty partition and carries no scopes, so it still falls
@@ -977,8 +977,8 @@ export class SyncV2 {
          * Send one cmd 590 and wait until Zalo acknowledges it (Y4a): requests are paced by their acks, so a
          * request is never sent into a queue that has not taken the one before it.
          *
-         * A request also waits for the releases still unanswered: Web sends 591, takes its ack, and only then the
-         * 590 (capture CS1: 591 at 37.419 s, ack at 37.456, first 590 at 37.487).
+         * A request also waits for the releases still unanswered: 591 goes out, its ack comes back, and only then
+         * the 590.
          *
          * @returns {Promise<{socketClosed: boolean}>} `socketClosed` when the wire died before the ack; any other
          *   failure throws with words the person can act on
@@ -1086,7 +1086,7 @@ export class SyncV2 {
                     // thousands of messages; the listener keeps the socket alive with
                     // a setInterval ping, and a blocked loop means a missed ping
                     // means Zalo drops the connection mid-run. This is the same
-                    // problem Zalo Web avoids by decoding in a worker thread.
+                    // problem a worker thread for decoding would avoid.
                     await new Promise((r) => setImmediate(r));
                     try {
                         let plain;
@@ -1154,7 +1154,7 @@ export class SyncV2 {
                         ? "reconnected — asking for your conversation list again (your phone already confirmed)"
                         : "reconnected — asking for your conversation list again; your phone may prompt once more",
                 });
-                // A new socket starts as Web's does: the dead one's sessions released with reason 3, counting from 0.
+                // A new socket starts with the dead one's sessions released with reason 3, counting from 0.
                 await channel.releaseAbandoned();
                 channel.resetUssidx(0);
                 const retryId = newSession("conv");
@@ -1186,8 +1186,8 @@ export class SyncV2 {
                     { reason: "download-failed" },
                 );
             }
-            // Zalo Web releases the conversation session as soon as it has the
-            // list, before asking for any messages. Match that: it clears the
+            // The conversation session is released as soon as the list is in,
+            // before asking for any messages: it clears the
             // phone's banner for that round instead of holding it open.
             disposeOne(convId);
             conversations = convs.length;
@@ -1216,8 +1216,8 @@ export class SyncV2 {
             }
 
             // Tier 3: resolve 1-1 conversations not in the friend list (non-friends, OA) to
-            // real ids + names via /api/gid/decrypt — the same fallback Zalo Web uses. Left
-            // groups have no per-item endpoint, so they stay opaque (as in Zalo Web).
+            // real ids + names via /api/gid/decrypt. Left
+            // groups have no per-item endpoint, so they stay opaque.
             const unresolved = convs.filter((c) => c.convType !== 2 && !threadMap.has(c.convId)).map((c) => c.convId);
             if (unresolved.length) {
                 onStatus({ phase: "resolve", detail: `resolving ${unresolved.length} non-friend conversation(s)` });
@@ -1241,11 +1241,10 @@ export class SyncV2 {
                 }
             }
 
-            // `to` is per conversation, not a global bound. Zalo Web sends each
-            // partition its own conversation's `lastTs` -- a capture of one run
-            // shows 30 distinct `to` values across 30 partitions -- and asks for
-            // an unbounded `to` only on the conversation round, where it does
-            // not yet know what the latest message is. Sending MAX_SAFE_INTEGER
+            // `to` is per conversation, not a global bound. Each partition is
+            // sent its own conversation's `lastTs` (30 partitions, 30 distinct
+            // `to` values), and an unbounded `to` is asked for only on the
+            // conversation round, where the latest message is not yet known. Sending MAX_SAFE_INTEGER
             // per partition asks the phone to scan to the year 285428 for a
             // conversation that has been quiet since 2024.
             const askedTo = Math.min(win.to, Date.now());
@@ -1352,9 +1351,8 @@ export class SyncV2 {
             onStatus({ phase: "messages", detail: `${todo.length} conversations in ${shards.length} batch(es)` });
 
             // ---- message rounds (sharded) ----
-            // Requests go out in waves. Zalo Web opens at most FOUR message
-            // sessions at once and the phone serves them one at a time; firing
-            // all fifty shards of a full-history run at once got the socket
+            // Requests go out in waves. The phone serves message sessions one
+            // at a time; firing all fifty shards of a full-history run at once got the socket
             // dropped with no error frame, so the in-flight count is capped.
             // Within a wave the requests still go out together, which is what
             // makes them inherit the single confirmation.
@@ -1531,7 +1529,7 @@ export class SyncV2 {
                         break;
                     }
                     if (why === "stalled") {
-                        // Fail this session alone, as Web does (its idle timeout fails the session, not the run):
+                        // Fail this session alone (an idle timeout fails the session, not the run):
                         // what arrived is stored, and the conversations it never delivered are asked for once more at
                         // the end of the run, in sessions of their own.
                         const stalled = sessions.get(m.sid);
@@ -1608,9 +1606,9 @@ export class SyncV2 {
                     // The partitions of this shard now stand done, failed, or (a session that ended early) pending.
                     if (served.err) sessionErrors++;
                     settleRanges(shards[wave[k]], served);
-                    // The session is released with the others of its wave below, not now: Web and PC release a run's
-                    // sessions together once all are consumed (capture CS1: four 591 within 3 ms, none between two
-                    // 590s). The phone stops serving at about 32 sessions open together, which a wave never reaches.
+                    // The session is released with the others of its wave below, not now: a run's sessions are
+                    // released together once all are consumed. The phone stops serving at about 32 sessions open
+                    // together, which a wave never reaches.
                     if (served.err || served.failures.length) served.disposeReason ??= DISPOSE_REASON.ERROR;
 
                     finished++;
@@ -1646,9 +1644,8 @@ export class SyncV2 {
                 // that run would have had to re-fetch everything as well.
                 if (schedule.useResume() && (await reconnect())) {
                     socketDied = false;
-                    // What Web does first on a socket it opens: release, with reason 3, every session the
-                    // previous socket left open (cleanOldSyncSession; capture After-CS6: three 591 before any 590),
-                    // and count sessions from 0 again, as a new sync does. The sessions of the dead socket are
+                    // First on a new socket: release, with reason 3, every session the previous socket left
+                    // open, and count sessions from 0 again, as a new sync does. The sessions of the dead socket are
                     // gone with it; asking on without releasing them left up to 39 of them open on the phone.
                     await channel.releaseAbandoned();
                     channel.resetUssidx(1); // 0 is the conversation round, which a resume does not repeat

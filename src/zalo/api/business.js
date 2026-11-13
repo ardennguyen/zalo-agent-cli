@@ -3,29 +3,26 @@
  * quick messages, and auto-reply rules (agent/docs/zca-replace/spec-sweep.md 1.2, "Bank accounts", "Catalog",
  * "Quick messages and auto-reply"; spec-people.md 17 for `getListBankAccount`).
  *
- * Every call is one session request on the ordinary envelope (kernel/endpoint.js), shaped the way Zalo Web 26.11.10
- * shapes it (`1.c72c0957b455ab70b73c.js`, the API module). Where the Web differs from what the engine sent before,
- * the Web wins:
+ * Every call is one session request on the ordinary envelope (kernel/endpoint.js), shaped the way the server
+ * expects it. Where that differs from what the engine sent before:
  *
- * - `getListBank`: a GET with the common query only, no `params` (getListBank).
- * - `getListBankAccount`: page and limit clamped as the Web clamps them, `page >= 0`, `limit >= 1`
- *   (getListBankCard).
- * - auto-reply create, update and delete: a POST whose sealed `params` ride in the query, with no body
- *   (createAutoReply, updateAutoReply, deleteAutoReply).
+ * - `getListBank`: a GET with the common query only, no `params`.
+ * - `getListBankAccount`: page and limit clamped, `page >= 0`, `limit >= 1`.
+ * - auto-reply create, update and delete: a POST whose sealed `params` ride in the query, with no body.
  *
- * `uploadProductPhoto` keeps the one-chunk upload the engine has always sent: Web's quick-message path (featureId
- * 1, `toid` = the account's own "my documents" thread). The Web has no method body for it beside the path (its
- * catalog editor uploads with featureId 2 and no `toid`), so its definition is `verified: false` until a live run.
+ * `uploadProductPhoto` keeps the one-chunk upload the engine has always sent: the quick-message path (featureId
+ * 1, `toid` = the account's own "my documents" thread). The catalog upload's own fields (featureId 2 and no `toid`)
+ * are not confirmed, so its definition is `verified: false` until a live run.
  * Every id stays a string. Nothing here writes to stdout or logs.
  */
 import { readFile } from "node:fs/promises";
 import { ZaloApiError } from "../errors.js";
 import { sealParams } from "../kernel/http.js";
 
-/** The currency the catalog's products are priced in (Zalo Web's default, Vietnamese dong). */
+/** The currency the catalog's products are priced in (Zalo's default, Vietnamese dong). */
 export const CATALOG_CURRENCY = "₫";
 
-/** Recurrence of an auto-reply rule: every day (Zalo Web's `DefaultRecurrence`). */
+/** Recurrence of an auto-reply rule: every day (Zalo's default). */
 export const DAILY = Object.freeze(["RRULE:FREQ=DAILY;"]);
 
 /** Most photos a product may carry. */
@@ -118,7 +115,7 @@ export const BANK_DELETE = Object.freeze({
  * A catalog call: `POST {catalog}/api/prodcatalog/<path>` with the body as given.
  *
  * @param {string} path - after `/api/prodcatalog`
- * @param {number} cmd - Web's command id
+ * @param {number} cmd - command id
  * @param {(a: object, ctx: object) => object} body
  * @returns {object} an endpoint definition
  */
@@ -159,8 +156,8 @@ export const PRODUCT_LIST = catalogCall("/product/list", 12039, (a) => ({
 }));
 
 /**
- * getProductInfo, 12057: one product by its id, `{product_id}` only. Not verified: the Web's catalog editor and its
- * product card call it, and no live answer has been seen (a zBusiness catalog with a product is needed).
+ * getProductInfo, 12057: one product by its id, `{product_id}` only. Not verified: no live answer has been seen (a
+ * zBusiness catalog with a product is needed).
  */
 export const PRODUCT_VIEW = Object.freeze({
     ...catalogCall("/product/view", 12057, (a) => ({ product_id: a.productId })),
@@ -198,8 +195,7 @@ export const CATALOG_REGISTER = catalogCall("/catalog/register", 12031, (a) => (
 
 /**
  * `POST {file}/api/product/upload/photo`: one chunk, multipart, sealed params in the query (12036). Not verified: the
- * Web's command table names the path (@2511568) but no Web method shows the fields, which are the quick-message
- * upload's (spec-sweep 1.3).
+ * path is known but the fields are not, so they are the quick-message upload's (spec-sweep 1.3).
  */
 export const PRODUCT_PHOTO = Object.freeze({
     host: "file",
@@ -294,10 +290,10 @@ export const AUTO_REPLY_LIST = Object.freeze({
 
 /**
  * An auto-reply write: `POST {auto_reply}/api/autoreply/<path>` with the sealed params in the query and no body,
- * as Zalo Web posts it.
+ * as the server expects it.
  *
  * @param {string} path - after `/api/autoreply`
- * @param {number} cmd - Web's command id
+ * @param {number} cmd - command id
  * @param {(a: object, ctx: object) => object} params - the object sealed into `params`
  * @returns {object} an endpoint definition
  */
@@ -341,7 +337,7 @@ export const AUTO_REPLY_DELETE = autoReplyWrite("/delete", 12051, (a, ctx) => ({
 
 /**
  * The user ids an auto-reply rule names: only a rule scoped to chosen people (scope 2 or 3) carries them. None given
- * is an empty list, as the Web's createAutoReply/updateAutoReply default it, never a list holding a null.
+ * is an empty list, never a list holding a null.
  *
  * @param {number} scope
  * @param {string|string[]|undefined} uids

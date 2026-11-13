@@ -1,7 +1,7 @@
 /**
- * A group recall carries the group's own `visibility`, as Zalo Web's does (spec-actions 1.3, open question 4; FX 13).
+ * A group recall carries the group's own `visibility`, as Zalo expects (spec-actions 1.3, open question 4; FX 13).
  *
- * Web reads it from its group-info cache and sends 0 only when the cache has none; the previous engine always sent 0, and so did
+ * The value comes from the group-info cache, 0 only when the cache has none; the previous engine always sent 0, and so did
  * `msg undo` and `zalo_undo`. Both now pass it: from the MCP thread cache when it holds the value, else from the
  * group's info (`getGroupInfo`). A 1-1 recall is untouched, and a group whose value nobody can read still recalls
  * with 0.

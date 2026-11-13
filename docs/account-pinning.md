@@ -50,8 +50,8 @@ socket beside it.
 once (the same login on two machines, or a copied config folder): the second
 session takes the socket (close code 3000), and an on-demand daemon then waits,
 `yielded`, until `zalo-agent presence resume --yes`. Zalo also keeps only one web
-login per account: a QR login into Zalo Web elsewhere signs the server out
-(`signed_out`). Use the phone or Zalo PC beside the server, not Zalo Web.
+login per account: a QR login into Zalo in a browser elsewhere signs the server out
+(`signed_out`). Use the phone or the Zalo desktop app beside the server, not a browser.
 
 ## Running multiple live accounts simultaneously
 

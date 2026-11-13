@@ -2,8 +2,8 @@
  * The retry engine (src/zalo/retry.js): the arithmetic of "when do I try again".
  *
  * Everything is deterministic: a fixed random number, a fixed clock, and an
- * anomaly history built by hand. What each test says is the behavior of the
- * official client the engine follows, not a re-reading of the engine's own code.
+ * anomaly history built by hand. What each test says is the behavior of Zalo's
+ * own app the engine follows, not a re-reading of the engine's own code.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -242,7 +242,7 @@ describe("the anomaly history", () => {
         const errors = [
             { code: 4001, time: T0 - 1 * DAY },
             { code: 4001, time: T0 - 2 * DAY },
-            { code: 4001, time: T0 - 2 * DAY + 3600_000 }, // same day as the one above: counts again, as the official client counts entries
+            { code: 4001, time: T0 - 2 * DAY + 3600_000 }, // same day as the one above: counts again, as Zalo's own app counts entries
             { code: 5011, time: T0 - 1 * DAY },
             { code: 4001, time: T0 - 1000 }, // today: not counted
         ];

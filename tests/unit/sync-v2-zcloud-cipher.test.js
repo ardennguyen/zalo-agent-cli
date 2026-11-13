@@ -2,16 +2,14 @@
  * src/zalo/kernel/zcloud-cipher.js — the zCloud params/response cipher.
  *
  * zCloud (`zcld.chat.zalo.me`) does not use the session cipher every other
- * Zalo endpoint uses (session key, all-zero IV). Zalo Web's module `98yS`
- * (bundle 1.e0ef5e98f8f9d8970e2c.js @2868035, captured 2026-09-29) does:
+ * Zalo endpoint uses (session key, all-zero IV). It is:
  *
  *   encryptAES(json, enk) = base64( iv16 ‖ AES-CBC-PKCS7(json, key = base64decode(enk)) )
  *                           with a fresh random iv per call
  *   decryptAES(b64,  enk) = split the first 16 bytes off as the iv, then the same
  *   encodeParams(obj)     = encodeURIComponent(encryptAES(JSON.stringify(obj), enk))
  *
- * The fixed vectors below were produced once by that module re-run with
- * crypto-js (the library the web client itself calls), with a chosen IV in
+ * The fixed vectors below were produced once with crypto-js, with a chosen IV in
  * place of the random one, and reviewed when they were written down. They are
  * not made by the module under test, so a green run means our Node-crypto
  * implementation reads what the client writes, not merely that it agrees with
@@ -38,7 +36,7 @@ const cipher = () => import("../../src/zalo/kernel/zcloud-cipher.js");
 const bytes = (b64) => Uint8Array.from(Buffer.from(b64, "base64"));
 
 /**
- * The web client's `encryptAES` of PAYLOAD under ENK_256 with the IV 00 01 .. 0f, and of "short key" under ENK_128
+ * `encryptAES` of PAYLOAD under ENK_256 with the IV 00 01 .. 0f, and of "short key" under ENK_128
  * with the IV f0 e0 .. 00.
  */
 const WEB_SEALED_256 =
@@ -91,7 +89,7 @@ describe("zcloud-cipher", () => {
         assert.equal(decryptZCloud(b, ENK_256), "same plaintext");
     });
 
-    it("what it encrypts is in the web client's format: the IV, then AES-CBC under it", async () => {
+    it("what it encrypts is in Zalo's format: the IV, then AES-CBC under it", async () => {
         const { encryptZCloud } = await cipher();
         const ct = encryptZCloud(JSON.stringify(PAYLOAD), ENK_256);
         assert.ok(isWebFormat(ct, ENK_256, JSON.stringify(PAYLOAD)));
@@ -99,7 +97,7 @@ describe("zcloud-cipher", () => {
         assert.equal(isWebFormat(ct, OTHER_ENK, JSON.stringify(PAYLOAD)), false);
     });
 
-    it("what the web client's encryptAES produced, it decrypts", async () => {
+    it("what the reference encryptAES produced, it decrypts", async () => {
         const { decryptZCloud } = await cipher();
         assert.deepEqual(JSON.parse(decryptZCloud(WEB_SEALED_256, ENK_256)), PAYLOAD);
         assert.ok(isWebFormat(WEB_SEALED_256, ENK_256, JSON.stringify(PAYLOAD)), "the restatement reads it too");

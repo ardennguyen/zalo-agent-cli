@@ -2,9 +2,9 @@
  * Fetch the media that a transfer-sync only ever gave us references to.
  *
  * The sync stream carries no file bytes — just CDN URLs on `attach.href` /
- * `attach.thumb`. Zalo Web does the same thing: it indexes those references at
- * sync time and fetches lazily when you scroll to the message. This module is
- * the deliberate, batched version of that fetch.
+ * `attach.thumb`. A chat app indexes those references at sync time and
+ * fetches lazily when you scroll to the message. This module is the
+ * deliberate, batched version of that fetch.
  *
  * Expiry is the interesting part. A Zalo CDN URL is signed with a lifetime
  * tied to the message's age; once it lapses the server answers 200 with a JSON
@@ -86,10 +86,9 @@ const CONTENT_TYPE_EXT = {
 };
 
 /**
- * The JPEG twin of a JPEG XL photo URL, as Zalo Web asks for it when it cannot decode JPEG XL (the sync worker's own
- * normalizer): `…/jxl/…/x.jxl?jxlstatus=1` becomes `…/jpg/…/x.jpg`. A JPEG XL file opens in almost no viewer and no
- * model, so the CLI always takes the JPEG. An end-to-end encrypted session's URL keeps its form, as on the Web; any
- * other URL is returned unchanged.
+ * The JPEG twin of a JPEG XL photo URL, the form Zalo serves to a client that cannot decode JPEG XL:
+ * `…/jxl/…/x.jxl?jxlstatus=1` becomes `…/jpg/…/x.jpg`. A JPEG XL file opens in almost no viewer and no model, so the
+ * CLI always takes the JPEG. An end-to-end encrypted session's URL keeps its form; any other URL is returned unchanged.
  *
  * @param {string} url
  * @returns {string}
@@ -425,7 +424,7 @@ function writeConversationIndex(mediaRoot, names, scope) {
  * @param {number} [opts.limit=-1] - opt-in bound on the messages considered; -1 (default): every one still missing its file
  * @param {number} [opts.since] / @param {number} [opts.until] - epoch ms bounds
  * @param {number} [opts.concurrency=2] - parallel downloads. Two, not more: the CDN answers a burst with 403 and 429
- *   long before it runs short of bandwidth, and Zalo Web fetches a file only when it is opened
+ *   long before it runs short of bandwidth
  * @param {number} [opts.maxFiles] - download at most this many files in this run; the rest are counted in
  *   `deferred` and stay pending for the next run. Unset: all of them
  * @param {number} [opts.maxBytes] - skip attachments larger than this
@@ -544,7 +543,7 @@ export async function downloadSyncedMedia(opts = {}) {
 
     // Explicit mediaRootOpt or global ZALO_MEDIA_DIR (--media-dir) overrides the
     // per-account default (<accountDir>/media).
-    // The account's own fetch: its proxy, its User-Agent and the Web client's Referer (plan item ZP-01).
+    // The account's own fetch: its proxy, its User-Agent and the Referer Zalo expects (plan item ZP-01).
     const download = opts.fetchImpl ?? createDownloadFetch(api);
     const isInCloudIndex = (row) => {
         try {

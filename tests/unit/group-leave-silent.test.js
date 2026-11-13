@@ -2,7 +2,7 @@
  * `group leave` and `group disperse`, driven end to end offline over the session's HTTP seam.
  *
  * - `-s/--silent` reaches Zalo as `silent: 1` (the previous engine's command never passed it on).
- * - Leave as Zalo PC 26.11.11 does: a member leaves; the owner of a group with other members must name the next
+ * - Leave as Zalo does: a member leaves; the owner of a group with other members must name the next
  *   owner (`--new-owner`: change-owner, then leave) or let Zalo pick one (`--random-owner`), else nothing is sent.
  * - Disperse deletes the group for everyone, so only the owner can; anyone else is refused before anything is sent.
  *
@@ -38,7 +38,7 @@ function groupInfo({ creatorId, adminIds = [], members }) {
     };
 }
 
-describe("group leave and disperse reach Zalo as Zalo PC does", () => {
+describe("group leave and disperse reach Zalo as Zalo expects", () => {
     let fake;
 
     before(async () => {

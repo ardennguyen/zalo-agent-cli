@@ -1,19 +1,18 @@
 /**
- * The read-only endpoints Zalo Web calls and this client did not (plan track S, 6.1).
+ * The read-only endpoints Zalo offers that this client did not call (plan track S, 6.1).
  *
- * Every entry is one GET or POST of the web client's API module (`fBUP`, bundle build 826674fb31d2af1b2b59 and the
- * 2026-10-23 refresh), with its service-map host, path, command id and the body it encrypts, read from that module's
- * method of the same purpose. They all ride the session cipher: the body is JSON, AES-encrypted with the session key
+ * Every entry is one GET or POST of Zalo's API, with its service-map host, path, command id and the body it
+ * encrypts. They all ride the session cipher: the body is JSON, AES-encrypted with the session key
  * into `params`, in the query of a GET or the form body of a POST, beside `zpw_ver` and `zpw_type`; the reply is the
  * ordinary session envelope. `check-update` is the exception, a plain query with no encryption.
  *
  * Reads only. A call here changes nothing on the account: no entry sends a message, a receipt, a seen mark or a
- * setting. The state-changing endpoints of the same web client (plan 6.2) are in ./writes.js, behind a dry run and a
+ * setting. The state-changing endpoints of the same API (plan 6.2) are in ./writes.js, behind a dry run and a
  * confirmation.
  *
  * `verified` says whether the entry's reply has been seen on a live account. An entry that is not verified has its
- * request shape from the bundle (or, for the emoji-status pair, only its path and the presence of `params` from a
- * capture), so a failure of it says "not accepted", not "broken".
+ * request shape unconfirmed (for the emoji-status pair, only its path and the presence of `params` are known), so a
+ * failure of it says "not accepted", not "broken".
  */
 import { CallError, CallUsageError, arg, buildCall, list, num, runCall } from "./web-call.js";
 import { errorCodeOf } from "./errors.js";
@@ -55,7 +54,7 @@ function localRead(name) {
     };
 }
 
-/** The avatar size the web client asks profile endpoints for. */
+/** The avatar size asked of profile endpoints. */
 const AVATAR_SIZE = 160;
 
 /** The largest signed 64-bit id, past every real message id: a "page back from" read then starts at the newest. */
@@ -65,7 +64,7 @@ const NEWEST_PAGE_ID = String(2n ** 63n - 1n);
  * @typedef {object} ReadDef
  * @property {string} host - service-map key, or "auth"
  * @property {string} path
- * @property {number|null} cmd - the web client's command id (documentation; it is not sent)
+ * @property {number|null} cmd - Zalo's command id (documentation; it is not sent)
  * @property {"get"|"post"|"query"} [method="get"] - "query": a GET whose body is the plain query, unencrypted
  * @property {"session"|"plain"} [reply="session"] - "plain": the reply is `{error_code, data}` with `data` unencrypted
  * @property {number[]} [okCodes] - error codes besides 0 that are an answer, not a failure
@@ -120,7 +119,7 @@ export const READS = {
         path: "/api/login/setting",
         cmd: 11329,
         reply: "plain",
-        what: "The server-side client settings the web client reads at boot (seasonal effects and the like)",
+        what: "The server-side client settings Zalo reads at startup (seasonal effects and the like)",
         args: [],
         verified: true,
     },
@@ -151,7 +150,7 @@ export const READS = {
         host: "conversation",
         path: "/api/conv/cm/grOfl",
         cmd: 12300,
-        what: "Which conversations have messages waiting offline (the web client's own boot probe; `{}`, `0`, `0` ask for all)",
+        what: "Which conversations have messages waiting offline (Zalo's own startup probe; `{}`, `0`, `0` ask for all)",
         args: [
             arg("queueInfo", "json", "queue info as the client sends it", true),
             arg("lastActId", "string", "last action id"),
@@ -314,7 +313,7 @@ export const READS = {
         host: "profile",
         path: "/api/social/oa/convertid",
         cmd: 11863,
-        what: "Turn Official Account ids into the ids the profile service uses for them (the web client asks before opening an OA from a link)",
+        what: "Turn Official Account ids into the ids the profile service uses for them (Zalo asks before opening an OA from a link)",
         args: [arg("oaIds", "json", "OA ids without the `OA` prefix (array)", true)],
         body: (a) => ({ oa_ids: list(a.oaIds).map(String) }),
         // Answered `{}` for an id that is not an OA (2026-10-28); the shape of a real OA's answer has not been seen.
@@ -493,7 +492,7 @@ export const READS = {
         host: "banner",
         path: "/api/banner/v1/info",
         cmd: 16181,
-        what: "The banners Zalo shows at the top of the conversation list (new in this web build)",
+        what: "The banners Zalo shows at the top of the conversation list",
         args: [],
         body: (_a, ctx) => ({ imei: ctx.imei }),
         verified: true,
@@ -591,7 +590,7 @@ function msgIdOf(v) {
  *   paging: object}>}>}
  */
 export const READ_PAGERS = {
-    // Zalo PC's blocked-friend loop: page after page while `has_more`, 50 a page.
+    // The blocked-friend list: page after page while `has_more`, 50 a page.
     blocklist: {
         asked: ["page", "count"],
         walk: async (call) => {
@@ -607,7 +606,7 @@ export const READ_PAGERS = {
             };
         },
     },
-    // Zalo Web's alias list: on while `hasMore` when the reply has it, else while a page is full; 212 past page 1 is
+    // The alias list: on while `hasMore` when the reply has it, else while a page is full; 212 past page 1 is
     // the end of the list.
     aliases: {
         asked: ["page", "count"],

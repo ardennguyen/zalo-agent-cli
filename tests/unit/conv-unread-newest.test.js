@@ -1,5 +1,5 @@
 /**
- * `conv unread` pins the unread mark to the conversation's newest message, as Zalo Web's `_markUnread` does: the
+ * `conv unread` pins the unread mark to the conversation's newest message, as Zalo expects: the
  * newest cached message with a client id, its `cliMsgId` and sender (`"0"` for this account's own). Before, the
  * command sent only the thread id, so the mark carried the clock as a message id and `"0"` as the sender.
  *
@@ -81,18 +81,18 @@ describe("conv unread: the mark names the newest cached message", () => {
             row({ threadId: t, msgId: "8000000000000402", cliMsgId: "1700000000402", senderId: MEMBER, ts: 2 }),
         );
         const calls = await unread([t, "-t", "1"]);
-        // Red if the command still passed the thread alone (the Web's mark would name no message).
+        // Red if the command still passed the thread alone (the mark would name no message).
         assert.deepEqual(calls, [[t, 1, { cliMsgId: "1700000000402", fromUid: MEMBER }]]);
     });
 
-    it('our own message: fromUid "0", the Web\'s name for this account', async () => {
+    it('our own message: fromUid "0", Zalo\'s name for this account', async () => {
         const t = freshThread();
         insertMessage(row({ threadId: t, msgId: "8000000000000501", cliMsgId: "1700000000501", senderId: OWN, ts: 5 }));
         const calls = await unread([t]);
         assert.deepEqual(calls, [[t, 0, { cliMsgId: "1700000000501", fromUid: "0" }]]);
     });
 
-    it('an empty cache: null, so the Web\'s "-1" goes out', async () => {
+    it('an empty cache: null, so "-1" goes out', async () => {
         const t = freshThread();
         const calls = await unread([t]);
         assert.deepEqual(calls, [[t, 0, null]]);

@@ -225,7 +225,7 @@ async function forwardSource(api, row) {
         senderUid: sender.uid,
         threadId,
         isGroup: kind === "group" && !isMyDocuments,
-        // The web's sendDttm: the server timestamp for any message it did not
+        // Zalo's sendDttm: the server timestamp for any message it did not
         // send itself. The cliMsgId is the fallback for a row that lost it.
         ts: Number(row.timestamp) || Number(cliMsgId),
         ...(isMyDocuments && { logSrcType: LOG_SRC_TYPE.MY_CLOUD }),
@@ -816,10 +816,10 @@ export function registerMsgCommands(program) {
 
                 // Build message content. `urgency` is 1 (important) or 2
                 // (urgent); the session turns it into the `metaData: {urgency}`
-                // object Zalo Web sends, on every text endpoint.
+                // object Zalo sends, on every text endpoint.
                 //
                 // Zalo refuses one oversized message (114 plain, 112 styled), so
-                // a long text goes out as Web sends it: split at 3000 bytes of
+                // a long text goes out as Zalo sends it: split at 3000 bytes of
                 // text plus styles, in order, 300 ms apart. The quote and the
                 // urgency belong to the first part only.
                 const urgency = opts.urgency;
@@ -1163,7 +1163,7 @@ export function registerMsgCommands(program) {
 
     msg.command("send-video <threadId> <video>")
         .description(
-            "Send a video from a URL, or a local file uploaded in chunks and sent as a video as Zalo Web does " +
+            "Send a video from a URL, or a local file uploaded in chunks and sent as a video as Zalo does " +
                 "(the local-file path is unverified live)",
         )
         .requiredOption("--thumb <urlOrFile>", "Thumbnail: an image URL, or a local jpg/png/webp (uploaded)")
@@ -1399,7 +1399,7 @@ export function registerMsgCommands(program) {
                     error(target.error);
                     return;
                 }
-                // A group recall carries the group's own visibility, as Zalo Web's does (src/zalo/custom/group-visibility.js).
+                // A group recall carries the group's own visibility, as Zalo's does (src/zalo/custom/group-visibility.js).
                 const api = getApi();
                 const payload = await undoPayload(
                     api,
@@ -1563,8 +1563,8 @@ export function registerMsgCommands(program) {
             // message. Without it the copy arrives as plain text with no
             // "forwarded" badge, which is all this command used to send. The
             // reference id is md5(cliMsgId + senderUid + conversationKey),
-            // derived the way Zalo Web derives it -- src/zalo/custom/forward.js has
-            // the derivation and the capture it reproduces. Refuse rather than
+            // derived the way Zalo derives it -- src/zalo/custom/forward.js has
+            // the derivation. Refuse rather than
             // send a reference built from a guess.
             const source = await forwardSource(api, row);
             if (source.error) {
@@ -1714,7 +1714,7 @@ export function registerMsgCommands(program) {
     msg.command("history <threadId>")
         .description(
             "A conversation's history: everything cached, or for a group not cached yet, Zalo's group message store " +
-                "paged back until it has nothing older. A DM has no server history (as on Zalo Web and PC): the cache, " +
+                "paged back until it has nothing older. A DM has no server history (as in Zalo): the cache, " +
                 "plus the socket's old-message scan only with --scan",
         )
         .option("-t, --type <n>", "Thread type: 0=User(DM), 1=Group", "0")
@@ -1775,7 +1775,7 @@ export function registerMsgCommands(program) {
                 process.exit(1);
             }
 
-            // A hidden chat's history is shown only with --include-hidden and the PIN, as Web opens one.
+            // A hidden chat's history is shown only with --include-hidden and the PIN, as Zalo opens one.
             const hidden = await hiddenAccess(opts, { ownId: activeAcc.ownId, api, json: jsonMode });
             if (hidden.mode !== "include" && hidden.set.isHidden(threadId)) {
                 const why =
@@ -2048,7 +2048,7 @@ export function registerMsgCommands(program) {
     msg.command("typing <threadId>")
         .description(
             'Show the "typing…" indicator in a conversation. Refused for a stranger in a 1-1 conversation when the ' +
-                "friend list is known, as Zalo Web never sends it there; a one-shot command knows none, so it sends " +
+                "friend list is known, as Zalo never sends it there; a one-shot command knows none, so it sends " +
                 "and says so",
         )
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
@@ -2150,8 +2150,8 @@ export function registerMsgCommands(program) {
                 error(`URL scan failed: ${e.message}`);
             }
         });
-    // Asked about first, as Zalo Web does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
-    // `msg pin` is not guarded: Zalo Web asks only when the pin would replace one, and knowing that takes a read.
+    // Asked about first, as Zalo does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    // `msg pin` is not guarded: Zalo asks only when the pin would replace one, and knowing that takes a read.
     guardSubcommand(msg, "undo", "msg.undo", { target: (msgId, threadId) => ({ msgId, threadId }) });
     guardSubcommand(msg, "delete", "msg.delete", {
         target: (msgId, threadId, opts) => ({ msgId, threadId, everyone: Boolean(opts.everyone) }),

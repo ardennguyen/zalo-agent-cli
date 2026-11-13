@@ -1,15 +1,15 @@
 /**
- * The account's hidden conversations, as Zalo Web keeps them: which threads are hidden, whether a PIN is set, and the
+ * The account's hidden conversations, as Zalo keeps them: which threads are hidden, whether a PIN is set, and the
  * check of a PIN someone typed. Shared by the CLI and the MCP server, so both hide the same threads.
  *
  * - The set is filled from `hiddenconvers/get-all` (refresh) and kept current from the 601 `hidden_chat` controls
- *   (attachHiddenChatControls): `add_remove` refetches, `reset` clears it (Web's other devices only clear their local
+ *   (attachHiddenChatControls): `add_remove` refetches, `reset` clears it (the other devices only clear their local
  *   state; the device that reset deletes the conversations), `change_pin` takes the new hash.
  * - Zalo's get-all answer carries `pin`, the unsalted MD5 of the 4-digit PIN. It stays in this process's memory, in a
  *   private field, and is used only to check a PIN. It is never written, logged or returned.
  * - A mirror of the thread ids alone (`hidden-threads.json` in the account folder) lets a command that has no
  *   session (`msg search`) still leave hidden threads out.
- * - A wrong PIN counts toward a lockout, as Web's does: after 6 failures, each further try waits a growing back-off.
+ * - A wrong PIN counts toward a lockout, as in Zalo: after 6 failures, each further try waits a growing back-off.
  *   The state file (`hidden-pin-lockout.json`) holds only counts and times.
  */
 
@@ -19,7 +19,7 @@ import { readSealedJson, scopeOfDir, writeSealedJson } from "./keystore/index.js
 import { dirname, join } from "node:path";
 import { writeFileAtomic } from "../zalo/kernel/atomic-file.js";
 
-/** Failures before the back-off starts (Zalo Web's count). */
+/** Failures before the back-off starts (Zalo's count). */
 export const PIN_FREE_TRIES = 6;
 /** The first back-off, doubled for each further failure, capped at PIN_MAX_BACKOFF_MS. */
 export const PIN_BASE_BACKOFF_MS = 30_000;
@@ -370,7 +370,7 @@ export function withoutHidden(list, set, mode, idOf = (item) => item?.threadId) 
 
 /**
  * An event as the policy passes it on: unchanged, null (left out), or `{event, hidden: true}` with no thread id and
- * no content (`contentless`, Web's unread dot).
+ * no content (`contentless`, like Zalo's unread dot).
  *
  * @param {object} event
  * @param {HiddenChats|null|undefined} set

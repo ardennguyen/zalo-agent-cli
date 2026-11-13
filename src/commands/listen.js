@@ -140,7 +140,7 @@ export function registerListenCommand(program) {
         )
         .option(
             "--no-self-heal",
-            "Do not pull what a dropped socket missed from Zalo's offline queue on reconnect (the default does, as Zalo Web does, on this socket and with no phone tap)",
+            "Do not pull what a dropped socket missed from Zalo's offline queue on reconnect (the default does, as Zalo does, on this socket and with no phone tap)",
         )
         .option(
             "--log-level <level>",
@@ -421,7 +421,7 @@ export function registerListenCommand(program) {
              * How the daemon self-heals
              * -------------------------
              * A window the socket was down for is first RECORDED here, then
-             * closed from Zalo's offline queue -- the way Zalo Web closes it on
+             * closed from Zalo's offline queue -- the way Zalo closes it on
              * every connect. After each handshake the daemon asks each message
              * queue (510_1, 511_1) for everything after the last message it
              * stored, pages until the server says there is no more, and writes
@@ -447,7 +447,7 @@ export function registerListenCommand(program) {
              *    and the daemon never starts it on its own -- only a
              *    `zalo-agent sync` someone typed does. (The self-heal this
              *    replaces called the retired pullMobileMsg/getCrossDB pair,
-             *    MEASURED 2026-09-20 to have zero call sites in Zalo Web: it
+             *    MEASURED 2026-09-20 to be unused by Zalo itself: it
              *    announced an attempt, said nothing more, and the gap stayed
              *    pending forever.)
              *
@@ -558,7 +558,7 @@ export function registerListenCommand(program) {
             const enabledEvents = new Set(opts.events.split(",").map((e) => e.trim()));
 
             // Delivered receipts (deliveredv2): what every Zalo client sends when a
-            // message arrives -- Zalo Web included, for our own echoes too. Built
+            // message arrives -- for our own echoes too. Built
             // once and shared with `mcp start` through src/zalo/receipts.js, so the
             // two listeners cannot drift apart (AGENTS.md §13). `getApi`, not an
             // api: a re-login replaces it. Seen receipts are never sent from here.
@@ -1082,7 +1082,7 @@ export function registerListenCommand(program) {
                             {
                                 event: "typing",
                                 // "typing", or "fsending": the peer is sending a file. Our own devices' typing never
-                                // arrives here (the listener drops it, as Zalo Web does).
+                                // arrives here (the listener drops it, as Zalo does).
                                 action: t.action ?? "typing",
                                 threadId: t.threadId,
                                 isGroup: t.type === THREAD_GROUP,
@@ -1123,7 +1123,7 @@ export function registerListenCommand(program) {
                     // is what tells being removed from removing someone else
                     // -- mcp.js passes it too.
                     const gone = storeGroupEvent(event, { ownId: activeAcc.ownId });
-                    // A gone group's later events are skipped until a join names us (Zalo Web's ZGroupLeaveCache).
+                    // A gone group's later events are skipped until a join names us (as Zalo does).
                     if (gone.ignored) return;
                     // Our own exit: purge the group's history, or keep it flagged (groups.onLeave, read now). The
                     // group_gone event goes out through the sink set at start.

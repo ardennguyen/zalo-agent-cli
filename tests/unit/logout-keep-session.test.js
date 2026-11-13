@@ -1,9 +1,9 @@
 /**
- * `logout --keep-session` on a real session against the offline fake Zalo: the key-only logout sends Zalo Web's
- * production `GET api/login/logOut`, then Zalo Web's `logoutV2` (src/zalo/official-logout.js `sendLogoutV2`), then
+ * `logout --keep-session` on a real session against the offline fake Zalo: the key-only logout sends the
+ * production `GET api/login/logOut`, then `logoutV2` (src/zalo/official-logout.js `sendLogoutV2`), then
  * probes the key with `fetchAccountInfo`.
  *
- * What is pinned is the logoutV2 the Web sends (cmd 12743): `POST stg-wpa.chat.zalo.me/api/v2/login/logOut`, the
+ * What is pinned is the logoutV2 Zalo expects (cmd 12743): `POST stg-wpa.chat.zalo.me/api/v2/login/logOut`, the
  * common params in the query, and a form whose only field is `params`, sealed with the session key, holding
  * exactly `{time, imei, computer_name, language}` in that order, with `time` in unix SECONDS. The old logoutV2
  * call this replaces sent milliseconds and no `language`. Also: a refused logoutV2 does not stop the probe, and a probe that fails to parse prints nothing
@@ -26,7 +26,7 @@ const V2_PATH = "/api/v2/login/logOut";
 const plain = (body) =>
     new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
 
-describe("logout --keep-session sends Zalo Web's logoutV2", () => {
+describe("logout --keep-session sends logoutV2", () => {
     let fake;
     let api;
 
@@ -70,7 +70,7 @@ describe("logout --keep-session sends Zalo Web's logoutV2", () => {
     const order = () =>
         fake.requests.map((r) => `${r.method} ${r.host}${r.path}`).filter((c) => !c.includes("registry.npmjs.org"));
 
-    it("POSTs the sealed Web form, time in unix seconds, after the production GET and before the probe", async () => {
+    it("POSTs the sealed form, time in unix seconds, after the production GET and before the probe", async () => {
         serve();
         const before = Math.floor(Date.now() / 1000);
         const result = await serverLogout(api, KEEP);
@@ -93,7 +93,7 @@ describe("logout --keep-session sends Zalo Web's logoutV2", () => {
         const opened = openSession(FAKE.sessionKey, req.form.params);
         assert.notEqual(opened, null, "sealed with the session key");
         const sent = JSON.parse(opened);
-        // The Web form exactly (logoutV2 @11580968): red on a key added, dropped or moved, `language` included.
+        // The expected form exactly: red on a key added, dropped or moved, `language` included.
         assert.deepEqual(Object.keys(sent), ["time", "imei", "computer_name", "language"]);
         assert.equal(sent.imei, FAKE_CREDENTIALS.imei);
         assert.equal(sent.computer_name, "Web");

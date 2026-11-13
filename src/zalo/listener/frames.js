@@ -9,16 +9,16 @@
  *   0  the JSON text itself
  *   1  base64 of a zlib- or gzip-compressed JSON text
  *   2  URI-encoded base64 of `iv (16 bytes) | additional data (16 bytes) | AES-GCM ciphertext | tag (16 bytes)`,
- *      whose plaintext is compressed JSON; the key is the session cipher key (base64, 16 or 32 bytes, as Web's
- *      WebCrypto import accepts any AES size)
+ *      whose plaintext is compressed JSON; the key is the session cipher key (base64, 16 or 32 bytes: any AES
+ *      size is accepted)
  *   3  as 2, but the plaintext is the JSON text, not compressed
  *
  * The session cipher key arrives in the cmd 1 frame's top-level `key`, and that frame's own `data` is encrypted
  * under it. An outbound frame carries the JSON of `data` in the clear, or nothing after the header when there is no
  * data object.
  *
- * Ids: the decoder can quote bare integer ids by key before parsing (`idKeys`, see ../kernel/json-ids.js), the way
- * Web's chat and control handlers do. {@link idKeysForCmd} names the list for a cmd.
+ * Ids: the decoder can quote bare integer ids by key before parsing (`idKeys`, see ../kernel/json-ids.js), per
+ * handler family (chat, control). {@link idKeysForCmd} names the list for a cmd.
  *
  * Pure functions: no socket, no state, no output.
  */
@@ -39,10 +39,10 @@ export const CMD_AUTH = 1;
 export const CMD_PING = 2;
 
 /**
- * Cmds the Web chat handler owns: pushes (501, 521, 502, 522, 504, 524, 570, 534), the Signal pushes it routes
+ * Cmds the chat handler owns: pushes (501, 521, 502, 522, 504, 524, 570, 534), the Signal pushes routed
  * through the same path (551, 552, 535, ...), the cloud pushes (620, 621, 623), 530, 533, the kick (3000), and the
- * two chat queue answers this client pulls (510, 511). Web adds the rest of its chat queues at run time from the
- * handshake's `qCmds`; {@link idKeysForCmd} does the same when given the handshake data.
+ * two chat queue answers this client pulls (510, 511). The rest of the chat queues come at run time from the
+ * handshake's `qCmds`; {@link idKeysForCmd} adds them when given the handshake data.
  */
 export const CHAT_CMDS = Object.freeze([
     501, 521, 502, 522, 504, 524, 570, 534, 551, 552, 535, 543, 544, 548, 549, 561, 580, 581, 582, 559, 546, 550, 553,
@@ -50,8 +50,8 @@ export const CHAT_CMDS = Object.freeze([
 ]);
 
 /**
- * Cmds the Web control handler owns: actions (602), reactions (612 push, 613 clear, 610 and 611 pages), controls (601
- * push, 603 page) and 600. Web adds its control queues at run time from the handshake's `ctrl_qCmds`.
+ * Cmds the control handler owns: actions (602), reactions (612 push, 613 clear, 610 and 611 pages), controls (601
+ * push, 603 page) and 600. The control queues come at run time from the handshake's `ctrl_qCmds`.
  */
 export const CTRL_CMDS = Object.freeze([602, 612, 613, 610, 611, 601, 603, 600]);
 
@@ -62,12 +62,12 @@ function queueCmds(list) {
 }
 
 /**
- * The id key list Web parses a cmd's payload with: the chat list for chat cmds, the control list for control cmds,
+ * The id key list a cmd's payload is parsed with: the chat list for chat cmds, the control list for control cmds,
  * and null (a plain parse) for anything else, the handshake and the ping included.
  *
  * @param {number} cmd
  * @param {{qCmds?: Array<{cmd: number}>, ctrl_qCmds?: Array<{cmd: number}>}|null} [auth] - the decoded handshake
- *   data; its queue lists join the chat and control families, as they do in Web
+ *   data; its queue lists join the chat and control families
  * @returns {readonly string[]|null}
  */
 export function idKeysForCmd(cmd, auth = null) {
@@ -112,7 +112,7 @@ const isUint = (n, max) => Number.isInteger(n) && n >= 0 && n <= max;
 
 /**
  * Build an outbound frame: the header, then the UTF-8 JSON of `data` when `data` is a plain object, and nothing
- * more otherwise (Web's `_send`).
+ * more otherwise.
  *
  * @param {{version?: number, cmd: number, subCmd: number, data?: object}} payload - `version` defaults to 1;
  *   `subCmd` has no default, because a wrong one is silently ignored by the server
@@ -167,7 +167,7 @@ function inflate(bytes) {
  * Decode an inbound envelope's `data` into the payload object.
  *
  * Same call shape as the decoder in src/core/sync-v2/index.js, which re-exports this one: `decodeFrame(parsed,
- * cipherKey)` parses plainly; pass `{idKeys}` to keep the listed ids lossless (Web's per-handler preParse).
+ * cipherKey)` parses plainly; pass `{idKeys}` to keep the listed ids lossless (the per-handler key lists).
  *
  * @param {{encrypt: number, data: string}} parsed - the frame's JSON envelope
  * @param {string|null|undefined} cipherKey - the session key (base64); needed for encrypt 2 and 3 only
@@ -196,8 +196,8 @@ export function decodeFrame(parsed, cipherKey, opts = {}) {
 /**
  * Read the handshake (cmd 1) envelope: take its cipher key, and decode its `data` under that same key.
  *
- * One deliberate leniency against Web: Web's `_processAuthData` requires the decoded payload's `error_code` to be
- * exactly 0 (else INVALID_AUTH_DATA, 5007). Here a payload that carries no `error_code` at all is accepted, and only
+ * One deliberate leniency: a strict reading requires the decoded payload's `error_code` to be exactly 0 (else
+ * INVALID_AUTH_DATA, 5007). Here a payload that carries no `error_code` at all is accepted, and only
  * a present, non-zero one refuses the session. The previous engine never decoded this payload, so a key frame without the field
  * has always opened a session for this client, and nothing reads the field but this check; refusing it would end
  * sessions that work today over a field no consumer uses. An explicit refusal (any non-zero code) is still final.
@@ -207,14 +207,14 @@ export function decodeFrame(parsed, cipherKey, opts = {}) {
  * @returns {{key: string, auth: object|null}} `auth` is the decoded payload's `data` (`{qCmds, ctrl_qCmds,
  *   bk_cmds}`), or null when the envelope carries no data
  * @throws {Error} when the envelope has no key, or its data does not decode, or the decoded payload reports a
- *   non-zero `error_code` (Web refuses the session in all three cases)
+ *   non-zero `error_code`
  */
 export function readAuthFrame(envelope) {
     const key = envelope?.key;
     if (typeof key !== "string" || key.length === 0) throw new Error("handshake frame carries no cipher key");
     if (typeof envelope.data !== "string" || envelope.data.length === 0) return { key, auth: null };
     const payload = decodeFrame(envelope, key);
-    // Absent is accepted on purpose (see above); a present code must be 0, as in Web.
+    // Absent is accepted on purpose (see above); a present code must be 0.
     if (payload?.error_code !== undefined && payload.error_code !== 0) {
         throw new Error(`handshake refused with error_code ${payload.error_code}`);
     }

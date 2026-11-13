@@ -29,7 +29,7 @@ describe("createDownloadFetch", () => {
         assert.equal(seen[0].url, "https://batch.zalo.invalid/a");
     });
 
-    it("carries the session's User-Agent, the Web client's Referer and the browser's fetch headers, and no cookie", async () => {
+    it("carries the session's User-Agent, the expected Referer and the browser's fetch headers, and no cookie", async () => {
         let init;
         const f = createDownloadFetch(
             apiWith(async (_u, i) => {

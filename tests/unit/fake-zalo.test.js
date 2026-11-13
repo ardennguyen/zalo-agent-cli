@@ -255,7 +255,7 @@ describe("fake Zalo", () => {
             const [messages] = await old;
             assert.deepEqual(messages, []);
             const sent = zalo.sock.framesOf(510, 1).at(-1);
-            // the Web's key (reqId), not the previous engine's own (req_id): see src/zalo/pulls.js
+            // the expected key (reqId), not the previous engine's own (req_id): see src/zalo/pulls.js
             assert.deepEqual(Object.keys(sent.data).sort(), ["first", "lastId", "preIds", "reqId"]);
         });
 

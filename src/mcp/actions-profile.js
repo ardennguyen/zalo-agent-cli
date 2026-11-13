@@ -190,7 +190,7 @@ export const PROFILE_META = {
         "`setting`, `value`), 'avatars' (the avatar gallery), 'full_avatar' " +
         "(a user's full-size avatar), 'avatar_url' (several users' avatar URLs), 'delete_avatar' (photos from " +
         "the gallery; asked about first: `confirm`, `dryRun`), 'reuse_avatar' (an earlier photo as the avatar), " +
-        "'active' (this session's presence, active or away, as Zalo Web sends when its tab gains or " +
+        "'active' (this session's presence, active or away, as Zalo sends when its window gains or " +
         "loses focus; it does not hide the online status, which is 'set' with setting 'online-status'), " +
         "'lang' (the account language), 'devices' (the phone and " +
         "the devices linked to this account) and 'usage' (read-only: this account's storage on the server, its " +

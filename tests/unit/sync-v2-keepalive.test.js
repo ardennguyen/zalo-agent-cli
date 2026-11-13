@@ -5,7 +5,7 @@
  * method exists on the session and is an HTTP GET to `<chat host>/keepalive`. It
  * never touches the WebSocket, so it cannot keep this socket warm. The frame
  * that does is Zalo's own `cmd 2 / subCmd 1` ping, which the server echoes
- * back -- measured at a 180000 ms interval both in a captured Zalo Web session
+ * back -- measured at a 180000 ms interval both in a captured session
  * and in the settings this account is handed at login.
  *
  * These tests drive an injected scheduler, so nothing here waits on a real
@@ -107,7 +107,7 @@ describe("keepalive frame shape", () => {
 });
 
 describe("resolveKeepAliveInterval", () => {
-    it("defaults to the interval the server advises, as Zalo Web does (Y11)", () => {
+    it("defaults to the interval the server advises (Y11)", () => {
         assert.equal(DEFAULT_KEEPALIVE_MS, SERVER_PING_INTERVAL_MS);
         assert.equal(resolveKeepAliveInterval(undefined), SERVER_PING_INTERVAL_MS);
         assert.equal(resolveKeepAliveInterval(0), SERVER_PING_INTERVAL_MS);

@@ -28,7 +28,7 @@ The keyring is now wrapped by the passphrase instead of DPAPI, so the copied fol
 
 ## 3. Copy
 
-1. **Stop everything on Windows** that uses these accounts: `zalo-agent listen --stop`, `zalo-agent mcp start --stop` for each account, quit Claude Desktop, Claude Code and any `zalo-mcp` service, and close any Zalo Web tab. Back up `%USERPROFILE%\.zalo-agent-cli` as it is.
+1. **Stop everything on Windows** that uses these accounts: `zalo-agent listen --stop`, `zalo-agent mcp start --stop` for each account, quit Claude Desktop, Claude Code and any `zalo-mcp` service, and close any browser tab with Zalo open. Back up `%USERPROFILE%\.zalo-agent-cli` as it is.
 2. **Pack only what moves** (PowerShell; `tar` ships with Windows 10 and later). Replace the two ids with yours:
    ```powershell
    cd $env:USERPROFILE\.zalo-agent-cli
@@ -67,13 +67,13 @@ Then continue with step 6 of [README.md](README.md) (`za fleet generate`, instal
   (If Windows already runs 3.0, `logout` is guarded: add `--yes`.)
   Then delete the encrypted archive and, once the VPS has run a few days, the old Windows folders.
 - **Zalo may challenge a login that moves** from a home address to a datacenter one. If an account goes `signed_out` (`za presence status` or `journalctl -u zalo-mcp@<id>` says the login was refused; the daemon stays up and refuses requests), log that account in again on the VPS with `za login` (QR over the SSH tunnel), then `sudo systemctl restart zalo-mcp@<id>`; its history stays.
-- **Keep using the phone or Zalo PC** next to the server. Logging the account into **Zalo Web** signs the server out (one web login per account).
+- **Keep using the phone or the Zalo desktop app** next to the server. Logging the account into **Zalo in a browser** signs the server out (one web login per account).
 
 ## 6. Other ways, and why not
 
 | Way | History | Device | When |
 |---|---|---|---|
 | Copy the 2.5.9 home (this page) | kept | same | the default |
-| `account export` on Windows, `za login --credentials <file>` on the VPS | **not kept** (a phone-tapped `sync` restores far less than the PC store) | same | a companion whose history does not matter |
+| `account export` on Windows, `za login --credentials <file>` on the VPS | **not kept** (a phone-tapped `sync` restores far less than the Windows machine's store) | same | a companion whose history does not matter |
 | New QR login on the VPS, then drop the old `zalo.db` and `media/` into the new account folder before its first start, and `za account security migrate --all` | kept | new | you want a fresh device entry |
 | Upgrade Windows to 3.0, then copy | only after section 2 | same | avoid |

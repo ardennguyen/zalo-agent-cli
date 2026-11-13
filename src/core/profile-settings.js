@@ -5,8 +5,8 @@
 
 /**
  * The settings `profile set` changes, by the name the CLI and `zalo_profile` use: Zalo's key as `getSettings` reads
- * it (`key`), the key `/api/setting/update` takes when it differs (`writeKey`; Zalo Web writes the Focused/Other
- * switch as `archivedChatStatus` and reads it back as `archived_chat_status`), a label, and the values with their
+ * it (`key`), the key `/api/setting/update` takes when it differs (`writeKey`; the Focused/Other switch is written
+ * as `archivedChatStatus` and read back as `archived_chat_status`), a label, and the values with their
  * meaning.
  */
 export const SETTING_MAP = {
@@ -69,8 +69,8 @@ export const SETTING_MAP = {
 };
 
 /**
- * Settings `profile settings` shows but `profile set` does not change: Zalo Web only reads the first two, and quick
- * messages are switched with `quick-msg enable|disable` (Zalo Web writes them as `quickMessageStatus`).
+ * Settings `profile settings` shows but `profile set` does not change: Zalo only reads the first two, and quick
+ * messages are switched with `quick-msg enable|disable` (written as `quickMessageStatus`).
  */
 export const READ_ONLY_SETTINGS = {
     "stranger-messages": {
@@ -91,7 +91,7 @@ export const READ_ONLY_SETTINGS = {
     },
 };
 
-/** The key `/api/setting/update` takes for quick messages (Zalo Web's `updateSettings({quickMessageStatus})`). */
+/** The key `/api/setting/update` takes for quick messages (`updateSettings({quickMessageStatus})`). */
 export const QUICK_MESSAGE_WRITE_KEY = "quickMessageStatus";
 
 /**
@@ -172,7 +172,7 @@ export function settingValueError(setting, value) {
         if (readOnly) {
             return readOnly.changeWith
                 ? `${setting} is changed with \`${readOnly.changeWith}\`, not \`profile set\`.`
-                : `${setting} is read-only here: Zalo Web does not change it either.`;
+                : `${setting} is read-only here: Zalo does not change it either.`;
         }
         return `Unknown setting: "${setting}". Valid: ${Object.keys(SETTING_MAP).join(", ")}.`;
     }
@@ -205,7 +205,7 @@ export async function updateSetting(api, setting, value) {
 
 /**
  * Turn quick messages on or off for this account (`quick-msg enable|disable`, `zalo_quick_message`
- * `enable`/`disable`), as Zalo Web's quick-message switch does: `/api/setting/update` with `quickMessageStatus`.
+ * `enable`/`disable`), as Zalo's quick-message switch does: `/api/setting/update` with `quickMessageStatus`.
  * Unverified live.
  *
  * @param {object} api - logged-in session

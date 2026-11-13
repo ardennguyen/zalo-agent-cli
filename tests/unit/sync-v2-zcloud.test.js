@@ -5,7 +5,7 @@
  * verified offline: pagination and its termination conditions, normalization
  * of Zalo's several envelope shapes, and persistence.
  *
- * These endpoints are reconstructed from Zalo Web's bundle and have not been
+ * These endpoints are reconstructed and have not been
  * exercised against a live account, so a green run here means "the client
  * behaves as specified", not "Zalo accepts it".
  */

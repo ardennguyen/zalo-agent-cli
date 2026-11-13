@@ -1,6 +1,6 @@
 /**
  * src/zalo/listener/frames.js and src/zalo/kernel/json-ids.js: the chat socket's frame header, the outgoing encoder,
- * the payload decoder (encrypt 0-3, zlib and gzip, 16- and 32-byte keys), the handshake reader, and Web's lossless
+ * the payload decoder (encrypt 0-3, zlib and gzip, 16- and 32-byte keys), the handshake reader, and the lossless
  * id pass.
  *
  * Every frame here is built by the test from a hand-written body with fake ids.
@@ -110,7 +110,7 @@ describe("encodeFrame", () => {
         assert.equal(encodeFrame({ cmd: 2, subCmd: 1, data: { eventId: 1 } })[0], 1);
     });
 
-    it("sends the header alone when data is not a plain object (Web's _send)", () => {
+    it("sends the header alone when data is not a plain object", () => {
         for (const data of [undefined, null, "x", 5, [1, 2]]) {
             assert.equal(encodeFrame({ cmd: 2, subCmd: 1, data }).length, 4, `data ${JSON.stringify(data)}`);
         }
@@ -175,7 +175,7 @@ describe("decodeFrame", () => {
     });
 
     it("opens a 24-byte key as AES-192-GCM, both sealed encodings", () => {
-        // Web imports the key with WebCrypto, which takes any AES size. Red if the decoder only knew 16 and 32 bytes
+        // Zalo's key can be any AES size. Red if the decoder only knew 16 and 32 bytes
         // (it would refuse the key) or picked the cipher by a fixed size (the tag would not verify).
         for (const encrypt of [2, 3]) {
             const env = envelope({ text: JSON.stringify(BODY), encrypt, key: KEY24 });
@@ -241,10 +241,10 @@ describe("readAuthFrame", () => {
         assert.deepEqual(readAuthFrame({ key: KEY16 }), { key: KEY16, auth: null });
     });
 
-    it("accepts a decoded handshake with no error_code at all (the pinned leniency against Web)", () => {
-        // Web requires error_code === 0. This client accepts an absent code on purpose (see readAuthFrame): the previous engine
+    it("accepts a decoded handshake with no error_code at all (a pinned leniency)", () => {
+        // The strict rule is error_code === 0. This client accepts an absent code on purpose (see readAuthFrame): the previous engine
         // never read this payload, and tests/unit/sync-v2-zalo-lifecycle.test.js sends exactly such a key frame
-        // (`{}` as data). Red if the check becomes Web's strict one; then that file's key frame needs the field.
+        // (`{}` as data). Red if the check becomes the strict one; then that file's key frame needs the field.
         assert.deepEqual(readAuthFrame({ key: KEY16, encrypt: 0, data: "{}" }), { key: KEY16, auth: null });
         const sealed = envelope({ text: JSON.stringify({ data: auth }), encrypt: 2, key: KEY16 });
         assert.deepEqual(readAuthFrame({ key: KEY16, ...sealed }), { key: KEY16, auth });
@@ -271,7 +271,7 @@ describe("idKeysForCmd", () => {
         for (const cmd of [1, 2, 4, 590, 591, 9999]) assert.equal(idKeysForCmd(cmd), null, `cmd ${cmd}`);
     });
 
-    it("adds the handshake's queue cmds to their family, as Web does", () => {
+    it("adds the handshake's queue cmds to their family", () => {
         const auth = { qCmds: [{ cmd: 515, subCmd: 0 }, null], ctrl_qCmds: [{ cmd: 713, subCmd: 0 }] };
         assert.equal(idKeysForCmd(515), null);
         assert.equal(idKeysForCmd(515, auth), CHAT_ID_KEYS);
@@ -280,9 +280,9 @@ describe("idKeysForCmd", () => {
     });
 });
 
-describe("preParse (Web's lossless id pass)", () => {
-    it("pins the three key lists to Web's", () => {
-        // Red if a key is added, dropped or misspelled: each list is Web's (chat handler, control handler,
+describe("preParse (the lossless id pass)", () => {
+    it("pins the three key lists", () => {
+        // Red if a key is added, dropped or misspelled: each list is Zalo's (chat handler, control handler,
         // request/response handler), and a changed list changes which ids arrive as strings.
         assert.deepEqual(
             [...CHAT_ID_KEYS],
@@ -309,7 +309,7 @@ describe("preParse (Web's lossless id pass)", () => {
         const out = parseWithIds(`{"uidFrom":${BIG},"ts":${BIG},"msgId":5}`, CHAT_ID_KEYS);
         assert.equal(out.uidFrom, BIG);
         assert.equal(out.msgId, "5", "a small integer under a listed key becomes a string too");
-        assert.equal(typeof out.ts, "number", "ts is not listed: lossy, as in Web");
+        assert.equal(typeof out.ts, "number", "ts is not listed: lossy");
         assert.notEqual(String(out.ts), BIG);
     });
 
@@ -380,13 +380,13 @@ describe("decodeFrame: refusals and the id pass", () => {
         }
     });
 
-    it("reads ids as Web does: listed keys as strings, every digit kept; unlisted big integers lossy", () => {
+    it("reads ids: listed keys as strings, every digit kept; unlisted big integers lossy", () => {
         const text = `{"data":{"msgId":5,"uidFrom":${BIG},"ts":${BIG}}}`;
         const env = envelope({ text, encrypt: 2, key: KEY16 });
         const own = decodeFrame(env, KEY16, { idKeys: CHAT_ID_KEYS }).data;
         assert.equal(own.uidFrom, BIG, "a big id under a listed key keeps every digit");
         assert.equal(own.msgId, "5", "a small integer under a listed key is a string");
         assert.equal(typeof own.ts, "number", "a big integer under an unlisted key is a number");
-        assert.notEqual(String(own.ts), BIG, "and lossy, as in Web");
+        assert.notEqual(String(own.ts), BIG, "and lossy");
     });
 });

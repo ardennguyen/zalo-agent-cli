@@ -2,19 +2,19 @@
  * When a user was last online: `friend last-online` and zalo_friend `last_online` (one function, one reply), and the
  * cache the listener keeps from Zalo's presence pushes.
  *
- * What Zalo Web does (bundle 2026-11-06, `getLastOnlStatus`):
+ * How Zalo reads it:
  *
  * - When this account's own `show_online_status` is off, it shows no one's online status and asks nothing: the
  *   answer is 0 without a request. {@link lastOnlineStatus} does the same and reports `hiddenBy: "you"`, unless the
  *   caller asks anyway (`--ask-anyway`, `askAnyway`) to see what Zalo answers.
  * - It asks `lastOnline` with `conv_type` 2 for an Official Account (a profile whose `type` is 1 or more), 1 for any
- *   other user. Its own profile cache tells it which; this asks for the profile first, unless the caller says.
+ *   other user. A profile tells which; this asks for the profile first, unless the caller says.
  * - The answer's `settings` carry the other user's own `show_online_status`; off is `hiddenBy: "them"`.
  * - The 602 push `act_type: "profile"`, `act: "online_status"` (`{uid, lastOnline}`) moves a user's last-online time.
  *   {@link attachLastOnline} keeps it, in memory and in the account's db (`last_online`), for `--cached` reads that
  *   send nothing. Only the daemon (`listen`, `mcp start`) writes that table.
  *
- * `friend online` (cmd 11290) is not used: Zalo Web's contact list asks it and discards the answer, and it answers 404.
+ * `friend online` (cmd 11290) is not used: it answers 404.
  */
 import { getLastOnline, upsertLastOnline } from "./db.js";
 import { settingValue } from "./profile-settings.js";
@@ -68,7 +68,7 @@ export function clearLastOnlineMemory() {
 }
 
 /**
- * Whether a profile is an Official Account, as Zalo Web's `isOAType` reads one: a user id with `type` 1 or more.
+ * Whether a profile is an Official Account, as Zalo reads one: a user id with `type` 1 or more.
  *
  * @param {object|null|undefined} profile
  * @returns {boolean}
@@ -88,12 +88,12 @@ function profileOf(res, userId) {
 }
 
 /**
- * When a user was last online, as Zalo Web reads it. The reply is the same for the CLI and MCP:
+ * When a user was last online, as Zalo reads it. The reply is the same for the CLI and MCP:
  *
  *   {userId, lastOnline, hiddenBy, myShowOnlineStatus, asked, source, convType?, note?, data?}
  *
  * - `lastOnline`: epoch ms, or null when unknown or hidden.
- * - `hiddenBy`: "you" (this account's own online status is hidden, so Zalo Web shows no one's), "them" (the user
+ * - `hiddenBy`: "you" (this account's own online status is hidden, so Zalo shows no one's), "them" (the user
  *   hides theirs) or null.
  * - `myShowOnlineStatus`: this account's own setting (true, false, or null when it could not be read).
  * - `asked`: whether Zalo was asked; `source` "zalo", "cache" or null.
@@ -145,7 +145,7 @@ export async function lastOnlineStatus(
             asked: false,
             source: null,
             note:
-                "Your own online status is hidden (profile setting online-status 0), so Zalo Web shows no one's and " +
+                "Your own online status is hidden (profile setting online-status 0), so Zalo shows no one's and " +
                 "asks nothing; neither did this. Use --ask-anyway (askAnyway) to ask Zalo regardless.",
         };
     }

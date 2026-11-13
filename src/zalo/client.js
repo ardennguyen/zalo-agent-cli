@@ -95,7 +95,7 @@ export function createProxyFetch(proxyUrl) {
 }
 
 /**
- * The session options a session is built with: what Zalo Web announces, whether the session logs, what it delivers,
+ * The session options a session is built with: what the client announces, whether the session logs, what it delivers,
  * and the proxy when there is one.
  *
  * @param {string|null} proxyUrl
@@ -107,7 +107,7 @@ export function createProxyFetch(proxyUrl) {
  */
 export function buildSessionOptions(proxyUrl, { logging = true, env } = {}) {
     const opts = {
-        // What Zalo Web announces, from the protocol profile (./profile.js).
+        // What the client announces, from the protocol profile (./profile.js).
         // The login builds every URL's zpw_ver and the login calls'
         // client_version from these.
         apiType: API_TYPE,
@@ -118,7 +118,7 @@ export function buildSessionOptions(proxyUrl, { logging = true, env } = {}) {
         // Deliver our own traffic too. Off would be
         // right for a bot that would otherwise answer itself, and wrong for a
         // local cache: without it, everything the owner sends -- from their
-        // phone, from Zalo Web, from this CLI -- is dropped before any handler
+        // phone, from Zalo in a browser, from this CLI -- is dropped before any handler
         // sees it, so every conversation in zalo.db holds one side of itself.
         // It also made the new delivery receipts inert, since a receipt updates
         // the row of a message WE sent and that row was never written.
@@ -157,7 +157,7 @@ export function openSession(creds, { zaloOptions, ownId = null, drStoreFor = nul
 }
 
 /**
- * Log in by QR code, the official Web sequence (./qr-login.js), then open the session it produced.
+ * Log in by QR code, Zalo's own QR sequence (./qr-login.js), then open the session it produced.
  *
  * @param {object} opts
  * @param {object} opts.zaloOptions - from {@link buildSessionOptions}

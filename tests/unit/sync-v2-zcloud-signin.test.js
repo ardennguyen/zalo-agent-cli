@@ -1,15 +1,14 @@
 /**
- * zCloud sign-in for `sync-cloud`, checked against what Zalo Web sends.
+ * zCloud sign-in for `sync-cloud`, checked against what Zalo expects.
  *
  * `sync-cloud` failed with "Invalid CloudViewerKey" — the client's own
- * INVALID_VIEWERKEY (-205) — because it skipped the handshake Zalo Web does
- * before touching zCloud. The web client's zCloud module (`tP1L`, bundle
- * 1.e0ef5e98f8f9d8970e2c.js @13433045, captured 2026-09-29) shows the whole of it:
+ * INVALID_VIEWERKEY (-205) — because it skipped the handshake Zalo expects
+ * before touching zCloud. The whole of it:
  *
  *   key      GET  https://wpa.chat.zalo.me/api/getCloudViewerKey?zpw_ver&zpw_type   (no params,
  *                 session-encrypted response {viewer_key, enk})
  *   header   cloud-viewer-key: <viewer_key>   on every zCloud call
- *   params   encodeURIComponent(base64(iv16 ‖ AES-CBC(JSON, base64decode(enk))))   (module 98yS)
+ *   params   encodeURIComponent(base64(iv16 ‖ AES-CBC(JSON, base64decode(enk))))
  *   verify   GET  zcld /cloudmedia/queue/pc/verify      {lastNoiseId, loadType, listNoiseIds, tracking_source}
  *   urls     GET  zcld /cloudmedia/downloadurls/pc/v1   {list_noise_ids}, 100 ids per call
  *   quota    GET  zcld /cloudmedia/info/pc/v2/usage, /cloudmedia/info/pc/v1/cloud-settings
@@ -17,8 +16,8 @@
  *
  * Every request below runs through the session's real HTTP layer into a stub
  * fetch (`ctx.options.polyfill`). The stub decrypts `params` with the zCloud
- * cipher, which tests/unit/sync-v2-zcloud-cipher.test.js pins to the web
- * client's own bytes, so these assertions are about the bytes on the wire.
+ * cipher, which tests/unit/sync-v2-zcloud-cipher.test.js pins to reference
+ * bytes, so these assertions are about the bytes on the wire.
  *
  * Keys, ids and viewer keys are throwaway constants (AGENTS.md §12). No socket,
  * no session, no network.
@@ -189,7 +188,7 @@ describe("zcloud sign-in — sandbox", () => {
     });
 });
 
-describe("zCloud requests go out the way Zalo Web sends them", () => {
+describe("zCloud requests go out the way Zalo expects them", () => {
     it("verify is a GET to zcld carrying the cloud-viewer-key header, not a session-encrypted POST", async () => {
         const h = harness({ routes: { [P.verify]: () => cloudOk(page([])) } });
         await zcloud.syncCloudIndex({ api: h.api, maxPages: 1 });
@@ -211,7 +210,7 @@ describe("zCloud requests go out the way Zalo Web sends them", () => {
             lastNoiseId: "resume-cursor",
             loadType: 1,
             listNoiseIds: [],
-            tracking_source: 2, // Need_Verify_CMD: what every page of every captured Web walk sends
+            tracking_source: 2, // Need_Verify_CMD: what every page of every captured walk sends
         });
     });
 
@@ -230,7 +229,7 @@ describe("zCloud requests go out the way Zalo Web sends them", () => {
         assert.deepEqual(r.unresolved, ["nz-b"]);
     });
 
-    it("download URLs are requested 100 noise ids at a time, as the web client batches them", async () => {
+    it("download URLs are requested 100 noise ids at a time", async () => {
         const h = harness({
             routes: {
                 [P.urls]: (c) => {
@@ -348,7 +347,7 @@ describe("the viewer key", () => {
         assert.equal(key.enk, ENK_FRESH);
     });
 
-    it("accepts the key payload as a JSON string, as the web client does", async () => {
+    it("accepts the key payload as a JSON string", async () => {
         const h = harness({
             loginInfo: {},
             routes: { [P.key]: () => sessionOk(JSON.stringify({ viewer_key: VK_FRESH, enk: ENK_FRESH })) },
@@ -479,8 +478,8 @@ describe("zCloud responses and paging", () => {
 describe("zCloud is a partial source", () => {
     it("records only entries the queue marks as added; remove, del_thread and reset entries are not cloud items", async () => {
         // A recall arrives as action 2 (remove) with msgType chat.undo (live cmd 620
-        // capture); its noiseId names the queue entry, not a media item. The web
-        // client applies these as deletions (tP1L verifyFromId: onAdd/onDel/onDelThread).
+        // capture); its noiseId names the queue entry, not a media item. Zalo
+        // applies these as deletions.
         const undo = addItem("nz-undo", {
             action: 2,
             msgInfo: { ...MSG_INFO, glbMsgId: "glb-undo", msgType: "chat.undo" },
@@ -504,7 +503,7 @@ describe("zCloud is a partial source", () => {
         assert.equal(stats.items, 1);
     });
 
-    it("reads the real item shape: glbMsgId, msgInfo.ts, mediaInfo.mediaSize and the web's conversation id", () => {
+    it("reads the real item shape: glbMsgId, msgInfo.ts, mediaInfo.mediaSize and Zalo's conversation id", () => {
         const group = zcloud.normalizeCloudItem(
             addItem("g", { msgInfo: { ...MSG_INFO, glbMsgId: "glb-g", srcId: PEER, destId: GROUP, destType: 6 } }),
             OWN,
@@ -541,9 +540,9 @@ describe("zCloud is a partial source", () => {
         assert.equal(hit.item.noiseId, "nz-hit");
     });
 
-    it("finds an item by the key Zalo Web joins on when its global message id is the literal 0", async () => {
+    it("finds an item by its join key when its global message id is the literal 0", async () => {
         // About three quarters of the live queue's entries carry glbMsgId "0" (every year, every type), so the message id
-        // cannot find them; the Web joins on cliMsgId_conversation_sender, which is stored as zKey.
+        // cannot find them; the join key is cliMsgId_conversation_sender, which is stored as zKey.
         const zero = (id, cli) => addItem(id, { msgInfo: { ...MSG_INFO, glbMsgId: "0", cliMsgId: cli } });
         const h = harness({
             routes: {
@@ -568,7 +567,7 @@ describe("zCloud is a partial source", () => {
     });
 });
 
-describe("zCloud transport failures follow the web client's rules", () => {
+describe("zCloud transport failures follow Zalo's rules", () => {
     const ok = () => cloudOk(page([addItem("nz-ok")]));
 
     it("retries server code 112 and succeeds once the server does", async () => {
@@ -709,7 +708,7 @@ describe("zCloud transport failures follow the web client's rules", () => {
     });
 });
 
-describe("download URLs are batched and reused like the web client's", () => {
+describe("download URLs are batched and reused", () => {
     const urls = (c) => {
         const idsAsked = plain(c).list_noise_ids;
         return cloudOk({ download_urls: Object.fromEntries(idsAsked.map((id) => [id, `https://cdn.invalid/${id}`])) });

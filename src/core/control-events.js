@@ -2,44 +2,44 @@
  * The `601` controls Zalo pushes about changes made on another device, which this client used to name as
  * unhandled: a product catalog changed, a DM reminder created, edited or removed, the account's device list changed.
  *
- * What Zalo Web does with each (read in its bundle, 2026-11-06), and what this does:
+ * What Zalo's own apps do with each, and what this does:
  *
  * - **`prod_catalog`** (`add_prod`, `edit_prod`, `del_prod`, `del_list_prod`, `add_catalog`, `edit_catalog`,
- *   `del_catalog`, `enable_feature`). The Web applies the control's data to its catalog store (an `item` row for an add
- *   or an edit; `catalog_id`, `product_id` or `product_ids` for a delete) and repaints. This client keeps no catalog:
- *   `catalog` commands read it live. So nothing is stored; the change is reported.
- * - **`oneone` / `remove_reminder11`**. The Web removes the reminder (`reminderId`) from the conversation's board. This
- *   removes the row `sync-boards` stored for it, from whichever end of the DM it was stored under, and reports it.
- * - **`oneone` / `create_reminder11`, `update_reminder11`** (seen live, key names only). The Web inserts or updates the
- *   reminder on the conversation's board from the control's own reminder object (`reminderId`, `creatorUid`, `toUid`,
- *   `editorUid`, `emoji`, `params` with the title, `startTime`, `duration`, `repeat`, `color`, `createTime`,
+ *   `del_catalog`, `enable_feature`). Zalo's apps apply the control's data to their catalog store (an `item` row for an
+ *   add or an edit; `catalog_id`, `product_id` or `product_ids` for a delete) and repaint. This client keeps no
+ *   catalog: `catalog` commands read it live. So nothing is stored; the change is reported.
+ * - **`oneone` / `remove_reminder11`**. Zalo's apps remove the reminder (`reminderId`) from the conversation's board.
+ *   This removes the row `sync-boards` stored for it, from whichever end of the DM it was stored under, and reports it.
+ * - **`oneone` / `create_reminder11`, `update_reminder11`** (seen live, key names only). Zalo's apps insert or update
+ *   the reminder on the conversation's board from the control's own reminder object (`reminderId`, `creatorUid`,
+ *   `toUid`, `editorUid`, `emoji`, `params` with the title, `startTime`, `duration`, `repeat`, `color`, `createTime`,
  *   `editTime`). This writes the row `sync-boards` would write (under the other end of the DM, type `dm`) and reports
- *   it. Not verified against a live payload: the field names are the Web's.
- * - **`my_settings` / `update`**. The Web merges the changed settings into its store. This reports them as a
+ *   it. Not verified against a live payload: the field names are Zalo's.
+ * - **`my_settings` / `update`**. Zalo's apps merge the changed settings into their store. This reports them as a
  *   `settings_changed` event (`listen --events settings`); nothing is stored.
- * - **`user_devices` / `update_user_devices`**. The Web's trusted-device module checks the new, signed device list it
+ * - **`user_devices` / `update_user_devices`**. A trusted device checks the new, signed device list it
  *   carries (`devices`) against its own identity, and may sign itself out if it is no longer on it. This client does
  *   not verify that list; it logs one line every time (a device signed in or out is worth seeing whether or not anyone
  *   asked for the event) and reports it. `account devices` reads the current list.
  *
  * - **`mute` / `set`, `unset`** (seen live, key names only: `toId`, `muteType`, `duration`, `startTime`, `systemTime`,
- *   `advanced`). Zalo PC (26.10.20, `_processMuteConversations`) keeps the last control per `toId`, reads `muteType` 1
- *   as a DM and anything else as a group, drops a `set` whose `duration` (seconds, -1 for "until turned back on") has
- *   already run out since `systemTime`, and hands the rest to its mute store. This client keeps no mute list
- *   (`conv muted` reads it live): it reports a `mute_changed` event per conversation.
- * - **`label_convers` / `update`** (no data). Zalo PC refetches its labels (`syncLabelFromServer`). This reports a
+ *   `advanced`). The last control per `toId` counts, `muteType` 1 is a DM and anything else a group, and a `set` whose
+ *   `duration` (seconds, -1 for "until turned back on") has already run out since `systemTime` changes nothing. This
+ *   client keeps no mute list (`conv muted` reads it live): it reports a `mute_changed` event per conversation.
+ * - **`label_convers` / `update`** (no data). The labels changed. This reports a
  *   `labels_changed` event; `label list` reads them.
- * - **`archived_chat` / `update`** (`{version, actionType, items}`). Zalo PC, when `version` is newer than its own,
- *   refetches the archived list and repaints the conversations in `items` (`{id, type: 1 group}`). This reports an
+ * - **`archived_chat` / `update`** (`{version, actionType, items}`). A newer `version` means the archived list
+ *   changed, for the conversations in `items` (`{id, type: 1 group}`). This reports an
  *   `archived_changed` event (`actionType` 0 moved them to Other, 1 back, as `conv archive` sends it).
- * - **`quick_message` / `create`, `update`, `delete`** (`{items, version}`). Zalo PC applies the items to its quick
- *   message store. This reports a `quick_messages_changed` event; `quick-msg list` reads them.
- * - **`conv_settings` / `update_ttl`** (`{threadId, ttl, fromId, isGroup, ts}`). Zalo PC stores the conversation's new
- *   auto-delete time and adds a local "auto-delete set" line to the conversation. This client writes no message rows
- *   of its own (AGENTS.md §13): it reports an `auto_delete_changed` event; `conv auto-delete-status` reads it.
+ * - **`quick_message` / `create`, `update`, `delete`** (`{items, version}`). The items are the changed quick
+ *   messages. This reports a `quick_messages_changed` event; `quick-msg list` reads them.
+ * - **`conv_settings` / `update_ttl`** (`{threadId, ttl, fromId, isGroup, ts}`). The conversation's
+ *   auto-delete time changed (Zalo's apps also add a local "auto-delete set" line to the conversation). This client
+ *   writes no message rows of its own (AGENTS.md §13): it reports an `auto_delete_changed` event; `conv
+ *   auto-delete-status` reads it.
  *
  * Only key names were ever seen for these controls (`unknown-acts.json`), never values, so an event names the fields
- * the Web reads and carries the control's own data whole under `control`. The device list's signed identity material
+ * Zalo's apps read and carries the control's own data whole under `control`. The device list's signed identity material
  * (`encIdentity`, `encAccSign`) is removed from it first, as `account devices` never prints it.
  *
  * A control can come twice (live, then again in a replayed `603` page): one already seen (by its action id) is skipped.
@@ -72,7 +72,7 @@ export function withoutSecrets(value, depth = 0) {
 const str = (v) => (v === undefined || v === null || v === "" ? null : String(v));
 
 /**
- * A catalog control as an event. The ids are the ones the Web reads for each act.
+ * A catalog control as an event. The ids are the ones each act carries.
  *
  * @param {{act: string, data: object|null, ts: number|null}} c
  * @returns {object}
@@ -113,7 +113,7 @@ export function devicesEvent(c) {
 /**
  * A `my_settings` control (this account's own settings changed on another device) as an event: the changed keys as
  * Zalo names them under `settings`, and each one this client knows under `changed`, with its `profile set` name
- * (src/core/profile-settings.js). Zalo Web merges the same `data` into its settings store.
+ * (src/core/profile-settings.js).
  *
  * @param {{act: string, data: object|null, ts: number|null}} c
  * @returns {object}
@@ -194,7 +194,7 @@ const num = (v) => (v === undefined || v === null || v === "" || !Number.isFinit
 const threadTypeOf = (isGroup) => (isGroup ? "group" : "dm");
 
 /**
- * The `mute_changed` events of one frame's `mute` controls, as Zalo PC reads them: the last control per conversation
+ * The `mute_changed` events of one frame's `mute` controls: the last control per conversation
  * wins, `muteType` 1 is a DM and anything else a group, and a `set` whose time has already run out changes nothing.
  *
  * @param {Array<{act: string, data: object|null, ts: number|null}>} controls - the frame's `mute` controls, in order
@@ -317,7 +317,7 @@ export function applyControlEvents({
     now = Date.now,
 }) {
     const out = [];
-    // A frame's mute controls are read together, as Zalo PC does: the last one per conversation wins.
+    // A frame's mute controls are read together: the last one per conversation wins.
     const mutes = [];
     // One frame (a control replay can carry many) says "the device list changed" once, with a count.
     let deviceChanges = 0;

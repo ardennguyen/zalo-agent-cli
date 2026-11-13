@@ -1,10 +1,10 @@
 /**
  * A group's own `visibility`, for the recall (`undo`) of a message in it.
  *
- * Zalo Web's group recall (`undoMessage`, cmd 11192) sends the group's `visibility` from its group-info cache, 0
- * when the cache has none; the previous engine always sent 0 (spec-actions 1.3, open question 4). `msg undo` and `zalo_undo` do
- * what Web does with what they have: the MCP server's thread cache when it holds the value, else the group's info
- * from Zalo (`getGroupInfo`, the call Web's cache is filled from). When neither answers, the payload carries no
+ * A group recall (cmd 11192) carries the group's `visibility` from the group's info, 0 when it is unknown; the
+ * previous engine always sent 0 (spec-actions 1.3, open question 4). `msg undo` and `zalo_undo` use what they
+ * have: the MCP server's thread cache when it holds the value, else the group's info from Zalo
+ * (`getGroupInfo`). When neither answers, the payload carries no
  * `visibility` and the engine sends 0, as before.
  *
  * Nothing here writes or logs.

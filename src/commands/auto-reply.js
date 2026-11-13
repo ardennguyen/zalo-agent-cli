@@ -81,6 +81,6 @@ export function registerAutoReplyCommands(program) {
                 error(`Delete auto-reply failed: ${e.message}`);
             }
         });
-    // Asked about first, as Zalo Web does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    // Asked about first, as Zalo does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
     guardSubcommand(ar, "delete", "autoReply.delete", { target: (id) => ({ autoReplyId: id }) });
 }

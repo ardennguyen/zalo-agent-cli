@@ -6,7 +6,7 @@ How this client names a person in every output (3.0), then the 2.x change that i
 
 ## How names work in 3.0: alias first, everywhere
 
-Every output names a person the way Zalo Web and PC do: **the alias the account owner set for them**, then their
+Every output names a person the way Zalo's own apps do: **the alias the account owner set for them**, then their
 phonebook name (only when a caller supplies one: this client reads no phonebook), then their Zalo name, then their
 display name, then the uid (`src/core/contact-names.js`). This covers `listen` lines, JSONL and webhooks, the MCP
 buffer, notifier and wait results, every `zalo_*` reply, `msg history` / `msg search`, `conv` lists, `friend`

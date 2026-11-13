@@ -2,7 +2,7 @@
  * Scripted server behavior for the fake Zalo socket: the connect-time queue
  * pulls and the phone-backed transfer sync (cmd 590 / 591 / 601).
  *
- * The shapes follow what the official Web client's socket carries: the pulls
+ * The shapes follow what Zalo's socket carries: the pulls
  * answer with `queueStatus` entries `{ids, lastId, evict}`; a sync request
  * (590) is acknowledged with `{reqId, err, ts}`, then the progress comes as
  * `601` control frames (`act_type: "transfer_sync2"`, `act` `transfer_status`
@@ -118,7 +118,7 @@ const PULL_BODIES = {
 };
 
 /**
- * Answer the connect-time pulls the official client sends (510, 511, 515,
+ * Answer the connect-time pulls a client sends (510, 511, 515,
  * 517, 518, 603, 610, 611) plus 537, 564 and 577, with the verified reply
  * shapes and empty queues.
  *

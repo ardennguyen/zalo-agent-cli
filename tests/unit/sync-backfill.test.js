@@ -2,10 +2,10 @@
  * src/core/sync.js — `backfillOverSocket()`, the replacement for the retired
  * phone-transfer path.
  *
- * Background (measured against the live Zalo Web client, 2026-09-20): the REST
+ * Background (measured live, 2026-09-20): the REST
  * endpoints the old `sync-mobile` relied on — `/api/message/pull_mobile_msg`
- * and `/api/message/get_crossdb` — are still present in Zalo Web's bundle but
- * have zero call sites in it. A web client whose local database has been wiped
+ * and `/api/message/get_crossdb` — still exist but are no longer
+ * used. A client whose local database has been wiped
  * restores itself over the WebSocket instead, with cmd 510 (DMs) and 511
  * (groups). The listener already exposes exactly that as
  * `listener.requestOldMessages()` plus the `old_messages` event, so the whole

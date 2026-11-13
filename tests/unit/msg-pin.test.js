@@ -1,11 +1,10 @@
 /**
- * `msg pin <msgId>` / `msg unpin <msgId>` -- the requests Zalo Web sends.
+ * `msg pin <msgId>` / `msg unpin <msgId>` -- the requests Zalo expects.
  *
  * The session has no area method for these, so they are custom calls on its own
  * session envelope. The shapes are the captured ones
- * (agent/work/zalo-web-capture-2026-09-29/live/group.A9_pin_message,
- * group.A9b_unpin_message, dm.D9_pin_message, dm.D9b_unpin_message;
- * the capture's comparison notes #17, §5.17):
+ * (group.A9_pin_message, group.A9b_unpin_message, dm.D9_pin_message,
+ * dm.D9b_unpin_message):
  *
  *   group pin    POST {group_board}/api/board/topic/createv2
  *                {grid, type:2, color, emoji:"📌", startTime:-1, duration:-1,
@@ -18,10 +17,10 @@
  *   1-1 unpin    GET  {friend_board}/api/friendboard/multi_unpin
  *                {conversationId, topics:[{topicId, topicType:2}], version, lang, imei}
  *
- * What the capture does not show and the web bundle does: the group unpin's
+ * What the capture does not show: the group unpin's
  * topicId and boardVersion come from `GET /api/board/pin/list {groupId,
- * boardVersion:0, imei}` (the web's fetchTopics), which answers
- * `{items, boardVersion}`; a stale version is error 183, after which the web
+ * boardVersion:0, imei}`, which answers
+ * `{items, boardVersion}`; a stale version is error 183, after which the client
  * refetches once and retries. The 1-1 version comes from friendboard/list,
  * which getFriendBoardList already calls exactly as captured.
  *
@@ -68,7 +67,7 @@ before(() => {
     seedMessage({ ...S1, threadId: GROUP, senderId: NOISED, timestamp: 1700000000555, src: "sync-v2" });
 });
 
-/** The `params` JSON string the web puts inside a text message's pin topic. */
+/** The `params` JSON string inside a text message's pin topic. */
 function pinParams(m, senderUid) {
     return JSON.stringify({
         client_msg_id: m.cliMsgId,
@@ -232,7 +231,7 @@ describe("msg unpin", () => {
         assert.deepEqual(Object.keys(unpin.params), ["grid", "imei", "topic", "boardVersion"]);
     });
 
-    it("group: a stale board version (183) is refetched and retried once, as the web does", async () => {
+    it("group: a stale board version (183) is refetched and retried once", async () => {
         const r = await runOffline(["msg", "unpin", G1.msgId], {
             responses: {
                 "/api/board/pin/list": {

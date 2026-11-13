@@ -1,10 +1,10 @@
 /**
- * src/zalo/reads.js — the web client's read-only endpoints, checked at the wire.
+ * src/zalo/reads.js — the read-only endpoints, checked at the wire.
  *
  * Each case drives `callRead` through the session's real HTTP layer into a stub fetch (`ctx.options.polyfill`, the session's own
- * HTTP seam) and checks what the stub received against what the web client's API module builds for the same call
- * (module `fBUP`, read from the 2026-10-23 bundle): the service-map host, the path, GET or POST, and the JSON that is
- * encrypted into `params` with the session key. The expected values are written out here by hand from that module, not
+ * HTTP seam) and checks what the stub received against what Zalo expects for the same call:
+ * the service-map host, the path, GET or POST, and the JSON that is
+ * encrypted into `params` with the session key. The expected values are written out here by hand, not
  * computed from the table under test.
  *
  * Keys, ids and hosts are throwaway constants (AGENTS.md §12). No socket, no session, no network.
@@ -36,7 +36,7 @@ import {
 // The local reads' answers are the application's; the CLI registers them the same way.
 import "../../src/core/local-reads.js";
 
-// [name, args, host key, path, method, what the web client encrypts (null: no params)]
+// [name, args, host key, path, method, what is encrypted (null: no params)]
 const CASES = [
     [
         "last-messages",
@@ -220,7 +220,7 @@ describe("reads — sandbox", () => {
     });
 });
 
-describe("each read goes out the way the web client's API module sends it", () => {
+describe("each read goes out the way Zalo expects it", () => {
     for (const [name, args, key, path, method, body] of CASES) {
         it(`${name} ${JSON.stringify(args)}`, async () => {
             const h = harness();

@@ -6,8 +6,7 @@
  * substitution: the Zalo api is the engine's own session object
  * (src/zalo/api.js), built on a context whose fetch is a fake transport that
  * decrypts every request with a throwaway key. What is asserted is that decrypted request -- host, path,
- * method, params -- compared with a capture of the real Zalo Web client
- * (build 826674fb31d2af1b2b59, zpw_ver 691). Templates name their capture row.
+ * method, params -- compared with a captured request (zpw_ver 691). Templates name their capture row.
  *
  * `conv read` also reads the local cache, so its rows are written the way the
  * listener writes them: a listener message model through storeLiveMessage().
@@ -214,7 +213,7 @@ before(() => {
     initDb(join(dir, "zalo.db"));
 });
 
-describe("conv read — clears the manual unread mark AND sends the web's seenv2", () => {
+describe("conv read — clears the manual unread mark AND sends seenv2", () => {
     it("group: removeUnreadMark, then a seenv2 carrying the frame's real st/at/cmd", async () => {
         const grid = freshGroup();
         // at 9, a captured webchat value (group.A13 row 3), deliberately NOT the
@@ -428,7 +427,7 @@ describe("conv read — clears the manual unread mark AND sends the web's seenv2
     });
 });
 
-describe('conv read — Zalo Web\'s "Mark as read": every unread message, reactions, the mark only when set', () => {
+describe('conv read — "Mark as read": every unread message, reactions, the mark only when set', () => {
     it("sends one seenv2 for every cached incoming message after the read watermark, oldest first", async () => {
         const grid = freshGroup();
         for (const [i, id] of ["8000000000801", "8000000000802", "8000000000803", "8000000000804"].entries()) {
@@ -440,7 +439,7 @@ describe('conv read — Zalo Web\'s "Mark as read": every unread message, reacti
             );
         }
         recordReadWatermark({ threadId: grid, msgId: "8000000000802" });
-        // Known clear: Zalo Web removes the mark only when it is set.
+        // Known clear: the mark is removed only when it is set.
         upsertConvState({ threadId: grid, unreadMarked: false });
         const { api, sent } = harness((rec) =>
             rec.path === "/api/setting/me" ? { display_seen_status: 1 } : { status: 0 },
@@ -598,7 +597,7 @@ describe("msg seen / zalo_conversation `seen` — chosen messages, no unread mar
 });
 
 describe("conv block-sharing — blocksharing/updateConvers (zBusiness Max, unverified)", () => {
-    it("sends the Web's body and answers {success, threadId, threadType, blockSharing, verified: false}", async () => {
+    it("sends the expected body and answers {success, threadId, threadType, blockSharing, verified: false}", async () => {
         const grid = freshGroup();
         const { api, sent } = harness();
         const r = await conv(["block-sharing", grid, "on", "-t", "1"], api, { json: true });
@@ -614,7 +613,7 @@ describe("conv block-sharing — blocksharing/updateConvers (zBusiness Max, unve
         });
     });
 
-    it("names Zalo Web's refusal 829 (zBusiness only)", async () => {
+    it("names Zalo's refusal 829 (zBusiness only)", async () => {
         const { api } = harness(() => ({ zaloError: { code: 829, message: "denied" } }));
         const r = await conv(["block-sharing", freshPeer(), "off"], api);
         assert.equal(r.exitCode, 1);
@@ -622,7 +621,7 @@ describe("conv block-sharing — blocksharing/updateConvers (zBusiness Max, unve
     });
 });
 
-describe("conv pin / unpin — pinconvers/updatev2 with the web's tab:0", () => {
+describe("conv pin / unpin — pinconvers/updatev2 with tab:0", () => {
     for (const [cmd, type, action] of [
         ["pin", "1", 1],
         ["unpin", "1", 2],
@@ -653,7 +652,7 @@ describe("conv pin / unpin — pinconvers/updatev2 with the web's tab:0", () => 
     });
 });
 
-describe("conv pinned — the list Web reads, without Zalo's m1 entry", () => {
+describe("conv pinned — the pinned list, without Zalo's m1 entry", () => {
     it("prints the pinned conversations and leaves out `m1` (spec-actions 7.3)", async () => {
         const g = freshGroup();
         const u = freshPeer();
@@ -688,7 +687,7 @@ describe("conv archive / unarchive — archivedchat/update with the server's ver
             const { api, sent } = labelled();
             const r = await conv([cmd, id, "-t", type], api);
             const [list] = find(sent, "/api/archivedchat/list");
-            assert.ok(list, "the version comes from the archived-chat list, as the web's comes from its last list");
+            assert.ok(list, "the version comes from the archived-chat list");
             assert.equal(list.method, "GET");
             const [update] = find(sent, "/api/archivedchat/update");
             assert.ok(update);

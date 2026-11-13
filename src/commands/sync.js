@@ -34,7 +34,7 @@ import {
     recordConversationList,
 } from "../core/db.js";
 
-/** Zalo close code for a duplicate web session (Zalo Web is open elsewhere). */
+/** Zalo close code for a duplicate web session (Zalo is open in a browser elsewhere). */
 const CLOSE_DUPLICATE = 3000;
 
 /**
@@ -141,7 +141,7 @@ export function registerSyncCommands(program) {
         )
         .option(
             "-F, --force",
-            "Skip the 'already synced recently' shortcut and sync anyway. By default a sync is skipped when a successful one completed within the last hour and no gap is pending — mirroring Zalo Web, which only re-syncs when it thinks something is missing",
+            "Skip the 'already synced recently' shortcut and sync anyway. By default a sync is skipped when a successful one completed within the last hour and no gap is pending — as Zalo does, re-syncing only when something seems to be missing",
         )
         .option(
             "-d, --days <n>",
@@ -298,7 +298,7 @@ export function registerSyncCommands(program) {
         .description(
             "Retrieve existing reactions from Zalo's servers into the local cache. Reactions are the one " +
                 "thing a transfer sync cannot restore — the Sync2 payload has no reaction field — but they " +
-                "ARE served over the socket (cmd 610 for 1-1, 611 for groups), which is how Zalo Web shows " +
+                "ARE served over the socket (cmd 610 for 1-1, 611 for groups), which is how Zalo shows " +
                 "them after a fresh login. Needs no phone confirmation",
         )
         .option("-w, --wait <seconds>", "Per-page deadline", parseIntAtLeast(1), 15)
@@ -341,7 +341,7 @@ export function registerSyncCommands(program) {
         .command("sync-cloud")
         .description(
             "Walk the zCloud ('Cloud của tôi') media index and record it locally — the same " +
-                "reconciliation Zalo Web runs when it receives a cloud verify event. Records where " +
+                "reconciliation Zalo runs when it receives a cloud verify event. Records where " +
                 "each backup lives; it does not download or decrypt cloud blobs",
         )
         .option(
@@ -349,7 +349,7 @@ export function registerSyncCommands(program) {
             "Stop after this many pages (default: until the server says the walk is done)",
             parseIntAtLeast(1),
         )
-        .option("-s, --page-size <n>", "Items per page (Zalo Web uses 300)", parseIntAtLeast(1), 300)
+        .option("-s, --page-size <n>", "Items per page (Zalo uses 300)", parseIntAtLeast(1), 300)
         .option("-r, --resume <noiseId>", "Resume from this cursor instead of the saved one")
         .option(
             "--full",
@@ -703,7 +703,7 @@ async function boardPass(api, opts) {
  *
  * Reactions were long documented here as unrecoverable, which conflated two
  * things: the transfer-sync payload genuinely has no reaction field, but the
- * socket serves them on cmd 610/611 and Zalo Web asks for both on every
+ * socket serves them on cmd 610/611 and Zalo asks for both on every
  * connect. Measured on a real account, one request pair returned 28 direct and
  * 50 group reactions while the local cache held one row.
  *
@@ -763,7 +763,7 @@ async function runReactionSync(activeAcc, opts) {
         if (!connected.ok) {
             if (connected.reason === "duplicate") {
                 error("Zalo closed this connection: another web session is already open on this account.");
-                info("Zalo allows one web session per account. Sign out of Zalo Web, then run this again.");
+                info("Zalo allows one web session per account. Sign out of Zalo in your browser, then run this again.");
             } else {
                 error(`Could not open a connection: ${connected.reason}`);
             }
@@ -893,7 +893,7 @@ function reportReactionDrain(stats, opts) {
     if (stats.received === 0) {
         warning("The server returned no reactions.");
         info(
-            "That is a caught-up queue, not a missing feature: this channel is what Zalo Web itself " +
+            "That is a caught-up queue, not a missing feature: this channel is what Zalo itself " +
                 "asks on every connect. Reactions arriving from now on are captured by `zalo-agent listen`.",
         );
         return;
@@ -960,9 +960,9 @@ async function runCloudSync(activeAcc, opts) {
 }
 
 /**
- * What the account's zCloud plan is, read in the order and with the calls Zalo Web makes at boot: the settings, then
- * `usage-mycloud`, which carries the plan; the full `v2/usage` only when that plan is not the free one (-1), as the
- * web client does. A free account therefore never asks for `v2/usage`. Null when the plan could not be read.
+ * What the account's zCloud plan is, read in the order and with the calls Zalo makes at start-up: the settings, then
+ * `usage-mycloud`, which carries the plan; the full `v2/usage` only when that plan is not the free one (-1), as
+ * Zalo does. A free account therefore never asks for `v2/usage`. Null when the plan could not be read.
  *
  * @param {object} api
  * @param {{settings?: () => Promise<object>, myCloud?: () => Promise<object>, usage?: () => Promise<object>}} [opts]
@@ -1062,7 +1062,7 @@ function routeCloudWalk(accountDir) {
 /**
  * One walk of the zCloud index. Exit-free.
  *
- * The cursor is saved after every page and kept when the walk is complete, as Zalo Web keeps its last noise id: the
+ * The cursor is saved after every page and kept when the walk is complete, as Zalo keeps its last noise id: the
  * next walk starts there and reads only what is new (a killed or capped walk carries on from its last page, not from
  * the top). `full` ignores the saved place, walks from the top and sweeps what no page listed; an explicit `resume`
  * wins over the saved place.
@@ -1143,8 +1143,8 @@ function formatBytes(n) {
 export function connectListener(api, waitMs) {
     return new Promise((res) => {
         let settled = false;
-        // Web and PC send nothing until the server's hello (cmd 1/1, which carries the key) has been processed, and
-        // then ping at once (capture: +7 ms) before anything else. "Open" is therefore not "connected": a reconnect
+        // Zalo sends nothing until the server's hello (cmd 1/1, which carries the key) has been processed, and
+        // then pings at once before anything else. "Open" is therefore not "connected": a reconnect
         // that asked for sessions 1 ms ahead of the hello was closed again within seconds.
         const onHello = () => {
             try {
@@ -1204,7 +1204,7 @@ export function restoreViaDaemon(accountDir, req, { proc = process } = {}) {
     );
 }
 
-/** The shortest pause Zalo Web puts before retrying a socket that closed abnormally (its table: 2, 3, 5, 8 s). */
+/** The shortest pause Zalo puts before retrying a socket that closed abnormally (its table: 2, 3, 5, 8 s). */
 export const RECONNECT_DELAY_MS = 2000;
 
 /**
@@ -1226,7 +1226,7 @@ export async function reconnectListener(api, waitMs = 30000, delayMs = RECONNECT
     // The listener nulls `ws` on close and refuses to start again while it is set,
     // so a socket still hanging around has to be put down first.
     if (api?.listener?.ws) await closeListener(api);
-    // Web's first retry after a 1006 comes after 2 s (then 3, 5, 8); this one came after 0.5 s.
+    // Zalo's first retry after a 1006 comes after 2 s (then 3, 5, 8); this one came after 0.5 s.
     if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
     const r = await connectListener(api, waitMs);
     return r.ok === true;
@@ -1328,7 +1328,9 @@ async function runTransferSync(activeAcc, opts) {
             if (!connected.ok) {
                 if (connected.reason === "duplicate") {
                     error("Zalo closed this connection: another web session is already open on this account.");
-                    info("Zalo allows one web session per account. Sign out of Zalo Web, then run this again.");
+                    info(
+                        "Zalo allows one web session per account. Sign out of Zalo in your browser, then run this again.",
+                    );
                 } else {
                     error(`Could not open a connection: ${connected.reason}`);
                 }
@@ -1636,7 +1638,7 @@ async function fetchMediaAfterRestore(accountDir, api, since, { limit } = {}) {
         // an unscoped fetch re-downloads exactly what was just deleted.
         since: Number.isFinite(since) && since > 0 ? since : undefined,
         includePruned: false,
-        // Two at a time, as Zalo Web fetches: a burst is what the CDN answers with 403 and 429.
+        // Two at a time, as Zalo fetches: a burst is what the CDN answers with 403 and 429.
         concurrency: 2,
         maxFiles: limit,
         threadNames: getThreadNames(),
@@ -1777,7 +1779,7 @@ function printPlan(plan, win, jsonMode) {
  * of the messages and conversations, and they were split across five
  * commands -- two of which each opened their own socket and took their own
  * lock, so a full refresh meant running five things in the right order and
- * evicting Zalo Web twice. This runs them as stages of one process: one lock,
+ * evicting a browser Zalo session twice. This runs them as stages of one process: one lock,
  * one socket window shared by the socket stages, then the REST stages, and one
  * exit code at the end. The five commands remain for targeted re-runs.
  *
@@ -1942,8 +1944,8 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
         //
         // The socket is not unpinged without this -- the listener sends Zalo's
         // `cmd 2/1` ping on the interval the server hands out at login, which
-        // this account's login reports as 180000 ms, the same value a captured
-        // Zalo Web session used. The problem is that 180 s is the entire width
+        // this account's login reports as 180000 ms, the same value Zalo's own
+        // sessions use. The problem is that 180 s is the entire width
         // of the phone wait: the restore sends nothing and receives nothing for
         // minutes, so the flow can sit silent right up against the server's own
         // liveness bound with no margin, and one late ping means six minutes of
@@ -1960,7 +1962,7 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
             if (!connected.ok) {
                 const why =
                     connected.reason === "duplicate"
-                        ? "another web session is open on this account (sign out of Zalo Web)"
+                        ? "another web session is open on this account (sign out of Zalo in your browser)"
                         : `could not open a connection: ${connected.reason}`;
                 warning(`Socket stages skipped — ${why}.`);
                 for (const n of ["messages", "reactions"]) if (runs(n)) record(n, "failed", why);
@@ -1971,7 +1973,7 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
                 // The restore runs FIRST and ALONE, exactly as `sync-mobile
                 // --transfer` runs it -- its own live-store tap included. The
                 // first version drained the reaction backlog concurrently, as
-                // Zalo Web does on connect, and the restore then lost its socket
+                // Zalo does on connect, and the restore then lost its socket
                 // (close 1006) at batch 0 of 5 on both live attempts, right after
                 // the phone confirmed. The same window on the same account
                 // restored 11,324 messages through the old command minutes later.
@@ -2195,13 +2197,13 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
  *
  * HONEST STATUS, measured 2026-09-20: on the account this was developed
  * against, Zalo answers both commands with an EMPTY set — including when given
- * the exact `lastId` anchors Zalo Web itself sends. Zalo Web gets the same
+ * the exact `lastId` anchors Zalo itself sends. Zalo gets the same
  * empty answer and then falls back to `transfer-sync-v2` (socket cmd 590/591,
  * libsignal-encrypted), which is the only path observed carrying real data and
  * is NOT implemented here.
  *
  * DO NOT read "no phone contact" as a feature. The phone IS the data source:
- * the account owner confirmed that a real Zalo Web sync makes their phone show
+ * the account owner confirmed that a real Zalo sync makes their phone show
  * a request notification, which means cmd 590 causes the server to wake the
  * phone, and the phone encrypts the payload that comes back as cmd 601. A run
  * of this command that leaves the phone silent has not synced anything.
@@ -2219,9 +2221,9 @@ async function runSocketBackfill(activeAcc, opts) {
 
     // Build the SyncManager first so we can consult the local sync-freshness
     // marker BEFORE touching the network. A redundant run should neither open
-    // a socket (which would evict a live Zalo Web session) nor, once the
+    // a socket (which would evict a live browser Zalo session) nor, once the
     // transfer-sync path lands, wake the owner's phone — the same debounce Zalo
-    // Web applies to its own "Đồng bộ tin nhắn".
+    // applies to its own "Đồng bộ tin nhắn".
     let api;
     let syncManager;
     try {
@@ -2273,7 +2275,7 @@ async function runSocketBackfill(activeAcc, opts) {
         if (!connected.ok) {
             if (connected.reason === "duplicate") {
                 error("Zalo closed this connection: another web session is already open on this account.");
-                info("Zalo allows one web session per account. Sign out of Zalo Web, then run this again.");
+                info("Zalo allows one web session per account. Sign out of Zalo in your browser, then run this again.");
             } else {
                 error(`Could not open a connection: ${connected.reason}`);
             }
@@ -2290,7 +2292,7 @@ async function runSocketBackfill(activeAcc, opts) {
             if (res.total === 0) {
                 warning("No history returned — and your phone was never asked.");
                 info(
-                    "A real Zalo sync notifies your phone, because the phone is the data source: Zalo Web sends " +
+                    "A real Zalo sync notifies your phone, because the phone is the data source: Zalo sends " +
                         "socket cmd 590, the server wakes the phone, the phone encrypts and uploads, and the payload " +
                         "comes back as cmd 601. That handshake (transfer-sync-v2) is what `--transfer` runs; this " +
                         "default path does not, so the absence of a notification on your phone means no real sync took place.",

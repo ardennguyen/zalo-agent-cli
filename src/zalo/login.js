@@ -1,8 +1,8 @@
 /**
- * The Web login, as the official Zalo Web client does it (plan items L2a-e, L5, L6, L7).
+ * The login, as Zalo's own client does it (plan items L2a-e, L5, L6, L7).
  *
  * The previous engine's `Zalo.login()` asked `getLoginInfo` first, `getServerInfo` second, probed the npm registry
- * on the way, announced `zpw_ver`/`zpw_type` where the official client does not, always encrypted, and had
+ * on the way, announced `zpw_ver`/`zpw_type` where Zalo's own app does not, always encrypted, and had
  * no timeout and no retry. This module does the login the verified way and hands the finished session to
  * `createApi` (./api.js), which builds the session object every command uses:
  *
@@ -13,7 +13,7 @@
  *     error 19000 switches encryption off and asks again. HTTP 500-504 is asked again every 10 s for up to 120 s.
  *  3. `getServerInfo` again, now with `floatMenuPos`: its answer is the session's settings.
  *
- * Every request has a 10 s timeout. `checkUpdate` is off: the official client asks nobody whether it is current.
+ * Every request has a 10 s timeout. `checkUpdate` is off: Zalo's own app asks nobody whether it is current.
  *
  * Nothing here knows about files except through the `store` the caller passes (see {@link createDrStore}).
  */
@@ -67,7 +67,7 @@ export function drConfigOf(settings) {
 }
 
 /**
- * A small file that remembers the disaster-recovery values between logins, as the official client keeps them
+ * A small file that remembers the disaster-recovery values between logins, as Zalo's own app keeps them
  * in its local storage. No identity and no credential: two numbers and a time.
  *
  * @param {string} file

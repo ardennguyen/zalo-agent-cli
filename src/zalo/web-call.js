@@ -1,5 +1,5 @@
 /**
- * One call to Zalo Web's HTTP API, for the tables of reads (./reads.js) and writes (./writes.js), built and sent by
+ * One call to Zalo's HTTP API, for the tables of reads (./reads.js) and writes (./writes.js), built and sent by
  * the kernel's table runner (./kernel/endpoint.js).
  *
  * A table entry names a service-map host, a path and a body. The body is JSON, AES-encrypted with the session key into
@@ -17,7 +17,7 @@ export const list = (v) => (Array.isArray(v) ? v : v === undefined || v === null
 /** A number argument with a default for an absent or empty one. */
 export const num = (v, d) => (v === undefined || v === null || v === "" ? d : Number(v));
 /**
- * One declared argument of a table entry. `values` names the numbers of an enum the web client sends (`{accept: 1}`):
+ * One declared argument of a table entry. `values` names the numbers of an enum Zalo expects (`{accept: 1}`):
  * a name is accepted wherever the number is.
  */
 export const arg = (name, type, desc, required = false, values = undefined) => ({
@@ -29,7 +29,7 @@ export const arg = (name, type, desc, required = false, values = undefined) => (
 });
 
 /**
- * An enum argument as the number the web client sends: a number stays, a name is looked up (case-insensitively).
+ * An enum argument as the number Zalo expects: a number stays, a name is looked up (case-insensitively).
  *
  * @param {number|string|undefined} v
  * @param {Record<string, number>} values

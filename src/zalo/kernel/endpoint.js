@@ -5,7 +5,7 @@
  * An endpoint definition (design 1.2):
  *
  * ```
- * { host, path, cmd,                       // service-map key (or a list, first present wins), path, Web command id
+ * { host, path, cmd,                       // service-map key (or a list, first present wins), path, command id
  *   method: "get"|"post"|"query"|"multipart",
  *   paramsFirst: true,                      // GET only: `params` before zpw_ver and zpw_type
  *   body(args, ctx) -> object|string|null,  // sealed with the session key into `params`
@@ -18,8 +18,8 @@
  *   emptyOn: {code: value},                 // a code that means "nothing", and what to return for it
  *   bigIdKeys: [key...],                    // parse the reply losslessly for these keys (json-ids.js)
  *   timeoutMs,                              // 10 s by default; none for a multipart body
- *   swapHosts: true,                        // an HTTP 4xx/5xx moves on to the service map's next host (Web's
- *                                           // switchDomain), once per host the map lists
+ *   swapHosts: true,                        // an HTTP 4xx/5xx moves on to the service map's next host,
+ *                                           // once per host the map lists
  *   transform(data, args, {code, message}) -> value }
  * ```
  *
@@ -30,7 +30,7 @@
 import { ZaloApiError } from "../errors.js";
 import { buildUrl, decodeReply, httpRequest, multipartBody, sealParams } from "./http.js";
 
-/** Where login and settings questions go: Zalo Web's `authDomain`. */
+/** Where login and settings questions go: Zalo's auth domain. */
 export const AUTH_DOMAIN = "https://wpa.chat.zalo.me";
 
 /** Raised for an unknown name, a missing argument or a host the account lacks, before any request is made. */
@@ -46,8 +46,8 @@ export class CallUsageError extends Error {
  * The base URL of a service-map key, without a trailing slash.
  *
  * @param {Record<string, string|string[]>|null|undefined} serviceMap
- * @param {string|string[]} key - a key, or keys to try in order (`["group_poll", "group"]`); "auth" is Web's
- *   `authDomain`
+ * @param {string|string[]} key - a key, or keys to try in order (`["group_poll", "group"]`); "auth" is the auth
+ *   domain
  * @returns {string}
  * @throws {CallUsageError} naming the key when the map has none of them
  */
@@ -63,8 +63,8 @@ export function hostOf(serviceMap, key) {
 }
 
 /**
- * Every base URL a service-map key names, in the map's order, without trailing slashes: the hosts Zalo Web's
- * `switchDomain` moves through after an HTTP 4xx/5xx. The first present key wins, as in {@link hostOf}.
+ * Every base URL a service-map key names, in the map's order, without trailing slashes: the hosts to move through
+ * after an HTTP 4xx/5xx. The first present key wins, as in {@link hostOf}.
  *
  * @param {Record<string, string|string[]>|null|undefined} serviceMap
  * @param {string|string[]} key
@@ -82,7 +82,7 @@ export function hostsOf(serviceMap, key) {
     throw new CallUsageError(`this account's service map has no "${keys.join('" or "')}" host`);
 }
 
-/** Whether an error is an HTTP 4xx/5xx answer (decodeReply's `HTTP <status>`), the case Web's switchDomain handles. */
+/** Whether an error is an HTTP 4xx/5xx answer (decodeReply's `HTTP <status>`), the case that moves to the next host. */
 function isHttpFailure(e) {
     const status = Number(e?.status);
     return e instanceof ZaloApiError && status >= 400 && status < 600;

@@ -2,7 +2,7 @@
  * The official QR login (src/zalo/qr-login.js, plan item L15) against the offline fake id.zalo.me.
  *
  * Asserted on the wire: the calls and their forms in the verified order (an account without a trusted device
- * confirms with no `bundle`; one with a trusted device matches the captured Web login in full: the second QR, the
+ * confirms with no `bundle`; one with a trusted device matches the captured login in full: the second QR, the
  * poll on its code, the proof as `bundle`), the headers of a page load versus a script call, the events
  * the login's consumers rely on, decline, retry, expiry and abort, the session the redirect chain ends in, the
  * device identity kept after a login, and the switch that selects it (`ZALO_QR_FLOW`).
@@ -122,7 +122,7 @@ describe("the QR login", () => {
         };
     };
     const calledWith = (trust, name) => trust.calls.find(([n]) => n === name)?.[1];
-    it("makes the verified calls in order, and differs from the official shape only by the bundle", async () => {
+    it("makes the verified calls in order, and differs from the expected shape only by the bundle", async () => {
         qr = serveQrLogin(fake);
         await qrLogin({ ...BASE });
         assert.deepEqual(diffSequence(fake.requests, WEB_QR_LOGIN, { forbidden: WEB_QR_LOGIN_FORBIDDEN }), [
@@ -347,7 +347,7 @@ describe("the QR login", () => {
             return { trust, store, seen, result };
         };
 
-        it("makes the calls of the captured Web login, whole: second QR, poll on its code, proof as bundle", async () => {
+        it("makes the calls of the captured login, whole: second QR, poll on its code, proof as bundle", async () => {
             await login();
             assert.deepEqual(diffSequence(fake.requests, WEB_QR_LOGIN, { forbidden: WEB_QR_LOGIN_FORBIDDEN }), []);
         });
@@ -360,11 +360,11 @@ describe("the QR login", () => {
             assert.equal(fake.requests.filter((r) => r.path.endsWith("/qr/generate")).length, 1);
         });
 
-        it("makes the second QR from the token it was given, as a Web device, and shows it as layer 2", async () => {
+        it("makes the second QR from the token it was given, as a browser device, and shows it as layer 2", async () => {
             const { trust, seen } = await login();
             const qr = calledWith(trust, "generateLinkingQr");
             assert.equal(qr.qrToken, SECOND_QR_ASKED.token);
-            assert.equal(qr.platform, 1, "a Web client");
+            assert.equal(qr.platform, 1, "a browser client");
             assert.ok(Math.abs(qr.timestamp - Date.now()) < 5000, "stamped with the time it was made");
             assert.deepEqual([...qr.publicKey], [1, 2, 3]);
             assert.deepEqual([...qr.secret], [7, 8]);
@@ -387,14 +387,14 @@ describe("the QR login", () => {
             assert.equal(scanned[0].data.display_name, SECOND_QR_SCANNED.display_name);
         });
 
-        it("makes the proof from the link data the phone answered, and sends it as the bundle the Web sends", async () => {
+        it("makes the proof from the link data the phone answered, and sends it as the bundle Zalo expects", async () => {
             const { trust } = await login();
             const proof = calledWith(trust, "createLinkingProof");
             assert.equal(Buffer.from(proof.primaryLinkingData).toString(), "fake-link-data");
             assert.equal(Buffer.from(proof.linkingHmac).toString(), "fake-link-hmac");
             assert.deepEqual([...proof.privateKey], [4, 5, 6]);
             const confirm = fake.requests.find((r) => r.path.endsWith("/waiting-confirm"));
-            assert.deepEqual(Object.keys(confirm.form), ["continue", "code", "bundle", "v"], "in the Web's order");
+            assert.deepEqual(Object.keys(confirm.form), ["continue", "code", "bundle", "v"], "in the expected order");
             const bundle = JSON.parse(Buffer.from(confirm.form.bundle, "base64").toString());
             assert.deepEqual(Object.keys(bundle), ["encLinkMetaData", "encAccSign", "encDeviceSign", "encCompPubKey"]);
             const decoded = (key) => [...Buffer.from(bundle[key], "base64")];
@@ -659,7 +659,7 @@ describe("the QR login", () => {
         });
     });
 
-    describe("the device id (imei): reused on a re-login, as Zalo Web keeps one per browser", () => {
+    describe("the device id (imei): reused on a re-login, one per browser", () => {
         const SAVED_IMEI = "11111111-2222-4333-8444-555555555555-0123456789abcdef0123456789abcdef";
         const OTHER_UA = CHROME_UA.replace("Windows NT 10.0; Win64; x64", "Macintosh; Intel Mac OS X 10_15_7");
 

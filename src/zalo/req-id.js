@@ -1,9 +1,9 @@
 /**
  * The request id every command carries, from one counter.
  *
- * Zalo Web numbers all of its socket requests (queue pulls, sync requests and releases, the activity ping) from a
+ * Socket requests (queue pulls, sync requests and releases, the activity ping) are numbered from a
  * single counter, `req_<n>`, and the server echoes the id in its answer. The previous engine numbered its own frames separately
- * and under another key (`req_id`). Everything this client sends in the Web shape takes its id from here, so ids
+ * and under another key (`req_id`). Everything this client sends in that shape takes its id from here, so ids
  * never repeat inside a process and an answer can be matched to exactly one request.
  */
 

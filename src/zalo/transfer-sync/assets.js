@@ -1,12 +1,12 @@
 /**
  * transfer-sync-v2 crypto/codec assets.
  *
- * Zalo Web decrypts sync batches with a wasm-bindgen module (`libzproto`) and
- * decodes them with google-protobuf ("jspb") message classes, both shipped in
- * its public web bundle. Rather than vendor Zalo's proprietary binary into this
+ * Sync batches are decrypted with a wasm-bindgen module (`libzproto`) and
+ * decoded with google-protobuf ("jspb") message classes, both served by Zalo's
+ * public chat page. Rather than vendor Zalo's proprietary binary into this
  * package, we fetch those pieces from Zalo's own CDN on first use and cache the
  * extracted modules locally (they are ~350 KB total and change only when Zalo
- * ships a new web build). Everything runs in-process in Node — no browser.
+ * updates its chat page). Everything runs in-process in Node — no browser.
  *
  * Pipeline these assets serve (see src/core/sync-v2/index.js):
  *   msgUrl bytes -> [u32 LE len][payload] chunk -> zproto decrypt
@@ -30,7 +30,7 @@ function extractModule(src, id) {
         start = src.indexOf(`${id}:function(`);
         sliceFrom = start;
     }
-    if (start < 0) throw new Error(`webpack module ${id} not found (Zalo web build changed?)`);
+    if (start < 0) throw new Error(`sync-v2 module ${id} not found (Zalo's chat page changed?)`);
     const braceStart = src.indexOf("{", src.indexOf("function(", start));
     let depth = 0;
     for (let i = braceStart; i < src.length; i++) {
@@ -41,7 +41,7 @@ function extractModule(src, id) {
             if (depth === 0) return src.slice(sliceFrom, i + 1);
         }
     }
-    throw new Error(`webpack module ${id} not brace-balanced`);
+    throw new Error(`sync-v2 module ${id} not brace-balanced`);
 }
 
 async function fetchText(url) {
@@ -57,7 +57,7 @@ async function fetchBytes(url) {
 
 /**
  * Ensure the extracted assets exist under `cacheDir`, fetching from the CDN
- * once and caching by the web build's worker hash. Returns absolute paths.
+ * once and caching by the sync worker's file hash. Returns absolute paths.
  *
  * @param {string} cacheDir
  * @param {(m: string) => void} [log]
@@ -67,7 +67,7 @@ export async function ensureAssets(cacheDir, log = () => {}) {
     // Discover the sync-v2 worker filename from the app shell.
     const html = await fetchText(`${APP_ORIGIN}/`);
     const wm = /__SRC_SYNC_V2_WORKER__\s*=\s*'([^']+)'/.exec(html) || /(sync-v2-worker\.[0-9a-f]+\.js)/.exec(html);
-    if (!wm) throw new Error("could not locate sync-v2 worker in Zalo web shell");
+    if (!wm) throw new Error("could not locate sync-v2 worker in Zalo's chat page");
     const workerFile = wm[1];
     const hash = (/\.([0-9a-f]{6,})\.js$/.exec(workerFile) || [, "unknown"])[1];
     const dir = resolve(cacheDir, hash);
@@ -89,7 +89,7 @@ export async function ensureAssets(cacheDir, log = () => {}) {
     log(`fetching transfer-sync-v2 assets (build ${hash}) from ${APP_ORIGIN}…`);
     fs.mkdirSync(dir, { recursive: true });
     const worker = await fetchText(`${APP_ORIGIN}/${workerFile}`);
-    // The libzproto glue module id used by Zalo web is "Vox7"; message/conversation protobufs are "1y5R"/"Ho1Y".
+    // The libzproto glue module id is "Vox7"; message/conversation protobufs are "1y5R"/"Ho1Y".
     fs.writeFileSync(paths.glue, extractModule(worker, "Vox7"));
     fs.writeFileSync(paths.pbMsg, extractModule(worker, "1y5R"));
     fs.writeFileSync(paths.pbConv, extractModule(worker, "Ho1Y"));
@@ -115,7 +115,7 @@ function makeRequire(extra) {
         if (id === "hRO2") return require("google-protobuf"); // jspb + goog runtime
         if (id === "N3ek") return {}; // base proto namespace
         if (extra && extra[id]) return extra[id];
-        throw new Error(`sync-v2 asset required an unmocked webpack module: ${id}`);
+        throw new Error(`sync-v2 asset required an unmocked module: ${id}`);
     };
     t.d = (e, name, getter) => {
         if (!Object.prototype.hasOwnProperty.call(e, name))

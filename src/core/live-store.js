@@ -1,8 +1,8 @@
 /**
  * Persist live socket events — shared by `listen` and by a running mobile sync.
  *
- * Zalo Web does not freeze while a transfer sync runs: the same WebSocket keeps
- * delivering new messages, reactions and recalls, and the app writes them to its
+ * A transfer sync does not freeze the socket: the same WebSocket keeps
+ * delivering new messages, reactions and recalls, which must be written to the
  * local store alongside the batches arriving from the phone. Our sync used to
  * subscribe only to cmd 601 and ignore everything else on that socket, so any
  * message that landed during a run — and a full-history run takes many minutes —
@@ -272,11 +272,9 @@ export async function refreshLiveMessageIdentities(api, msg, opts = {}) {
  * Store one message a history fetch returned -- only if it is not stored yet.
  *
  * `msg history` reads Zalo's cloud-message store (groups) or scans the
- * socket's old-message queue, and writes what it found through here. Zalo Web
- * writes the history it fetches too -- into the same table as live messages,
- * through the same writer -- but only rows it does not already hold, and
- * never replacing one (findMsgsAddDb, then ZStorage.setMessage with
- * replace:false). So a msgId already in zalo.db is left exactly as it is, and
+ * socket's old-message queue, and writes what it found through here: into the
+ * same table as live messages, through the same writer, but only rows not
+ * already held, and never replacing one. So a msgId already in zalo.db is left exactly as it is, and
  * whatever the listener, the media downloader, a receipt or a recall put on
  * it stays. That is the whole difference from {@link storeLiveMessage}, whose
  * upsert replaces the text, type, raw_data (st/at/cmd included), timestamp
@@ -284,8 +282,8 @@ export async function refreshLiveMessageIdentities(api, msg, opts = {}) {
  *
  * A new row gets the listener's normalization -- same classifier, same
  * columns, same thread update -- with `raw_data.src` "history" where the
- * listener writes "listen", as the phone restore writes "sync-v2". Zalo Web's
- * other two guards are mirrored:
+ * listener writes "listen", as the phone restore writes "sync-v2". Two
+ * more guards:
  *
  *   - removal frames ("chat.delete", "chat.undo") and rows without content
  *     are never written, and a removal is never APPLIED from history:
@@ -626,8 +624,8 @@ function joinNamesUs(event, ownId) {
  *   markGroupGone) and returns `gone` with the reason. Nothing is deleted here: the purge (or not, `groups.onLeave`)
  *   is ./group-exit.js applyGroupExit, which the listeners run next.
  * - **While a group is gone** (a group exit recorded and no newer chat message), every later event of it is ignored
- *   (`ignored: true`; the caller stores no system line) until a `join` naming us, which brings it back -- Zalo Web's
- *   ZGroupLeaveCache: a delayed or replayed control must not undo a leave.
+ *   (`ignored: true`; the caller stores no system line) until a `join` naming us, which brings it back: a delayed or
+ *   replayed control must not undo a leave.
  * - Otherwise (a group marked gone by a conversation list or `conv delete`) any later-dated event is a sighting and
  *   clears the gone marker, as before.
  *

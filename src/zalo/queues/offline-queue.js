@@ -1,30 +1,22 @@
 /**
  * Zalo's offline message queues: ask what this session missed since a cursor.
  *
- * What Zalo Web does on every authenticated connect (bundle
- * 1.e0ef5e98f8f9d8970e2c.js, character offsets):
- *
- *   `_doAfterAuth` hands the handshake to each handler (@~2698600); the chat
- *   handler's `onAuthenticated` (@~11118700) takes the queue list from the
- *   handshake's `data.qCmds` and calls `signalGetOffline` (@~3209700), which
- *   sends `doGetOffline(cmd, subCmd, first=true)` for every queue (@~3210267):
+ * What the server expects on every authenticated connect: the queue list comes
+ * from the handshake's `data.qCmds`, and every queue is asked for with
  *
  *     {cmd, subCmd, data: {first, reqId, lastId, preIds}}
  *
- *   `lastId` is that queue's saved cursor (`queueIds.getLastActionIdsForSocket`
- *   @~1391535; "1" when it has none). `onGotOffline` (@~3210990) pages while
- *   the answer says `data.more`, asking again with `first:false` from the
- *   answer's `lastActionId`, and `checkQueueOverflow` reads
- *   `queueStatus[q].evict` -- the server's word that it dropped queued items.
+ *   `lastId` is that queue's saved cursor ("1" when it has none). The client
+ *   pages while the answer says `data.more`, asking again with `first:false`
+ *   from the answer's `lastActionId`, and reads `queueStatus[q].evict` -- the
+ *   server's word that it dropped queued items.
  *
- * Captured on the wire (agent/work/transfer-sync-v2/zalo-cap-sync.decoded.jsonl):
- * the handshake lists `510_1` (1-1) and `511_1` (group) among its `qCmds`; the
- * web asks both within a millisecond of each other with `first:true`, a
+ * On the wire: the handshake lists `510_1` (1-1) and `511_1` (group) among its
+ * `qCmds`; both are asked within a millisecond of each other with `first:true`, a
  * msgId-shaped `lastId` and `preIds:[]`; each answer arrives in ~100 ms as
  * `{lastActionId, more, msgs|groupMsgs, queueStatus: {"511_1": {ids, lastId,
  * evict}}, reqId}`. Live pushes carry the same `queueStatus`, and for these
- * two queues its `lastId` is the pushed message's msgId
- * (live/socket.L1_group_echo.json, socket.L4_dm_echo.json).
+ * two queues its `lastId` is the pushed message's msgId.
  *
  * The listener already sends this request shape (`listener.requestOldMessages`) but
  * only ever with `first:true`, and its `old_messages` event drops `more`,
@@ -43,8 +35,8 @@ const THREAD_GROUP = 1;
 /**
  * The offline queues this module can drain, keyed by cmd: the two that carry
  * plaintext messages. The handshake also lists 515/517/518 -- the E2EE
- * session and ack queues in Zalo Web's SignalCommands (516 SESSION_OFFLINE,
- * 517 SESSION_OFFLINE_WEB, 518 OFFLINE_ACK_ONE_ONE) -- which we do not decode.
+ * session and ack queues (516/517 session offline, 518 1-1 offline ack) --
+ * which we do not decode.
  */
 const MESSAGE_QUEUES = new Map([
     [510, { threadType: THREAD_USER, rows: "msgs" }],
@@ -84,9 +76,9 @@ export const DEFAULT_MESSAGE_QUEUES = Object.freeze([
 ]);
 
 /**
- * How long a whole drain may take, every page included: Zalo PC's `offline_timeout` (480 s, one timer for the whole
- * offline phase, started by `signalGetOffline`), the budget of a long multi-page drain. One page is waited for at
- * most {@link DEFAULT_PAGE_TIMEOUT_MS} inside it. At its deadline PC raises a socket error and reconnects, and the
+ * How long a whole drain may take, every page included: Zalo's offline timeout (480 s, one timer for the whole
+ * offline phase), the budget of a long multi-page drain. One page is waited for at
+ * most {@link DEFAULT_PAGE_TIMEOUT_MS} inside it. At that deadline a client would reconnect, and the
  * new handshake asks every queue again from its saved cursor; here the socket supervisor owns reconnects, so the
  * drain ends as "timeout" and the next connect or wake asks again.
  */
@@ -95,7 +87,7 @@ export const DEFAULT_DRAIN_TIMEOUT_MS = 480_000;
 /**
  * How long one page's answer is waited for before the queue is given up on this socket, inside the drain's deadline.
  * Every queue answers in ~100 ms on the wire, an empty one included (`more: 0`, empty arrays), so silence is not an
- * empty queue: it is an answer that never came. PC would wait it out and then drop the socket; waiting 480 s on a
+ * empty queue: it is an answer that never came. Waiting it out and then dropping the socket, 480 s on a
  * live one held a daemon's start (2026-11-12: every queue silent for the full 480 s, while a wake minutes later had
  * every answer in under 300 ms). So a silent queue ends as "timeout" after this, and the next connect or wake asks
  * again. 30 s, not 10: one cold control answer was seen live past 10 s.
@@ -109,9 +101,9 @@ export const DEFAULT_MAX_PAGES = Infinity;
 /**
  * The message queues a handshake names, in its order.
  *
- * Follows `qCmds` rather than assuming 510/511, as the web does, and keeps only
+ * Follows `qCmds` rather than assuming 510/511, and keeps only
  * the queues whose answers this module can store. With no handshake to go on,
- * the captured pair.
+ * the usual pair.
  *
  * @param {Array<{cmd: number, subCmd: number, queueName?: string}>} [qCmds]
  * @returns {Array<{cmd: number, subCmd: number, queueName: string, threadType: number}>}
@@ -148,7 +140,7 @@ function request({ listener, tap, queue, data, deadline, onFrame, onStray }) {
             ws?.off?.("close", onClose);
             resolve(value);
         };
-        // PC's `beforeClose` ends the offline phase with the socket; an answer can never come on a closed one.
+        // A close ends the offline phase with the socket; an answer can never come on a closed one.
         const onClose = () => done(CLOSED);
         timer = setTimeout(() => done(null), Math.max(0, deadline - Date.now()));
         off = tap.on(queue.cmd, (frame, from) => {
@@ -159,8 +151,8 @@ function request({ listener, tap, queue, data, deadline, onFrame, onStray }) {
             // stream -- zalo_get_history, or `msg history`'s scan, which page it
             // through the listener outside this request -- gets answers without ours.
             // Taking one of those would store the wrong page and claim coverage
-            // from it. An answer with no reqId at all is taken, as PC (which
-            // routes by cmd alone) would; one naming another request is logged
+            // from it. An answer with no reqId at all is taken (routed by cmd
+            // alone); one naming another request is logged
             // and skipped, so a wait that runs out is never unexplained.
             const got = String(frame.data?.reqId ?? "");
             if (got !== "" && got !== data.reqId) {
@@ -180,7 +172,7 @@ function request({ listener, tap, queue, data, deadline, onFrame, onStray }) {
         });
         ws?.once?.("close", onClose);
         try {
-            // The web's request carries its own `reqId` in `data`.
+            // The request carries its own `reqId` in `data`.
             listener.sendWs({ version: 1, cmd: queue.cmd, subCmd: queue.subCmd, data });
         } catch {
             done(null);
@@ -192,8 +184,8 @@ function request({ listener, tap, queue, data, deadline, onFrame, onStray }) {
  * Drain one offline queue from a cursor, as `doGetOffline` / `onGotOffline` do.
  *
  * The first request goes out before this returns its promise. Callers drain one queue at a time (../../core/self-heal.js:
- * asked in the same moment, Zalo answered only the first). `timeoutMs` is the whole drain's budget (PC's
- * `offline_timeout`); a page silent for `pageTimeoutMs` ends the drain as "timeout" on this socket, and a socket that
+ * asked in the same moment, Zalo answered only the first). `timeoutMs` is the whole drain's budget (Zalo's
+ * offline timeout); a page silent for `pageTimeoutMs` ends the drain as "timeout" on this socket, and a socket that
  * closes ends it at once ("closed").
  *
  * @param {object} args
@@ -260,8 +252,8 @@ export async function drainOfflineQueue({
         if (Number(body.error_code) && Number(body.error_code) !== 0) return { ...out, reason: "error" };
         const d = body.data || {};
 
-        // `processSuccessData` resets its cursors and processes nothing else
-        // when the server sends this (@~11109800).
+        // The cursors are reset and nothing else is processed
+        // when the server sends this.
         const reset = d.resetLastActionId;
         if (reset !== undefined && reset !== null && reset !== "" && reset !== 0 && reset !== "0") {
             return { ...out, reason: "reset", resetTo: String(reset) };

@@ -1,13 +1,13 @@
 /**
- * End a Zalo session at Zalo's servers, the way Zalo Web does.
+ * End a Zalo session at Zalo's servers, the way Zalo does.
  *
- * Zalo Web's logout is `GET https://wpa.chat.zalo.me/api/login/logOut` (cmd
+ * The logout is `GET https://wpa.chat.zalo.me/api/login/logOut` (cmd
  * 11135): the common params plus `{time, client_version, type, imei,
- * computer_name}` as a PLAIN query string. The web builds it with `_get()`, which
- * URL-encodes the object as-is — no AES `params=` — and `time` is unix seconds.
+ * computer_name}` as a PLAIN query string: the object URL-encoded as-is
+ * — no AES `params=` — and `time` is unix seconds.
  *
- * The web also calls `logoutV2` — POST /api/v2/login/logOut on whatever
- * `getDevDomainV3()` returns, which live is the staging host `stg-wpa` — but only
+ * There is also `logoutV2` — POST /api/v2/login/logOut on the dev domain,
+ * which live is the staging host `stg-wpa` — but only
  * as an extra step behind a server flag (`sendLogoutV2` in ./official-logout.js),
  * and until 2026-09-30 it was the only call `logout` and `account remove` made.
  * The session survived it (tier 5). docs/agent-notes.md has how that went
@@ -18,7 +18,7 @@
  * answered right after a proven logout on 2026-09-19. Anything else is reported
  * as what it is.
  *
- * v3.0 (plan items L13a-c, X1): the default logout is now the official client's six steps
+ * v3.0 (plan items L13a-c, X1): the default logout is now Zalo's own app's six steps
  * (./official-logout.js), which sign the DEVICE out: afterwards the saved cookie is rejected
  * and the phone stops listing it. What is described above is the `keepSession` path
  * (`logout --keep-session`): it ends the session key and nothing more, as before.
@@ -31,7 +31,7 @@ import { errorCodeOf } from "./errors.js";
 import { boundUtils } from "./kernel/bound.js";
 import { officialLogout, sendLogoutV2 } from "./official-logout.js";
 
-/** Zalo Web's logout endpoint: the auth domain, not a service-map host. */
+/** The logout endpoint: the auth domain, not a service-map host. */
 export const PRODUCTION_LOGOUT_URL = "https://wpa.chat.zalo.me/api/login/logOut";
 
 /**
@@ -43,7 +43,7 @@ export const PRODUCTION_LOGOUT_URL = "https://wpa.chat.zalo.me/api/login/logOut"
 const SESSION_REJECTED = new Set([600]);
 
 /**
- * Send Zalo Web's production logout.
+ * Send the production logout.
  *
  * @param {object} api - a logged-in session API
  * @returns {Promise<*>} the response's `data`, decoded if it arrives encrypted
@@ -119,7 +119,7 @@ async function probeSessionKey(api) {
 }
 
 /**
- * Sign this device out at Zalo, the way the official client does (plan items L13a-c, X1).
+ * Sign this device out at Zalo, the way Zalo's own app does (plan items L13a-c, X1).
  *
  * Runs the six steps of src/zalo/official-logout.js, then looks: the session key is probed with
  * `fetchAccountInfo`, and, when the saved login is given, it is tried in a new login. "Signed out" is claimed
@@ -148,7 +148,7 @@ export async function serverLogout(api, { keepSession = false, savedLogin = null
  * End this session's KEY at Zalo's servers (the pre-v3.0 logout, `--keep-session`).
  *
  * The production logout runs FIRST, while the session key is still valid, then
- * the optional staging `logoutV2` (best-effort; Zalo Web's form: `params` sealed
+ * the optional staging `logoutV2` (best-effort; its form: `params` sealed
  * with the session key, `time` in unix seconds), then a `fetchAccountInfo`
  * probe. Order matters: measured live 2026-09-30, running `logoutV2` first
  * kills the in-process session key, and the production call then answers
@@ -156,7 +156,7 @@ export async function serverLogout(api, { keepSession = false, savedLogin = null
  *
  * What this does NOT do, also measured 2026-09-30: end the login. Both calls
  * end only this device's session key. The saved login (cookie) still
- * auto-logs-in on the next command, and the web session stays listed on the
+ * auto-logs-in on the next command, and this session stays listed on the
  * phone as signed in until it is removed from the phone's device list. So the
  * `logout` command deletes the local credentials on top of this, and points
  * the user at the phone for a server-side revoke. This helper only reports what

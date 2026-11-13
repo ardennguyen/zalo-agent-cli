@@ -1,6 +1,6 @@
 /**
  * Temporary local HTTP server for QR display on headless/VPS environments.
- * Serves the QR image as a plain login page on localhost, laid out like the Zalo Web login.
+ * Serves the QR image as a plain login page on localhost, laid out like Zalo's own login page.
  * Auto-closes after login completes.
  *
  * The page is also served at a one-time link, `/zalo/qr/<token>` (QrPage below): on the MCP HTTP server's own port
@@ -117,7 +117,7 @@ button:disabled{opacity:.6;cursor:default}
 `;
 
 /**
- * Everything the page says, in the two languages Zalo Web offers. The page picks one from the `lang` query, then a
+ * Everything the page says, in the two languages Zalo offers. The page picks one from the `lang` query, then a
  * saved choice, then the browser's language; the server only ever sends both.
  */
 export const PAGE_TEXT = Object.freeze({

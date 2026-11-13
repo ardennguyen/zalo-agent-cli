@@ -1,6 +1,6 @@
 /**
- * Tier-3 conversation-id resolution — the same path Zalo Web uses for peers not
- * in the local friend/group cache.
+ * Tier-3 conversation-id resolution — the path Zalo uses for peers not in the
+ * local friend/group cache.
  *
  * A synced conversation is keyed by an opaque "global noised id". Friends and
  * current groups are resolved from their lists (both carry `globalId`). Everyone
@@ -11,7 +11,7 @@
  *     -> { <globalNoisedId>: <userId> }
  *
  * We then batch `getUserInfo(userIds)` for display names. Left groups have no
- * per-item endpoint server-side, so they stay unresolved (matches Zalo Web).
+ * per-item endpoint server-side, so they stay unresolved.
  *
  * Built on the kernel's bound session helpers (src/zalo/kernel/bound.js), so the
  * authenticated envelope is the one every session call sends.

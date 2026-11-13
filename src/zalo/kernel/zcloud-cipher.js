@@ -1,8 +1,8 @@
 /**
- * zCloud's params/response cipher — a Node-crypto port of Zalo Web's own.
+ * zCloud's params/response cipher, on Node crypto.
  *
  * zCloud (`zcld.chat.zalo.me`) does not use the session cipher every other
- * Zalo endpoint uses (the session key with an all-zero IV — src/zalo/kernel/cipher.js). Zalo Web's zCloud layer keys a separate AES-CBC
+ * Zalo endpoint uses (the session key with an all-zero IV — src/zalo/kernel/cipher.js). zCloud keys a separate AES-CBC
  * with `enk`, the second half of the account's cloud viewer key pair, and
  * prepends a fresh random IV to every ciphertext:
  *
@@ -10,14 +10,10 @@
  *   decryptAES(b64,  enk) = the same, reading the first 16 bytes as the IV
  *   encodeParams(obj)     = encodeURIComponent(encryptAES(JSON.stringify(obj), enk))
  *
- * Source: bundle 1.e0ef5e98f8f9d8970e2c.js, module `98yS` (@2868035) and
- * `tP1L.encodeParams`, build 826674fb31d2af1b2b59, captured 2026-09-29.
- *
- * CryptoJS picks the AES variant from the key's length, so a 16/24/32-byte enk
- * means AES-128/192/256; any other length is refused rather than guessed.
- * Decryption also refuses bytes that are not valid UTF-8 — CryptoJS's
- * `toString(Utf8)` throws "Malformed UTF-8 data" in the same case — so a wrong
- * key surfaces as an error instead of as garbage.
+ * The AES variant follows the key's length, so a 16/24/32-byte enk means
+ * AES-128/192/256; any other length is refused rather than guessed.
+ * Decryption also refuses bytes that are not valid UTF-8, so a wrong key
+ * surfaces as an error instead of as garbage.
  *
  * Key material never leaves these functions and is never logged.
  */
@@ -39,7 +35,7 @@ function keyOf(enk) {
 }
 
 /**
- * Encrypt a string the way Zalo Web's zCloud layer does.
+ * Encrypt a string the way zCloud expects.
  *
  * @param {string} plaintext
  * @param {string} enk - base64 AES key from the viewer key pair
@@ -76,7 +72,7 @@ export function decryptZCloud(ciphertext, enk) {
 }
 
 /**
- * Zalo Web's `encodeParams`: the value of a zCloud request's `params` query field.
+ * The value of a zCloud request's `params` query field.
  *
  * @param {object} params
  * @param {string} enk

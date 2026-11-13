@@ -1,17 +1,17 @@
 /**
- * What the official Zalo Web client sends, written by hand as shapes: call
+ * What Zalo expects a client to send, written by hand as shapes: call
  * order, hosts, paths, and the NAMES (and a few fixed values) of query keys,
  * form keys and frame fields. No ids, tokens, cookies or captured payloads.
  *
  * These are the facts the v3.0 work is checked against. They were verified on
- * the wire against the Zalo Web client at version 694; a shape here changes
- * only when the official client is seen to change, and the diff is reviewed.
- * A shape says what the official client does, never what our code does today:
+ * the wire at protocol version 694; a shape here changes
+ * only when Zalo is seen to change, and the diff is reviewed.
+ * A shape says what Zalo expects, never what our code does today:
  * the tests that use them pin today's differences separately.
  */
 
 /**
- * The boot of a logged-in Web client, the calls that carry our identity.
+ * The boot of a logged-in session, the calls that carry our identity.
  * The socket upgrade follows `login-info` within about a second; it is not an
  * HTTP call and is not listed.
  *
@@ -117,7 +117,7 @@ export const WEB_QR_LOGIN = [
 ];
 
 /**
- * The calls no verified Web login makes.
+ * The calls no verified login makes.
  *
  * @type {Array<{host: string, path: string}>}
  */
@@ -170,11 +170,11 @@ export const WEB_LOGOUT = [
     { id: "login page", method: "GET", host: "id.zalo.me", path: "/account", query: { required: ["continue"] } },
 ];
 
-/** There is no production `GET /api/login/logOut` in the official client. */
+/** There is no production `GET /api/login/logOut` in the expected logout. */
 export const WEB_LOGOUT_FORBIDDEN = [{ host: "wpa.chat.zalo.me", path: "/api/login/logOut" }];
 
 /**
- * Socket frame bodies the official client sends, by command.
+ * Socket frame bodies a client sends, by command.
  *
  * @type {Record<string, import("./replay.js").BodyShape>}
  */

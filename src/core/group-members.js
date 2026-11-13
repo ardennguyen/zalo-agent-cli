@@ -20,7 +20,7 @@ import { getGroupInfoWatched } from "./group-exit.js";
  * (e.g. `"1000000000000000001_0"`).
  *
  * A group Zalo answers as disbanded (`removedsGroup`, 161) or not ours (not-a-member) is recorded as gone with the
- * open cache (src/core/group-exit.js), as Zalo Web does on the same answers.
+ * open cache (src/core/group-exit.js), as Zalo does on the same answers.
  *
  * @param {object} api - logged-in session
  * @param {string} groupId
@@ -46,7 +46,7 @@ export async function groupMemberUids(api, groupId) {
 /**
  * Ask Zalo for the display names of some users (`getGroupMembersInfo`).
  *
- * Zalo Web fetches member profiles the same way when it shows a member list:
+ * Member profiles are fetched the way Zalo shows a member list:
  * one request at a time, a bounded number of ids per request. The ids go
  * in the request URL, so `batchSize` keeps a large group's lookup from
  * outgrowing one URL. Keys come back as the uid, sometimes with the

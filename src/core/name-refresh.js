@@ -1,10 +1,10 @@
 /**
- * Profile refresh for non-friend DM peers, paced the way Zalo PC does it.
+ * Profile refresh for non-friend DM peers, paced the way Zalo expects.
  *
- * Zalo PC asks `getprofiles/v2` for up to 500 uids per request, one request after another. When the server answers
- * 221 ("too many requests") it parks the uids of that request for an hour, or until the server's `nextTs` (+100 ms)
- * when the reply carries one, and does not ask for them again until then. There is no cap per session: every peer is
- * asked for, in as many requests as it takes.
+ * `getprofiles/v2` is asked for up to 500 uids per request, one request after another. When the server answers
+ * 221 ("too many requests") the client parks the uids of that request for an hour, or until the server's `nextTs` (+100
+ * ms) when the reply carries one, and does not ask for them again until then. There is no cap per session: every peer
+ * is asked for, in as many requests as it takes.
  *
  * This module does the same for a restore: every uid in requests of 500, sequential, and on a 221 it stops for this
  * run, parks the uids of the refused request in a small state file next to the account's sync state, and says how
@@ -15,11 +15,11 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname } from "node:path";
 import { describeLookupError, isRateLimitError } from "../zalo/custom/user-info.js";
 
-/** Uids per `getprofiles/v2` request, as Zalo PC sends them. */
+/** Uids per `getprofiles/v2` request. */
 export const PROFILE_CHUNK_SIZE = 500;
 /** How long a refused request's uids stay parked when the reply names no `nextTs`. */
 export const PARK_MS = 60 * 60 * 1000;
-/** Added to the server's `nextTs`, as Zalo PC does. */
+/** Added to the server's `nextTs`. */
 const NEXT_TS_SLACK_MS = 100;
 /** Pause between two requests of one refresh. */
 const GAP_MS = 300;

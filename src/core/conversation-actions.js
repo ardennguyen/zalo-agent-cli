@@ -21,7 +21,7 @@ export const SEEN_ANCHOR_SCAN_DEPTH = 50;
 /**
  * The hidden-conversation list as the CLI and MCP hand it out: the threads and whether a PIN is set, never the PIN.
  *
- * Zalo's `hiddenconvers/get-all` answers with `pin`, the unsalted MD5 of the 4-digit PIN (Zalo Web keeps it to check
+ * Zalo's `hiddenconvers/get-all` answers with `pin`, the unsalted MD5 of the 4-digit PIN (a client keeps it to check
  * the PIN on the device). Ten thousand guesses recover the PIN from it, so passing the answer through gave it to
  * every script and every MCP agent that listed hidden conversations (seen live 2026-11-07).
  *
@@ -32,7 +32,7 @@ export function hiddenConversationsView(raw) {
     return { threads: Array.isArray(raw?.threads) ? raw.threads : [], hasPin: Boolean(raw?.pin) };
 }
 
-/** `conv auto-delete`'s periods, in milliseconds, as Zalo Web offers them. */
+/** `conv auto-delete`'s periods, in milliseconds, as Zalo offers them. */
 export const AUTO_DELETE_TTLS = Object.freeze({ off: 0, "1d": 86400000, "7d": 604800000, "14d": 1209600000 });
 
 /** Build the deleteChat anchor triple, or null when any part is missing. */
@@ -58,7 +58,7 @@ function toAnchor(ownerId, cliMsgId, globalMsgId) {
  * @returns {Promise<{ownerId: string, cliMsgId: string, globalMsgId: string}|null>}
  */
 export async function newestMessageAnchor(api, threadId, type) {
-    // Source 1: Zalo's cloud-message store, the group history Zalo Web reads
+    // Source 1: Zalo's cloud-message store, the group history Zalo serves
     // (src/zalo/custom/group-history.js). The previous engine's getGroupChatHistory asked
     // /api/group/history, which Zalo answers with 404 -- and this used to read
     // its answer as an array, a shape it never had.
@@ -113,7 +113,7 @@ export async function newestMessageAnchor(api, threadId, type) {
 }
 
 /**
- * Pin or unpin one conversation, exactly as Zalo Web does.
+ * Pin or unpin one conversation.
  *
  * `POST {conversation}/api/pinconvers/updatev2` with
  * `{actionType: 1 pin | 2 unpin, conversations: ["g<id>" | "u<id>"], tab: 0}`
@@ -140,15 +140,14 @@ export async function setConversationPinned(api, { threadId, type, pinned }) {
  * `{ids: [{id, type: 1 group | 0 user}], version, actionType: 0 to Other | 1 back, imei}`.
  *
  * `version` is the one decision here. The previous engine's updateArchivedChatList
- * sent `Date.now()`. Zalo Web sends the SERVER's version: each captured update
- * carried exactly the `version` the previous response returned, and the first
- * carried the one the web had stored from the server -- 25 days older than the
- * clock. Its archived-chat manager (module FEfs in the web API bundle) keeps
- * that value, refreshes it from `archivedchat/list` at start-up and from every
- * update response, and refetches the list when an answer flags it stale. A CLI
- * run is a fresh client every time, so it does what the web does at start-up:
- * read the list (getArchivedChatList, the same GET a fresh web
- * session makes) and send the version found there. With no version, nothing
+ * sent `Date.now()`. The server expects its OWN version: each update carries
+ * exactly the `version` the previous response returned, and the first one
+ * carries the version stored from the server, which can be weeks older than the
+ * clock. A client keeps that value, refreshes it from `archivedchat/list` at
+ * start-up and from every update response, and reads the list again when an
+ * answer flags it stale. A CLI run is a fresh client every time, so it does the
+ * start-up step: read the list (getArchivedChatList) and send the version found
+ * there. With no version, nothing
  * is sent.
  *
  * @param {object} api - logged-in session

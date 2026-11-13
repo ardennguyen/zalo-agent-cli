@@ -2,7 +2,7 @@
  * Telling Zalo which queue items this client has safely stored (plan item Y10, decision D7).
  *
  * Zalo keeps a message queue per conversation kind (`510_1` for 1-1 chats, `511_1` for groups). Every push and every
- * offline page names the queue items it carries in `queueStatus[queue].ids`. The Web client collects those ids and
+ * offline page names the queue items it carries in `queueStatus[queue].ids`. A client collects those ids and
  * sends them back in a `532` frame, once `max_msg_verify + 2` are pending or `interval_verify` has passed; the
  * server answers `{reqId, error}`: 0 done, 1 some of them were never delivered (they follow as `534` pushes), -1
  * stop verifying. Without these acks the server never learns what a client received, so its repair path never
@@ -12,14 +12,14 @@
  * committed to zalo.db.** An ack for something that was not stored reports "nothing missing", and the loss is
  * never repaired. So callers hand ids to {@link confirm} only after the write; this module never decides that.
  *
- * Nothing is sent while the connection's offline queues are being drained: Zalo PC (26.10.20, `verify_on_done_offline`)
- * refuses to verify until `onDoneOfflineAll` starts its verifier ("module is not started yet!"). {@link hold} and
+ * Nothing is sent while the connection's offline queues are being drained: verifying starts only once every offline
+ * queue is done. {@link hold} and
  * {@link release} are that switch: ids confirmed meanwhile wait, and go out once the drain is over.
  *
  * Seen live (2026-10-25): an ack is `{queueName, ids: [{actionId}], nretry, reqId}` and Zalo answers `{error: 0, reqId}`.
  * Two acks for ids of queue 510_1 got no answer in three tries and were dropped; where those ids came from was not
  * identified. What is still not known is the server's own `max_msg_verify` and `interval_verify` for this identity:
- * both are read from `settings.features.socket` when present, and a captured session shows the first ack 30 s after
+ * both are read from `settings.features.socket` when present, and an observed session shows the first ack 30 s after
  * a message.
  */
 import { nextReqId as sharedNextReqId } from "../req-id.js";

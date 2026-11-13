@@ -3,9 +3,8 @@
  * missed from Zalo's offline queue -- on its own socket, with no phone -- and
  * resolves a coverage gap only for the window that pull actually covered.
  *
- * This is what Zalo Web does on every authenticated connect (../zalo/queues/offline-queue.js
- * has the bundle offsets and the capture): each message queue is asked for
- * everything after its saved cursor, page by page until the server says there
+ * This is what a client does on every authenticated connect (../zalo/queues/offline-queue.js): each message queue is
+ * asked for everything after its saved cursor, page by page until the server says there
  * is no more. It never involves the phone. The phone-backed restore
  * (transfer-sync-v2, cmd 590) is a different thing -- the full history, and the
  * one step that needs the owner's tap -- and nothing here ever starts it; only a
@@ -19,13 +18,13 @@
  *   cipher key from it synchronously just before. A daemon start is simply the
  *   first handshake.
  * - **One queue at a time, one deadline.** The message queues in the handshake's `qCmds` order, then the control
- *   queues, each drained from its own cursor once the one before it is done. Zalo PC's `signalGetOffline` (26.10.20)
- *   asks every queue in the same moment, and this did too (5c99017): live, Zalo then answered only the first queue
+ *   queues, each drained from its own cursor once the one before it is done. Asking every queue in the same moment, as
+ *   this once did (5c99017), fails: live, Zalo then answered only the first queue
  *   and never 511_1 or 603_1, at start or on a wake, reproduced both ways on the same cursors (2026-11-12). The whole
- *   catch-up has one deadline (PC's `offline_timeout`, 480 s), and one page is waited for at most 30 s inside it. A
+ *   catch-up has one deadline (`offline_timeout`, 480 s), and one page is waited for at most 30 s inside it. A
  *   queue unanswered then, or whose socket closed, is not finished: its gaps stay pending and the next connect or
- *   wake asks again. PC closes and reconnects at its deadline; here the socket supervisor owns every reconnect, so the
- *   run only says it did not finish.
+ *   wake asks again. The socket supervisor owns every reconnect, so at its deadline the run only says it did not
+ *   finish.
  * - **One of our stages at a time.** It takes the daemon's stage lock
  *   (daemon-channel.js `createStageLock`), so it waits behind a running `sync`
  *   stage or `msg history` fetch and never shares the socket with one. Live
@@ -38,8 +37,8 @@
  *   msgId). Moving it before the write would let a crash skip a message
  *   forever; a cursor that lags only re-fetches what insert-if-absent then
  *   ignores. With no saved cursor, a queue starts from its newest stored
- *   message, then from the other queue's cursor (the web keeps one shared
- *   `lastActionId` for queues it has no id of its own for).
+ *   message, then from the other queue's cursor (one shared `lastActionId`
+ *   serves queues that have no id of their own).
  * - **Written insert-if-absent, removals applied.** New messages go through
  *   the history writer (`storeHistoryMessage`, `raw_data.src` "offline"), so a
  *   row the cache already holds is never modified. A recall or a
@@ -72,9 +71,9 @@
  *   items a client holds (a `532`, see ../zalo/queues/queue-verify.js), and repairs what it was not told about. A live push
  *   is acknowledged once every message in it is committed; a message the server re-sends as a `534` is stored first
  *   and acknowledged after. An item whose row did not commit is not acknowledged, so the server delivers it again.
- * - **Offline pages are never acknowledged, and nothing is while they drain.** Zalo PC skips the offline batch
- *   (`skip_offline_verify`: "skip verify msg offline") and starts its verifier only at `onDoneOfflineAll`
- *   (`verify_on_done_offline`: "module is not started yet!"). So a connect holds the verifier until its catch-up
+ * - **Offline pages are never acknowledged, and nothing is while they drain.** Offline batches are not verified
+ *   (`skip_offline_verify`), and the verifier starts only once the offline catch-up is done
+ *   (`verify_on_done_offline`). So a connect holds the verifier until its catch-up
  *   run is over, finished or not; live and `534` acks confirmed meanwhile go out then. Offline rows are still
  *   stored and still move the cursor.
  * - **A re-sent message is announced once** (design 6.1, FX 11). Our listener announces a `534` as `message` too,
@@ -85,7 +84,7 @@
  *
  * Out of scope here, on purpose: the 533/570 resend path (the server asking us for ids it says we hold). It
  * repairs a push lost in transit on a live socket; the catch-up above is a cursor pull and does not depend on
- * it. Zalo Web does not verify offline batches either (`skip_offline_verify`, bundle @~13896600).
+ * it.
  */
 import { GroupMessage, UserMessage, Undo } from "../zalo/listener/models.js";
 import {
@@ -195,8 +194,8 @@ const uncoveredReason = (reason, cause = null) =>
  *   the messages a run stored that the cache never had, oldest first, for the
  *   daemon's bot-facing output (the MCP buffer, `listen`'s events and webhook)
  * @param {() => number} [args.now]
- * @param {number} [args.timeoutMs] - the whole catch-up's deadline, every queue and page included (Zalo PC's
- *   `offline_timeout`); there is no per-page wait
+ * @param {number} [args.timeoutMs] - the whole catch-up's deadline, every queue and page included
+ *   (`offline_timeout`); there is no per-page wait
  * @param {number} [args.maxPages] - pages per queue
  * @param {boolean} [args.acks=true] - acknowledge stored queue items to Zalo (`532`); false sends nothing of the kind
  * @param {(undo: Undo) => {stored: boolean}} [args.storeUndo] - writes a recall found on a queue page; the live
@@ -442,7 +441,7 @@ export function createSelfHeal({
             const row = { ...raw }; // the message models rewrite their data in place
             const ts = Number(row.ts);
             if (Number.isFinite(ts) && ts > 0) out.oldestTs = out.oldestTs === null ? ts : Math.min(out.oldestTs, ts);
-            // lastId means "after this" in every use Zalo Web makes of it; a
+            // lastId means "after this" in every use Zalo makes of it; a
             // row from before the cursor says the server read it differently.
             if (isId(row.msgId) && idGreater(cursorId, row.msgId)) out.older++;
             try {
@@ -542,7 +541,7 @@ export function createSelfHeal({
         );
 
         // One queue at a time, the message queues in `qCmds` order and then the control queues, all under one deadline
-        // from this moment. Not all at once, as Zalo PC's `signalGetOffline` does: asked in the same moment, Zalo
+        // from this moment. Not all at once: asked in the same moment, Zalo
         // answered only the first (510_1) for this client and never 511_1 or 603_1, so group messages and group events
         // missed while parked never came back (2026-11-12, reproduced both ways on the same cursors).
         const deadline = now() + timeoutMs;
@@ -565,7 +564,7 @@ export function createSelfHeal({
             });
             const s = storeRows(p.queue, r.rows, ownId, p.cursor.id);
             if (s.newest) advance(p.queue.queueName, s.newest);
-            // Not acknowledged: Zalo PC never verifies an offline batch (`skip_offline_verify`, see the file header).
+            // Not acknowledged: an offline batch is never verified (`skip_offline_verify`, see the file header).
             if (r.resetTo) writeCursor(p.queue.queueName, { id: r.resetTo, ts: now() });
             if (s.older) {
                 say(
@@ -941,7 +940,7 @@ export function createSelfHeal({
     if (enabled && tap) {
         tap.on(CMD_AUTHEN, () => {
             // A new connection: what was waiting to be acknowledged belonged to the old one. Nothing is acknowledged
-            // until this connection's catch-up is over (Zalo PC's `verify_on_done_offline`).
+            // until this connection's catch-up is over (`verify_on_done_offline`).
             verifier?.reset();
             verifier?.hold();
             awaiting.length = 0;

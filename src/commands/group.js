@@ -38,7 +38,7 @@ function openActiveCache() {
 
 /**
  * Our own leave or disperse went through: record the group's exit here (purge, or keep flagged: groups.onLeave),
- * as Zalo Web does on the API's success. A listener need not be running.
+ * as Zalo does on the API's success. A listener need not be running.
  *
  * @param {string} groupId
  * @param {"leave"|"disbanded"} reason
@@ -152,7 +152,7 @@ export function registerGroupCommands(program) {
         .description("Show group details")
         .action(async (groupId) => {
             try {
-                // getGroupInfo takes a list of group ids, as the Web's getmg-v2 does.
+                // getGroupInfo takes a list of group ids, as Zalo's getmg-v2 does.
                 const raw = await getGroupInfoWatched(getApi(), openActiveCache(), [String(groupId)]);
                 // Members named alias first, as Zalo's member list shows them (src/core/contact-names.js).
                 await ensureAliases(getApi());
@@ -173,7 +173,7 @@ export function registerGroupCommands(program) {
                 // cursor that stops moving older, or at the filter point (src/zalo/custom/group-history.js).
                 const count = opts.count === undefined ? Number.MAX_SAFE_INTEGER : parseIntAtLeast(1)(opts.count);
                 // Zalo's cloud-message store (/api/cm/getrecentv2), which is
-                // what Zalo Web reads. The previous engine's getGroupChatHistory asked
+                // what Zalo reads. The previous engine's getGroupChatHistory asked
                 // /api/group/history, which Zalo answers with 404.
                 const result = await getGroupHistory(getApi(), groupId, count);
                 const msgs = result?.groupMsgs || [];
@@ -397,7 +397,7 @@ export function registerGroupCommands(program) {
                 "other members must name the next owner (--new-owner) or let Zalo pick one (--random-owner)",
         )
         .option("-s, --silent", "Leave without the usual notice to ordinary members (the owner still sees it)")
-        .option("--new-owner <userId>", "You own the group: hand it to this member first, then leave (as Zalo PC)")
+        .option("--new-owner <userId>", "You own the group: hand it to this member first, then leave (as Zalo does)")
         .option("--random-owner", "You own the group: leave and let Zalo give ownership to a random member")
         .action(async (groupId, opts) => {
             const json = program.opts().json;
@@ -509,7 +509,7 @@ export function registerGroupCommands(program) {
             // Zalo stores the whole setting object on every update, so this
             // reads the current one and sends back everything the user did not
             // name, unchanged. See src/zalo/custom/group-settings.js for why, and
-            // for what Zalo Web sends.
+            // for what Zalo sends.
             try {
                 const { settingChangesFromOptions } = await import("../core/group-settings.js");
                 const { NOTHING_TO_CHANGE, applyGroupSettingChanges } =
@@ -663,7 +663,7 @@ export function registerGroupCommands(program) {
             try {
                 let raw;
                 if (opts.page === undefined && opts.count === undefined) {
-                    // No page asked: every page, as Zalo PC reads them (src/core/list-all.js).
+                    // No page asked: every page, as Zalo reads them (src/core/list-all.js).
                     const { paging, ...all } = await allGroupBlocked(getApi(), groupId);
                     raw = all;
                     if (paging.note) warning(paging.note);
@@ -817,7 +817,7 @@ export function registerGroupCommands(program) {
                 if (opts.memberPage !== undefined) {
                     result = await getApi().getGroupLinkInfo({ link, memberPage: opts.memberPage });
                 } else {
-                    // No member page asked: every one, as Zalo PC reads a link preview (src/core/list-all.js).
+                    // No member page asked: every one, as Zalo reads a link preview (src/core/list-all.js).
                     const { paging, ...all } = await groupLinkInfoAll(getApi(), link);
                     result = all;
                     if (paging.note) warning(paging.note);
@@ -853,7 +853,7 @@ export function registerGroupCommands(program) {
             }
         });
 
-    // The actions Zalo Web asks about first: each needs --yes, and --dry-run says what it would do (src/core/confirm-guard.js).
+    // The actions Zalo asks about first: each needs --yes, and --dry-run says what it would do (src/core/confirm-guard.js).
     // leave and disperse read the group first, then settle the guard themselves (gateCli above).
     guardSubcommand(group, "leave", "group.leave", { target: () => ({}), deferred: true });
     guardSubcommand(group, "remove-member", "group.removeMember", {

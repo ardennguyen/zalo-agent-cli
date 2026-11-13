@@ -54,14 +54,14 @@ export function registerQuickMsgCommands(program) {
                 error(`Remove quick message failed: ${e.message}`);
             }
         });
-    // Asked about first, as Zalo Web does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    // Asked about first, as Zalo does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
     for (const [name, enabled] of [
         ["enable", true],
         ["disable", false],
     ]) {
         qm.command(name)
             .description(
-                `Turn quick messages ${enabled ? "on" : "off"} for this account, as Zalo Web's switch does ` +
+                `Turn quick messages ${enabled ? "on" : "off"} for this account, as Zalo's switch does ` +
                     "(unverified live; `profile settings` shows the current state)",
             )
             .action(async () => {

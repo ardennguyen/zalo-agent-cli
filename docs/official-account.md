@@ -300,7 +300,7 @@ zalo-agent oa whoami --oa-id shop2
 
 | | `zalo-agent` (personal) | `zalo-agent oa` (official) |
 |---|---|---|
-| API | Unofficial (Zalo Web's protocol) | Official (Zalo OA API v3.0) |
+| API | Unofficial (Zalo's own protocol) | Official (Zalo OA API v3.0) |
 | Auth | QR code login | OAuth 2.0 |
 | Scope | Personal Zalo account | Official Account |
 | Risk | Account can be banned | Safe — sanctioned official API |

@@ -104,7 +104,7 @@ describe("normalizeKeyword", () => {
         assert.deepEqual(normalizeKeyword("  Được  "), { keyword: "Được", norm: "duoc", truncated: false });
     });
 
-    it("cuts a keyword to 100 characters, as the official client does, and says so", () => {
+    it("cuts a keyword to 100 characters, as Zalo's own app does, and says so", () => {
         const long = "a".repeat(MAX_KEYWORD_LENGTH + 20);
         const out = normalizeKeyword(long);
         assert.equal(out.keyword.length, MAX_KEYWORD_LENGTH);

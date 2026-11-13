@@ -3,9 +3,8 @@
  *
  * Zalo's self-chat ("My Documents", "Cloud của tôi") is not the account's own
  * uid. It is a conversation of its own, and sending there is an ordinary 1-1
- * send to its id -- measured against Zalo Web on 2026-09-29, and the replay of
- * `sendMessage(text, <that id>, 0)` is byte-identical to the web's request.
- * The web learns the id from the login config (`send2me_id`), and the login
+ * send to its id (`sendMessage(text, <that id>, 0)`, checked live on
+ * 2026-09-29). The id comes from the login config (`send2me_id`), and the login
  * already keeps that config at `ctx.loginInfo`. Sending to the own uid instead
  * is rejected with "Tham số không hợp lệ".
  *

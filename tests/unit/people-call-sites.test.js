@@ -6,7 +6,7 @@
  *
  * - `friend find-username` reads the snake_case names Zalo answers with (spec-people 4);
  * - `friend sent-requests` reads "none sent" from the engine's `{}` (Zalo's 112), never from an error's text;
- * - `friend undo-request` explains Zalo's 301 (too many requests taken back), in Zalo Web's sense;
+ * - `friend undo-request` explains Zalo's 301 (too many requests taken back), in Zalo's sense;
  * - `group info` asks for its one group as a list;
  * - `conv mute` / `conv unmute` send the mute action Zalo expects (1 and 3);
  * - the media renewal of a restore (src/zalo/custom/renewlink.js) seals its request on the session.
@@ -126,7 +126,7 @@ describe("people call sites over the wire", () => {
     });
 
     describe("friend undo-request", () => {
-        it("explains Zalo's 301 the way Zalo Web does: too many taken back, wait 24 hours", async () => {
+        it("explains Zalo's 301: too many taken back, wait 24 hours", async () => {
             fake.routeAnswer("/api/friend/undo", { inner: { error_code: 301, error_message: "fake refusal" } });
             const r = await run(registerFriendCommands, ["friend", "undo-request", U]);
             assert.deepEqual(one("/api/friend/undo").params, { fid: U });

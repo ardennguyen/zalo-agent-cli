@@ -1,10 +1,9 @@
 /**
- * src/zalo/writes.js — the web client's state-changing endpoints, checked at the wire, and the guards around them.
+ * src/zalo/writes.js — the state-changing endpoints, checked at the wire, and the guards around them.
  *
  * Each case drives `callWrite` through the session's real HTTP layer into a stub (tests/helpers/web-call.js) and checks what
- * the stub received against what the web client's API module builds for the same call (module `fBUP`, 2026-10-23
- * bundle): the service-map host, the path, GET or POST, and the JSON encrypted into `params`. The expected values are
- * written out by hand from that module, not computed from the table under test. Nothing here talks to Zalo.
+ * the stub received against what Zalo expects for the same call: the service-map host, the path, GET or POST, and the JSON encrypted into `params`. The expected values are
+ * written out by hand, not computed from the table under test. Nothing here talks to Zalo.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it } from "node:test";
@@ -21,7 +20,7 @@ const TOP = { color: -16777216, emoji: "", startTime: -1, duration: -1, repeat: 
 /** A body field the test cannot know (a client id made from the clock): it is checked by shape, then replaced. */
 const ANY_CLIENT_ID = "<a client id>";
 
-// [name, args, host key, path, method, what the web client encrypts]
+// [name, args, host key, path, method, what is encrypted]
 const CASES = [
     [
         "multi-undo",
@@ -343,7 +342,7 @@ describe("writes — sandbox", () => {
     });
 });
 
-describe("each write goes out the way the web client's API module sends it", () => {
+describe("each write goes out the way Zalo expects it", () => {
     for (const [name, args, key, path, method, body] of CASES) {
         it(`${name} ${JSON.stringify(args).slice(0, 70)}`, async () => {
             const h = harness();
@@ -402,7 +401,7 @@ describe("ids go out as strings", () => {
     });
 });
 
-describe("the web client's enums, by name or number", () => {
+describe("Zalo's enums, by name or number", () => {
     it("accepts a name wherever the client sends a number, in any case", async () => {
         const h = harness();
         await callWrite(h.api, "topic-response", { groupId: "555", eventId: "e1", type: "REJECT" });
@@ -433,7 +432,7 @@ describe("the web client's enums, by name or number", () => {
     });
 });
 
-describe("a repeat rule and a pin are sent the way the web client serializes them", () => {
+describe("a repeat rule and a pin are sent the way Zalo expects them", () => {
     it("serializes a rule as a JSON array of one RRULE, the legacy repeat code beside it, weekdays in week order", async () => {
         const h = harness();
         for (const rule of [

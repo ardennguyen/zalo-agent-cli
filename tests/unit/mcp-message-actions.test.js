@@ -251,7 +251,7 @@ describe("zalo_send_message urgency", () => {
         const api = recordingApi();
         await call("zalo_send_message", { threadId: GROUP, text: "offline urgent", urgency: "urgent" }, api);
         await call("zalo_send_message", { threadId: PEER, text: "offline important", urgency: "important" }, api);
-        // the send turns `urgency` into the metaData {urgency} Zalo Web sends
+        // the send turns `urgency` into the metaData {urgency} Zalo expects
         // (pinned on the wire for the CLI in msg-urgency.test.js). Red if the
         // mapping drifts, or the field is dropped.
         assert.deepEqual(api.calls[0].content, { msg: "offline urgent", urgency: 2 });

@@ -2,13 +2,13 @@
  * The account's linked devices, as `account devices` prints them.
  *
  * Zalo's device list (`getListDevice`) names one primary device, the phone (`masterId`), and the companions
- * linked to it: the PC and web clients, and this CLI once it has logged in with the official QR flow (it is a trusted
- * companion device, see docs/agent-notes.md). A companion is `{id, linkId, platform, status, expireTs, encIdentity,
- * encAccSign}`; the last two are the signed identity material, which is never printed.
+ * linked to it: the desktop app and browser sessions, and this CLI once it has logged in with the official QR flow (it
+ * is a trusted companion device, see docs/agent-notes.md). A companion is `{id, linkId, platform, status, expireTs,
+ * encIdentity, encAccSign}`; the last two are the signed identity material, which is never printed.
  *
  * This client is the companion whose `id` is the `companionId` saved in `trusted-device.json`: the list says which
- * entry is this CLI, so a person can tell it from the web and PC entries, and can see after a logout or a purge that the
- * phone still lists it until it is removed there.
+ * entry is this CLI, so a person can tell it from the browser and desktop entries, and can see after a logout or a
+ * purge that the phone still lists it until it is removed there.
  */
 
 /** Zalo's name for a companion's platform, as far as it is known: the codes are the server's, the names are not. */

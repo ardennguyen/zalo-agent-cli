@@ -1,5 +1,5 @@
 /**
- * The default `logout`: Zalo Web's own six steps (src/zalo/official-logout.js), then a look at whether the
+ * The default `logout`: Zalo's own six sign-out steps (src/zalo/official-logout.js), then a look at whether the
  * device is really signed out (src/core/logout.js, plan items L13a-c and X1).
  *
  * What is asserted is what goes over the wire against the offline fake Zalo, and what the result says:

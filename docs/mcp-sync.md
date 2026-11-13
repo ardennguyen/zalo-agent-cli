@@ -59,7 +59,7 @@ retryable `WARMING` and `retryAfterSec`. Repeat it with the **same `requestId` a
 arguments** after that many seconds. Once a stage runs, the daemon does not park
 until it ends. Every tool, `zalo_sync_status` included, is refused with
 `YIELDED` while another session of the same login holds the account (the owner
-confirms `presence resume`) and with `SIGNED_OUT` after a Zalo Web login elsewhere
+confirms `presence resume`) and with `SIGNED_OUT` after a Zalo login in a browser elsewhere
 revoked this one (add the account again by QR). See
 [configuration.md](configuration.md#users-the-always-on-cap-and-on-demand-presence).
 

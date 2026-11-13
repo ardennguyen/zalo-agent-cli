@@ -5,7 +5,7 @@
  * logged-in fake (design 3.1 and 3.3).
  *
  * Each case has two parts: (1) our record against its reviewed golden record; (2) the error answers, each checked
- * against a literal `{message, code}`. The Web behavior is also asserted outright, so a reader sees it here and not
+ * against a literal `{message, code}`. The expected behavior is also asserted outright, so a reader sees it here and not
  * only in the golden file.
  *
  * Every id and phone number here is fake (tests/unit/no-real-ids.test.js).
@@ -444,8 +444,8 @@ describe("wire: people (src/zalo/api/people.js)", () => {
             );
         });
 
-        it("getFriendOnlines swaps profile hosts on an HTTP failure, as the Web's Friends tab does", () => {
-            // Red if the one difference from the Web found in its bundle (switchDomain) were dropped again.
+        it("getFriendOnlines swaps profile hosts on an HTTP failure", () => {
+            // Red if the host swap were dropped again.
             assert.equal(FRIEND_ONLINES.swapHosts, true);
             assert.equal(FRIEND_ONLINES.verified, false);
         });
@@ -456,7 +456,7 @@ describe("wire: people (src/zalo/api/people.js)", () => {
             assert.equal(rec.own.error.code, null);
         });
 
-        it("getCloseFriends: GET {profile}/friend/getclosedfriends with no params (the Web's form)", async () => {
+        it("getCloseFriends: GET {profile}/friend/getclosedfriends with no params (the expected form)", async () => {
             const rec = await check("getCloseFriends", "getCloseFriends", [], { reply: [] });
             const [req] = rec.own.requests;
             assert.equal(req.path, "/api/social/friend/getclosedfriends");
@@ -476,7 +476,7 @@ describe("wire: people (src/zalo/api/people.js)", () => {
             ["removeFriend", [PEER], "POST", "friend", "/api/friend/remove", { fid: PEER, imei: FAKE.imei }],
             ["blockUser", [PEER], "POST", "friend", "/api/friend/block", { fid: PEER, imei: FAKE.imei }],
             ["unblockUser", [PEER], "POST", "friend", "/api/friend/unblock", { fid: PEER, imei: FAKE.imei }],
-            // A GET: the Web method's body is `this._get(..., 12090)` (@11684243). spec-sweep's verb column said
+            // A GET (12090). spec-sweep's verb column said
             // post by its 400-character heuristic, which read the next method's `_post`.
             [
                 "lastOnline",

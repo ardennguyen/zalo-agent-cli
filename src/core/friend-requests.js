@@ -2,7 +2,7 @@
  * Friend requests, as the CLI's `friend` commands and the MCP tool `zalo_friend`
  * both read them.
  *
- * Zalo has no "incoming requests" list of its own. Zalo Web shows them inside
+ * Zalo has no "incoming requests" list of its own. Zalo shows them inside
  * the recommendations feed: an item whose `recommType` is 2
  * (`FriendRecommendationsType.ReceivedFriendRequest`) is a request someone
  * sent us, with their message in `recommInfo.message`; type 1 is an ordinary
@@ -21,7 +21,7 @@ export const RECEIVED_FRIEND_REQUEST = 2;
 /** Zalo's code for "this account has no open sent friend requests" (`/api/friend/requested/list`). */
 export const NO_SENT_REQUESTS = 112;
 
-/** Zalo's code for "too many friend requests taken back": Zalo Web says to wait 24 hours. */
+/** Zalo's code for "too many friend requests taken back": Zalo says to wait 24 hours. */
 export const UNDO_LIMIT_REACHED = 301;
 
 /**
@@ -50,7 +50,7 @@ export function describeFriendAddError(code, userId) {
         215: `User ${userId} may have blocked you or is unreachable.`,
         222: `User ${userId} already sent you a friend request. Use "friend accept ${userId}" instead.`,
         "-1": `Invalid userId "${userId}". Use "friend find <phone>" to get the correct userId first.`,
-        // Names from Zalo Web's own error table (TOO_MANY_REQUESTS, FULL_FRIEND_REQUESTING, FULL_FRIEND).
+        // Names from Zalo's own error table (TOO_MANY_REQUESTS, FULL_FRIEND_REQUESTING, FULL_FRIEND).
         221: "Zalo says too many requests were sent: wait a while before sending more.",
         223: "Zalo says the pending friend-request list is full (223).",
         224: "Zalo says the friend list is full (224).",

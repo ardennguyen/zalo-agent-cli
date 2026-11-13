@@ -1,15 +1,14 @@
 /**
  * The protocol version this CLI announces to Zalo.
  *
- * The previous engine defaulted to zpw_ver=685; the live Zalo Web client sent 691 on every
- * URL (agent/work/zalo-web-capture-2026-09-29: FINDINGS.md §7, comparison
- * §3g), then 694, and 695 since Zalo Web and PC build 26.11.10. `createZalo()` asks for 695, overridable with ZALO_API_VERSION so
+ * The previous engine defaulted to zpw_ver=685; Zalo expected 691 on every
+ * URL, then 694, and 695 now. `createZalo()` asks for 695, overridable with ZALO_API_VERSION so
  * a bad bump can be rolled back without a release.
  *
  * Asserted on the wire, through a real login against ./fake-zalo-session.js --
  * never by reading the options object back:
  *   - getLoginInfo carries it as client_version, and no zpw_ver / zpw_type (the
- *     official client announces those on API calls only),
+ *     protocol carries those on API calls only),
  *   - getServerInfo carries it as client_version,
  *   - an ordinary API call carries it as zpw_ver,
  *   - the WebSocket URL the listener would dial carries it as zpw_ver
@@ -75,7 +74,7 @@ describe("protocol version (zpw_ver / client_version)", () => {
         else process.env.ZALO_API_VERSION = saved;
     });
 
-    it("announces 695, the live Zalo Web version, by default", async () => {
+    it("announces 695, the current protocol version, by default", async () => {
         assert.deepEqual(await announced(fake), everywhere("695"));
     });
 

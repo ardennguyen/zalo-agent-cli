@@ -2,10 +2,11 @@
  * On-demand presence: when a daemon holds its account's one Zalo socket, and when it lets it go.
  *
  * A daemon whose consumers come and go (a CRM backend, an MCP server reached over HTTP) does not need the socket
- * while nobody asks for anything. Holding it anyway keeps the account's one web session busy, so the user's own Zalo
- * Web or PC clashes with it, and a fleet of hundreds stays connected for nobody. This module decides; the socket host
- * (./socket-host.js `park()` / `wake()`) executes. It never touches a socket itself and imports nothing from
- * `src/zalo/` (AGENTS.md section 13: the supervisor owns every retry, and only the socket host starts one).
+ * while nobody asks for anything. Holding it anyway keeps the account's one browser-class session busy, so the user's
+ * other Zalo session (a browser or the desktop app) clashes with it, and a fleet of hundreds stays connected for
+ * nobody. This module decides; the socket host (./socket-host.js `park()` / `wake()`) executes. It never touches a
+ * socket itself and imports nothing from `src/zalo/` (AGENTS.md section 13: the supervisor owns every retry, and only
+ * the socket host starts one).
  *
  *  - **Holds.** Anything that needs the socket opens a hold (an MCP tool call, a wait, a CRM lease, a CLI request
  *    routed to the daemon, a stage, the start-up catch-up, a catch-up pulse) and closes it when done. A hold may carry
@@ -21,9 +22,9 @@
  *    go and nothing takes it back on its own. Every hold is refused while yielded (`refusal()`, code `YIELDED`): a tool
  *    call, a lease, a CLI request, a wait. Only an explicit `resume()` (the user confirmed the other session is
  *    closed: `presence resume --yes`, the admin API, MCP) wakes it again (owner decision 2026-11-08).
- *  - **Signed out.** Zalo refuses the saved login (the user QR-logged into Zalo Web elsewhere, which takes the one web
- *    login): `signed-out`. Every hold is refused (code `SIGNED_OUT`), nothing retries, and the daemon stays up so its
- *    API, its status and a QR re-add keep working. Only a new login (a restart after the QR) ends it.
+ *  - **Signed out.** Zalo refuses the saved login (the user QR-logged into Zalo in a browser elsewhere, which takes the
+ *    one browser login): `signed-out`. Every hold is refused (code `SIGNED_OUT`), nothing retries, and the daemon stays
+ *    up so its API, its status and a QR re-add keep working. Only a new login (a restart after the QR) ends it.
  *  - **Metering.** Connected time and the time waits held the socket are counted for usage (owner decision 2).
  *
  * `listen` and `mcp start` both drive it through ./daemon-presence.js (one wiring, so the two cannot differ).
@@ -59,8 +60,9 @@ export const REFUSALS = Object.freeze({
     "signed-out": {
         code: "SIGNED_OUT",
         message:
-            "Zalo refuses this account's saved login: another browser or device took the web login (a Zalo Web QR " +
-            "login elsewhere). Add the account again by QR (`zalo-agent login`, or the fleet controller's QR add).",
+            "Zalo refuses this account's saved login: another browser or device took the browser login (a Zalo QR " +
+            "login in a browser elsewhere). Add the account again by QR (`zalo-agent login`, or the fleet " +
+            "controller's QR add).",
     },
 });
 

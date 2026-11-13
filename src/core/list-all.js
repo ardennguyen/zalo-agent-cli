@@ -28,8 +28,8 @@ const nothing = (r) => ({ paging: pagingOf(r) });
 
 /**
  * A conversation's reminders, every page. A group's pages after the first carry the id of the last topic of the page
- * before (`lastId`, as Zalo Web pages them) and end at an empty page (a short page can be followed by more); a DM's
- * go by page number and end at an empty or short page, as Zalo Web's DM lookups do.
+ * before (`lastId`) and end at an empty page (a short page can be followed by more); a DM's
+ * go by page number and end at an empty or short page.
  *
  * @param {object} api - a logged-in api
  * @param {string} threadId
@@ -63,7 +63,8 @@ export async function allReminders(api, threadId, threadType, { count = PAGE_SIZ
 
 /**
  * A group's whole board (notes, pinned messages, polls), every page: each page after the first carries the cursor of
- * the page before (`boardCursor`), and the list ends at an empty page, as Zalo Web pages it (`boardPage` in src/zalo/api/boards.js).
+ * the page before (`boardCursor`), and the list ends at an empty page (`boardPage` in
+ * src/zalo/api/boards.js).
  *
  * @param {object} api
  * @param {string} groupId
@@ -81,8 +82,8 @@ export async function allBoardItems(api, groupId, { count = PAGE_SIZE } = {}) {
 }
 
 /**
- * A group's blocked members, every page: on while the page says `has_more` 1, as Zalo PC's
- * `_getAllGroupBlockedMembers` reads them (50 a page).
+ * A group's blocked members, every page: on while the page says `has_more` 1 (50 a
+ * page).
  *
  * @param {object} api
  * @param {string} groupId
@@ -102,7 +103,7 @@ export async function allGroupBlocked(api, groupId, { count = 50 } = {}) {
 
 /**
  * A group seen through its invite link, with every member page: on while the page says `hasMoreMember`, joining the
- * pages' `currentMems`, as Zalo PC's `getGroupInfoByLink` does.
+ * pages' `currentMems`.
  *
  * @param {object} api
  * @param {string} link
@@ -120,9 +121,9 @@ export async function groupLinkInfoAll(api, link) {
 }
 
 /**
- * A pending group invitation's details with every member page. Zalo PC asks for the first page only (a preview);
- * this goes on while the group says `hasMoreMember`, or, when its reply has no such field, while a member page comes
- * back full.
+ * A pending group invitation's details with every member page. Not just the first page (a
+ * preview): this goes on while the group says `hasMoreMember`, or, when its reply has no such field, while a member
+ * page comes back full.
  *
  * @param {(mpage: number) => Promise<object>} fetchPage - one member page (`getInviteBoxInfo` with `mpage`)
  * @param {number} mcount - members per page asked
@@ -167,8 +168,8 @@ export async function allAvatars(api, { count = 50 } = {}) {
 }
 
 /**
- * Every catalog: pages from 0 while the page says `has_more`, keeping each catalog once, as Zalo PC's catalog list
- * manager reads them (20 a page).
+ * Every catalog: pages from 0 while the page says `has_more`, keeping each catalog once (20 a
+ * page).
  *
  * @param {object} api
  * @param {{limit?: number}} [opts]
@@ -195,7 +196,7 @@ export async function allCatalogs(api, { limit = 20 } = {}) {
 
 /**
  * Every product of a catalog: pages from 0 while the page says `has_more`, each later page asked with the first
- * product id of the page before (`lastProductId`), as Zalo PC's `doRequestGetProduct` does (100 a page).
+ * product id of the page before (`lastProductId`), 100 a page.
  *
  * @param {object} api
  * @param {string} catalogId
@@ -242,7 +243,7 @@ export async function allBankAccounts(api, { limit = 20 } = {}) {
 }
 
 /**
- * Every friend nickname, read the way Zalo Web pages its alias list (`readAllAliases`). A 221 on a later page keeps
+ * Every friend nickname, read page by page (`readAllAliases`). A 221 on a later page keeps
  * the pages read before it and says so in `note`; on the first page it is thrown.
  *
  * @param {object} api

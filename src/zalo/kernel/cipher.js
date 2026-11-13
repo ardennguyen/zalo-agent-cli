@@ -2,7 +2,7 @@
  * The session cipher: how every request's `params` is sealed and every reply's `data` is opened once a login
  * has handed out its key (`zpw_enk`).
  *
- * Wire facts (Zalo Web's `encodeAES`/`decodeAES`, spec-kernel 10.2): the key is the base64-decoded `zpw_enk`
+ * Wire facts (spec-kernel 10.2): the key is the base64-decoded `zpw_enk`
  * (16 bytes, so AES-128); AES in CBC mode with an IV of 16 zero bytes and PKCS#7 padding; the plaintext is the
  * caller's UTF-8 text (a JSON string); the ciphertext travels as standard base64 (`+`, `/`, `=`), and the URL or
  * form encoder escapes it. Opening first undoes any URL escaping (`decodeURIComponent`), then reverses the rest.
@@ -75,7 +75,7 @@ export function openSession(key, data) {
 }
 
 /**
- * A new device id (the `imei` every request carries), the way Zalo Web makes one: a random UUID, a dash, and the
+ * A new device id (the `imei` every request carries), in the shape Zalo expects: a random UUID, a dash, and the
  * MD5 of the User-Agent in lowercase hex.
  *
  * @param {string} userAgent

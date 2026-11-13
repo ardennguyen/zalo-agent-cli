@@ -25,7 +25,7 @@ import {
     readCloudPush,
 } from "../../src/core/cloud-verify.js";
 
-it("keeps Zalo Web's own pace: a cloud verify push is acted on once in 30 minutes", () => {
+it("keeps Zalo's own pace: a cloud verify push is acted on once in 30 minutes", () => {
     assert.equal(THROTTLE_MS, 30 * 60 * 1000);
 });
 
@@ -249,7 +249,7 @@ describe("when a cmd 621 notice makes the daemon walk", () => {
         assert.equal(await first, "walked");
     });
 
-    it("answers a forced verify as the Web does: the whole queue from the top, swept, past the pace and the id check", async () => {
+    it("answers a forced verify with the whole queue from the top, swept, past the pace and the id check", async () => {
         // The saved place equals the server's newest id, and a walk ran a minute ago: an ordinary notice would leave.
         setSyncState("cloudCursor", "server-newest-0000000000");
         const { verifier, calls, lines, advance } = build();
@@ -379,7 +379,7 @@ describe("a cloud-queue entry pushed live (cmd 620)", () => {
     const pushFrame = (item) => ({ cmd: CMD_CLOUD_PUSH, subCmd: 0, data: item });
     const noises = () => getCloudItems(PEER).map((r) => r.noiseId);
 
-    it("is cmd 620, Zalo PC's CLOUD.PUSH, and is read from the frame's data", () => {
+    it("is cmd 620, CLOUD.PUSH, and is read from the frame's data", () => {
         assert.equal(CMD_CLOUD_PUSH, 620);
         assert.equal(readCloudPush(pushFrame(addItem("1"))).noiseId, "noise-1");
         assert.equal(readCloudPush({ data: { data: JSON.stringify(addItem("2")) } }).noiseId, "noise-2");
@@ -413,7 +413,7 @@ describe("a cloud-queue entry pushed live (cmd 620)", () => {
         assert.deepEqual(noises(), []);
     });
 
-    it("lets a removal that overtook its add cancel that add, for an hour, as Zalo PC's validator does", async () => {
+    it("lets a removal that overtook its add cancel that add, for an hour", async () => {
         const { verifier, advance } = build({ getApi: () => api });
         assert.equal(await verifier.handlePush(pushFrame(removeItem("30"))), "unchanged");
         assert.equal(await verifier.handlePush(pushFrame(addItem("30"))), "cancelled");

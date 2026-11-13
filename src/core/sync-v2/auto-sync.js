@@ -2,14 +2,14 @@
  * Auto sync after a QR login (plan item Y8).
  *
  * When the person ticks "auto sync" on the phone while confirming a QR login, the phone puts a
- * `transfer_sync2 / transfer_after_login` control in the account's control queue, `{temp_key, imei, pc}`. Zalo Web
- * takes the latest one of those that is for the web (`pc` 0) and has a key, and sends the key as `tempKey` in its
- * conversation request: the phone then does not ask for a tap (measured live, 2026-10-26: the request went out 15
+ * `transfer_sync2 / transfer_after_login` control in the account's control queue, `{temp_key, imei, pc}`. A browser
+ * client takes the latest one of those that is meant for it (`pc` 0) and has a key, and sends the key as `tempKey` in
+ * its conversation request: the phone then does not ask for a tap (measured live, 2026-10-26: the request went out 15
  * seconds after the login and the phone showed no prompt; a key 765 seconds old got the prompt as usual).
  *
  * `zalo-agent login` always looks for that control after a QR login and says whether the box was ticked. The tick IS
- * the person's consent, given on the phone at the login itself, so a ticked offer is restored at once with its key, as
- * Zalo Web does (`--no-sync` declines; `--sync` is the older spelling of the default). This is the only restore that
+ * the person's consent, given on the phone at the login itself, so a ticked offer is restored at once with its key
+ * (`--no-sync` declines; `--sync` is the older spelling of the default). This is the only restore that
  * starts without a `sync` someone typed, and it never runs in a daemon (AGENTS.md section 13). The key is short-lived,
  * so it is read from the control queue the moment the socket is up.
  */
@@ -24,15 +24,16 @@ export const TRANSFER_AFTER_LOGIN = "transfer_after_login";
 /** A key older than this is not used: the phone stops honoring it long before 765 s. */
 export const AUTO_SYNC_MAX_AGE_MS = 120_000;
 
-/** `pc` of a control meant for the web client (the PC app is 1). */
+/** `pc` of a control meant for a browser client (the desktop app is 1). */
 const FOR_WEB = 0;
 
 /**
  * What the controls say about the phone's "sync messages to this device" box at the QR confirmation.
  *
- * - `ticked`: a `transfer_after_login` for the web (`pc` 0) with a key, recent enough to use (`tempKey`, `ageMs`).
- * - `late`: the same, but older than `maxAgeMs` (the phone asks for a tap again by then; Zalo Web drops it after 10 s).
- * - `other-client`: only offers for the PC app (`pc` not 0), which this client must not use.
+ * - `ticked`: a `transfer_after_login` for a browser client (`pc` 0) with a key, recent enough to use (`tempKey`,
+ *   `ageMs`).
+ * - `late`: the same, but older than `maxAgeMs` (the phone asks for a tap again by then).
+ * - `other-client`: only offers for the desktop app (`pc` not 0), which this client must not use.
  * - `none`: no offer at all: the box was not ticked.
  *
  * @param {object[]} controls - `controls[]` entries of 601/603 frames
@@ -68,8 +69,8 @@ export function classifyLoginOffer(controls, { now = Date.now(), maxAgeMs = AUTO
 }
 
 /**
- * Zalo Web's own rule for which control to use: the latest `transfer_after_login` whose data has a key and is for the
- * web, and (Web: within 10 s; here, within `maxAgeMs`) recent.
+ * Which control to use: the latest `transfer_after_login` whose data has a key and is for a browser client, and
+ * recent (within `maxAgeMs`).
  *
  * @param {object[]} controls - `controls[]` entries of 601/603 frames: `{actionId, content: {act, data, ts}}`
  * @param {object} [opts]
@@ -89,7 +90,7 @@ export const DEFAULT_CONTROL_QUEUES = Object.freeze([
 ]);
 
 /** Pages read from a saved cursor, and from the start of a queue (50 controls a page): no cap -- a read goes on
- * until the offer is found, the server says no more, or its cursor stops moving (`stalled`), as Zalo Web reads it. */
+ * until the offer is found, the server says no more, or its cursor stops moving (`stalled`). */
 const CURSOR_PAGES = Infinity;
 const START_PAGES = Infinity;
 
@@ -126,7 +127,7 @@ function askPage(listener, tap, queue, data, timeoutMs) {
 
 /**
  * Read one control queue from a cursor (or from its start: `lastId` null), page by page while the server says
- * `more`, as Zalo Web's `doGetOffline` / `onGotOffline` do. The pages reach the caller through the tap; this only
+ * `more`. The pages reach the caller through the tap; this only
  * drives the paging. It moves no saved cursor and acknowledges nothing (a read does not consume a control).
  *
  * @returns {Promise<{pages: number, reason: "drained"|"found"|"timeout"|"stalled"|"page-cap"|"reset"|"error"}>}
@@ -207,7 +208,7 @@ export function describeLoginControls(entries, now) {
  * Where the offer is: the phone puts it in the control queues at the QR confirmation, before this socket exists, so
  * it is read from the queues (a live `601` push is taken too, if one comes). A QR re-login that keeps the device id
  * (src/zalo/qr-login.js `deviceImeiFor`) keeps the control queue with everything it held, so the offer is at its END.
- * Each queue is therefore read the way Zalo Web reads it: from the cursor this account saved (`cursorOf`, the one
+ * Each queue is therefore read from the cursor this account saved (`cursorOf`, the one
  * `listen` keeps), page by page while the server says `more`; a queue with no saved cursor, or one the cursor did not
  * find it in, is read from its start the same way. (A single page asked without a cursor found the offer while every
  * QR login made a new device; on a kept device that page is the oldest one, and the offer was never seen.)
@@ -319,7 +320,7 @@ export async function autoSyncAfterLogin(
         if (offer.status !== "ticked") {
             const reason = {
                 late: `the phone offered auto sync ${Math.round((offer.ageMs ?? 0) / 1000)} s ago, too long ago to use without a tap`,
-                "other-client": "the phone's auto sync offer was for the Zalo PC app, not this client",
+                "other-client": "the phone's auto sync offer was for Zalo's desktop app, not this client",
                 none: "auto sync was not ticked on the phone at the QR confirmation",
             }[offer.status];
             return { offered: false, status: offer.status, ageMs: offer.ageMs, reason, ...diag };

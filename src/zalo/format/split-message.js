@@ -1,12 +1,12 @@
 /**
- * Splitting a long text message the way Zalo Web does.
+ * Splitting a long text message the way Zalo does.
  *
  * Zalo refuses one oversized message instead of cutting it: `114 "Tham số không hợp lệ"` for plain text past 3000
  * UTF-16 units, and `112 "Lỗi không xác định"` for a styled message (what Markdown becomes) whose text plus style
  * list passes roughly 3.1 to 3.5 KB. Chinese and long bulleted answers hit the second one early, because a Chinese
  * character is three bytes and each bullet carries a style entry. Measured live, 2026-10-29.
  *
- * The Web client never sends such a message. It budgets every message at `limitMsgByte` (3000) UTF-8 bytes of the
+ * Zalo's own apps never send such a message. They budget every message at 3000 UTF-8 bytes of the
  * text plus, for a styled message, the JSON of its styles; cuts at a newline when it can, else at a sentence end or
  * a space; trims the pieces; and sends them one after another, 300 ms apart. This does the same.
  *
@@ -14,10 +14,10 @@
  * the text they belong to; each part gets its own text and the ranges re-based to it.
  */
 
-/** Zalo Web's `limitMsgByte`: the most UTF-8 bytes of text (plus style JSON) in one message. */
+/** The most UTF-8 bytes of text (plus style JSON) in one message. */
 export const MESSAGE_BYTE_LIMIT = 3000;
 
-/** The pause between parts of one split message, as Web's `setTimeout(…, 300)`. */
+/** The pause between parts of one split message. */
 export const PART_GAP_MS = 300;
 
 const byteLength = (s) => Buffer.byteLength(s, "utf8");
@@ -54,13 +54,13 @@ function clipStyles(styles, from, to) {
     return out;
 }
 
-/** What one message costs against the limit: its text bytes plus its style list, as Web counts it. */
+/** What one message costs against the limit: its text bytes plus its style list. */
 function cost(text, styles) {
     return byteLength(text) + (styles.length > 0 ? byteLength(JSON.stringify(styles)) : 0);
 }
 
 /**
- * Sentence and clause marks of the scripts Zalo is used in, ranked like Web's ASCII ones (a full stop strongest). They
+ * Sentence and clause marks of the scripts Zalo is used in, ranked like the ASCII ones (a full stop strongest). They
  * need no space after them: Chinese, Japanese, Thai, Burmese and Khmer write none.
  */
 const MARKS = {
@@ -94,8 +94,8 @@ const MARKS = {
 
 /**
  * How good a place `text[i]` is to end a part after: higher is better, null when it is no break at all.
- * Web's own order (`" ,;)!?."`, a full stop strongest), a newline above all, and the marks other scripts use for the
- * same jobs (Web's list is ASCII only, so a long Chinese, Hindi or Arabic text with few spaces would be cut blind).
+ * The ASCII order (`" ,;)!?."`, a full stop strongest), a newline above all, and the marks other scripts use for the
+ * same jobs (an ASCII-only list would cut a long Chinese, Hindi or Arabic text with few spaces blind).
  */
 function breakRank(text, i) {
     const c = text[i];
@@ -136,7 +136,7 @@ function chooseCut(text, pos, end) {
  *
  * A style range that spans a cut is clipped into both parts. A mention is never cut: the cut moves before it. A
  * user-perceived character (an emoji, a flag, a Thai or Devanagari syllable with its marks) is never cut. Whitespace
- * at a cut is dropped, as Web trims its parts.
+ * at a cut is dropped: the parts are trimmed.
  *
  * @param {{text: string, styles?: Array<{start: number, len: number, st: string}>, mentions?: Array<{pos: number, len: number, uid: string}>}} message
  * @param {number} [limit] - bytes per part
@@ -182,7 +182,7 @@ export function splitMessage({ text, styles = [], mentions = [] }, limit = MESSA
             });
         }
         pos = cut;
-        // Web trims each remainder: the whitespace at a cut belongs to no part.
+        // Trim each remainder: the whitespace at a cut belongs to no part.
         while (pos < text.length && /\s/.test(text[pos])) pos++;
     }
     return parts.length > 0 ? parts : [{ text, styles, mentions }];

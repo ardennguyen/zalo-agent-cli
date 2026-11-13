@@ -1,12 +1,12 @@
 /**
- * `logout --keep-session` must end the session KEY the way Zalo Web ends it — and
+ * `logout --keep-session` must end the session KEY the way Zalo ends it — and
  * must say so only when it has seen the session end. (The default logout, which
  * signs the device out, is tested in logout-official.test.js.)
  *
  * Until this change both `logout` and `account remove` called only the patched
  * `logoutV2()`, which POSTs to `https://stg-wpa.chat.zalo.me/api/v2/login/logOut`.
- * That is a real call Zalo Web makes, but only as an optional extra step. The
- * web's actual logout is `GET https://wpa.chat.zalo.me/api/login/logOut` (cmd
+ * That is a real call, but only an optional extra step. The
+ * actual logout is `GET https://wpa.chat.zalo.me/api/login/logOut` (cmd
  * 11135) with a plain query string. Tier 5 saw the result: logout reported
  * success, and the credential still answered `whoami` afterwards.
  *
@@ -106,7 +106,7 @@ function harness({
     return { api, calls, requests };
 }
 
-describe("serverLogout --keep-session sends Zalo Web's production logout", () => {
+describe("serverLogout --keep-session sends the production logout", () => {
     it("GET https://wpa.chat.zalo.me/api/login/logOut with a plain query, time in seconds", async () => {
         const { api, requests } = harness();
         const before = Math.floor(Date.now() / 1000);
@@ -118,8 +118,8 @@ describe("serverLogout --keep-session sends Zalo Web's production logout", () =>
         const url = new URL(req.url);
         // Red if the call goes back to staging, to a service-map host, or to the v2 path.
         assert.equal(url.origin, "https://wpa.chat.zalo.me", "production auth domain, not stg-wpa");
-        assert.equal(url.pathname, "/api/login/logOut", "the web's logout path (cmd 11135), not /api/v2/");
-        assert.equal(req.method, "GET", "the web sends it as a GET, not a POST");
+        assert.equal(url.pathname, "/api/login/logOut", "the production logout path (cmd 11135), not /api/v2/");
+        assert.equal(req.method, "GET", "it goes out as a GET, not a POST");
         assert.equal(req.body, null, "no request body");
 
         const q = url.searchParams;

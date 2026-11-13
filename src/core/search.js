@@ -2,7 +2,7 @@
  * Searching the local message cache, the way Zalo's own clients do (plan items F3 to F9).
  *
  * Zalo searches messages in the client's own store: there is no server endpoint, and this does not call one either.
- * What it does follow from the official client (see docs/agent-notes.md, "Search"): the keyword and the text are folded
+ * What it does follow from Zalo's own app (see docs/agent-notes.md, "Search"): the keyword and the text are folded
  * alike (src/utils/vn-text.js), the keyword is cut to 100 characters, a hit is shown as a preview of 70 characters
  * before the match and 30 after, results come in pages, and the footer says how far back the local data reaches.
  *

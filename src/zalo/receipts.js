@@ -1,5 +1,5 @@
 /**
- * Seen and delivered receipts, sent the way Zalo Web sends them.
+ * Seen and delivered receipts, sent the way Zalo expects them.
  *
  * Both are plain HTTP calls carrying the same per-message record:
  *
@@ -10,9 +10,7 @@
  *
  *   data[i] = {cmi, gmi, si, di, mt, st, at, cmd, ts}
  *
- * That is what a capture of the real client (build 826674fb31d2af1b2b59,
- * zpw_ver 691) shows, and what its own builders (`sendSeen` / `sendDelivered`
- * in the web API bundle) produce: `si`/`di` are the raw frame's uidFrom/idTo --
+ * That is what the server expects: `si`/`di` are the raw frame's uidFrom/idTo --
  * "0" meaning this account -- and `st`, `at`, `cmd`, `ts` are echoed from the
  * socket frame that delivered the message, -1 where a field is missing.
  *
@@ -22,10 +20,10 @@
  *     `st: msg.st || 0 === msg.st ? 0 : -1`, which parses as
  *     `(msg.st || (0 === msg.st)) ? 0 : -1`: always 0 or -1, never the value.
  *     The same holds for at, cmd and ts.
- *   - A DM seen goes out without `imei`, which the web always sends.
+ *   - A DM seen goes out without `imei`, which the server expects.
  *   - the listener rewrites an own message's uidFrom "0" (and a DM's idTo "0") to the
  *     account uid before any handler sees it, so passing its message through
- *     sends our uid where the web sends "0".
+ *     sends our uid where Zalo expects "0".
  *
  * Hence this module: the requests are built here, on the kernel's bound
  * helpers, the pattern the other hand-built calls (./custom/gid.js) use.
@@ -45,26 +43,26 @@ const THREAD_GROUP = THREAD_TYPE.GROUP;
 /** The socket command a message arrives on, which its receipt echoes as `cmd`. */
 export const RECEIPT_CMD = Object.freeze({ [THREAD_USER]: 501, [THREAD_GROUP]: 521 });
 
-/** Zalo's per-call cap, shared by both receipts (the web's slice(-50)). */
+/** Zalo's per-call cap, shared by both receipts (the last 50). */
 export const MAX_RECEIPTS_PER_CALL = 50;
 
 /**
  * `st`/`at` for a cached message the listener stored before it kept them.
  *
- * A GUESS, labelled as one wherever it is used. `st` was 3 on every captured
+ * A GUESS, labelled as one wherever it is used. `st` was 3 on every observed
  * ordinary message (5 only on pin/unpin system rows); `at` varies -- 5 for
- * plain text, 0 for a card, 9 elsewhere -- and 5 is the plain-text value. The
- * web's own builder sends -1 for a field it lacks; if Zalo misbehaves with
- * this guess, -1 is the web-faithful alternative. To verify live.
+ * plain text, 0 for a card, 9 elsewhere -- and 5 is the plain-text value. A
+ * missing field is otherwise sent as -1; if Zalo misbehaves with
+ * this guess, -1 is the alternative. To verify live.
  */
 export const SEEN_FALLBACK = Object.freeze({ st: 3, at: 5 });
 
-/** The web's delivered-queue delay (`ack_seen.queue_delay || 150`). */
+/** The delivered-queue delay (`ack_seen.queue_delay`, 150 ms by default). */
 export const DELIVERED_QUEUE_DELAY_MS = 150;
 
 /**
- * Live msgTypes that must never be acknowledged. Zalo Web's message reducer
- * routes these to their own handlers and never into the delivered batch.
+ * Live msgTypes that must never be acknowledged: they go to their own
+ * handlers, never into the delivered batch.
  */
 const NO_RECEIPT_TYPES = new Set(["chat.delete", "chat.undo", "chat.e2ee.replace"]);
 
@@ -96,7 +94,7 @@ export async function zaloPost(api, { url, query = {}, params, signal }) {
     return utils.resolve(response);
 }
 
-/** A numeric frame field as the web sends it: the value, or -1 when absent. */
+/** A numeric frame field as the server expects it: the value, or -1 when absent. */
 function frameInt(v) {
     if (v === undefined || v === null || v === "") return -1;
     const n = Number(v);
@@ -116,7 +114,7 @@ export function isId(v) {
 }
 
 /**
- * One `msgInfos.data` entry, in the web's key order.
+ * One `msgInfos.data` entry, in the expected key order.
  *
  * @param {object} m
  * @param {string|number} m.msgId - global message id (`gmi`)
@@ -176,7 +174,7 @@ export function threadOf(threadId, type) {
  * Send seenv2 for up to 50 messages of one conversation.
  *
  * Group: `{"data":[…],"grid":<id>}`; DM: `{"data":[…],"senderId":<peer>}`.
- * Both carry `imei` and go out with `nretry=0`, as captured.
+ * Both carry `imei` and go out with `nretry=0`.
  *
  * @param {object} api - logged-in session
  * @param {object} opts
@@ -201,13 +199,13 @@ export async function sendSeenReceipt(api, { threadId, type, messages, signal } 
 }
 
 /**
- * Tell Zalo the reactions of one conversation were seen, as Zalo Web's `sendClearUnreadReaction` does when a
+ * Tell Zalo the reactions of one conversation were seen, as Zalo expects when a
  * conversation with unread reactions is read: `{reaction}/api/message/react_seen` (cmd 12448) for a DM,
  * `{reaction}/api/group/react_seen` (12449) for a group, body `{seenInfos: [{msgIds: [<reaction id>], uid|groupId}],
  * imei}`. The id is the newest unread reaction's own message id (a reaction frame's `msgId`), not the id of the
  * message it reacts to.
  *
- * Unverified: read from the Web bundle (2026-11-06), never captured on the wire.
+ * Unverified: never seen on the wire.
  *
  * @param {object} api - logged-in session
  * @param {object} opts
@@ -232,14 +230,14 @@ export async function sendReactionSeen(api, { threadId, type, reactionId, signal
  * Send deliveredv2 for up to 50 messages of one conversation.
  *
  * Group: `{"seen":0,"data":[…],"grid":<id>}` plus `imei`; DM: `{"seen":0,"data":[…]}`
- * and no `imei` at all -- the web's DM sender adds none. No `nretry`.
+ * and no `imei` at all. No `nretry`.
  *
  * @param {object} api - logged-in session
  * @param {object} opts
  * @param {string} opts.threadId
  * @param {0|1} opts.type
  * @param {object[]} opts.messages - see {@link receiptEntry}
- * @param {boolean} [opts.seen] - the web's `seen` flag; always false from the listener
+ * @param {boolean} [opts.seen] - the `seen` flag; always false from the listener
  * @param {AbortSignal} [opts.signal]
  * @returns {Promise<any>}
  */
@@ -262,8 +260,8 @@ export async function sendDeliveredReceipt(api, { threadId, type, messages, seen
  * What a receipt for one live listener message event names.
  *
  * The listener has already rewritten the frame's "0" sender (and a DM's "0"
- * recipient) to our uid by the time a handler sees it, so the raw values the
- * web echoes are rebuilt from `isSelf`: our own message is `si:"0"`; in a DM
+ * recipient) to our uid by the time a handler sees it, so the raw values a
+ * receipt echoes are rebuilt from `isSelf`: our own message is `si:"0"`; in a DM
  * the side that is us is "0" (`di:"0"` for an incoming DM, `di:<peer>` for our
  * own); in a group `di` is always the group.
  *
@@ -305,16 +303,16 @@ export function liveReceiptTarget(msg) {
  *
  * `listen` and `mcp start` both use this, and only this, so the two entry
  * points to the socket cannot drift apart (AGENTS.md §13). Every received 501
- * or 521 message is acknowledged -- our own echoes included, as Zalo Web does
- * -- except the removal frames the web does not acknowledge either.
+ * or 521 message is acknowledged -- our own echoes included, as Zalo does
+ * -- except the removal frames, which Zalo does not acknowledge either.
  *
- * Batching mirrors the web's delivered queue: messages wait `delayMs` (the
- * web's 150 ms), then go out one call at a time, one conversation per call, at
+ * Batching follows Zalo's delivered queue: messages wait `delayMs` (150 ms by
+ * default), then go out one call at a time, one conversation per call, at
  * most 50 messages per call. A message arriving while its conversation's batch
- * is still waiting joins it. So ordinary traffic produces exactly the captured
+ * is still waiting joins it. So ordinary traffic produces the usual
  * one-message calls, and a burst -- a reconnect replaying a backlog, a busy
  * group -- costs one call per conversation instead of one per message, spaced
- * like the web's own.
+ * the same way.
  *
  * Best-effort by construction. A receipt must never stop the listener, delay
  * or drop the message write, or reach stdout (the JSON-RPC stream in MCP mode):

@@ -1,8 +1,8 @@
 /**
  * The session's own calls: the keepalive and the account's profile.
  *
- * - `keepAlive()`: `GET {chat}/keepalive?zpw_ver&zpw_type&params`, `params` = sealed `{imei}` (Zalo Web, command
- *   11770). The reply is plain: its `data` is not sealed. The engine reads only `config_vesion` (Zalo's spelling).
+ * - `keepAlive()`: `GET {chat}/keepalive?zpw_ver&zpw_type&params`, `params` = sealed `{imei}` (command 11770). The
+ *   reply is plain: its `data` is not sealed. The engine reads only `config_vesion` (Zalo's spelling).
  * - `fetchAccountInfo()`: `GET {profile}/api/social/profile/me-v2?zpw_ver&zpw_type&params&os&browser`, `params` =
  *   sealed `{avatar_size, imei}`, `os` and `browser` the numbers of the saved User-Agent (plan item L6). A session
  *   reply.

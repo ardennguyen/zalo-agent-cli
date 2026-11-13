@@ -2,21 +2,21 @@
  * Lossless ids in JSON text: quote the bare integers under a known list of keys before `JSON.parse` sees them.
  *
  * Zalo sends ids (user, group, message, action ids) as bare JSON integers, many past 2^53, which `JSON.parse` rounds.
- * Zalo Web does not use a big-number parser. Each socket handler runs its frame text through a `preParse(text, keys)`
- * pass that wraps the digits of every listed key's value in quotes, then parses it plainly. The pass also reaches the
+ * No big-number parser is used. Each socket handler runs its frame text through a pass
+ * that wraps the digits of every listed key's value in quotes, then parses it plainly. The pass also reaches the
  * same keys inside JSON that is held, escaped, in a string value (`"data":"{\"uid\":123}"`), so a nested payload
  * parsed later keeps its ids too.
  *
- * Consequences, the same as Web's:
+ * Consequences:
  *  - a listed key's integer becomes a string, however small (`"msgId":5` -> `"5"`);
  *  - an integer under a key that is not listed stays a number (lossy past 2^53);
  *  - negative numbers, decimals and exponents are left as they are;
  *  - in an array under a listed key (`"ids":[1,2]`), each bare integer item is quoted and other items are left alone.
  *
- * The key lists are Web's, one per socket handler family (chat, control, request/response). Pure functions, no I/O.
+ * The key lists are Zalo's, one per socket handler family (chat, control, request/response). Pure functions, no I/O.
  */
 
-/** Keys the Web chat handler quotes (messages, receipts, recalls: cmds 501, 521, 502, 522, 504, 510, 511, ...). */
+/** Keys the chat handler quotes (messages, receipts, recalls: cmds 501, 521, 502, 522, 504, 510, 511, ...). */
 export const CHAT_ID_KEYS = Object.freeze([
     "uidFrom",
     "uidTo",
@@ -38,7 +38,7 @@ export const CHAT_ID_KEYS = Object.freeze([
     "ids",
 ]);
 
-/** Keys the Web control handler quotes (controls, reactions, typing: cmds 601, 602, 603, 610, 611, 612, ...). */
+/** Keys the control handler quotes (controls, reactions, typing: cmds 601, 602, 603, 610, 611, 612, ...). */
 export const CTRL_ID_KEYS = Object.freeze([
     "uid",
     "group_id",
@@ -54,7 +54,7 @@ export const CTRL_ID_KEYS = Object.freeze([
     "ids",
 ]);
 
-/** Keys the Web request/response handler quotes: the chat list without the two global message id keys. */
+/** Keys the request/response handler quotes: the chat list without the two global message id keys. */
 export const API_ID_KEYS = Object.freeze(CHAT_ID_KEYS.filter((k) => k !== "globalMsgId" && k !== "globalDelMsgId"));
 
 /** One compiled pattern per key list, keyed by the list's joined text. */
@@ -89,7 +89,7 @@ function quoteItems(inside, esc) {
 }
 
 /**
- * Quote the bare integers under `keys` in a JSON text, as Zalo Web's `preParse` does, so a plain `JSON.parse` keeps
+ * Quote the bare integers under `keys` in a JSON text, so a plain `JSON.parse` keeps
  * every digit of those ids. Text that is not a string, an empty text, or an empty key list is returned unchanged.
  *
  * @param {string} text - JSON text (a whole frame payload, or a nested payload)

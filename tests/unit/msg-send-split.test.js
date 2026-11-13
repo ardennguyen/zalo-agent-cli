@@ -1,8 +1,8 @@
 /**
- * `msg send` of a text Zalo would refuse as one message: it goes out as several, the way Zalo Web sends it.
+ * `msg send` of a text Zalo would refuse as one message: it goes out as several, the way Zalo splits it.
  *
  * Measured live (2026-10-29): plain text past 3000 UTF-16 units is refused with 114, and a styled message past
- * roughly 3.1 KB of text plus style JSON with 112 — 1200 Chinese characters with one bold word already is. Web
+ * roughly 3.1 KB of text plus style JSON with 112 — 1200 Chinese characters with one bold word already is. The split
  * budgets each message at 3000 bytes of text plus styles, cuts at a newline or a sentence end, and sends the parts
  * 300 ms apart.
  *

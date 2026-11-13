@@ -8,10 +8,10 @@
  *   `sendLink` (+ `parseLink`), `sendVoice`, `sendVideo` (both by hosted URL, over the forward endpoint),
  *   `sendBankCard`, `sendTypingEvent`, `sendReport`, `scanURL`.
  *
- * Wire facts this follows, from Zalo Web 26.11.10's API module where it and the previous engine differ (each is
- * pinned by a golden record in tests/helpers/wire-diff/golden/messages.js):
+ * Wire facts this follows where they differ from the previous engine (each is pinned by a golden record in
+ * tests/helpers/wire-diff/golden/messages.js):
  *
- * - Every send's params are in Web's key order (Web builds the object, then appends styles `textProperties`,
+ * - Every send's params are in the server's expected key order (the object, then styles `textProperties`,
  *   `metaData {urgency}` and `ttl`, then the thread key). The previous engine used its own order.
  * - Group text (`/api/group/sendmsg`) carries `imei`; group mention and group quote carry `language`.
  * - A sticker carries `ttl`; `searchSticker` asks for 10 by default; `getStickerCategoryDetail` sends `cid` as a
@@ -24,7 +24,7 @@
  * string), even when Zalo answers with no object (a bank card answers ""); the client ids come from the session's
  * monotonic source (`s.nextClientId()`), so two sends in one millisecond never share one; a video without its
  * width and height is refused before any request (Zalo refuses it with code 114); the HEAD that reads a hosted
- * video's size has a timeout and sends no cookie; a voice makes no HEAD and sends no size, as Web does.
+ * video's size has a timeout and sends no cookie; a voice makes no HEAD and sends no size.
  *
  * Nothing here writes to stdout or logs an id.
  */
@@ -37,19 +37,19 @@ export const HEAD_TIMEOUT_MS = 8000;
 /** `ttl` when the caller gives none: no self-destruct. */
 const NO_TTL = 0;
 
-/** `zsource` values (Web's send-source tracker; -1 is "not tracked"). */
+/** `zsource` values (Zalo's send-source tracker; -1 is "not tracked"). */
 const ZSOURCE = Object.freeze({ UNTRACKED: -1, STICKER_SUGGESTION: 101, FORWARD_VIDEO: 704 });
 
 /** `msgType` of the forward endpoint, by what is forwarded. */
 const FORWARD_TYPE = Object.freeze({ VOICE: 3, VIDEO: 5, CONTACT: 6 });
 
-/** The typing indicator's destination kind for a person (Web `DEST_TYPING.USER`). */
+/** The typing indicator's destination kind for a person. */
 const DEST_USER = 3;
 
 /** `sendReport`'s "other" reason: the only one that carries free text. */
 const REASON_OTHER = 0;
 
-/** A group report's `type` (Web `reportUser`). */
+/** A group report's `type`. */
 const GROUP_REPORT_TYPE = 14;
 
 /**
@@ -75,7 +75,7 @@ export const QUOTE_TYPE = Object.freeze({
  *
  * @param {string} host - service-map key
  * @param {string} path
- * @param {number} cmd - Web command id
+ * @param {number} cmd - command id
  * @param {object} [extra] - more definition fields (`timeoutMs`, `transform`)
  * @returns {object} an endpoint definition (src/zalo/kernel/endpoint.js)
  */
@@ -145,7 +145,7 @@ function stamp(data, clientId) {
 }
 
 /**
- * The UI language name Web sends as `language` ("vi" or "en").
+ * The UI language name sent as `language` ("vi" or "en").
  *
  * @param {{language?: string}} ctx
  * @returns {string}
@@ -193,7 +193,7 @@ function styleOf(style) {
 }
 
 /**
- * Append what Web's param builder appends after a send's own keys: `textProperties` for a non-empty style list,
+ * Append what the server expects after a send's own keys: `textProperties` for a non-empty style list,
  * `metaData` for urgency 1 (important) or 2 (urgent).
  *
  * @param {object} params - mutated
@@ -254,7 +254,7 @@ async function hostedSize(ctx, url, what, timeoutMs) {
  */
 export function messageMethods(s) {
     /**
-     * Send a forward-endpoint message (card, voice, video) with Web's key order: the thread keys, `ttl`,
+     * Send a forward-endpoint message (card, voice, video) in the expected key order: the thread keys, `ttl`,
      * `zsource` when the send is tracked, `msgType`, `clientId`, `msgInfo`.
      */
     async function forward({ threadId, group, ttl, zsource, msgType, clientId, msgInfo }) {
@@ -422,7 +422,7 @@ export function messageMethods(s) {
      * Search stickers by keyword.
      *
      * @param {string} keyword
-     * @param {number} [limit] - how many; Web asks for 10
+     * @param {number} [limit] - how many; 10 by default
      * @returns {Promise<Array<{sticker_id: number, cate_id: number, type: number}>>}
      */
     const searchSticker = (keyword, limit = 10) =>
@@ -465,7 +465,7 @@ export function messageMethods(s) {
     /**
      * The stickers of one sticker category.
      *
-     * @param {number|string} cateId - the category id (sent as a string, as Web does)
+     * @param {number|string} cateId - the category id (sent as a string)
      * @returns {Promise<object>}
      */
     const getStickerCategoryDetail = (cateId) => s.call(ENDPOINTS.stickerCategory, { params: { cid: String(cateId) } });
@@ -519,7 +519,7 @@ export function messageMethods(s) {
     }
 
     /**
-     * Send a voice message from a hosted file. As Zalo Web forwards one, the request goes to Zalo only: no HEAD to
+     * Send a voice message from a hosted file. The request goes to Zalo only: no HEAD to
      * the file's host and no `fileSize` in `msgInfo` (spec-send 6.3).
      *
      * @param {{voiceUrl: string, ttl?: number, m4aUrl?: string}} options - `m4aUrl` defaults to `voiceUrl`

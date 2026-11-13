@@ -104,7 +104,7 @@ describe("readMarksFrom -- which clearUnreads rows are conversation reads", () =
         ]);
     });
 
-    it("skips a folder or request-box row (type 2, sct 1-3) and a read of message 0, as the web does", () => {
+    it("skips a folder or request-box row (type 2, sct 1-3) and a read of message 0, as Zalo does", () => {
         const marks = readMarksFrom(
             {
                 clearUnreads: [

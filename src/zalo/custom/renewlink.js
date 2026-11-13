@@ -1,5 +1,5 @@
 /**
- * Refresh an expired media URL — the same call Zalo Web makes when a photo,
+ * Refresh an expired media URL — the same call Zalo makes when a photo,
  * video or file in the timeline has aged past its signed URL.
  *
  *   POST {fileDomain}/api/message/renewlink   (cmd 12094)
@@ -25,7 +25,7 @@
 import { boundUtils } from "../kernel/bound.js";
 
 /**
- * Zalo Web strips its internal `jxl` marker before sending a URL back for
+ * Zalo strips its internal `jxl` marker before sending a URL back for
  * renewal. Our URLs come straight off the wire and normally have none, so this
  * is defensive rather than load-bearing.
  */

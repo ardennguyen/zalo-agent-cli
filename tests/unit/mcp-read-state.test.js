@@ -2,7 +2,7 @@
  * The account's read state on Zalo, as the MCP tools report it (M4).
  *
  * A bot has its own read cursor (`consumer`, zalo_mark_read); this is the
- * other kind of read: what the human already read on the phone or Zalo Web,
+ * other kind of read: what the human already read on the phone or another Zalo session,
  * which the listener stores from the server's `clearUnreads` reports
  * (src/core/read-state.js). It is the signal for handing a thread back to a
  * person, so each listing tool carries it: `readOnZalo` on every message of

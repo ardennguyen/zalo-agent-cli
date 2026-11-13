@@ -1,10 +1,10 @@
 /**
- * Leaving a group, and disbanding one for everyone, the way Zalo PC (26.11.11) does. `group leave` / `group disperse`
+ * Leaving a group, and disbanding one for everyone, the way Zalo does it. `group leave` / `group disperse`
  * and `zalo_group` leave / disperse share it.
  *
  * - **Leave** removes only this account. A member or deputy just leaves. The **owner** of a group that still has
- *   other members must say who owns it next: PC opens "Chọn trưởng nhóm mới trước khi rời" and, on a choice, calls
- *   `changeGroupOwner` and then `leaveGroup`. Its older dialog still offered a plain leave, after which "Quyền trưởng
+ *   other members must say who owns it next: Zalo asks "Chọn trưởng nhóm mới trước khi rời" and, on a choice, calls
+ *   `changeGroupOwner` and then `leaveGroup`. An older dialog still offered a plain leave, after which "Quyền trưởng
  *   nhóm sẽ được trao ngẫu nhiên cho thành viên khác" (Zalo picks a random member). Here that is `newOwner` or
  *   `randomOwner`; with neither, the leave is refused before anything is sent. An owner alone in the group just
  *   leaves.
@@ -88,7 +88,7 @@ function label(groupId, name) {
 }
 
 /**
- * Read the group and decide how this account leaves it; refuse, before anything is sent, what PC would not let
+ * Read the group and decide how this account leaves it; refuse, before anything is sent, what Zalo would not let
  * through.
  *
  * @param {object} api
@@ -163,7 +163,7 @@ export async function planLeave(api, { groupId, ownId, newOwner = null, randomOw
 }
 
 /**
- * Leave as planned: hand ownership over first when a new owner was chosen (as PC: `changeGroupOwner`, then
+ * Leave as planned: hand ownership over first when a new owner was chosen (`changeGroupOwner`, then
  * `leaveGroup`), else leave.
  *
  * @param {object} api

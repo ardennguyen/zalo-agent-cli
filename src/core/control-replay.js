@@ -5,14 +5,14 @@
  * text of a transcribed voice message, a sync status. They reach a connected client as pushes; while the client is
  * away the server keeps them in the control queues (`603_0` and `603_1` in this account's handshake, named by its
  * `ctrl_qCmds`) and serves them to the next connect, from the cursor the client holds, in pages of 50
- * (`{controls, queueStatus, more, lastActionId}`). Zalo Web asks for them on every connect and runs each one through
- * the same handler as a live push (bundle module `8RMw`, `processControl`: one path for `601`, `603`, `610` and `611`).
+ * (`{controls, queueStatus, more, lastActionId}`). A client asks for them on every connect and runs each one through
+ * the same handler as a live push (one path for `601`, `603`, `610` and `611`).
  *
  * So does this client now. Each page that comes back is handed to the listener as if it had arrived as a `601`: the
  * frame's command is rewritten and the bytes are given to the socket's own `message` handlers, so the listener emits
  * the same `group_event` and `friend_event`, and everything that reads `601` here (the unread marks, the transcripts, the
  * unknown-action collector, the cursor keeper) sees it as it sees a push. Nothing is written by this module, nothing
- * is acknowledged (the Web client acknowledges controls with nothing at all: its cursor is the whole mechanism),
+ * is acknowledged (controls take no acknowledgment at all: the cursor is the whole mechanism),
  * and the cursor only moves where `601` handling moves it: forward, from the answer's own `queueStatus`.
  *
  * What it does not do, on purpose:
@@ -41,7 +41,7 @@ export function replayAsPush(listener, raw) {
     const copy = Buffer.from(raw);
     copy.writeUInt16LE(CMD_CONTROL_PUSH, 1);
     copy[3] = 0;
-    // `true`: a binary frame. The listener reads only binary frames (it ignores text ones, as Web does), and `ws`
+    // `true`: a binary frame. The listener reads only binary frames (it ignores text ones), and `ws`
     // hands its handlers the data as text unless told it is binary.
     ws.emit("message", copy, true);
     return true;

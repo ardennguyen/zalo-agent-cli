@@ -162,6 +162,6 @@ export function registerPollCommands(program) {
                 error(`Share poll failed: ${e.message}`);
             }
         });
-    // Asked about first, as Zalo Web does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    // Asked about first, as Zalo does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
     guardSubcommand(poll, "lock", "poll.lock", { target: (pollId) => ({ pollId }) });
 }

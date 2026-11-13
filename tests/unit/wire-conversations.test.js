@@ -3,7 +3,7 @@
  * PIN, and auto-delete, src/zalo/api/conversations.js on one logged-in fake.
  *
  * Each case has two parts: (1) our record against its reviewed golden record; (2) the error answers, each checked
- * against a literal `{message, code}`. The Web behavior is also asserted outright.
+ * against a literal `{message, code}`. The expected behavior is also asserted outright.
  *
  * Every id here is fake (tests/unit/no-real-ids.test.js).
  */
@@ -123,7 +123,7 @@ describe("wire: conversations (src/zalo/api/conversations.js)", () => {
     });
 
     describe("addUnreadMark", () => {
-        it('DM, newest message unknown: {param: JSON} in the Web\'s order, "-1" for both message ids', async () => {
+        it('DM, newest message unknown: {param: JSON} in the expected order, "-1" for both message ids', async () => {
             const rec = await check("unread-add-dm", "addUnreadMark", [PEER, 0], {
                 reply: { data: '{"updateId":1}', status: 0 },
             });
@@ -143,7 +143,7 @@ describe("wire: conversations (src/zalo/api/conversations.js)", () => {
             assert.deepEqual(rec.own.result, { data: { updateId: 1 }, status: 0 });
         });
 
-        it("DM, newest message given: the entry names its cliMsgId and sender, as the Web's does", async () => {
+        it("DM, newest message given: the entry names its cliMsgId and sender", async () => {
             const last = { cliMsgId: "1699999999999", fromUid: "0" };
             const rec = await check("unread-add-newest", "addUnreadMark", [PEER, 0, last], {
                 reply: { data: '{"updateId":2}', status: 0 },
@@ -179,7 +179,7 @@ describe("wire: conversations (src/zalo/api/conversations.js)", () => {
             assert.deepEqual(rec.own.requests[0].params, { imei: FAKE.imei });
         });
 
-        it("hide: {del_threads, add_threads, imei} in the Web's order, both lists as JSON text", async () => {
+        it("hide: {del_threads, add_threads, imei} in the expected order, both lists as JSON text", async () => {
             const rec = await check("hide", "setHiddenConversations", [true, [PEER, PEER2], 0], { reply: {} });
             const [req] = rec.own.requests;
             assert.deepEqual(req.paramsOrder, ["del_threads", "add_threads", "imei"]);
@@ -239,7 +239,7 @@ describe("wire: conversations (src/zalo/api/conversations.js)", () => {
             assert.equal(req.method, "POST");
             assert.deepEqual(req.queryOrder, ["zpw_ver", "zpw_type", "params"]);
             assert.deepEqual(req.params, { threadId: PEER, isGroup: 0, ttl: 86400000, clientLang: "vi" });
-            // Red if a form body came back: the Web posts nothing.
+            // Red if a form body came back: nothing is posted.
             assert.equal(req.form, null);
             assert.equal(req.body, null);
         });

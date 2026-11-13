@@ -2,7 +2,7 @@
  * The `601` control frames and the queues behind them (plan item X4).
  *
  * A `601` carries `controls[]`, each `{actionId, controlId, content: {act, act_type, data}}`, plus `queueStatus` with
- * the control queues' cursors: `603_1`, `603_0` and `604_0`, each `{ids, lastId}`. The Web client uses those
+ * the control queues' cursors: `603_1`, `603_0` and `604_0`, each `{ids, lastId}`. A client uses those
  * `lastId`s as the cursor of its next `603` pull, so that controls that arrived while it was offline (a group
  * event, an unread mark, a sync status) are fetched when it comes back.
  *
@@ -14,7 +14,7 @@
  *  - {@link controlCursorsOf} reads the control queues' cursors, which the daemon keeps (forward only) from every
  *    push and every replayed page.
  *
- * Nothing here acknowledges a control: the Web client acknowledges them with nothing at all (its cursor is the
+ * Nothing here acknowledges a control: Zalo expects no acknowledgement at all (the cursor is the
  * mechanism; a control queue is not consumed by being read), and the controls this client handles are acted on in
  * memory, not stored.
  */
@@ -24,7 +24,7 @@ export const CONTROL_QUEUES = Object.freeze(["603_1", "603_0", "604_0"]);
 
 /**
  * What a control is, by `act_type/act`, `act_type` or `act`. An entry names the handler that acts on it, or (`ignored`)
- * why there is nothing for this client to do. The values come from the captured frames and from the handlers
+ * why there is nothing for this client to do. The values come from observed frames and from the handlers
  * this client already has (the listener's `file_done`, `video_done`, `photo_success`, `group`, `fr`; src/core/read-state.js's `mark_unread`; the sync status
  * frames).
  */
@@ -38,7 +38,7 @@ const KNOWN = new Map([
     ["group", { kind: "group-event", handler: "listener" }],
     ["fr", { kind: "friend-event", handler: "listener" }],
     // The owner's alias for someone set, changed or removed: the listener's `alias_change`; the app rereads its alias
-    // list (src/core/contact-names.js), as Zalo Web does.
+    // list (src/core/contact-names.js), as Zalo does.
     ["alias", { kind: "alias", handler: "listener" }],
     // The account's own profile changed on another device: the listener's `profile_change`; on `update` the app
     // rereads its own profile name (src/core/contact-names.js).
@@ -52,8 +52,8 @@ const KNOWN = new Map([
     ["update_reminder11", { kind: "reminder", handler: "control-events" }],
     ["remove_reminder11", { kind: "reminder", handler: "control-events" }],
     ["update_user_devices", { kind: "devices", handler: "control-events" }],
-    // This account's own settings changed on another device (`act: "update"`, the changed keys in `data`; Zalo Web
-    // merges them into its settings store): a `settings_changed` event, src/core/control-events.js.
+    // This account's own settings changed on another device (`act: "update"`, the changed keys in `data`, to merge
+    // into the settings): a `settings_changed` event, src/core/control-events.js.
     ["my_settings", { kind: "settings", handler: "control-events" }],
     // Hidden chats hidden or unhidden (`add_remove`), their PIN removed (`reset`) or changed (`change_pin`, the new
     // hash in `data.pin`) on another device: the app keeps its hidden set current from them.
@@ -62,7 +62,7 @@ const KNOWN = new Map([
     // conversation labels changed (`label_convers/update`), the archived ("Other") list changed
     // (`archived_chat/update`, `{version, actionType, items}`), a quick message created, edited or deleted
     // (`quick_message`, `{items, version}`), a conversation's auto-delete time changed (`conv_settings/update_ttl`), on
-    // another device. Zalo PC applies each to a store of its own; this client keeps none of them (`conv muted`,
+    // another device. Zalo's own apps apply each to a store of their own; this client keeps none of them (`conv muted`,
     // `label list`, `conv archived`, `quick-msg list` and `conv auto-delete-status` read Zalo live), so each is reported
     // as an event: src/core/control-events.js.
     ["mute", { kind: "mute", handler: "control-events" }],
@@ -70,13 +70,13 @@ const KNOWN = new Map([
     ["archived_chat", { kind: "archived", handler: "control-events" }],
     ["quick_message", { kind: "quick-message", handler: "control-events" }],
     ["conv_settings/update_ttl", { kind: "auto-delete", handler: "control-events" }],
-    // Known, and nothing to do: what Zalo PC 26.10.20 does with each, and why this client has nothing to change.
+    // Known, and nothing to do: what each is for, and why this client has nothing to change.
     [
         "media_send2me",
         {
             kind: "self-chat-media",
             ignored:
-                "Zalo PC adds or removes the item in its My Cloud media panel; the zCloud index follows the cloud queue (cmd 620/621), not this",
+                "Zalo's apps add or remove the item in their My Cloud media panel; the zCloud index follows the cloud queue (cmd 620/621), not this",
         },
     ],
     [
@@ -84,7 +84,7 @@ const KNOWN = new Map([
         {
             kind: "renew-link",
             ignored:
-                "the late answer to a link renewal Zalo PC made to forward media (matched by originalUrl to a waiting callback); this client reads renewlink's own reply and waits for none",
+                "the late answer to a link renewal another device made to forward media (matched by originalUrl to a waiting callback); this client reads renewlink's own reply and waits for none",
         },
     ],
     [
@@ -92,7 +92,7 @@ const KNOWN = new Map([
         {
             kind: "renew-link",
             ignored:
-                "the late answer to a link renewal Zalo PC made to forward a file (matched by originalUrl to a waiting callback); this client reads renewlink's own reply and waits for none",
+                "the late answer to a link renewal another device made to forward a file (matched by originalUrl to a waiting callback); this client reads renewlink's own reply and waits for none",
         },
     ],
     [
@@ -100,21 +100,21 @@ const KNOWN = new Map([
         {
             kind: "renew-link",
             ignored:
-                "the late answer to a link renewal Zalo PC made to forward a video (matched by originalUrl to a waiting callback); this client reads renewlink's own reply and waits for none",
+                "the late answer to a link renewal another device made to forward a video (matched by originalUrl to a waiting callback); this client reads renewlink's own reply and waits for none",
         },
     ],
     [
         "emoji_status",
         {
             kind: "emoji-status",
-            ignored: "the status emoji Zalo PC paints beside a contact; this client neither keeps nor shows one",
+            ignored: "the status emoji Zalo paints beside a contact; this client neither keeps nor shows one",
         },
     ],
     [
         "contact_tab",
         {
             kind: "ui",
-            ignored: "the Contacts tab was opened on another device: Zalo PC clears that tab's badge (UI only)",
+            ignored: "the Contacts tab was opened on another device: Zalo clears that tab's badge (UI only)",
         },
     ],
     [

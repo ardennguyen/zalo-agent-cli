@@ -37,7 +37,7 @@ export async function readUserAliasSnapshot(api) {
     const aliases = new Map();
     try {
         if (typeof api?.getAliasList !== "function") return null;
-        // readAllAliases pages the way Zalo Web does (`hasMore`, a full page, 212 past page 1). This wrapper keeps
+        // readAllAliases pages the list (`hasMore`, a full page, 212 past page 1). This wrapper keeps
         // this function's own contract on top: a malformed page, a page that repeats ids already read, or running
         // past the page cap fails the whole read instead of handing back part of the list.
         const seen = new Set();

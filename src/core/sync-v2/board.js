@@ -32,7 +32,7 @@ import { upsertBoardItem, upsertReminder } from "../db.js";
 
 /**
  * List a 1-1 conversation's board (notes, pinned messages, reminders): `/api/board/oneone/list` with board type 0,
- * every kind, which is what Zalo Web asks. It lives in the protocol layer (src/zalo/api/boards.js); re-exported here
+ * every kind. It lives in the protocol layer (src/zalo/api/boards.js); re-exported here
  * where it used to be.
  */
 export { listOneOneBoard };
@@ -166,7 +166,7 @@ export function describeZaloError(e) {
     return text || String(e);
 }
 
-/** Board items per page: Zalo PC's MAX_REF_LOAD_TOPIC. */
+/** Board items per page (MAX_REF_LOAD_TOPIC). */
 export const BOARD_PAGE_SIZE = 20;
 /** Reminders asked per page. */
 export const REMINDER_PAGE_SIZE = 50;
@@ -191,7 +191,7 @@ const itemKey = (item) => {
  * about the account, not the thread, so the whole pass stops there and says how
  * many threads were left (`stoppedBy: "rate-limit"`, `left`, `nextThreadId`).
  *
- * A board is paged the way Zalo PC pages it, 20 items a page, until a page
+ * A board is paged 20 items a page, until a page
  * comes back empty. There is no page cap; the runaway guard is a page that
  * brings nothing new (the cursor did not move), which ends that board and is
  * counted in `stalled`.
@@ -274,7 +274,7 @@ export async function syncBoards(opts = {}) {
             // uses /api/board/list; a 1-1 uses /api/board/oneone/list, which
             // takes the same board_type filter. A group's page 2 and later carry
             // the cursor of the page before (the id and type of its last item),
-            // as Zalo Web pages it, so an item added mid-scan does not shift one
+            // so an item added mid-scan does not shift one
             // past the page boundary.
             if (boards) {
                 let pageCursor = { lastId: 0, lastType: 0 };
@@ -292,7 +292,7 @@ export async function syncBoards(opts = {}) {
                     }
                     const items = resp?.items || resp?.data?.items || [];
                     // Only an empty page ends the board: with the cursor, Zalo can answer
-                    // a short page while more items follow, and the Web stops only when empty.
+                    // a short page while more items follow.
                     if (items.length === 0) break;
                     const keys = items.map(itemKey);
                     if (keys.every((k) => k !== null && seen.has(k))) {

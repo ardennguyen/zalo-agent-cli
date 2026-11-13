@@ -134,7 +134,7 @@ export const CONVERSATION_ACTIONS = {
     pinned: {
         async run(_a, { api }) {
             const res = await api.getPinConversations();
-            // Zalo's `m1` entry is not a conversation; Web skips it (spec-actions 7.3), as the pin sync does.
+            // Zalo's `m1` entry is not a conversation; Zalo skips it (spec-actions 7.3), as the pin sync does.
             const conversations = pinnedConversations(res?.conversations).map(String);
             return { count: conversations.length, conversations };
         },
@@ -268,7 +268,7 @@ export const CONVERSATION_ACTIONS = {
         needs: ["threadId"],
         async run(a, ctx) {
             const type = ctx.threadType(a.threadId, a.threadType);
-            // Zalo Web pins the mark to the newest cached message; with none cached its "-1" goes out instead.
+            // Zalo pins the mark to the newest cached message; with none cached its "-1" goes out instead.
             const last = unreadMarkAnchor(cachedRows(a.threadId, SEEN_ANCHOR_SCAN_DEPTH), { ownId: ctx.ownId() });
             await ctx.api.addUnreadMark(a.threadId, type, last);
             return { success: true, threadId: a.threadId, threadType: ctx.threadTypeName(type) };
@@ -279,7 +279,7 @@ export const CONVERSATION_ACTIONS = {
             const set = ctx.hidden();
             const listed = await readHidden(ctx.api, set);
             // With a PIN set, the PIN is checked even when nothing is hidden: a wrong one is refused (and counted)
-            // whatever the list holds, as Web asks it before showing the (possibly empty) list.
+            // whatever the list holds, as Zalo asks it before showing the (possibly empty) list.
             if (!listed.hasPin) return { count: listed.count, hasPin: false, threads: [] };
             const held = await pinGate(a, ctx, extra, {
                 action: "conv.hidden",
@@ -307,7 +307,7 @@ export const CONVERSATION_ACTIONS = {
             if (type?.error) throw new Error(type.error);
             const set = ctx.hidden();
             await set.refresh(ctx.api);
-            // Zalo Web asks for a PIN before the first hide: a hidden chat with no PIN would be hidden from nobody.
+            // Zalo asks for a PIN before the first hide: a hidden chat with no PIN would be hidden from nobody.
             if (!set.hasPin) throw new Error(`${pinFailureLine({ reason: "no-pin" })} Then hide them.`);
             await ctx.api.setHiddenConversations(true, a.threadIds, type);
             for (const id of a.threadIds) set.ids.add(String(id));
@@ -320,7 +320,7 @@ export const CONVERSATION_ACTIONS = {
         async run(a, ctx, extra) {
             const type = oneType(ctx, a.threadIds, a.threadType);
             if (type?.error) throw new Error(type.error);
-            // Opening a hidden chat asks the PIN on Web; unhiding one here does too.
+            // Opening a hidden chat asks the PIN in Zalo; unhiding one here does too.
             const held = await pinGate(a, ctx, extra, {
                 action: "conv.unhide",
                 target: { threadIds: a.threadIds },
@@ -391,7 +391,7 @@ export const CONVERSATION_ACTIONS = {
     hidden_pin_reset: {
         guard: () => ({ key: "conv.hiddenPinReset", target: {} }),
         async run(_a, ctx) {
-            // Web: removing the PIN needs no PIN, and the device that asked deletes every hidden conversation.
+            // As in Zalo: removing the PIN needs no PIN, and the device that asked deletes every hidden conversation.
             const r = await resetHiddenPinAndDelete(ctx.api, ctx.hidden());
             return { success: r.conversations.every((c) => c.deleted), ...r };
         },
@@ -526,7 +526,7 @@ export const CONVERSATION_META = {
         "Change how a conversation sits in this account's list, as the `conv` commands do. Actions: " +
         "'pinned', 'archived', 'muted', 'hidden' and 'auto_delete_status' list them; " +
         "'pin' / 'unpin', 'archive' / 'unarchive' (Zalo's Other tab), 'mute' (for `durationSeconds`, default " +
-        "forever) / 'unmute', 'read' (Zalo Web's \"Mark as read\": a seen receipt for every cached incoming message " +
+        "forever) / 'unmute', 'read' (Zalo's \"Mark as read\": a seen receipt for every cached incoming message " +
         "newer than the read position, up to 50, a reaction-seen receipt when a reaction is unread, and the unread " +
         'mark removed when set; the sender sees "Seen" unless this account\'s seen status is hidden, ' +
         "zalo_profile 'set' seen-status 0; `markOnly` removes only the unread mark and the real unread count stays; " +
@@ -534,10 +534,10 @@ export const CONVERSATION_META = {
         "or the newest incoming one, seen; it also moves this account's read position), 'block_sharing' " +
         "(`enabled`; needs zBusiness Max, unverified), 'hide' / 'unhide' " +
         "(threadIds, all DMs or all groups; hide needs a PIN set, unhide needs the PIN), 'hidden_pin' (set or " +
-        "change the 4-digit PIN of hidden conversations), 'hidden_pin_reset' (remove the PIN and, as Zalo Web " +
+        "change the 4-digit PIN of hidden conversations), 'hidden_pin_reset' (remove the PIN and, as Zalo " +
         "does, delete every hidden conversation), 'auto_delete' (`ttl`), 'delete' (delete the conversation's history on Zalo for this " +
         "account), 'forget' (delete this machine's copy: messages, board items and media; Zalo is not contacted), " +
-        "'typing' (show the typing indicator; refused for a stranger in a DM, as Zalo Web never sends it there) and 'report' (report the user or group to Zalo). " +
+        "'typing' (show the typing indicator; refused for a stranger in a DM, as Zalo never sends it there) and 'report' (report the user or group to Zalo). " +
         "'unhide', 'hidden_pin_reset', 'delete' and 'forget' are asked about first: `confirm`, `dryRun`. " +
         "The PIN is never typed into this tool: 'hidden' (to list the threads), 'unhide' and 'hidden_pin' reply " +
         "pinRequired with a one-time secureUrl for the account owner; repeat the call with its `ticket`.",

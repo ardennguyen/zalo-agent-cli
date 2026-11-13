@@ -2,35 +2,27 @@
  * Group chat history from Zalo's cloud-message store.
  *
  * The previous engine's getGroupChatHistory asked `{group}/api/group/history`, which Zalo
- * answers with HTTP 404. Zalo Web reads a group's history from a different
+ * answers with HTTP 404. Zalo serves a group's history from a different
  * service -- the cloud-message ("cm") store:
  *
  *   GET {group_cloud_message}/api/cm/getrecentv2?nretry=0     (cmd 12506)
  *   GET {group_cloud_message}/api/cm/getoldv2?nretry=0        (cmd 12507)
  *       params = AES({groupId, globalMsgId, count, msgIds, imei, src})
  *
- * Sources, all under agent/work/zalo-web-capture-2026-09-29/: the web
- * client's own `getCM` (bundles/1.*.js @11028626), the captures in
- * live/group.A1-A4.json, its comparison notes §3e and §5.30, FINDINGS §13.
+ * What is established, and what is not:
  *
- * What the evidence establishes, and what it does not:
- *
- * - The newest page is `getrecentv2` with globalMsgId 2^63 -- Zalo Web's
- *   MessageConstants.MAX_MSG_ID -- and `src: 1`, as sent when a group is
- *   opened (FINDINGS §13).
- * - Older pages follow Zalo Web's own client loop (`getCloudMessage`,
- *   bundles/1.*.js @6637459): the next globalMsgId is the response's
- *   `lastMsgId`, the request goes to `getoldv2` only when the response says
- *   `isOld`, and it carries `src: 3` (LOADMORE) -- the shape of every captured
- *   scroll-up request. No captured response ever carried messages, `hasMore`
- *   or `isOld`, so paging is implemented to that specification and is NOT yet
- *   verified against the live server.
- * - The response's `data` is a JSON string. Zalo Web quotes bare numbers in
- *   `uidFrom`, `uidTo`, `uid` and `ownerId` before parsing it (`preParse`),
- *   because uids run past 2^53. So does this.
+ * - The newest page is `getrecentv2` with globalMsgId 2^63 (the largest
+ *   message id) and `src: 1`, as sent when a group is opened.
+ * - Older pages: the next globalMsgId is the response's `lastMsgId`, the
+ *   request goes to `getoldv2` only when the response says `isOld`, and it
+ *   carries `src: 3` (load more). No observed response ever carried messages,
+ *   `hasMore` or `isOld`, so paging is implemented to that specification and
+ *   is NOT yet verified against the live server.
+ * - The response's `data` is a JSON string. Bare numbers in `uidFrom`,
+ *   `uidTo`, `uid` and `ownerId` are quoted before parsing it, because uids
+ *   run past 2^53.
  * - Recall (`chat.undo`) and delete (`chat.delete`) events and rows without
- *   content are dropped, and rows are de-duplicated on cliMsgId + sender, as
- *   Zalo Web's `checkDupMessageFromCloud` does.
+ *   content are dropped, and rows are de-duplicated on cliMsgId + sender.
  *
  * `group_cloud_message` was declared in the previous engine's own LoginInfo type
  * (zpw_service_map_v3, dist/context.d.ts). A session whose map lacks it gets a
@@ -44,16 +36,16 @@
 import { boundUtils } from "../kernel/bound.js";
 import { GroupMessage } from "../listener/models.js";
 
-/** Zalo Web's MessageConstants.MAX_MSG_ID, `(BigInt(2) ** BigInt(63)).toString()`: start from the newest. */
+/** The largest message id, `(BigInt(2) ** BigInt(63)).toString()`: start from the newest. */
 export const NEWEST_MSG_ID = "9223372036854775808";
 
 /**
- * Messages asked for per request. Zalo Web sends its server-configured
- * `cloud.countP.WEB`, which was 50 in every capture; nothing else has been seen.
+ * Messages asked for per request: the server-configured page size, 50 in
+ * every observed case; nothing else has been seen.
  */
 export const CM_PAGE_SIZE = 50;
 
-/** Zalo Web's cloud-load `src`: OVERFLOW (opening a conversation) and LOADMORE (scrolling up). */
+/** The cloud-load `src`: opening a conversation, and loading more (scrolling up). */
 const SRC_OPEN = 1;
 const SRC_LOAD_MORE = 3;
 
@@ -72,9 +64,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Quote bare integers under `uidFrom`, `uidTo`, `uid` and `ownerId` in a JSON
- * text, so JSON.parse keeps every digit of a uid past 2^53. The same job as
- * Zalo Web's `preParse`, which runs over every cloud-message response,
- * including those keys inside escaped JSON held in a string value.
+ * text, so JSON.parse keeps every digit of a uid past 2^53. It runs over every
+ * cloud-message response, including those keys inside escaped JSON held in a
+ * string value.
  *
  * @param {string} json
  * @returns {string}
@@ -103,7 +95,7 @@ function newestFirst(a, b) {
     return Number(b.data.ts || 0) - Number(a.data.ts || 0);
 }
 
-/** Zalo Web's `_validCloudMsg`: a real message, not a recall or delete event, with content. */
+/** A real message, not a recall or delete event, with content. */
 function isMessage(data) {
     return (
         Boolean(data) &&
@@ -125,7 +117,7 @@ function parsePage(raw) {
 async function fetchPage(api, host, { groupId, globalMsgId, src, old }) {
     const url = `${host}/api/cm/${old ? "getoldv2" : "getrecentv2"}`;
     const utils = boundUtils(api);
-    // Key order as Zalo Web builds it.
+    // Key order as the server expects it.
     const params = { groupId, globalMsgId, count: CM_PAGE_SIZE, msgIds: [], imei: api.getContext().imei, src };
     const enc = utils.encodeAES(JSON.stringify(params));
     const resp = await utils.request(utils.makeURL(url, { nretry: 0, params: enc }), { method: "GET" });
@@ -141,9 +133,9 @@ async function fetchPage(api, host, { groupId, globalMsgId, src, old }) {
  * old call's `groupMsgs` and `more` reads this unchanged.
  *
  * @param {object} api - a logged-in session
- * @param {string} groupId - numeric group id; a leading "g" is stripped, as Zalo Web does
+ * @param {string} groupId - numeric group id; a leading "g" is stripped
  * @param {number} [count=50] - how many of the newest messages to return, a whole number >= 1, or `Infinity` for
- *   everything the store serves: pages of 50, one after another, until it says `hasMore: 0`, as Zalo Web pages a group
+ *   everything the store serves: pages of 50, one after another, until it says `hasMore: 0`, as Zalo pages a group
  * @param {object} [opts]
  * @param {number} [opts.delayMs=150] - pause between pages
  * @param {number} [opts.untilTs] - stop after the first page that reaches back to this time (ms): a caller that
@@ -230,7 +222,7 @@ export async function getGroupHistory(
         if (kept.length >= count || !hasMore) break;
         if (untilTs !== null && rows.some((d) => Number(d?.ts) <= untilTs)) break;
 
-        // Zalo Web's loop: the next page starts at the lastMsgId the server
+        // The next page starts at the lastMsgId the server
         // returned. A cursor that does not move older would ask for the same
         // page forever, so it ends the walk.
         const next = msgIdOf(page.lastMsgId);

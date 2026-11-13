@@ -1,15 +1,15 @@
 /**
  * What is in the zCloud index, what a cleanup would touch (decision D27, 2026-10-28), and what deleting it sends.
  *
- * Zalo has no endpoint that deletes a zCloud item. Zalo Web's own "Delete" in its cloud view (the confirm dialog
- * `STR_MY_CLOUD_DELETE_TITLE`, bundle 2026-11-06) deletes the chat MESSAGE each item belongs to, for this account only
- * (`onlyMe`, the delete-for-me sync), one message at a time, conversation by conversation, and waits for the cloud
- * queue to drop the items. That has no undo. The planning half reads the local index (`cloud_items`, filled by
- * `sync-cloud`) and the local message cache and sends nothing; {@link cloudDeleteTarget} builds the message reference
- * the Web sends for one item, which `cloud apply` hands to the session's `deleteMessage`.
+ * Zalo has no endpoint that deletes a zCloud item. Zalo's own "Delete" in its cloud view deletes the chat MESSAGE
+ * each item belongs to, for this account only (`onlyMe`, the delete-for-me sync), one message at a time, conversation
+ * by conversation, and waits for the cloud queue to drop the items. That has no undo. The planning half reads the local
+ * index (`cloud_items`, filled by `sync-cloud`) and the local message cache and sends nothing; {@link
+ * cloudDeleteTarget} builds the message reference Zalo's cloud delete sends for one item, which `cloud apply` hands to
+ * the session's `deleteMessage`.
  */
 
-/** The message types of a queue item, as the Web client names them, reduced to the kinds a person thinks in. */
+/** The message types of a queue item, as Zalo names them, reduced to the kinds a person thinks in. */
 const KIND_OF = {
     "chat.photo": "photo",
     "chat.video.msg": "video",
@@ -64,7 +64,7 @@ export function describeItem(row, ownId = null) {
 }
 
 /**
- * The message reference Zalo Web's cloud delete sends for one item (its `deleteCloudItems`): the message's global id,
+ * The message reference Zalo's cloud delete sends for one item: the message's global id,
  * or `<cliMsgId>_001` when the queue names none; this account written as `"0"` when it sent the message; the
  * conversation the item belongs to. In the shape the session's `deleteMessage(target, true)` takes.
  *
@@ -83,10 +83,9 @@ export function cloudDeleteTarget(item, ownId) {
 /**
  * Delete the messages behind planned items for this account, as Zalo's cloud manager does: a page of
  * {@link CLOUD_PAGE_SIZE} items at a time, and within a page conversation by conversation, one delete-for-me per
- * message, sequentially, with no pause. A conversation stops at its first failure (the Web throws there): the rest of
+ * message, sequentially, with no pause. A conversation stops at its first failure: the rest of
  * its items, in this page and every later one, are not tried, and the other conversations go on. The local index is
- * left alone: the server's cloud queue reports the removals, and the next `sync-cloud` applies them, as the Web's view
- * waits for them.
+ * left alone: the server's cloud queue reports the removals, and the next `sync-cloud` applies them.
  *
  * @param {object} args
  * @param {Array<ReturnType<typeof describeItem>>} args.items - the planned items (every match unless a limit was asked)
@@ -281,6 +280,6 @@ export function planCloudCleanup({
  * The words that go with every plan: what applying one would mean at Zalo. Printed, and stored in the plan file.
  */
 export const CLEANUP_WARNING =
-    "Zalo has no endpoint that deletes a zCloud item. The only removal, the one Zalo Web's cloud view uses, is deleting " +
-    "the chat message the item belongs to, for this account on every device, and that cannot be undone. This is a " +
+    "Zalo has no endpoint that deletes a zCloud item. The only removal, the one Zalo's own cloud view uses, is " +
+    "deleting the chat message the item belongs to, for this account on every device, and that cannot be undone. This is a " +
     "report: nothing was sent to Zalo and nothing was deleted (`cloud apply --yes` with the same filters does it).";

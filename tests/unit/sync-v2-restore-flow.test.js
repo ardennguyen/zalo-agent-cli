@@ -111,7 +111,7 @@ describe("a restore against the fake phone", () => {
         assert.equal(phone.requests.length, 0, "no 590 was sent");
     });
 
-    it("fetches the batches in the account's own identity: its User-Agent and the Web client's Referer, no cookie", async () => {
+    it("fetches the batches in the account's own identity: its User-Agent and the expected Referer, no cookie", async () => {
         const { error, phone } = await run();
         assert.equal(error, null);
         assert.ok(phone.downloadHeaders.length > 0, "the phone served at least one batch");

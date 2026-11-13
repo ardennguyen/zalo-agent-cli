@@ -1,10 +1,8 @@
 /**
- * Pin and unpin a message the way Zalo Web does.
+ * Pin and unpin a message the way Zalo does.
  *
  * The session has no area method for these, so they are custom calls on its
- * envelope (src/zalo/session-call.js). Each shape is the one captured from Zalo Web on
- * 2026-09-29 (agent/work/zalo-web-capture-2026-09-29/live/group.A9_pin_message,
- * group.A9b_unpin_message, dm.D9_pin_message, dm.D9b_unpin_message):
+ * envelope (src/zalo/session-call.js). Each shape is the one the server expects:
  *
  *   group pin    POST {group_board}/api/board/topic/createv2
  *   group unpin  GET  {group_board}/api/board/unpinv2
@@ -13,31 +11,31 @@
  *
  * A pinned message is a board "topic" of type 2 whose `params` name the
  * message. Unpinning takes the topic's id, not the message's, so both unpins
- * start by listing the pinned topics: `/api/board/pin/list` for a group (the
- * web's fetchTopics, which also hands back the `boardVersion` unpinv2 needs)
+ * start by listing the pinned topics: `/api/board/pin/list` for a group
+ * (which also hands back the `boardVersion` unpinv2 needs)
  * and getFriendBoardList for a 1-1 (which returns the `version`
- * create and multi_unpin need). A stale group board version is error 183; the
- * web then refetches once and retries, and so does this.
+ * create and multi_unpin need). A stale group board version is error 183;
+ * Zalo then refetches once and retries, and so does this.
  *
- * Only text messages: text is the kind the capture covers, and every other
+ * Only text messages: text is the kind that has been checked, and every other
  * kind carries its own params blob.
  */
 import { customCall, getWithParams, postWithParams } from "../session-call.js";
 
-/** A pinned message's board topic type (the web's MSG_TOPIC). */
+/** A pinned message's board topic type. */
 export const PINNED_MESSAGE_TOPIC = 2;
 
-/** Zalo's error for a group board version that moved on (the web's INVALID_BOARD_VERSION). */
+/** Zalo's error for a group board version that moved on. */
 export const INVALID_BOARD_VERSION = 183;
 
-/** #222222 -- the web's `settings.group.topic_colors[0]` in the capture. */
+/** #222222 -- the default `settings.group.topic_colors[0]`. */
 const DEFAULT_TOPIC_COLOR = -14540254;
 
-/** The emoji the web gives a pinned text message (`:pushpin:`). */
+/** The emoji Zalo gives a pinned text message (`:pushpin:`). */
 const TEXT_PIN_EMOJI = "📌";
 
 /**
- * The `params` of a text message's pin topic, in the web's field order.
+ * The `params` of a text message's pin topic, in the expected field order.
  *
  * @param {object} m
  * @param {string} m.cliMsgId

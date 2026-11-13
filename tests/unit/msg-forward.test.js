@@ -10,7 +10,7 @@
  * link were each refused locally with no network call.
  *
  * Text no longer goes through the previous engine's forwardMessage at all: it now carries
- * the reference Zalo Web sends, which forwardMessage cannot serialize
+ * the reference Zalo expects, which forwardMessage cannot serialize
  * correctly (it hardcodes the decorLog's `st`), so it is a custom call in
  * src/zalo/custom/forward.js. The guards that pinned forwardMessage's call shape --
  * and the one that insisted the reference be omitted -- are replaced by

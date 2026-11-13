@@ -13,22 +13,22 @@
  * maintenance switch) are read from `getServerInfo` by the items that use
  * them and are not duplicated here.
  *
- * The announced version is {@link DEFAULT_API_VERSION}, the Zalo Web client's own
- * current version.
+ * The announced version is {@link DEFAULT_API_VERSION}, Zalo's current client
+ * version.
  */
 
-/** The Web client class this CLI announces as: `zpw_type` and `type`. */
+/** The client class this CLI announces as: `zpw_type` and `type`. */
 export const API_TYPE = 30;
 
 /**
  * The protocol version announced when `ZALO_API_VERSION` is not set:
  * `zpw_ver` on every HTTP and WebSocket URL and `client_version` in the login
- * calls, for every call alike. The previous engine defaulted to 685; the live Zalo Web
- * and PC clients were on 695 when this was last moved (build 26.11.10, 2026-11-06; it was 694).
+ * calls, for every call alike. The previous engine defaulted to 685; Zalo's current
+ * clients were on 695 when this was last moved (2026-11-06; it was 694).
  */
 export const DEFAULT_API_VERSION = 695;
 
-/** The `computer_name` Zalo Web sends in its login, server-info and logout calls. */
+/** The `computer_name` sent in the login, server-info and logout calls. */
 export const COMPUTER_NAME = "Web";
 
 /**
@@ -77,7 +77,7 @@ export function resolveApiVersion(env = process.env) {
 export const QR_FLOW_INVALID = "ZALO_QR_FLOW_INVALID";
 
 /**
- * Which QR login runs. Only `official` is left: the verified Web sequence (src/zalo/qr-login.js), the default since
+ * Which QR login runs. Only `official` is left: the verified sequence (src/zalo/qr-login.js), the default since
  * 2026-10-28, when two live logins with the trusted-device second QR went through (see docs/agent-notes.md). The
  * `legacy` flow (the previous engine's) was removed in 3.0.0: it could not log in an account with a trusted device and
  * skipped every later login fix. `ZALO_QR_FLOW=legacy` is refused with a message that says so, so a user who still
@@ -163,7 +163,7 @@ export function osCodeOf(userAgent) {
     return 0;
 }
 
-/** The `avatar_size` the Web client asks every profile and list call for. */
+/** The `avatar_size` every profile and list call asks for. */
 export const AVATAR_SIZE = 160;
 
 /**

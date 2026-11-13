@@ -3,7 +3,7 @@
  * unread marks, the pinned and archived lists, and the labels, src/zalo/api/actions.js on one logged-in fake.
  *
  * Each case has two parts: (1) our record against its reviewed golden record; (2) the error answers, each checked
- * against a literal `{message, code}`. The Web behavior is also asserted outright, so a reader sees it here and not
+ * against a literal `{message, code}`. The expected behavior is also asserted outright, so a reader sees it here and not
  * only in the golden file.
  *
  * Every id here is fake (tests/unit/no-real-ids.test.js).
@@ -73,7 +73,7 @@ describe("wire: actions (src/zalo/api/actions.js)", () => {
     }
 
     describe("undo", () => {
-        it("DM: POST {chat}/api/message/undo in the Web's key order, clientId from the session clock", async () => {
+        it("DM: POST {chat}/api/message/undo in the expected key order, clientId from the session clock", async () => {
             const rec = await check("undo-dm", "undo", [{ msgId: MSG_ID, cliMsgId: CLI_MSG_ID }, PEER, 0], {
                 reply: { status: 0 },
             });
@@ -131,7 +131,7 @@ describe("wire: actions (src/zalo/api/actions.js)", () => {
             });
         });
 
-        it("DM, received message: destId is this account's own uid (the Web's rule; the previous engine put the peer)", async () => {
+        it("DM, received message: destId is this account's own uid (Zalo's rule; the previous engine put the peer)", async () => {
             const rec = await check("delete-dm-received", "deleteMessage", [target(PEER, PEER, 0), true], {
                 reply: {},
             });
@@ -253,7 +253,7 @@ describe("wire: actions (src/zalo/api/actions.js)", () => {
     describe("deleteChat", () => {
         const anchor = { ownerId: PEER, cliMsgId: CLI_MSG_ID, globalMsgId: MSG_ID };
 
-        it("DM: POST deleteconver with no nretry, cliMsgId a string, the anchor in Web order", async () => {
+        it("DM: POST deleteconver with no nretry, cliMsgId a string, the anchor in the expected order", async () => {
             const rec = await check("delete-chat-dm", "deleteChat", [anchor, PEER, 0], { reply: {} });
             const [req] = rec.own.requests;
             assert.equal(req.path, "/api/message/deleteconver");
@@ -299,7 +299,7 @@ describe("wire: actions (src/zalo/api/actions.js)", () => {
             assert.deepEqual(rec.own.result, { data: { convsGroup: [], convsUser: [] }, status: 0 });
         });
 
-        it("removeUnreadMark (DM) writes the Web's fixed key order, ts from the session clock", async () => {
+        it("removeUnreadMark (DM) writes the fixed key order, ts from the session clock", async () => {
             const rec = await check("unread-remove-dm", "removeUnreadMark", [PEER, 0], {
                 reply: { data: '{"status":1}', status: 0 },
             });
@@ -535,7 +535,7 @@ describe("wire: labels when the server asks for the per-label calls (update_labe
             rec.own.requests.map((r) => `${r.method} ${r.path}`),
             ["GET /api/convlabel/get", "POST /api/convlabel/manage/delete", "POST /api/convlabel/manage/add"],
         );
-        // Red if a delete carried more than the ids, or the add an id, an offset or the imei the Web leaves out.
+        // Red if a delete carried more than the ids, or the add an id, an offset or the imei Zalo does not expect.
         assert.deepEqual(del.paramsOrder, ["labelIds"]);
         assert.deepEqual(del.params, { labelIds: [2] });
         assert.deepEqual(add.paramsOrder, ["labelInfo", "add"]);

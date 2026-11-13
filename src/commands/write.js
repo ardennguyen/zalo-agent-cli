@@ -1,10 +1,10 @@
 /**
- * `write`: the state-changing endpoints of Zalo Web's API that have no command of their own (plan track S, 6.2).
+ * `write`: the state-changing endpoints of Zalo's API that have no command of their own (plan track S, 6.2).
  *
  * `write list` says what there is, what each touches and what it takes. `write run <name>` shows the request with
  * `--dry-run`, and sends it only with `--yes`: each of these changes something on the account, and none has been
  * answered by a live account yet, so a first run of any of them belongs on something disposable. The table is in
- * `src/zalo/writes.js`, beside the web client method each request comes from.
+ * `src/zalo/writes.js`, beside the method each request comes from.
  */
 import chalk from "chalk";
 import { getApi } from "../core/zalo-client.js";
@@ -40,7 +40,7 @@ export function registerWriteCommands(program) {
     const write = program
         .command("write")
         .description(
-            "State-changing endpoints of Zalo Web's API that have no command of their own (board items, friends, …)",
+            "State-changing endpoints of Zalo's API that have no command of their own (board items, friends, …)",
         );
 
     const list = write

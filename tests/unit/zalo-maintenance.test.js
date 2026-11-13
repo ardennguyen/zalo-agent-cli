@@ -192,7 +192,7 @@ describe("waitOutMaintenance", () => {
         assert.equal(out.polls, 1);
     });
 
-    it("asks hourly while an announced window is running, as the official client does", async () => {
+    it("asks hourly while an announced window is running, as Zalo's own app does", async () => {
         const s = scripted(["maintenance", "maintenance", "ok"], { startTime: 1_000, endTime: 9_000_000 });
         await waitOutMaintenance({ ...s, now: () => 5_000 });
         assert.deepEqual(s.sleeps, [MAINTENANCE_POLL_MS.inWindow, MAINTENANCE_POLL_MS.inWindow]);

@@ -116,7 +116,7 @@ Each of these reports success, or names the wrong cause. They were all learned t
 | Command groups | **30** containers — 21 top-level + 7 OA subgroups + `mcp webhook` + `account security` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **36** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **5915** as of 2026-11-12 (5910 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **5926** as of 2026-11-13 (5921 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -1370,15 +1370,25 @@ now drains the message queues in `qCmds` order and then the control queues, one 
 deadline (`src/core/self-heal.js`, `src/core/control-replay.js`); the rest of 5c99017 stays (no `532` for offline rows,
 the verifier held until the run ends).
 
-**A disband by another member is inferred, not read (2026-11-12).** Seen live on the test account: the owner's disband
-reached the member as one `leave` control naming it in `updateMembers`, with `data.extraData` holding only `prjName`, no
-`leaveType`. Zalo PC 26.10.20 and 26.11.10 both have the KICK_GROUP/DISBAND_GROUP screens and strings, but the function
-that reads `leaveType` (module `PVnA`) is a stub returning `{}`, so PC shows a disband as a plain leave; no event named
-disband or disperse exists (disperse is only the outgoing `/api/group/disperse`). `exitReasonOf` therefore infers it: a
-`leave` naming us that `sourceId` says someone else did is `disbanded` (another member removing us is `remove_member`);
-our own `sourceId`, a missing one, or an unknown own id stays `leave`; an explicit `leaveType` still wins. The
-`[groups] our leave of …` line records who did it relative to us and `creatorId` (never ids), so a live disband and a
-live self-leave confirm the rule.
+**Disband, removal and own leave are told apart by `extraData`'s keys (2026-11-12, corrected 2026-11-13).** All
+three reach the member as one `leave` control naming it in `updateMembers`, with no `leaveType`. Zalo PC 26.10.20,
+26.11.10 and 26.11.11 have the KICK_GROUP/DISBAND_GROUP screens and strings, but the function that reads `leaveType`
+(module `PVnA`) is a stub returning `{}`, so PC shows every one as a plain leave; only the mobile app shows "disbanded by
+the owner". No event named disband or disperse exists (disperse is only the outgoing `/api/group/disperse`). Six live
+samples on the test account, live and recovered from the offline queue after a park:
+
+| What happened | `extraData` keys | `sourceId` |
+|---|---|---|
+| owner disbands, live | `prjName` | the owner |
+| owner disbands, replayed after a park | `prjName` | **us** (the 603 replay rewrites it) |
+| we leave, live and replayed | `featureId` | us |
+| owner removes us, live and replayed | none (`{}`) | the owner |
+
+The first rule (2026-11-12, "a `leave` someone else did is a disband") labeled both removals `disbanded` and the replayed
+disband `left`. `exitReasonOf` now goes: explicit `leaveType`; `prjName` without `featureId` is `disbanded`, unless
+`creatorId` is us (PC's own rule: our own disband is our leave); `featureId` is `leave`; no marker and `sourceId` someone
+else is `removed`; otherwise `leave`. `remove_member`/`block_member` keep their act's meaning. The
+`[groups] our leave of …` line records the key names and who did it relative to us and `creatorId` (never ids).
 
 **One request counter, and `reqId` on every pull (X5, Y7).** `src/zalo/req-id.js` is the process-wide `req_<n>` counter
 the sync channel, the offline-queue drain and the pulls share. `installOfficialPulls` makes the listener's old-message

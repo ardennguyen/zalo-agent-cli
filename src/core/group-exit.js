@@ -110,16 +110,13 @@ export function onLeaveChangeNote(value) {
 }
 
 /**
- * The `leaveType` a `leave` control may carry in `data.extraData` (an object, or the JSON text of one): "leave",
- * "kick" or "disband". Zalo PC has the KICK_GROUP/DISBAND_GROUP screens for it, but its reader is a stub returning
- * `{}` in both 26.10.20 and 26.11.10, and a live disband by another owner carried `extraData` with no `leaveType`
- * at all (only `prjName`). Kept for a server that sends it; {@link exitReasonOf} does not depend on it. Unreadable
- * is null.
+ * A group event's `data.extraData` as an object (Zalo sends an object or the JSON text of one). Unreadable, absent or
+ * not an object is null.
  *
  * @param {object|null|undefined} data - the group event's `data`
- * @returns {string|null}
+ * @returns {object|null}
  */
-export function leaveTypeOf(data) {
+function extraDataOf(data) {
     let extra = data?.extraData;
     if (typeof extra === "string") {
         try {
@@ -128,21 +125,41 @@ export function leaveTypeOf(data) {
             return null;
         }
     }
-    const t = extra && typeof extra === "object" ? extra.leaveType : null;
+    return extra && typeof extra === "object" && !Array.isArray(extra) ? extra : null;
+}
+
+/**
+ * The `leaveType` a `leave` control may carry in `data.extraData` (an object, or the JSON text of one): "leave",
+ * "kick" or "disband". Zalo PC has the KICK_GROUP/DISBAND_GROUP screens for it, but its reader is a stub returning
+ * `{}` in 26.10.20, 26.11.10 and 26.11.11, and no live exit has carried one. Kept for a server that sends it: when
+ * present it wins in {@link exitReasonOf}. Unreadable is null.
+ *
+ * @param {object|null|undefined} data - the group event's `data`
+ * @returns {string|null}
+ */
+export function leaveTypeOf(data) {
+    const t = extraDataOf(data)?.leaveType;
     return typeof t === "string" && t ? t.toLowerCase() : null;
 }
 
 /**
  * The exit reason of a group event that is our own departure.
  *
- * A disband reaches every member as act `leave` naming them in `updateMembers`, done by the owner (`sourceId`);
- * Zalo PC shows it as a plain leave (its leaveType reader is a stub), so the reason is inferred here: nobody but us
- * can make us `leave` (another member removing us is `remove_member`), so a `leave` naming us that someone else did
- * is a disband. A `leaveType` in `extraData`, if Zalo sends one, wins. Without our own id, or without a `sourceId`,
- * it stays `leave`, never guessed.
+ * Zalo sends all three ways out of a group as act `leave` naming us in `updateMembers`, and Web/PC cannot tell them
+ * apart (their leaveType reader is a stub). Which keys `extraData` carries does, seen live and recovered from the
+ * offline queue after a park (2026-11-12/13):
+ *
+ * - **disband** by the owner: `prjName`. The owner is `sourceId` live, but a replayed one names us, so who did it is
+ *   not the signal. A group we created ourselves is our own leave (Zalo PC drops a disband when `creatorId` is us).
+ * - **our own leave**: `featureId`, `sourceId` us.
+ * - **removed** by the owner or an admin: no key, `sourceId` the remover (live and replayed alike).
+ *
+ * Order: an explicit `leaveType`, then `prjName`, then `featureId`, then who did it: with no marker, a `leave` someone
+ * else did is a removal. Without our own id or a `sourceId` it stays `leave`, never guessed. `remove_member` and
+ * `block_member` are what their act says.
  *
  * @param {string} type - leave, remove_member, block_member
- * @param {object} [data] - the event's `data` (`sourceId`, `extraData`)
+ * @param {object} [data] - the event's `data` (`sourceId`, `creatorId`, `extraData`)
  * @param {string} [ownId] - the account's own uid
  * @returns {"leave"|"removed"|"blocked"|"disbanded"|null}
  */
@@ -153,10 +170,15 @@ export function exitReasonOf(type, data, ownId) {
             if (how === "disband") return "disbanded";
             if (how === "kick") return "removed";
             if (how === "leave") return "leave";
-            const source = data?.sourceId;
-            if (ownId && source !== undefined && source !== null && source !== "" && String(source) !== String(ownId)) {
-                return "disbanded";
+            const has = (v) => v !== undefined && v !== null && v !== "";
+            const extra = extraDataOf(data) ?? {};
+            if (has(extra.prjName) && !has(extra.featureId)) {
+                const creator = data?.creatorId;
+                return ownId && has(creator) && String(creator) === String(ownId) ? "leave" : "disbanded";
             }
+            if (has(extra.featureId)) return "leave";
+            const source = data?.sourceId;
+            if (ownId && has(source) && String(source) !== String(ownId)) return "removed";
             return "leave";
         }
         case "remove_member":

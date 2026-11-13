@@ -50,6 +50,7 @@ const ACCOUNT_DIR = join(CONFIG_DIR, "accounts", FAKE.ownId);
 const DB_PATH = join(ACCOUNT_DIR, "zalo.db");
 const MEDIA = join(ACCOUNT_DIR, "media");
 const OTHER = "2000000000000000002";
+const CREATOR = "2000000000000000003";
 const GID = "7000000000000000071";
 const OTHER_GID = "7000000000000000072";
 const OLD = 1_700_000_000_000;
@@ -221,6 +222,54 @@ describe("each exit kind purges the group's history by default", () => {
         assert.equal(e.reason, "disbanded");
         assertPurged(GID, file);
         assert.equal(getGroupGone(GID).goneReason, "disbanded");
+    });
+
+    // The shapes seen live and replayed after a park (2026-11-12/13), hand-written: extraData's keys decide.
+    for (const [label, data, want] of [
+        [
+            "disband, live (owner did it)",
+            { sourceId: OTHER, creatorId: OTHER, extraData: { prjName: "x" } },
+            "disbanded",
+        ],
+        [
+            "disband, replayed (names us)",
+            { sourceId: FAKE.ownId, creatorId: OTHER, extraData: { prjName: "x" } },
+            "disbanded",
+        ],
+        ["disband, no sourceId", { creatorId: OTHER, extraData: JSON.stringify({ prjName: "x" }) }, "disbanded"],
+        [
+            "disband of a group we created",
+            { sourceId: FAKE.ownId, creatorId: FAKE.ownId, extraData: { prjName: "x" } },
+            "leave",
+        ],
+        ["our own leave", { sourceId: FAKE.ownId, creatorId: OTHER, extraData: { featureId: 1 } }, "leave"],
+        [
+            "our own leave carrying both keys",
+            { sourceId: FAKE.ownId, extraData: { prjName: "x", featureId: 1 } },
+            "leave",
+        ],
+        ["removed by the owner, empty extraData", { sourceId: OTHER, creatorId: OTHER, extraData: {} }, "removed"],
+        ["removed by an admin, no extraData", { sourceId: OTHER, creatorId: CREATOR }, "removed"],
+        ["removed, extraData not JSON", { sourceId: OTHER, extraData: "{oops" }, "removed"],
+        ["no marker, done by us", { sourceId: FAKE.ownId, extraData: {} }, "leave"],
+    ]) {
+        it(`a leave naming us: ${label} -> ${want}`, () => {
+            assert.equal(exitReasonOf("leave", data, FAKE.ownId), want);
+        });
+    }
+
+    it("a removal that arrives as a leave is purged and recorded as removed", async () => {
+        const file = seedGroup(GID);
+        const ev = groupEvent("leave", GID, { source: OTHER });
+        ev.data.creatorId = OTHER;
+        ev.data.extraData = "{}";
+        const g = storeGroupEvent(ev, { ownId: FAKE.ownId });
+        assert.equal(g.gone, true);
+        assert.equal(g.reason, "removed");
+        const e = await applyGroupExit({ ownId: FAKE.ownId, threadId: GID, reason: g.reason, at: g.at });
+        assert.equal(e.reason, "removed");
+        assertPurged(GID, file);
+        assert.equal(getGroupGone(GID).goneReason, "removed");
     });
 
     for (const [label, source, ownId] of [

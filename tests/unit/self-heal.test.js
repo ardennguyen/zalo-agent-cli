@@ -135,6 +135,7 @@ function daemon({
     storeUndo,
     deviceSince,
     groupRepair,
+    timeoutMs = 150,
 } = {}) {
     const listener = fakeListener({ respond });
     const notices = [];
@@ -149,7 +150,7 @@ function daemon({
         enabled,
         log: (line) => logs.push(line),
         onRecovered: (items) => recovered.push(...items),
-        timeoutMs: 150,
+        timeoutMs,
         maxPages: 4,
         now,
         acks,
@@ -776,7 +777,9 @@ describe("Y10: queue items are acknowledged (532) only after their rows are stor
             held.push(payload); // nothing answers until the live push below is in
             return null;
         };
-        const d = daemon({ respond });
+        // The queues share one catch-up deadline; this test answers them by hand, so give it room (150 ms ran out
+        // under a loaded full run and released the hold early, which is the deadline working, not a leak).
+        const d = daemon({ respond, timeoutMs: 10_000 });
         live(d.listener, row(g1));
         d.listener.auth({ qCmds: QCMDS });
         await sleep(0);

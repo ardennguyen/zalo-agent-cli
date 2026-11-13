@@ -655,7 +655,7 @@ export function storeGroupEvent(event, opts = {}) {
         }
         if (departure === "ours") {
             const reason = exitReasonOf(event?.type, event?.data, opts.ownId);
-            // A disband is inferred from who did the leave (./group-exit.js exitReasonOf): the log keeps key NAMES
+            // Disband/removal/own leave are told apart by extraData's keys (./group-exit.js exitReasonOf): the log keeps key NAMES
             // and who did it relative to us and the creator (never ids or values) as evidence of the shape.
             if (String(event?.type || "").toLowerCase() === "leave") {
                 const extra = event?.data?.extraData;

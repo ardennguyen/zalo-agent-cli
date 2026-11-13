@@ -238,9 +238,9 @@ describe("each exit kind purges the group's history by default", () => {
         ],
         ["disband, no sourceId", { creatorId: OTHER, extraData: JSON.stringify({ prjName: "x" }) }, "disbanded"],
         [
-            "disband of a group we created",
+            "our own disband (a group we created)",
             { sourceId: FAKE.ownId, creatorId: FAKE.ownId, extraData: { prjName: "x" } },
-            "leave",
+            "disbanded",
         ],
         ["our own leave", { sourceId: FAKE.ownId, creatorId: OTHER, extraData: { featureId: 1 } }, "leave"],
         [
@@ -505,8 +505,21 @@ describe("while gone, only a join naming us brings the group back", () => {
 });
 
 describe("our own leave and disperse from the CLI, with no listener running", () => {
+    // Leave and disperse read the group first (src/core/group-departure.js): who created it decides what is allowed.
+    let creator = OTHER;
     beforeEach(() => {
+        creator = OTHER;
         fake.clearRoutes();
+        fake.route("/api/group/getmg-v2", () => ({
+            gridInfoMap: {
+                [GID]: {
+                    groupId: GID,
+                    creatorId: creator,
+                    totalMember: 2,
+                    memVerList: [`${OTHER}_0`, `${FAKE.ownId}_0`],
+                },
+            },
+        }));
         fake.route("/api/group/leave", () => ({ memberError: [] }));
         fake.route("/api/group/disperse", () => ({}));
     });
@@ -537,6 +550,7 @@ describe("our own leave and disperse from the CLI, with no listener running", ()
     });
 
     it("`group disperse --yes` records a disband and purges", async () => {
+        creator = FAKE.ownId; // only the owner disbands
         const file = seedGroup(GID);
         const r = await runCommand(withGuard, ["group", "disperse", GID, "--yes"]);
         assert.equal(r.exitCode, null, r.stdout + r.stderr);

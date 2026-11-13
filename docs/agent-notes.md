@@ -116,7 +116,7 @@ Each of these reports success, or names the wrong cause. They were all learned t
 | Command groups | **30** containers — 21 top-level + 7 OA subgroups + `mcp webhook` + `account security` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **36** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **5926** as of 2026-11-13 (5921 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **5952** as of 2026-11-13 (5947 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -1385,10 +1385,22 @@ samples on the test account, live and recovered from the offline queue after a p
 | owner removes us, live and replayed | none (`{}`) | the owner |
 
 The first rule (2026-11-12, "a `leave` someone else did is a disband") labeled both removals `disbanded` and the replayed
-disband `left`. `exitReasonOf` now goes: explicit `leaveType`; `prjName` without `featureId` is `disbanded`, unless
-`creatorId` is us (PC's own rule: our own disband is our leave); `featureId` is `leave`; no marker and `sourceId` someone
+disband `left`. `exitReasonOf` now goes: explicit `leaveType`; `prjName` without `featureId` is `disbanded`, our own
+disband included (PC drops the disband banner when `creatorId` is us, but that is display: the group is gone for everyone,
+which a leave is not); `featureId` is `leave`; no marker and `sourceId` someone
 else is `removed`; otherwise `leave`. `remove_member`/`block_member` keep their act's meaning. The
 `[groups] our leave of …` line records the key names and who did it relative to us and `creatorId` (never ids).
+
+**Leave and disperse follow Zalo PC 26.11.11 (2026-11-13).** PC reads the group before either. An owner (`creatorId` is
+us) leaving a group with other members gets "Chọn trưởng nhóm mới trước khi rời": a choice runs `changeGroupOwner(group,
+newOwner)` and then `leaveGroup(group)`, and a new owner who has just left is "Người bạn chọn làm trưởng nhóm vừa rời đi".
+PC's older dialog sent a plain leave and said "Quyền trưởng nhóm sẽ được trao ngẫu nhiên cho thành viên khác", so the
+server accepts an owner's plain leave and picks a random owner; that is `--random-owner`. An owner alone just leaves.
+Disperse ("Giải tán nhóm") deletes the group for every member and is the owner's menu item. `src/core/group-departure.js`
+plans (reads, refuses before anything is sent) and runs each, so the CLI and `zalo_group` ask their confirmation in
+between. Mutual groups: a profile's "Nhóm chung (N)" is `/api/social/profile/extra` `groupIds` (cmd 11864), minus groups
+in hidden chats; `/api/friend/group/related` (11439) is what PC uses for friend suggestions. Both answered "Tham số không
+hợp lệ" for one valid-looking account id from the test account; the cause is unknown.
 
 **One request counter, and `reqId` on every pull (X5, Y7).** `src/zalo/req-id.js` is the process-wide `req_<n>` counter
 the sync channel, the offline-queue drain and the pulls share. `installOfficialPulls` makes the listener's old-message

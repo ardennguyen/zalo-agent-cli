@@ -14,6 +14,8 @@ import { applyGroupSettingChanges } from "../zalo/custom/group-settings.js";
 import { SETTING_FLAGS } from "../core/group-settings.js";
 import { lastOnlineStatus } from "../core/last-online.js";
 import { recordOwnExit } from "../core/group-exit.js";
+import { planDisperse, runDisperse } from "../core/group-departure.js";
+import { groupNames } from "../core/mutual-groups.js";
 
 /** The session's own uid, or "". */
 function ownOf(api) {
@@ -111,11 +113,24 @@ export const FRIEND_EXTRA_ACTIONS = {
     },
     common_groups: {
         needs: ["userIds"],
-        async run(a, { api }) {
+        async run(a, { api, hidden, hiddenMode }) {
             const res = await api.getRelatedFriendGroup(a.userIds);
-            const shared = Object.entries(res?.groupRelateds ?? {}).map(([userId, groups]) => ({
+            // Groups in hidden chats are left out unless the deployment includes them, as Zalo PC leaves them out.
+            const set = hiddenMode?.() === "include" ? null : (hidden?.() ?? null);
+            const lists = Object.entries(res?.groupRelateds ?? {}).map(([userId, groups]) => [
                 userId,
-                groupIds: (Array.isArray(groups) ? groups : []).map(String),
+                (Array.isArray(groups) ? groups : []).map(String).filter((id) => !set?.isHidden(id)),
+            ]);
+            const names = await groupNames(
+                api,
+                lists.flatMap(([, ids]) => ids),
+                { ownId: ownOf(api) || null },
+            );
+            const shared = lists.map(([userId, groupIds]) => ({
+                userId,
+                count: groupIds.length,
+                groupIds,
+                groups: groupIds.map((groupId) => ({ groupId, name: names.get(groupId) ?? null })),
             }));
             return { shared };
         },
@@ -286,9 +301,12 @@ export const GROUP_EXTRA_ACTIONS = {
     },
     disperse: {
         needs: ["groupId"],
-        guard: (a) => ({ key: "group.disperse", target: { groupId: a.groupId } }),
+        // Only the owner can disband a group for everyone: anyone else is refused before the guard and the call
+        // (src/core/group-departure.js).
+        prepare: async (a, { api }) => ({ plan: await planDisperse(api, { groupId: a.groupId, ownId: ownOf(api) }) }),
+        guard: (a) => ({ key: "group.disperse", target: { groupId: a.groupId, others: a.plan?.others } }),
         async run(a, { api }) {
-            await api.disperseGroup(a.groupId);
+            await runDisperse(api, a.plan);
             // The disperser deletes locally on the API's success, as Zalo Web does (src/core/group-exit.js).
             return {
                 success: true,

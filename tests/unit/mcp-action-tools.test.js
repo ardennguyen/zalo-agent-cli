@@ -308,7 +308,8 @@ const HAPPY = {
         ["blocked", { groupId: GROUP }, "getGroupBlockedMember"],
         ["upgrade_community", { groupId: GROUP }, "upgradeGroupToCommunity"],
         ["settings", { groupId: GROUP, settings: { lockCreatePoll: true } }, "http", { getGroupInfo: groupSetting }],
-        ["disperse", { groupId: GROUP, confirm: true }, "disperseGroup"],
+        // Only the owner disbands: the group is read first and this account owns it.
+        ["disperse", { groupId: GROUP, confirm: true }, "disperseGroup", { getGroupInfo: ownedGroup }],
         ["pending", { groupId: GROUP }, "getPendingGroupMembers"],
         ["approve", { groupId: GROUP, userIds: [PEER] }, "reviewPendingMemberRequest"],
         ["reject_member", { groupId: GROUP, userIds: [PEER] }, "reviewPendingMemberRequest"],
@@ -325,6 +326,11 @@ const HAPPY = {
         ["members_info", { userIds: [PEER] }, "getGroupMembersInfo"],
     ],
 };
+
+/** The group as getGroupInfo returns it when this account (OWN) created it. */
+function ownedGroup() {
+    return { gridInfoMap: { [GROUP]: { groupId: GROUP, creatorId: OWN, totalMember: 1, memVerList: [`${OWN}_0`] } } };
+}
 
 /** A group's settings as getGroupInfo returns them: every field Zalo stores, all off. */
 function groupSetting() {
@@ -429,6 +435,13 @@ const GUARDED = Object.entries(HAPPY).flatMap(([tool, rows]) =>
         }),
 );
 
+/**
+ * What an action sent that changes something: the reads an action makes before its guard (disperse reads the group to
+ * check this account owns it, src/core/group-departure.js) are left out.
+ */
+const READS_BEFORE_GUARD = new Set(["getGroupInfo"]);
+const sentChanges = (fa) => [fa.calls.filter((c) => !READS_BEFORE_GUARD.has(c.method)), fa.http];
+
 describe("guarded actions", () => {
     it("cover every GUARDS entry these action tables serve (settings has its own test below)", () => {
         const tested = new Set([...GUARDED.map(([t, a]) => `${t} ${a}`), "zalo_group settings"]);
@@ -449,14 +462,14 @@ describe("guarded actions", () => {
             assert.equal(refused.isError, true);
             assert.equal(JSON.parse(refused.text).confirmationRequired, true);
             assert.equal(JSON.parse(refused.text).action, `${tool} ${action}`);
-            assert.deepEqual([fa.calls, fa.http], [[], []], "nothing is sent unconfirmed");
+            assert.deepEqual(sentChanges(fa), [[], []], "nothing is sent unconfirmed");
 
             fa = fakeApi(answers);
             const dry = await tools({ api: fa.api }).call(tool, { action, ...args, dryRun: true });
             assert.equal(dry.isError, false);
             assert.equal(dry.body.dryRun, true);
             assert.equal(dry.body.sent, false);
-            assert.deepEqual([fa.calls, fa.http], [[], []], "a dry run sends nothing");
+            assert.deepEqual(sentChanges(fa), [[], []], "a dry run sends nothing");
 
             fa = fakeApi(answers);
             const done = await tools({ api: fa.api, config }).call(tool, { action, ...args, confirm: true });

@@ -16,6 +16,27 @@ import { lastOnlineStatus } from "../core/last-online.js";
 import { getActive } from "../core/accounts.js";
 import { getAccountDbPath } from "../core/credentials.js";
 import { initDb } from "../core/db.js";
+import { groupNames, mutualGroupsLine, mutualGroupsOrError } from "../core/mutual-groups.js";
+import { hiddenSetForCli } from "../utils/hidden-access.js";
+
+/**
+ * The groups shared with one user for a CLI reply (src/core/mutual-groups.js), groups in hidden chats left out as
+ * Zalo PC does. Never throws: a failed read is `{error}`.
+ *
+ * @param {object} api
+ * @param {string|null|undefined} userId
+ */
+async function cliMutualGroups(api, userId) {
+    const ownId = api.getOwnId?.() ?? null;
+    let hidden = null;
+    try {
+        hidden = ownId ? await hiddenSetForCli(String(ownId), api, { preferMirror: true }) : null;
+    } catch (e) {
+        // Showing them without the hidden set could show a hidden chat's group: say so instead.
+        return { error: `could not read the hidden chats, so the shared groups are not shown: ${e.message}` };
+    }
+    return mutualGroupsOrError(api, userId, { ownId, hidden });
+}
 
 export function registerFriendCommands(program) {
     const friend = program.command("friend").description("Manage friends and contacts");
@@ -119,10 +140,13 @@ export function registerFriendCommands(program) {
                 }
                 await ensureAliases(getApi());
                 const result = found?.uid ? aliasFirst(found) : { ...found, data: aliasFirst(found.data) };
-                output(result, program.opts().json, () => {
-                    const u = result?.uid ? result : result?.data || result;
+                const u0 = result?.uid ? result : result?.data || result;
+                const mutualGroups = await cliMutualGroups(getApi(), u0?.uid);
+                output({ ...result, mutualGroups }, program.opts().json, () => {
+                    const u = u0;
                     info(`User ID: ${u.uid || "?"}`);
                     info(`Name: ${u.displayName || u.zaloName || u.display_name || u.zalo_name || "?"}`);
+                    info(mutualGroupsLine(mutualGroups));
                 });
             } catch (e) {
                 error(`Find user failed: ${e.message}`);
@@ -137,12 +161,14 @@ export function registerFriendCommands(program) {
                 const raw = await getApi().getUserInfo(userId);
                 await ensureAliases(getApi());
                 const result = withProfileNames(raw);
-                output(result, program.opts().json, () => {
+                const mutualGroups = await cliMutualGroups(getApi(), userId);
+                output({ ...result, mutualGroups }, program.opts().json, () => {
                     const profiles = result?.changed_profiles || {};
                     const p = profiles[userId] || {};
                     info(`Name: ${p.displayName || p.zaloName || "?"}`);
                     info(`Phone: ${p.phoneNumber || "?"}`);
                     info(`Avatar: ${p.avatar || "?"}`);
+                    info(mutualGroupsLine(mutualGroups));
                 });
             } catch (e) {
                 error(e.message);
@@ -488,11 +514,30 @@ export function registerFriendCommands(program) {
         .description("List the groups you share with one or more friends")
         .action(async (friendIds) => {
             try {
-                const result = await getApi().getRelatedFriendGroup(friendIds);
-                output(result, program.opts().json, () => {
-                    for (const [fid, groups] of Object.entries(result?.groupRelateds ?? {})) {
-                        info(`${fid}: ${groups.length} group(s)`);
-                        for (const g of groups) console.log(`  ${g}`);
+                const api = getApi();
+                const result = await api.getRelatedFriendGroup(friendIds);
+                // Groups in hidden chats are left out, as Zalo PC leaves them out of "Nhóm chung".
+                const ownId = api.getOwnId?.() ?? null;
+                const hidden = ownId ? await hiddenSetForCli(String(ownId), api, { preferMirror: true }) : null;
+                const lists = Object.entries(result?.groupRelateds ?? {}).map(([fid, groups]) => [
+                    fid,
+                    (Array.isArray(groups) ? groups : []).map(String).filter((id) => !hidden?.isHidden(id)),
+                ]);
+                const names = await groupNames(
+                    api,
+                    lists.flatMap(([, ids]) => ids),
+                    { ownId },
+                );
+                const shared = lists.map(([userId, groupIds]) => ({
+                    userId,
+                    count: groupIds.length,
+                    groups: groupIds.map((groupId) => ({ groupId, name: names.get(groupId) ?? null })),
+                }));
+                // groupRelateds is Zalo's own shape (hidden-chat groups left out); shared adds the count and names.
+                output({ groupRelateds: Object.fromEntries(lists), shared }, program.opts().json, () => {
+                    for (const s of shared) {
+                        info(`${s.userId}: ${s.count} mutual group${s.count === 1 ? "" : "s"}`);
+                        for (const g of s.groups) console.log(`  ${g.groupId}${g.name ? `  ${g.name}` : ""}`);
                     }
                 });
             } catch (e) {

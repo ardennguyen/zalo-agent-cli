@@ -219,13 +219,11 @@ function guardedProgram(ran) {
 
 /** Every guarded CLI command, with arguments it parses. */
 const GUARDED_CLI = [
-    ["group leave", [G]],
     ["group remove-member", [G, U]],
     ["group remove-admin", [G, U]],
     ["group transfer-owner", [G, U]],
     ["group block-member", [G, U]],
     ["group disable-link", [G]],
-    ["group disperse", [G]],
     ["group settings", [G, "--no-join-appr"]],
     ["friend remove", [U]],
     ["friend block", [U]],
@@ -287,6 +285,17 @@ describe("every guarded CLI command", () => {
         assert.equal(r.code, null);
         assert.deepEqual(ran, ["settings"]);
     });
+
+    // They read the group first (an owner must name a successor; only the owner disbands), then settle the guard
+    // themselves: tests/unit/group-leave-silent.test.js drives that against the fake session.
+    for (const name of ["group leave", "group disperse"]) {
+        it(`${name} settles itself after reading the group, so preAction lets it through`, async () => {
+            const ran = [];
+            const r = await captured(() => guardedProgram(ran).parseAsync([...name.split(" "), G], { from: "user" }));
+            assert.equal(r.code, null);
+            assert.deepEqual(ran, [name.split(" ").at(-1)]);
+        });
+    }
 
     it("label update settles itself after reading the labels, so preAction lets it through", async () => {
         const ran = [];

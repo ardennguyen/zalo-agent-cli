@@ -74,6 +74,8 @@ import { pinMessage, unpinMessage, textPinParams } from "../zalo/custom/pin.js";
 import { coverageReport } from "../core/coverage.js";
 import { groupMemberUids, fetchMemberNames } from "../core/group-members.js";
 import { getGroupInfoWatched, recordOwnExit, goneFields, goneGroupMap, sendRefusal } from "../core/group-exit.js";
+import { departureMessage, planLeave, runLeave } from "../core/group-departure.js";
+import { mutualGroupsOrError } from "../core/mutual-groups.js";
 import { recentConversations } from "../core/recent-conversations.js";
 import { callReadAll, describeReads, READ_NAMES, ReadUsageError } from "../zalo/reads.js";
 import "../core/local-reads.js";
@@ -2448,7 +2450,8 @@ export function registerTools(
         {
             title: "Lookup Zalo User",
             description:
-                "Look up a Zalo user by phone number (`phone`), username (`username`) or user id (`userId`), or read this logged-in account's own profile (`self: true`). Use it to find someone's `userId`, which is also the `threadId` of your 1-1 conversation with them, before sending a message or a contact card.",
+                "Look up a Zalo user by phone number (`phone`), username (`username`) or user id (`userId`), or read this logged-in account's own profile (`self: true`). Use it to find someone's `userId`, which is also the `threadId` of your 1-1 conversation with them, before sending a message or a contact card. " +
+                "A found user's reply also has `mutualGroups`: `{count, groups: [{groupId, name}]}`, the groups you share with them as Zalo shows on a profile (friends and strangers alike; groups in hidden chats are left out unless hidden chats are included), or `{error}` when that read failed.",
             inputSchema: z
                 .object({
                     self: z
@@ -2488,9 +2491,16 @@ export function registerTools(
                         profile: p,
                     });
                 }
+                // The groups shared with a found user, as Zalo shows on a profile (src/core/mutual-groups.js).
+                const shared = (id) =>
+                    mutualGroupsOrError(api, id, {
+                        ownId: ownIdOf(api) || null,
+                        hidden: hiddenMode() === "include" ? null : hiddenSet(),
+                    });
                 if (phone) {
                     const phoneNumber = phone;
                     const user = await api.findUser(phoneNumber);
+                    const found = user?.uid || user?.userId || null;
                     return ok({
                         mode: "phone",
                         query: phoneNumber,
@@ -2498,11 +2508,13 @@ export function registerTools(
                         // Alias first, as Zalo shows the person to this account (src/core/contact-names.js).
                         ...personNameFields(user?.uid || user?.userId, user),
                         avatar: user?.avatar || null,
+                        mutualGroups: await shared(found),
                         user: user || null,
                     });
                 }
                 if (username) {
                     const user = await api.findUserByUsername(username);
+                    const found = user?.uid || user?.userId || null;
                     return ok({
                         mode: "username",
                         query: username,
@@ -2510,6 +2522,7 @@ export function registerTools(
                         // Alias first, as Zalo shows the person to this account (src/core/contact-names.js).
                         ...personNameFields(user?.uid || user?.userId, user),
                         avatar: user?.avatar || null,
+                        mutualGroups: await shared(found),
                         user: user || null,
                     });
                 }
@@ -2522,6 +2535,7 @@ export function registerTools(
                     ...personNameFields(userId, changed),
                     displayName: personNameFields(userId, changed).displayName ?? (cachedDisplayName(userId) || null),
                     avatar: changed?.avatar || null,
+                    mutualGroups: await shared(userId),
                     profile: changed || info || null,
                 });
             } catch (e) {
@@ -3858,13 +3872,16 @@ export function registerTools(
                 "'create' (a new group named `name` with the members in userIds), " +
                 "'add_members' (add userIds to the group), " +
                 "'remove_member' (remove the one member userId from the group), " +
-                "'leave' (leave the group; `silent` hides the usual notice from ordinary members; the owner still sees it), " +
+                "'leave' (only this account leaves; `silent` hides the usual notice from ordinary members, the owner " +
+                "still sees it; the owner of a group with other members must give `newOwner` (a member's userId: " +
+                "ownership is handed over first, as Zalo PC does) or `randomOwner: true` (Zalo picks a member)), " +
                 "'rename' (set the group's name to `name`; every member sees the change), " +
                 "'avatar' (set the group's avatar from a local image, `filePath`), " +
                 "'add_admin' / 'remove_admin' (userIds), 'transfer_owner' (to userId), " +
                 "'block_member' / 'unblock_member' (userIds; a blocked member cannot rejoin), 'blocked' (the blocked " +
                 "members), 'settings' (change `settings`; the rest keep their values), 'upgrade_community', " +
-                "'disperse' (disband the group for everyone), 'pending' / 'approve' / 'reject_member' (join requests, " +
+                "'disperse' (owner only: disband the group, deleting it for every member), 'pending' / 'approve' / " +
+                "'reject_member' (join requests, " +
                 "admins only), 'enable_link' / 'disable_link' / 'link_info' (the invite link), 'link_preview' / " +
                 "'join' (a group by its invite `link`), 'invite_boxes' (invitations you received), 'invite_info' / " +
                 "'join_invite' (one of them, by groupId), 'delete_invite' (groupIds), 'invite_to' (invite userId to " +
@@ -3922,6 +3939,20 @@ export function registerTools(
                         .describe(
                             "Only for 'leave': hide the usual notice from ordinary members; the owner still sees it (default false)",
                         ),
+                    newOwner: z
+                        .string()
+                        .min(1)
+                        .optional()
+                        .describe(
+                            "Only for 'leave' by the group's owner: the member (numeric user id) who owns the group next; " +
+                                "ownership is handed over, then the account leaves",
+                        ),
+                    randomOwner: z
+                        .boolean()
+                        .optional()
+                        .describe(
+                            "Only for 'leave' by the group's owner: leave and let Zalo give ownership to a random member",
+                        ),
                     ...GROUP_EXTRA_INPUTS,
                     confirm: confirmInput("the actions asked about first (listed above)"),
                     ticket: ticketInput(),
@@ -3932,7 +3963,8 @@ export function registerTools(
         async (args, extra) => {
             // The actions added with the action tools run through the shared runner (src/mcp/action-tool.js).
             if (Object.hasOwn(GROUP_EXTRA_ACTIONS, args.action)) return groupExtra(args, extra);
-            const { action, groupId, name, userIds, userId, silent, confirm, dryRun, ticket } = args;
+            const { action, groupId, name, userIds, userId, silent, newOwner, randomOwner, confirm, dryRun, ticket } =
+                args;
             const gid = groupId === undefined ? "" : String(groupId).trim();
             if (["leave", "info", "add_members", "remove_member", "rename"].includes(action)) {
                 if (!gid) return err(`groupId is required for action='${action}'.`);
@@ -3968,12 +4000,36 @@ export function registerTools(
                 return err(`name is required for action='${action}'.`);
             }
 
+            if ((newOwner !== undefined || randomOwner !== undefined) && action !== "leave") {
+                return err("newOwner and randomOwner are only for action='leave'.");
+            }
+            // A leave is read first: the owner's leave without a successor, or a successor who is not a member, is
+            // refused before the guard and before anything is sent (src/core/group-departure.js).
+            let leavePlan = null;
+            if (action === "leave") {
+                try {
+                    leavePlan = await planLeave(api, {
+                        groupId: gid,
+                        ownId: ownIdOf(api) || null,
+                        newOwner,
+                        randomOwner: randomOwner === true,
+                    });
+                } catch (e) {
+                    return err(departureMessage(e, "mcp"));
+                }
+            }
+
             // After validation, before Zalo: a refused call changes nothing and says exactly how to retry.
             if (action === "leave" || action === "remove_member") {
                 const held = await gate(
                     action === "leave" ? "group.leave" : "group.removeMember",
                     action === "leave"
-                        ? { groupId: gid, silent: silent === true }
+                        ? {
+                              groupId: gid,
+                              silent: silent === true,
+                              newOwner: leavePlan.newOwner,
+                              randomOwner: leavePlan.handOver === "random",
+                          }
                         : { groupId: gid, userIds: [target] },
                     { confirm, dryRun, ticket },
                     extra,
@@ -4043,7 +4099,7 @@ export function registerTools(
                     }
                     case "leave": {
                         const quiet = silent === true;
-                        const res = await api.leaveGroup(gid, quiet);
+                        const res = await runLeave(api, leavePlan, { silent: quiet });
                         const memberError = Array.isArray(res?.memberError) ? res.memberError : [];
                         // As Zalo Web on the API's success: the group's local history goes now (or is kept flagged,
                         // groups.onLeave), whether or not a listener sees the echo.
@@ -4053,6 +4109,7 @@ export function registerTools(
                             success: true,
                             groupId: gid,
                             silent: quiet,
+                            ...(res.handOver && { ownership: res.handOver, newOwner: res.newOwner }),
                             ...(memberError.length > 0 && { memberError }),
                             ...exit,
                         });

@@ -12,7 +12,8 @@ import { allGroupBlocked, groupLinkInfoAll, inviteInfoAll } from "../core/list-a
 import { aliasFirst, ensureAliases, nameFor, senderNameFields } from "../core/contact-names.js";
 import { success, error, info, warning, output } from "../utils/output.js";
 import { parseIntOption, parseIntAtLeast } from "../utils/parse-options.js";
-import { guardSubcommand } from "../core/confirm-guard.js";
+import { gateCli, guardSubcommand } from "../core/confirm-guard.js";
+import { departureMessage, planDisperse, planLeave, runDisperse, runLeave } from "../core/group-departure.js";
 import { getGroupInfoWatched, recordOwnExit, describeGroupGone } from "../core/group-exit.js";
 import { initDb } from "../core/db.js";
 import { getActive } from "../core/accounts.js";
@@ -391,18 +392,49 @@ export function registerGroupCommands(program) {
 
     group
         .command("leave <groupId>")
-        .description("Leave a group")
+        .description(
+            "Leave a group (only you leave; `group disperse` deletes it for everyone). The owner of a group with " +
+                "other members must name the next owner (--new-owner) or let Zalo pick one (--random-owner)",
+        )
         .option("-s, --silent", "Leave without the usual notice to ordinary members (the owner still sees it)")
+        .option("--new-owner <userId>", "You own the group: hand it to this member first, then leave (as Zalo PC)")
+        .option("--random-owner", "You own the group: leave and let Zalo give ownership to a random member")
         .action(async (groupId, opts) => {
+            const json = program.opts().json;
             try {
-                const result = await getApi().leaveGroup(groupId, Boolean(opts.silent));
+                const api = getApi();
+                // Read first: an owner's leave without a successor, or a successor who is not a member, is refused
+                // before anything is asked or sent (src/core/group-departure.js).
+                const plan = await planLeave(api, {
+                    groupId,
+                    ownId: api.getOwnId?.() ?? null,
+                    newOwner: opts.newOwner,
+                    randomOwner: Boolean(opts.randomOwner),
+                });
+                gateCli(
+                    "group.leave",
+                    {
+                        groupId,
+                        silent: Boolean(opts.silent),
+                        newOwner: plan.newOwner,
+                        randomOwner: plan.handOver === "random",
+                    },
+                    opts,
+                    { json },
+                );
+                const result = await runLeave(api, plan, { silent: Boolean(opts.silent) });
                 const exit = await ownExit(groupId, "leave");
-                output({ ...result, ...exit }, program.opts().json, () => {
-                    success("Left group");
+                output({ ...result, groupId, ...exit }, json, () => {
+                    if (plan.handOver === "chosen") success(`${plan.newOwner} now owns the group`);
+                    success(
+                        plan.handOver === "random"
+                            ? "Left group; Zalo gives ownership to a random member"
+                            : "Left group",
+                    );
                     info(localHistoryLine(groupId, "leave", exit.localHistory));
                 });
             } catch (e) {
-                error(e.message);
+                error(departureMessage(e, "cli"));
             }
         });
 
@@ -754,10 +786,17 @@ export function registerGroupCommands(program) {
 
     group
         .command("disperse <groupId>")
-        .description("Disperse (disband) a group permanently — WARNING: irreversible!")
-        .action(async (groupId) => {
+        .description(
+            "Disband a group for every member (owner only) — WARNING: irreversible! To leave just yourself, use `group leave`",
+        )
+        .action(async (groupId, opts) => {
+            const json = program.opts().json;
             try {
-                const result = await getApi().disperseGroup(groupId);
+                const api = getApi();
+                // Only the owner can: anyone else is refused before anything is asked or sent.
+                const plan = await planDisperse(api, { groupId, ownId: api.getOwnId?.() ?? null });
+                gateCli("group.disperse", { groupId, others: plan.others }, opts, { json });
+                const result = await runDisperse(api, plan);
                 const exit = await ownExit(groupId, "disbanded");
                 output({ ...(result ?? {}), ...exit }, program.opts().json, () => {
                     success(`Group ${groupId} dispersed`);
@@ -815,9 +854,8 @@ export function registerGroupCommands(program) {
         });
 
     // The actions Zalo Web asks about first: each needs --yes, and --dry-run says what it would do (src/core/confirm-guard.js).
-    guardSubcommand(group, "leave", "group.leave", {
-        target: (groupId, opts) => ({ groupId, silent: Boolean(opts.silent) }),
-    });
+    // leave and disperse read the group first, then settle the guard themselves (gateCli above).
+    guardSubcommand(group, "leave", "group.leave", { target: () => ({}), deferred: true });
     guardSubcommand(group, "remove-member", "group.removeMember", {
         target: (groupId, userIds) => ({ groupId, userIds }),
     });
@@ -831,7 +869,7 @@ export function registerGroupCommands(program) {
         target: (groupId, userIds) => ({ groupId, userIds }),
     });
     guardSubcommand(group, "disable-link", "group.disableLink", { target: (groupId) => ({ groupId }) });
-    guardSubcommand(group, "disperse", "group.disperse", { target: (groupId) => ({ groupId }) });
+    guardSubcommand(group, "disperse", "group.disperse", { target: () => ({}), deferred: true });
     // Only turning membership approval off is asked about; every other setting goes ahead as before.
     guardSubcommand(group, "settings", "group.settings", {
         target: (groupId, opts) => ({ groupId, approvalOff: opts.joinAppr === false }),

@@ -2138,6 +2138,12 @@ describe("zalo_group", () => {
     }
     const call = (ga, args, config) =>
         register({ api: ga.api, ...(config && { config }) }).server.call("zalo_group", args);
+    /** Group G as getmg-v2 answers it: created by U1, this account an ordinary member. */
+    const AS_MEMBER = {
+        gridInfoMap: { [G]: { groupId: G, name: "Team", creatorId: U1, totalMember: 3, memVerList: [`${U1}_0`] } },
+    };
+    /** The calls that change something (leave reads the group first). */
+    const writes = (ga) => ga.calls.filter(([name]) => name !== "getGroupInfo");
 
     it("rename needs a groupId and a non-blank name, and passes (name, groupId), the order the session takes", async () => {
         const ga = groupApi();
@@ -2175,7 +2181,7 @@ describe("zalo_group", () => {
     });
 
     it("leave passes (groupId, silent) to Zalo: loud by default, quiet only when asked", async () => {
-        const ga = groupApi();
+        const ga = groupApi({ getGroupInfo: AS_MEMBER });
         const loud = payloadOf(await call(ga, { action: "leave", groupId: G, confirm: true }));
         // localHistory: what became of the group's local copy (src/core/group-exit.js); no cache is open here.
         assert.match(loud.localHistory?.error ?? "", /did not record it/);
@@ -2189,14 +2195,14 @@ describe("zalo_group", () => {
         const quiet = payloadOf(await call(ga, { action: "leave", groupId: G, silent: true, confirm: true }));
         assert.equal(quiet.silent, true);
         // Red if the flag is dropped on the way to the session, or defaults to silent.
-        assert.deepEqual(ga.calls, [
+        assert.deepEqual(writes(ga), [
             ["leaveGroup", G, false],
             ["leaveGroup", G, true],
         ]);
     });
 
     it("leave explains Zalo's 'not in the group' codes (167 seen live, 166 documented) and passes other failures through", async () => {
-        const gone = await call(groupApi({ leaveGroup: new Error("Zalo error (166)") }), {
+        const gone = await call(groupApi({ leaveGroup: new Error("Zalo error (166)"), getGroupInfo: AS_MEMBER }), {
             action: "leave",
             confirm: true,
             groupId: G,
@@ -2205,15 +2211,112 @@ describe("zalo_group", () => {
         assert.match(gone.content[0].text, /not in group 7000000000000000001/);
         for (const code of [167, 166]) {
             const e = Object.assign(new Error("Không thể rời nhóm"), { code });
-            const r = await call(groupApi({ leaveGroup: e }), { action: "leave", groupId: G, confirm: true });
+            const r = await call(groupApi({ leaveGroup: e, getGroupInfo: AS_MEMBER }), {
+                action: "leave",
+                groupId: G,
+                confirm: true,
+            });
             assert.match(r.content[0].text, /not in group/, `code ${code} read from error.code`);
         }
-        const other = await call(groupApi({ leaveGroup: new Error("boom (500)") }), {
+        const other = await call(groupApi({ leaveGroup: new Error("boom (500)"), getGroupInfo: AS_MEMBER }), {
             action: "leave",
             groupId: G,
             confirm: true,
         });
         assert.match(other.content[0].text, /boom \(500\)/);
+    });
+
+    describe("leave and disperse as Zalo PC (src/core/group-departure.js)", () => {
+        const OWN = "9100000000000000009";
+        /** Group G with this account (OWN) as its owner, U1 and U2 the other members. */
+        const AS_OWNER = {
+            gridInfoMap: {
+                [G]: {
+                    groupId: G,
+                    name: "Team",
+                    creatorId: OWN,
+                    totalMember: 3,
+                    memVerList: [`${OWN}_0`, `${U1}_0`, `${U2}_0`],
+                },
+            },
+        };
+        const owned = (answers = {}) => {
+            const ga = groupApi({ getGroupInfo: AS_OWNER, ...answers });
+            ga.api.getOwnId = () => OWN;
+            ga.api.changeGroupOwner = async (...a) => (ga.calls.push(["changeGroupOwner", ...a]), {});
+            ga.api.disperseGroup = async (...a) => (ga.calls.push(["disperseGroup", ...a]), {});
+            return ga;
+        };
+
+        it("the owner's leave without newOwner or randomOwner is refused before the guard, naming both", async () => {
+            const ga = owned();
+            const r = await call(ga, { action: "leave", groupId: G, confirm: true });
+            assert.equal(r.isError, true);
+            assert.match(r.content[0].text, /owns group \\?"Team\\?".*2 other member/);
+            assert.match(r.content[0].text, /newOwner .* or randomOwner: true/);
+            assert.deepEqual(writes(ga), []);
+        });
+
+        it("newOwner hands the group over first, then leaves", async () => {
+            const ga = owned();
+            const out = payloadOf(await call(ga, { action: "leave", groupId: G, newOwner: U1, confirm: true }));
+            assert.equal(out.success, true);
+            assert.equal(out.ownership, "chosen");
+            assert.equal(out.newOwner, U1);
+            // Red if it leaves first (Zalo would pick a random owner) or skips the hand-over.
+            assert.deepEqual(writes(ga), [
+                ["changeGroupOwner", U1, G],
+                ["leaveGroup", G, false],
+            ]);
+        });
+
+        it("the guard names the hand-over; nothing is sent unconfirmed", async () => {
+            const ga = owned();
+            const out = payloadOf(await call(ga, { action: "leave", groupId: G, newOwner: U1, dryRun: true }));
+            assert.match(out.wouldDo, new RegExp(`handing ownership to ${U1} first`));
+            assert.deepEqual(writes(ga), []);
+        });
+
+        it("randomOwner leaves and lets Zalo pick", async () => {
+            const ga = owned();
+            const out = payloadOf(await call(ga, { action: "leave", groupId: G, randomOwner: true, confirm: true }));
+            assert.equal(out.ownership, "random");
+            assert.deepEqual(writes(ga), [["leaveGroup", G, false]]);
+        });
+
+        it("a newOwner who is not a member is refused before anything is sent", async () => {
+            const ga = owned();
+            const r = await call(ga, { action: "leave", groupId: G, newOwner: "9100000000000000077", confirm: true });
+            assert.equal(r.isError, true);
+            assert.match(r.content[0].text, /not a member/);
+            assert.deepEqual(writes(ga), []);
+        });
+
+        it("newOwner/randomOwner belong to leave only", async () => {
+            const r = await call(owned(), { action: "rename", groupId: G, name: "X", randomOwner: true });
+            assert.equal(r.isError, true);
+            assert.match(r.content[0].text, /only for action='leave'/);
+        });
+
+        it("disperse is the owner's: a member is refused before the guard and the call", async () => {
+            const ga = groupApi({ getGroupInfo: AS_MEMBER });
+            ga.api.getOwnId = () => OWN;
+            ga.api.disperseGroup = async (...a) => (ga.calls.push(["disperseGroup", ...a]), {});
+            const r = await call(ga, { action: "disperse", groupId: G, confirm: true });
+            assert.equal(r.isError, true);
+            assert.match(r.content[0].text, /Only the owner/);
+            assert.deepEqual(writes(ga), []);
+        });
+
+        it("the owner's disperse is asked first, then deletes the group for everyone", async () => {
+            const ga = owned();
+            const asked = payloadOf(await call(ga, { action: "disperse", groupId: G }));
+            assert.equal(asked.confirmationRequired, true);
+            assert.match(asked.wouldDo, /for every member \(2 other member\(s\) lose it too\)/);
+            assert.deepEqual(writes(ga), []);
+            assert.equal(payloadOf(await call(ga, { action: "disperse", groupId: G, confirm: true })).success, true);
+            assert.deepEqual(writes(ga), [["disperseGroup", G]]);
+        });
     });
 
     it("info asks for the group as an array and returns its details, not its members", async () => {
@@ -2338,7 +2441,9 @@ describe("zalo_group confirm guard", () => {
         removeUserFromGroup: async (...a) => (calls.push(["removeUserFromGroup", ...a]), { errorMembers: [] }),
         createGroup: async (...a) => (calls.push(["createGroup", ...a]), { groupId: G, errorMembers: [] }),
         addUserToGroup: async (...a) => (calls.push(["addUserToGroup", ...a]), { errorMembers: [] }),
-        getGroupInfo: async (...a) => (calls.push(["getGroupInfo", ...a]), { gridInfoMap: { [G]: { name: "T" } } }),
+        // A read, not a change: leave reads the group before it asks (src/core/group-departure.js), so only the
+        // writes are recorded here.
+        getGroupInfo: async () => ({ gridInfoMap: { [G]: { name: "T" } } }),
     };
     const run = (args, config) => register({ api, ...(config && { config }) }).server.call("zalo_group", args);
     const LEAVE = { action: "leave", groupId: G };

@@ -168,6 +168,8 @@ const argvTable = () => ({
     "group join": ["https://zalo.me/g/fakelink"],
     "group link-preview": ["https://zalo.me/g/fakelink"],
     "group settings": [FAKE_GROUP_ID, "--no-lock-poll"],
+    // The fake group is ours with another member: an owner's leave names who owns it next (src/core/group-departure.js).
+    "group leave": [FAKE_GROUP_ID, "--random-owner"],
     "conv mute": [FAKE_PEER_ID],
     "conv delete": [FAKE_PEER_ID],
     "conv auto-delete": [FAKE_PEER_ID, "1d"],

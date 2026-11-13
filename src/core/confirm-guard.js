@@ -52,7 +52,13 @@ export const GUARDS = Object.freeze({
         cli: "group leave",
         mcp: "zalo_group leave",
         irreversible: true,
-        what: (t) => `leave group ${t.groupId}${t.silent ? " silently (the owner still sees it)" : ""}`,
+        what: (t) =>
+            `leave group ${t.groupId}${t.silent ? " silently (the owner still sees it)" : ""}` +
+            (t.newOwner
+                ? `, handing ownership to ${t.newOwner} first`
+                : t.randomOwner
+                  ? ", letting Zalo give ownership to a random member"
+                  : ""),
     },
     "group.removeMember": {
         cli: "group remove-member",
@@ -76,7 +82,9 @@ export const GUARDS = Object.freeze({
         cli: "group disperse",
         mcp: "zalo_group disperse",
         irreversible: true,
-        what: (t) => `disband group ${t.groupId} for every member`,
+        what: (t) =>
+            `disband group ${t.groupId} for every member` +
+            (Number.isFinite(t.others) ? ` (${t.others} other member(s) lose it too)` : ""),
     },
     "group.disableLink": {
         cli: "group disable-link",

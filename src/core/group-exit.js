@@ -150,7 +150,8 @@ export function leaveTypeOf(data) {
  * offline queue after a park (2026-11-12/13):
  *
  * - **disband** by the owner: `prjName`. The owner is `sourceId` live, but a replayed one names us, so who did it is
- *   not the signal. A group we created ourselves is our own leave (Zalo PC drops a disband when `creatorId` is us).
+ *   not the signal. Our own disband (`group disperse`, or from the phone) is a disband too: the group is gone for
+ *   everyone, which a leave is not. (Zalo PC drops a disband's banner when `creatorId` is us; that is display only.)
  * - **our own leave**: `featureId`, `sourceId` us.
  * - **removed** by the owner or an admin: no key, `sourceId` the remover (live and replayed alike).
  *
@@ -159,7 +160,7 @@ export function leaveTypeOf(data) {
  * `block_member` are what their act says.
  *
  * @param {string} type - leave, remove_member, block_member
- * @param {object} [data] - the event's `data` (`sourceId`, `creatorId`, `extraData`)
+ * @param {object} [data] - the event's `data` (`sourceId`, `extraData`)
  * @param {string} [ownId] - the account's own uid
  * @returns {"leave"|"removed"|"blocked"|"disbanded"|null}
  */
@@ -172,10 +173,7 @@ export function exitReasonOf(type, data, ownId) {
             if (how === "leave") return "leave";
             const has = (v) => v !== undefined && v !== null && v !== "";
             const extra = extraDataOf(data) ?? {};
-            if (has(extra.prjName) && !has(extra.featureId)) {
-                const creator = data?.creatorId;
-                return ownId && has(creator) && String(creator) === String(ownId) ? "leave" : "disbanded";
-            }
+            if (has(extra.prjName) && !has(extra.featureId)) return "disbanded";
             if (has(extra.featureId)) return "leave";
             const source = data?.sourceId;
             if (ownId && has(source) && String(source) !== String(ownId)) return "removed";

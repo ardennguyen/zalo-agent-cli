@@ -10,9 +10,18 @@
  * tied to the message's age; once it lapses the server answers 200 with a JSON
  * error body (`{"err_code":"1","message":"Invalid signature"}`) rather than an
  * HTTP error, so "did this work" cannot be read off the status code alone.
- * When a URL has lapsed we retry once through renewlink (cmd 12094), which
- * works only while Zalo still holds the file. Past that the bytes exist solely
- * on the sending device or in zCloud.
+ * A lapsed link is not renewed here, because Zalo never renews one to download
+ * it: a gone file is remembered as gone, and renewlink (cmd 12094) only clones
+ * a file into a forward's destination. Called per download it answered
+ * "invalid parameters" every time, and with no deadline of its own one hung
+ * call could hold a worker forever. Past expiry the bytes exist solely on the
+ * sending device or in zCloud.
+ *
+ * Every wait is bounded. Each request runs against its own deadline that
+ * fires even if the fetch underneath ignores its abort signal, the backoff
+ * sleep wakes on an abort, and a caller's signal stops the run between files
+ * and cuts the in-flight requests short, leaving what was not saved pending
+ * for the next run.
  *
  * That body sniff has to stay narrow, though. Reading a text response as
  * guilty until proven innocent silently discarded every `.csv`/`.txt`/`.md`
@@ -30,7 +39,6 @@ import {
     clearMessageLocalPath,
     getThreadNames,
 } from "../db.js";
-import { extractRenewedUrls, makeRenewLink } from "../../zalo/custom/renewlink.js";
 import { lookupCloudBackup, messageZKey } from "./zcloud.js";
 import { createDownloadFetch } from "../../zalo/download-fetch.js";
 import { readSealedJson, writeSealedJson } from "../keystore/index.js";
@@ -147,7 +155,7 @@ export const DOWNLOAD_REASONS = {
     "unreadable-body": { verdict: "unknown", label: "an unrecognized body" },
     "empty-body": { verdict: "unknown", label: "an empty body" },
     network: { verdict: "unknown", label: "no response at all" },
-    "renew-failed": { verdict: "failed", label: "link renewal failed" },
+    timeout: { verdict: "unknown", label: "no answer before the deadline" },
 };
 
 /**
@@ -314,43 +322,70 @@ export const THROTTLE_GIVE_UP = 25;
  * `retryable` drives the backoff and the give-up streak; `verdict` and `code`
  * exist so the caller can report what was observed rather than guess at it.
  *
+ * The deadline is enforced twice. The request gets an abort signal, which
+ * cuts DNS, connect, headers and the body short; and the wait itself races a
+ * timer, so a fetch that ignores its signal (a proxy layer, a stand-in) still
+ * returns on time instead of holding its worker forever.
+ *
  * @param {string} url
- * @param {number} timeoutMs - hard deadline covering headers AND body
+ * @param {number} timeoutMs - hard deadline covering the whole exchange: DNS, connect, headers AND body
+ * @param {typeof fetch} [fetchImpl]
+ * @param {AbortSignal} [runSignal] - the run's stop signal: aborting it ends the exchange at once
  * @returns {Promise<{ok: boolean, buf?: Buffer, contentType?: string|null,
- *   retryable?: boolean, expired?: boolean, verdict?: string, code?: string,
+ *   retryable?: boolean, expired?: boolean, aborted?: boolean, verdict?: string, code?: string,
  *   status?: number, reason?: string}>}
  */
-async function fetchBytes(url, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, fetchImpl = (...a) => fetch(...a)) {
+async function fetchBytes(url, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, fetchImpl = (...a) => fetch(...a), runSignal) {
+    if (runSignal?.aborted) return { ok: false, aborted: true, reason: "stopped" };
     let res;
     let buf;
     let ct;
     let disposition;
-    // One signal for the whole exchange: a server that sends headers promptly
-    // and then stops writing the body is exactly the stall this guards against.
-    const signal = AbortSignal.timeout(timeoutMs);
+    // One controller for the whole exchange: a server that sends headers
+    // promptly and then stops writing the body is a stall like any other.
+    const ctl = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+        timedOut = true;
+        ctl.abort(Object.assign(new Error(`timed out after ${timeoutMs}ms`), { name: "TimeoutError" }));
+    }, timeoutMs);
+    const onStop = () => ctl.abort(Object.assign(new Error("stopped"), { name: "AbortError" }));
+    runSignal?.addEventListener("abort", onStop, { once: true });
+    const deadline = new Promise((_, reject) => {
+        ctl.signal.addEventListener("abort", () => reject(ctl.signal.reason), { once: true });
+    });
+    deadline.catch(() => {});
     try {
-        res = await fetchImpl(url, { signal, redirect: "follow" });
-        // Reading the body must be guarded too, not just the request. A
-        // connection dropped mid-body throws here ("terminated" from undici),
-        // and with this outside the try it escaped the worker and aborted an
-        // entire ten-thousand-file run over one flaky read.
-        buf = Buffer.from(await res.arrayBuffer());
-        ct = res.headers.get("content-type");
-        disposition = res.headers.get("content-disposition");
+        const exchange = (async () => {
+            res = await fetchImpl(url, { signal: ctl.signal, redirect: "follow" });
+            // Reading the body must be guarded too, not just the request. A
+            // connection dropped mid-body throws here ("terminated" from undici),
+            // and with this outside the try it escaped the worker and aborted an
+            // entire ten-thousand-file run over one flaky read.
+            const body = Buffer.from(await res.arrayBuffer());
+            ct = res.headers.get("content-type");
+            disposition = res.headers.get("content-disposition");
+            return body;
+        })();
+        // An exchange abandoned at the deadline may still reject later; that is not an error of the run.
+        exchange.catch(() => {});
+        buf = await Promise.race([exchange, deadline]);
     } catch (e) {
-        const why =
-            e?.name === "TimeoutError" || e?.name === "AbortError"
-                ? `timed out after ${timeoutMs}ms`
-                : e?.message || String(e);
+        if (runSignal?.aborted && !timedOut) return { ok: false, aborted: true, reason: "stopped" };
+        const timeout = timedOut || e?.name === "TimeoutError";
+        const why = timeout ? `timed out after ${timeoutMs}ms` : e?.message || String(e);
         // No response at all: nothing was observed, so nothing is claimed.
         return {
             ok: false,
             retryable: true,
             verdict: "unknown",
-            code: "network",
+            code: timeout ? "timeout" : "network",
             status: 0,
             reason: `network: ${why}`,
         };
+    } finally {
+        clearTimeout(timer);
+        runSignal?.removeEventListener("abort", onStop);
     }
     const { verdict, code } = classifyResponse(res.status, ct, buf, disposition);
     const status = res.status;
@@ -372,6 +407,26 @@ async function fetchBytes(url, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, fetchImpl
         };
     }
     return { ok: true, buf, contentType: ct };
+}
+
+/**
+ * Wait `ms`, or less when `signal` aborts first. Never rejects.
+ *
+ * @param {number} ms
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<void>}
+ */
+function pause(ms, signal) {
+    if (!(ms > 0) || signal?.aborted) return Promise.resolve();
+    return new Promise((resolve) => {
+        const done = () => {
+            clearTimeout(t);
+            signal?.removeEventListener("abort", done);
+            resolve();
+        };
+        const t = setTimeout(done, ms);
+        signal?.addEventListener("abort", done, { once: true });
+    });
 }
 
 /** The sealed-file spec of the conversation index. */
@@ -413,8 +468,8 @@ function writeConversationIndex(mediaRoot, names, scope) {
  * Download the attachments recorded by a transfer sync.
  *
  * @param {object} opts
- * @param {object} [opts.api] - logged-in session; without it expired URLs cannot be renewed. Its context also
- *   gives the downloads the account's proxy, User-Agent and Referer
+ * @param {object} [opts.api] - logged-in session; its context gives the downloads the account's proxy, User-Agent
+ *   and Referer. Without one the downloads use the plain global fetch
  * @param {typeof fetch} [opts.fetchImpl] - the fetch the downloads use (tests); default: the account's own
  * @param {string} opts.accountDir - the account's data dir (media lands under `<dir>/media`)
  * @param {string} [opts.threadId] - restrict to one thread
@@ -436,18 +491,20 @@ function writeConversationIndex(mediaRoot, names, scope) {
  * @param {string} [opts.mediaRoot] - override the media root (defaults to <accountDir>/media)
  * @param {number} [opts.backoffBaseMs=1000] - base for the exponential backoff on throttling;
  *   0 disables the pause (tests)
- * @param {number} [opts.timeoutMs=60000] - per-request deadline; without one a stalled
+ * @param {number} [opts.timeoutMs=60000] - per-request deadline over the whole exchange; without one a stalled
  *   connection blocks its worker indefinitely
- * @param {(req: object) => Promise<object>} [opts.renewLink] - pre-built renewal caller;
- *   defaults to one derived from `api`. Injectable so the renewal path can be
- *   exercised without round-tripping Zalo's request crypto.
+ * @param {AbortSignal} [opts.signal] - stops the run: no new file is started, the requests in flight are cut short,
+ *   and everything not saved stays pending for the next run (`interrupted` is then true)
  * @param {(msgId: string, zKey?: string|null) => {found: boolean}} [opts.cloudLookup] - whether the local zCloud index lists a message's
  *   backup (defaults to {@link lookupCloudBackup}); a file that is gone from the CDN and listed there is counted in
  *   `cloudBacked`: it exists, but the copy is end-to-end encrypted under the account's cloud key, which this client never holds
- * @param {(p: object) => void} [opts.onProgress]
- * @returns {Promise<{considered:number, downloaded:number, skipped:number, failed:number, expired:number,
- *   cloudBacked:number, throttled:number, unknown:number, renewed:number, bytes:number, abortedEarly:boolean, deferred:number,
- *   reasons:Record<string,number>, failures:Array<object>}>}
+ * @param {(p: object) => void} [opts.onProgress] - `saved` per file written, `fail` per failure, `throttled` per
+ *   backoff, and `attempted` once per file finished either way (`{attempted, total, downloaded, failed, bytes}`), so a
+ *   run whose files all fail still shows it is moving
+ * @returns {Promise<{considered:number, attempted:number, downloaded:number, skipped:number, failed:number,
+ *   expired:number, cloudBacked:number, throttled:number, unknown:number, renewed:number, bytes:number,
+ *   abortedEarly:boolean, interrupted:boolean, deferred:number, reasons:Record<string,number>, failures:Array<object>}>}
+ *   `renewed` is always 0 (no link is renewed; kept so a reader of the result keeps its shape).
  *   `throttled` counts only responses that said to slow down; `unknown` counts the retryable
  *   failures that explained nothing. `reasons` tallies the observed codes — pass it to
  *   {@link describeDownloadReasons} rather than inferring a cause from a bucket.
@@ -471,6 +528,7 @@ export async function downloadSyncedMedia(opts = {}) {
         includePruned = false,
         mediaRoot: mediaRootOpt,
         backoffBaseMs = 1000,
+        signal,
         onProgress = () => {},
     } = opts;
     const kinds = opts.kinds ? new Set(opts.kinds) : DOWNLOADABLE_KINDS;
@@ -507,6 +565,8 @@ export async function downloadSyncedMedia(opts = {}) {
 
     const stats = {
         considered: jobs.length,
+        // Finished either way: saved, failed or skipped. What a progress line counts.
+        attempted: 0,
         deferred,
         downloaded: 0,
         skipped: 0,
@@ -523,6 +583,8 @@ export async function downloadSyncedMedia(opts = {}) {
         renewed: 0,
         bytes: 0,
         abortedEarly: false,
+        // Stopped by the caller's signal; what was not saved is still pending.
+        interrupted: false,
         // code -> count over the jobs that ultimately failed, for the summary.
         reasons: {},
         failures: [],
@@ -530,15 +592,6 @@ export async function downloadSyncedMedia(opts = {}) {
     if (!jobs.length || dryRun) {
         if (dryRun) onProgress({ phase: "dry-run", detail: `${jobs.length} attachment(s) would be fetched` });
         return stats;
-    }
-
-    let renewLink = opts.renewLink || null;
-    if (!renewLink && api) {
-        try {
-            renewLink = makeRenewLink(api);
-        } catch (e) {
-            onProgress({ phase: "warn", detail: `renewlink unavailable (${e.message}); expired URLs will be skipped` });
-        }
     }
 
     // Explicit mediaRootOpt or global ZALO_MEDIA_DIR (--media-dir) overrides the
@@ -570,16 +623,21 @@ export async function downloadSyncedMedia(opts = {}) {
     const backoff = async () => {
         const wait = Math.min(30000, backoffBaseMs * 2 ** Math.min(throttleStreak, 5));
         onProgress({ phase: "throttled", detail: `backing off ${Math.round(wait / 1000)}s`, streak: throttleStreak });
-        await new Promise((r) => setTimeout(r, wait));
+        await pause(wait, signal);
     };
 
     const worker = async () => {
         for (;;) {
-            if (stopAll) return;
+            if (stopAll || cursor >= jobs.length) return;
+            if (signal?.aborted) {
+                stats.interrupted = true;
+                return;
+            }
             const job = jobs[cursor++];
             if (!job) return;
+            let finished = true;
             try {
-                await runJob(job);
+                finished = (await runJob(job)) !== "stopped";
             } catch (e) {
                 // Belt and braces: whatever goes wrong with one attachment, the
                 // other nine thousand still get their chance.
@@ -592,6 +650,19 @@ export async function downloadSyncedMedia(opts = {}) {
                     });
                 }
             }
+            if (!finished) {
+                stats.interrupted = true;
+                return;
+            }
+            stats.attempted++;
+            onProgress({
+                phase: "attempted",
+                attempted: stats.attempted,
+                total: jobs.length,
+                downloaded: stats.downloaded,
+                failed: stats.failed,
+                bytes: stats.bytes,
+            });
         }
     };
 
@@ -608,34 +679,11 @@ export async function downloadSyncedMedia(opts = {}) {
             // id -> name mapping a human needs to find anything.
             const dir = join(mediaRoot, String(row.threadId));
 
-            let got = await fetchBytes(url, timeoutMs, download);
-            let wasGone = false;
-
-            // One renewal attempt: only helps while Zalo still holds the file.
-            if (!got.ok && got.expired && renewLink) {
-                stats.expired++;
-                wasGone = true;
-                try {
-                    const resp = await renewLink({
-                        threadId: row.threadId,
-                        threadType: names.get(String(row.threadId))?.type,
-                        msgType: JSON.parse(row.raw_data || "{}").msgType,
-                        msgInfo: { normalUrl: att.url, hdUrl: att.hdUrl, thumbUrl: att.thumbUrl },
-                        clientId: JSON.parse(row.raw_data || "{}").cliMsgId,
-                    });
-                    const fresh = extractRenewedUrls(resp);
-                    const next = jpegUrl(fresh?.normalUrl || fresh?.hdUrl || fresh?.thumbUrl);
-                    if (next) {
-                        got = await fetchBytes(next, timeoutMs, download);
-                        if (got.ok) stats.renewed++;
-                    }
-                } catch (e) {
-                    got = { ok: false, code: "renew-failed", reason: `renew failed: ${e.message}` };
-                }
-            } else if (!got.ok && got.expired) {
-                stats.expired++;
-                wasGone = true;
-            }
+            const got = await fetchBytes(url, timeoutMs, download, signal);
+            // Stopped mid-request: not a failure, and the row stays pending.
+            if (got.aborted) return "stopped";
+            const wasGone = !got.ok && Boolean(got.expired);
+            if (wasGone) stats.expired++;
 
             if (!got.ok) {
                 if (wasGone && isInCloudIndex(row)) stats.cloudBacked++;
@@ -652,6 +700,7 @@ export async function downloadSyncedMedia(opts = {}) {
                     if (throttleStreak >= THROTTLE_GIVE_UP) {
                         stopAll = true;
                         stats.abortedEarly = true;
+                        stats.failed++;
                         return;
                     }
                     await backoff();
@@ -719,6 +768,8 @@ export async function downloadSyncedMedia(opts = {}) {
     };
 
     await Promise.all(Array.from({ length: Math.max(1, Math.min(16, concurrency)) }, worker));
+    // A stop that landed after the last file finished interrupted nothing.
+    if (stats.attempted >= jobs.length) stats.interrupted = false;
     return stats;
 }
 

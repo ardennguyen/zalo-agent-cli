@@ -11,6 +11,7 @@ import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { createServer as createTcpServer } from "node:net";
 import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -53,7 +54,7 @@ const ROOT = mkdtempSync(join(tmpdir(), "zalo-media-test-"));
 const opened = [];
 let server;
 let base;
-/** Counts requests per path so tests can assert a renewal actually re-fetched. */
+/** Counts requests per path so tests can assert how often a URL was asked for. */
 let hits;
 /** The request headers of every request the server saw, in order. */
 let heads = [];
@@ -81,7 +82,7 @@ before(async () => {
             res.writeHead(200, { "content-type": "image/jxl" });
             return res.end(Buffer.from("pretend-jxl"));
         }
-        if (path === "/ok.jpg" || path === "/renewed.jpg") {
+        if (path === "/ok.jpg") {
             res.writeHead(200, { "content-type": "image/jpeg" });
             return res.end(PHOTO_BYTES);
         }
@@ -396,26 +397,32 @@ describe("downloadSyncedMedia — expiry", () => {
         assert.equal(stats.failed, 1);
     });
 
-    it("retries through renewlink and succeeds on the fresh url", async () => {
+    it("asks once for an expired link and moves on: no renewal call, no second request", async () => {
+        // A per-download renewal answered "invalid parameters" every time, and
+        // with no deadline of its own one hung call held its worker forever.
         row({}, [photo("/expired.jpg")]);
-        let asked = null;
+        row({}, [photo("/gone.jpg")]);
+        let other = 0;
         const stats = await downloadSyncedMedia({
             accountDir: dir,
-            // Injected rather than round-tripping Zalo's request crypto.
-            renewLink: async (req) => {
-                asked = req;
-                return { data: { normalUrl: `${base}/renewed.jpg` } };
+            limit: 50,
+            api: {
+                getContext: () => ({ userAgent: "Test-UA/1.0", options: {} }),
+                // Anything that reached for the session's request machinery would land here.
+                get zpwServiceMap() {
+                    other++;
+                    return { file: ["http://127.0.0.1:9"] };
+                },
             },
         });
-        assert.equal(stats.expired, 1);
-        assert.equal(stats.renewed, 1);
-        assert.equal(stats.downloaded, 1);
-        assert.equal(hits["/renewed.jpg"], 1);
-        // The renewal request must describe the message well enough for Zalo
-        // to find it: thread, numeric msgType and the stale URL.
-        assert.equal(asked.threadId, "t1");
-        assert.equal(asked.msgType, 3);
-        assert.ok(asked.msgInfo.normalUrl.endsWith("/expired.jpg"));
+        assert.equal(stats.expired, 2);
+        assert.equal(stats.failed, 2);
+        assert.equal(stats.attempted, 2);
+        assert.equal(stats.renewed, 0);
+        assert.equal(hits["/expired.jpg"], 1);
+        assert.equal(hits["/gone.jpg"], 1);
+        assert.equal(other, 0, "no renewal endpoint is consulted");
+        assert.deepEqual(stats.reasons, { "lapsed-signature": 1, "not-found": 1 });
     });
 
     it("counts a gone file that the local zCloud index lists as cloud-backed, and one it does not list as not", async () => {
@@ -456,17 +463,6 @@ describe("downloadSyncedMedia — expiry", () => {
         assert.equal(stats.cloudBacked, 0);
     });
 
-    it("does not count a file the renewal brought back, even if the index lists it", async () => {
-        row({ msgId: "m-renewed" }, [photo("/expired.jpg")]);
-        const stats = await downloadSyncedMedia({
-            accountDir: dir,
-            renewLink: async () => ({ data: { normalUrl: `${base}/renewed.jpg` } }),
-            cloudLookup: () => ({ found: true }),
-        });
-        assert.equal(stats.downloaded, 1);
-        assert.equal(stats.cloudBacked, 0);
-    });
-
     it("takes a lookup that cannot run for no verdict, not for a failure of the download pass", async () => {
         row({ msgId: "m1" }, [photo("/expired.jpg")]);
         const stats = await downloadSyncedMedia({
@@ -477,29 +473,6 @@ describe("downloadSyncedMedia — expiry", () => {
         });
         assert.equal(stats.expired, 1);
         assert.equal(stats.cloudBacked, 0);
-    });
-
-    it("gives up cleanly when renewal yields nothing usable", async () => {
-        row({}, [photo("/expired.jpg")]);
-        const stats = await downloadSyncedMedia({
-            accountDir: dir,
-            renewLink: async () => ({ error_code: 1, data: {} }),
-        });
-        assert.equal(stats.expired, 1);
-        assert.equal(stats.renewed, 0);
-        assert.equal(stats.failed, 1);
-    });
-
-    it("survives a renewal that throws", async () => {
-        row({}, [photo("/expired.jpg")]);
-        const stats = await downloadSyncedMedia({
-            accountDir: dir,
-            renewLink: async () => {
-                throw new Error("service down");
-            },
-        });
-        assert.equal(stats.failed, 1);
-        assert.match(stats.failures[0].reason, /renew failed/);
     });
 
     it("counts a 404 as expired", async () => {
@@ -864,6 +837,155 @@ describe("a stalled connection must not block the run forever", () => {
 
     it("ships a sane default deadline", () => {
         assert.ok(DEFAULT_REQUEST_TIMEOUT_MS > 0 && DEFAULT_REQUEST_TIMEOUT_MS <= 120000);
+    });
+});
+
+describe("every wait is bounded, and the run keeps going", () => {
+    /** A server that accepts the connection and never answers a byte: no status line, no headers. */
+    let silent;
+    let silentBase;
+    before(async () => {
+        const held = new Set();
+        silent = createTcpServer((sock) => {
+            held.add(sock);
+            sock.on("error", () => {});
+            sock.on("close", () => held.delete(sock));
+        });
+        silent.held = held;
+        await new Promise((r) => silent.listen(0, "127.0.0.1", r));
+        silentBase = `http://127.0.0.1:${silent.address().port}`;
+    });
+    after(async () => {
+        for (const sock of silent.held) sock.destroy();
+        await new Promise((r) => silent.close(r));
+    });
+    const mute = (name) => ({ kind: "photo", url: `${silentBase}/${name}.jpg` });
+
+    it("times out a server that accepts the connection and never sends headers, and keeps going", async () => {
+        row({}, [mute("a")]);
+        for (let i = 0; i < 3; i++) row({}, [photo("/ok.jpg")]);
+        const t0 = Date.now();
+        const stats = await downloadSyncedMedia({
+            accountDir: dir,
+            limit: 50,
+            concurrency: 1,
+            timeoutMs: 500,
+            backoffBaseMs: 0,
+        });
+        // Red if the wait for headers is unbounded: the run never returns and the test times out.
+        assert.equal(stats.downloaded, 3);
+        assert.equal(stats.failed, 1);
+        assert.equal(stats.attempted, 4);
+        assert.deepEqual(stats.reasons, { timeout: 1 });
+        assert.equal(stats.unknown, 1, "no answer is not evidence of throttling");
+        assert.ok(Date.now() - t0 < 8000, "gave up within the deadline");
+        assert.equal(countPendingAttachments(), 1, "the timed-out file stays pending for the next run");
+    });
+
+    it("times out headers-then-silence and counts it as a timeout", async () => {
+        row({}, [photo("/hang.jpg")]);
+        row({}, [photo("/ok.jpg")]);
+        const stats = await downloadSyncedMedia({ accountDir: dir, limit: 50, timeoutMs: 500, backoffBaseMs: 0 });
+        assert.equal(stats.downloaded, 1);
+        assert.equal(stats.failed, 1);
+        assert.equal(stats.reasons.timeout, 1);
+        assert.match(stats.failures[0].reason, /timed out after 500ms/);
+    });
+
+    it("still returns on time when the fetch underneath ignores its abort signal", async () => {
+        // The deadline cannot depend on every transport honoring `signal`: one
+        // that does not (a proxy layer, a wrapper) used to hold its worker forever.
+        for (let i = 0; i < 3; i++) row({}, [photo("/x.jpg")]);
+        const t0 = Date.now();
+        const stats = await downloadSyncedMedia({
+            accountDir: dir,
+            limit: 50,
+            concurrency: 2,
+            timeoutMs: 300,
+            backoffBaseMs: 0,
+            fetchImpl: () => new Promise(() => {}),
+        });
+        assert.equal(stats.failed, 3);
+        assert.equal(stats.reasons.timeout, 3);
+        assert.ok(Date.now() - t0 < 5000, `took ${Date.now() - t0}ms`);
+    });
+
+    it("reports progress per file attempted, even when every file fails", async () => {
+        for (let i = 0; i < 4; i++) row({}, [photo("/gone.jpg")]);
+        const seen = [];
+        const stats = await downloadSyncedMedia({
+            accountDir: dir,
+            limit: 50,
+            onProgress: (p) => p.phase === "attempted" && seen.push(p),
+        });
+        // Red if progress comes only from saved files: a run of dead links then looks frozen.
+        assert.equal(stats.downloaded, 0);
+        assert.deepEqual(
+            seen.map((p) => p.attempted),
+            [1, 2, 3, 4],
+        );
+        assert.equal(seen.at(-1).failed, 4);
+        assert.equal(seen.at(-1).total, 4);
+    });
+
+    it("stops promptly on abort, mid-request, and leaves what was not saved pending", async () => {
+        row({ timestamp: 1_750_000_000_003 }, [photo("/ok.jpg")]);
+        for (let i = 0; i < 5; i++) row({ timestamp: 1_750_000_000_000 - i }, [mute(`s${i}`)]);
+        const ctl = new AbortController();
+        const t0 = Date.now();
+        const run = downloadSyncedMedia({
+            accountDir: dir,
+            limit: 50,
+            concurrency: 2,
+            timeoutMs: 60000,
+            backoffBaseMs: 0,
+            signal: ctl.signal,
+            onProgress: (p) => {
+                // Once the healthy file is in, the workers sit on the silent server: stop then.
+                if (p.phase === "saved") setTimeout(() => ctl.abort(), 200);
+            },
+        });
+        const stats = await run;
+        // Red if the in-flight requests ignore the stop: they would wait out the 60 s deadline.
+        assert.ok(Date.now() - t0 < 5000, `took ${Date.now() - t0}ms`);
+        assert.equal(stats.interrupted, true);
+        assert.equal(stats.downloaded, 1);
+        assert.equal(stats.failed, 0, "a request cut short by the stop is not a failure");
+        assert.equal(stats.attempted, 1);
+        assert.equal(countPendingAttachments(), 5, "everything not saved is still pending");
+
+        // The next run resumes from exactly there.
+        const again = await downloadSyncedMedia({ accountDir: dir, limit: 50, timeoutMs: 300, backoffBaseMs: 0 });
+        assert.equal(again.considered, 5);
+        assert.equal(again.attempted, 5);
+    });
+
+    it("wakes from a backoff when stopped, instead of sleeping it out", async () => {
+        for (let i = 0; i < 3; i++) row({}, [photo("/ratelimit.jpg")]);
+        const ctl = new AbortController();
+        const t0 = Date.now();
+        const stats = await downloadSyncedMedia({
+            accountDir: dir,
+            limit: 50,
+            concurrency: 1,
+            backoffBaseMs: 20000,
+            signal: ctl.signal,
+            onProgress: (p) => p.phase === "throttled" && setTimeout(() => ctl.abort(), 50),
+        });
+        assert.ok(Date.now() - t0 < 5000, `took ${Date.now() - t0}ms`);
+        assert.equal(stats.interrupted, true);
+        assert.equal(stats.attempted, 1);
+        assert.equal(countPendingAttachments(), 3);
+    });
+
+    it("an already-aborted signal starts nothing", async () => {
+        row({}, [photo("/ok.jpg")]);
+        const ctl = new AbortController();
+        ctl.abort();
+        const stats = await downloadSyncedMedia({ accountDir: dir, signal: ctl.signal });
+        assert.equal(hits["/ok.jpg"], undefined);
+        assert.equal(stats.interrupted, true);
+        assert.equal(stats.attempted, 0);
     });
 });
 

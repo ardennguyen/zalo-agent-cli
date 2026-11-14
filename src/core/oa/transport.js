@@ -329,7 +329,8 @@ export function getOACredsFile() {
 
 function ensureDir() {
     const dir = getOADataDir();
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    // 0700: it holds the app secret and the tokens (the files themselves are 0600).
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 }
 
 /**

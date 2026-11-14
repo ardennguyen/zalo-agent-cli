@@ -25,6 +25,7 @@ import {
     domainVerification,
 } from "./oa-listen.js";
 import { success, error, info, warning, output } from "../utils/output.js";
+import { promptSecret } from "../utils/secret-input.js";
 
 /** Prompt user for input. In agent mode, returns the provided default. */
 function ask(question, agentMode, defaultValue = "") {
@@ -163,7 +164,7 @@ export function registerOAInitCommand(oaCommand, program) {
         .description("Setup wizard for Zalo OA — works interactive (human) and non-interactive (agent)")
         .option("--oa-id <id>", "OA identifier for multi-OA support", "default")
         .option("--app-id <id>", "Zalo App ID (non-interactive mode)")
-        .option("--secret <key>", "Zalo App Secret Key (non-interactive mode)")
+        .option("--secret <key>", "Zalo App Secret Key (non-interactive mode; or ZALO_OA_APP_SECRET)")
         .option("--tunnel <type>", "Tunnel type: ngrok | cloudflared | none (non-interactive mode)")
         .option("--webhook-url <url>", "Pre-existing webhook URL (VPS, n8n, etc.)")
         .option("--verify-file <path>", "Domain verification: the HTML file downloaded from Zalo, served as is")
@@ -190,7 +191,8 @@ export function registerOAInitCommand(oaCommand, program) {
 
             const existingCreds = loadOACreds(opts.oaId);
             let appId = opts.appId;
-            let secretKey = opts.secret;
+            // The flag, else ZALO_OA_APP_SECRET (a flag shows in the process list), else asked below.
+            let secretKey = opts.secret || process.env.ZALO_OA_APP_SECRET?.trim() || undefined;
 
             if (!appId && existingCreds?.appId) {
                 const reuse = await ask(
@@ -219,10 +221,13 @@ export function registerOAInitCommand(oaCommand, program) {
             }
             if (!secretKey) {
                 if (agentMode) {
-                    error("--secret is required in non-interactive mode");
+                    error("--secret or ZALO_OA_APP_SECRET is required in non-interactive mode");
                     return;
                 }
-                secretKey = await ask("  Secret Key: ", false);
+                // Typed at a prompt that does not echo; without a terminal, read as a line like the other answers.
+                secretKey = process.stdin.isTTY
+                    ? await promptSecret("  Secret Key: ").catch(() => "")
+                    : await ask("  Secret Key: ", false);
                 if (!secretKey) {
                     error("Secret Key is required.");
                     return;

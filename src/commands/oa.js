@@ -16,6 +16,7 @@ import { registerCallsCommands } from "./oa/calls.js";
 import { saveOACreds, loadOACreds, getOAProfile } from "../core/oa-client.js";
 import { startOAuthLogin, openInBrowser, refreshStoredToken } from "../core/oa/oauth.js";
 import { success, error, info, output } from "../utils/output.js";
+import { resolveAppSecret } from "../utils/secret-input.js";
 
 /**
  * `oa whoami`'s lines for one OA profile (the `v2.0/oa/getoa` data, field names as Zalo's OA docs give them).
@@ -68,17 +69,42 @@ export function registerOACommands(program) {
     oa.command("login")
         .description("Log in to a Zalo OA via OAuth v4 with PKCE (opens the browser, waits on a local callback)")
         .requiredOption("--app-id <id>", "Zalo App ID from developers.zalo.me")
-        .requiredOption("--secret <key>", "Zalo App Secret Key")
+        .option(
+            "--secret <key>",
+            "Zalo App Secret Key (else ZALO_OA_APP_SECRET, else asked at a hidden prompt; a flag shows in the process list)",
+        )
         .option("-p, --port <port>", "Callback server port", "3456")
         .option("--callback-host <host>", "Public callback base for a VPS (e.g. https://your-vps.com)")
         .option("--oa-id <id>", "OA identifier for multi-OA support", "default")
+        .option("--timeout <seconds>", "How long to wait for the callback", "300")
         .action(async (opts) => {
+            const timeoutSec = Number(opts.timeout);
+            if (!Number.isInteger(timeoutSec) || timeoutSec < 10 || timeoutSec > 3600) {
+                error("--timeout must be a whole number of seconds from 10 to 3600");
+                return;
+            }
+            let secretKey;
+            try {
+                secretKey = await resolveAppSecret({
+                    flag: opts.secret,
+                    envName: "ZALO_OA_APP_SECRET",
+                    prompt: "Zalo App Secret Key: ",
+                });
+            } catch (e) {
+                error(e.message);
+                return;
+            }
+            if (!secretKey) {
+                error("No app secret: set ZALO_OA_APP_SECRET, run this on a terminal to be asked, or pass --secret.");
+                return;
+            }
             const flow = startOAuthLogin({
                 appId: opts.appId,
-                secretKey: opts.secret,
+                secretKey,
                 port: Number(opts.port),
                 callbackHost: opts.callbackHost,
                 oaId: opts.oaId,
+                timeoutMs: timeoutSec * 1000,
                 onListening: ({ bindHost, port }) => {
                     if (!json()) info(`Waiting for the callback on ${bindHost}:${port}...`);
                 },

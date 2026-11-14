@@ -13,7 +13,7 @@ Automate Zalo messaging, groups, contacts, payments, and real-time events via `z
 Handles: login/logout, messaging (text/image/file/sticker/voice/video/link), reactions, mentions, recall, message history, friends, groups, conversations, profile, polls, reminders, auto-reply, quick messages, labels, catalogs, listen (WebSocket), webhooks, local SQLite cache + mobile sync, bank cards, VietQR, multi-account with proxy, **Official Account (OA) API v3.0** (OAuth login, OA messaging, followers, tags, articles, store, webhook listener), **MCP Server** (Model Context Protocol for Claude Code and MCP clients).
 Does NOT handle: Zalo Mini App, Zalo Ads, ZNS templates, non-Zalo platforms.
 
-Surface: **321 CLI commands** across 40 command containers (24 top-level groups + 11 OA subgroups + 3 ZBS subgroups + `mcp webhook` + `account security`) + **37 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
+Surface: **322 CLI commands** across 41 command containers (25 top-level groups + 11 OA subgroups + 3 ZBS subgroups + `mcp webhook` + `account security`) + **37 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
 
 ## Prerequisites
 
@@ -170,6 +170,7 @@ zalo-agent fleet serve --http 3899 --env-dir /etc/zalo-mcp/accounts   # The host
 zalo-agent fleet status --check                       # Every account's state and when its saved login ends (LOGIN ENDS); exit 1 on a failing state or 7 days or fewer left
 zalo-agent presence status                            # The daemon's socket under on-demand presence (wake / park to override)
 zalo-agent presence resume --yes                      # After a yield (another session of this login took the socket; requests refused with YIELDED): take it back
+zalo-agent session renew [--account <id>] [--fresh]   # A one-time QR link on the running mcp start --http daemon that renews the saved login in place (the account's phone scans it)
 zalo-agent db verify                                  # Row MAC check of every cached message (tamper evidence); exit 1 on a finding
 zalo-agent db usage                                   # Storage on this machine, quota state (ok/warn/over, purge date), retention rules (MCP: zalo_profile usage)
 zalo-agent db purge --dry-run | --yes                 # Quota/retention purge now (delete-only; through the daemon when one runs)
@@ -288,7 +289,7 @@ To run **multiple Zalo accounts live at once**, launch one MCP server per accoun
 
 | Tool | Purpose | Key params |
 |------|---------|-----------|
-| `zalo_get_messages` | Buffered live messages, cursor-based incremental reads; each says whether the human already read it on Zalo (`readOnZalo`). System events (`system: true`, `threadId` null) come in the same list to a read without `threadId`: `type` `storage_quota` (storage near/over quota, purge date, purged, ok), `group_gone` (the account left, was removed from, or saw disbanded a group; its local history is purged by default), `account_state` (`idle`, `connected`, `yielded`, `signed_out`, …), `queue_overflow` (Zalo dropped part of the offline queue) and `session_expiring` (the saved login ends by itself about 90 days after its QR login: sent at 14, 7, 3, 1 days left and once ended; tell the owner to log in again by QR, `command`, before `expiresAt`) | `threadId?`, `since` (default 0), `limit?` (omit for every unread message buffered) |
+| `zalo_get_messages` | Buffered live messages, cursor-based incremental reads; each says whether the human already read it on Zalo (`readOnZalo`). System events (`system: true`, `threadId` null) come in the same list to a read without `threadId`: `type` `storage_quota` (storage near/over quota, purge date, purged, ok), `group_gone` (the account left, was removed from, or saw disbanded a group; its local history is purged by default), `account_state` (`idle`, `connected`, `yielded`, `signed_out`, …), `queue_overflow` (Zalo dropped part of the offline queue) and `session_expiring` (the saved login ends by itself about 90 days after its QR login: sent at 14, 7, 3, 1 days left and once ended; tell the owner to log in again by QR, `command`, before `expiresAt`; with a `publicUrl` it carries a one-time renewal link, `renewUrl` until `renewExpiresAt`, for the owner to scan with the account's phone) and `session_renewed` (the login was renewed; the server uses it now) | `threadId?`, `since` (default 0), `limit?` (omit for every unread message buffered) |
 | `zalo_send_message` | Send text, local file/image attachments (`filePath` / `files`), link preview card (`link`), contact card (`cardUserId`), sticker, voice from a URL, video from a URL or a local file, bank card or VietQR image to a DM or group; `@[uid]` mentions, quote-replies, Important/Urgent, and `threadId: "me"` for My Documents | `threadId`, `text?`, `filePath?`, `files?`, `link?`, `cardUserId?`, `sticker?`, `voiceUrl?`, `video?`, `bankCard?`, `qrTransfer?`, `threadType?` (cached type when omitted), `quoteMsgId?`, `urgency?` (`normal`/`important`/`urgent`) |
 | `zalo_list_threads` | Buffered threads with unread counts, names and the account's own read state on Zalo (`readState`) | `type` (`dm`/`group`/`all`) |
 | `zalo_search_threads` | Fuzzy, Vietnamese-accent-insensitive thread lookup by name | `query`, `type`, `limit?` (omit for every match) |
@@ -405,7 +406,7 @@ Every write changes something. 26 of the 27 have been answered by a live account
 
 | File | Contents |
 |------|----------|
-| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 321 commands + 37 MCP tools) |
+| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 322 commands + 37 MCP tools) |
 | `references/mcp-guide.md` | MCP tools, parameters, return shapes, `mcp-config.json`, architecture (Vietnamese) |
 | `references/oa-command-reference.md` | Official Account, ZBS and Social API reference: every `oa`/`zbs`/`social` command, webhook events and signature, error codes, ZBS permissions, webhook checklist |
 | `references/login-flow.md` | QR login, headless credentials login, multi-account, proxy formats, troubleshooting |

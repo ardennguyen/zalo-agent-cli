@@ -194,6 +194,8 @@ const CLI_ONLY = {
     "presence status": "the daemon's socket presence on the machine: an operator's view",
     "presence wake": "opens the daemon's socket on purpose: an operator's override, never an agent's",
     "presence park": "closes the daemon's socket on purpose: an operator's override, never an agent's",
+    "session renew":
+        "opens a link that logs the account in again: an operator's step, done by scanning with the account's phone; the agent sees the link in session_expiring",
     update: "updates the installed package",
     "cloud get":
         "needs the account's cloud key (a secret derived from the owner's PIN), which must never pass through an agent or a tool input",

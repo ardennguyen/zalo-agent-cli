@@ -437,7 +437,7 @@ zalo-agent social status
 | Credentials | `~/.zalo-agent-cli/` | `~/.zalo-agent/` (không có hậu tố `-cli`) |
 | Disclaimer khi chạy | Có | Không (API chính thức) |
 | Auto-login trước lệnh | Có | Không — `oa` tự quản lý token riêng |
-| Số lệnh | 227 (trong tổng 321 lệnh CLI) | 94 (70 `oa` + 18 `zbs` + 6 `social`) |
+| Số lệnh | 228 (trong tổng 322 lệnh CLI) | 94 (70 `oa` + 18 `zbs` + 6 `social`) |
 | Realtime | WebSocket (`listen`) | Webhook HTTP (`oa listen`) |
 | Qua MCP | 36 tool (xem [mcp-guide](../skill/references/mcp-guide.md)) | Tool `zalo_official` (mọi lệnh trừ đăng nhập và `oa listen`) |
 

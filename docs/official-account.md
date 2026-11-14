@@ -437,7 +437,7 @@ zalo-agent social status
 | Credentials | `~/.zalo-agent-cli/` | `~/.zalo-agent/` (no `-cli` suffix) |
 | Runtime disclaimer | Shown | Suppressed (official API) |
 | Pre-command auto-login | Yes | No — `oa` manages its own OAuth token |
-| Command count | 227 (of 321 total CLI commands) | 94 (70 `oa` + 18 `zbs` + 6 `social`) |
+| Command count | 228 (of 322 total CLI commands) | 94 (70 `oa` + 18 `zbs` + 6 `social`) |
 | Real-time events | WebSocket (`listen`) | HTTP Webhook (`oa listen`) |
 | Over MCP | 36 tools (see [mcp-guide](../skill/references/mcp-guide.md)) | The `zalo_official` tool (all but the logins and `oa listen`) |
 

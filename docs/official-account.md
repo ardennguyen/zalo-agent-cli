@@ -52,7 +52,7 @@ There are **94 commands**: 70 in the `oa` group, 18 in the `zbs` group and 6 in 
 | Command | Description |
 |---------|-------------|
 | `oa init [flags]` | Guided setup wizard (interactive + non-interactive) — see flag table below |
-| `oa login --app-id <id> --secret <key> [-p, --port <port>]` | OAuth v4 login with PKCE (`code_challenge` + `state`; the code is exchanged with its `code_verifier`). Opens the browser; the callback server listens on `127.0.0.1:<port>`, default port `3456`. 2-minute timeout |
+| `oa login --app-id <id> --secret <key> [-p, --port <port>]` | OAuth v4 login with PKCE (`code_challenge` + `state`; the code is exchanged with its `code_verifier`). Opens the browser; the callback server listens on `127.0.0.1:<port>`, default port `3456`. Waits 5 minutes (`--timeout <seconds>`); a stray request to `/callback` (another `state`, no code) gets 400 and the login keeps waiting. `--secret` may be left out: `ZALO_OA_APP_SECRET`, else a prompt that does not echo |
 | `oa login ... --callback-host <url>` | Headless VPS OAuth login — binds `0.0.0.0`, skips opening a browser, and prints the auth URL to open on a local machine |
 | `oa refresh` | Refresh the access token using the saved refresh token. Zalo makes the refresh token single use, so the refresh is serialized under a file lock and the new pair saved before use |
 | `oa setup <access-token>` | Set an access token manually (bypassing OAuth; no refresh possible) |
@@ -397,7 +397,8 @@ zalo-agent zbs quota --oa-id shop2
 - Destructive and paying commands need `--yes`
 - Webhook body size limit: 1 MB max
 - OAuth: PKCE with `state`; the callback binds `127.0.0.1` (local) or `0.0.0.0` (VPS mode)
-- No hardcoded secrets — all secrets come from CLI flags or the credential file
+- No hardcoded secrets — all secrets come from CLI flags, `ZALO_OA_APP_SECRET` / `ZALO_SOCIAL_APP_SECRET`, a prompt that does not echo, or the credential file; the OA folder is created `0700`
+- Token requests time out after 30 s; the Social login requires `state` on its callback, and its DPoP proofs carry a random `jti`
 - Not sealed: the at-rest encryption 3.0 brought to the personal account's files ([security.md](security.md)) does not cover `oa-credentials.json`. Keep the OA directory on an encrypted disk and readable by the service account only.
 
 ---
@@ -415,8 +416,8 @@ zalo-agent social status
 
 | Command | Description |
 |---------|-------------|
-| `setup --app-id <id> --secret <key> [--profile <name>]` | Save the app's ID and secret key. |
-| `login [--app-id <id>] [--secret <key>] [-p, --port <port>] [--callback-host <host>] [--dpop] [--profile <name>]` | Open Zalo's permission page (`oauth.zaloapp.com/v4/permission`, PKCE and `state`), wait for the callback on 127.0.0.1 (0.0.0.0 with `--callback-host`), check `state`, exchange the code with the verifier, save the tokens, then show the user. Port default 3457. `--dpop` binds the tokens to a new P-256 key pair (DPoP, ES256): every later call and refresh carries a proof signed with it, so a stolen token is useless on its own. |
+| `setup --app-id <id> [--secret <key>] [--profile <name>]` | Save the app's ID and secret key (without `--secret`: `ZALO_SOCIAL_APP_SECRET`, else a prompt that does not echo). |
+| `login [--app-id <id>] [--secret <key>] [-p, --port <port>] [--callback-host <host>] [--dpop] [--timeout <seconds>] [--profile <name>]` | Open Zalo's permission page (`oauth.zaloapp.com/v4/permission`, PKCE and `state`), wait for the callback on 127.0.0.1 (0.0.0.0 with `--callback-host`), check `state`, exchange the code with the verifier, save the tokens, then show the user. Port default 3457; `--timeout` default 300 s. `state` is required on the callback: a stray request gets 400 and the login keeps waiting. `--dpop` binds the tokens to a new P-256 key pair (DPoP, ES256): every later call and refresh carries a proof signed with it, so a stolen token is useless on its own. |
 | `refresh [--profile <name>]` | Renew the access token now (the refresh token is single use; serialized under a lock). Refused, with nothing sent, once the 30-day login ended. |
 | `me [--fields <list>] [--picture small\|normal\|large] [--profile <name>]` | `GET graph.zalo.me/v2.0/me`: `id` (this app's ID for the user, not usable by other apps), `name`, `picture` (smallest unless `--picture`), and `is_sensitive` when asked (a user the law requires special handling for). Other fields are refused before any request. |
 | `status [--profile <name>]` | Whether a user is logged in, when the access token and the login end, DPoP on or off. Never shows a token. |

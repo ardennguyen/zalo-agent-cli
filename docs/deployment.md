@@ -76,7 +76,7 @@ So the very first deployment decision is forced: **you get one socket-holding pr
 > | | `listen` | `mcp start` |
 > |---|---|---|
 > | MCP tool surface (the 37 tools in `src/mcp/mcp-tools.js`) | no | **yes** |
-> | HTTP / HTTPS `/health`, `/ready`, `/status`, `/metrics`, `/events/wait`, OAuth 2.0 endpoints | no | **yes** (`--http` only) |
+> | HTTP / HTTPS `/health`, `/ready`, `/status`, `/metrics`, `/events/wait`, OAuth 2.1 endpoints (only with an OAuth client configured) | no | **yes** (`--http` only) |
 > | `-w, --webhook <url>` + `--webhook-secret <secret>` outbound fan-out | **yes** | **yes** |
 > | `--save <dir>` JSONL archive | **yes** | no |
 > | Event printing (`--events`, `--filter`, `--no-self`), `--auto-accept` | **yes** | no |
@@ -631,6 +631,8 @@ The data of an account moves with its folder only when the new machine can open 
 
 Whatever the way: stop every daemon and client of the account on the old machine first, and never start one there again. **Two copies of the same saved login must never run at once**: they kick each other off (an always-on daemon exits 3, again and again; an on-demand one yields and refuses every request until `presence resume --yes`). On the old machine, `logout --no-remote` (`--yes` on 3.0) drops the saved login without ending the session the new machine now uses. Step by step, Windows 2.5.9 to a VPS: [MIGRATE.md](config-samples/use-cases/c-vps-few-accounts/MIGRATE.md).
 
+The passphrase file named with `--passphrase-file` on the old machine is recorded in the keyring. On the new one, when that path does not exist and the service has the systemd credential (`$CREDENTIALS_DIRECTORY/zalo-storage-passphrase`, above), the credential is used (3.0.1; before, the old path won and the keyring did not open). A file named in `storage.json` or `ZALO_STORAGE_PASSPHRASE_FILE` still wins over both.
+
 > [!CAUTION]
 > **Upgrading a 2.5.x home to 3.0, on the same machine or another.** The first 3.0 command that opens an account (any of them, `listen` and `mcp start` included) seals its saved login and secret files under the machine's key provider and encrypts `zalo.db`, `webhook-outbox.db` and the downloaded media in place. **Sealing is one-way**: no command turns a 3.0 home back into a 2.5.x one, and a 2.5.x engine cannot read it. So:
 >
@@ -720,7 +722,7 @@ Since 3.0.0 the message database `zalo.db` is **encrypted** (SQLCipher v4), and 
 
 The token (`ZALO_MCP_AUTH_TOKEN`, or the `--auth <token>` flag, which `ps` shows) installs one Express middleware. What it does and does not do:
 
-- Compares with `timingSafeEqual` after a length check: constant-time, correct.
+- Compares in constant time (both sides hashed, so the length leaks nothing).
 - Guards every route except `GET /health` and `GET /ready`, which it exempts deliberately: they say only whether the process answers and whether the Zalo socket is up. `GET /status` and `GET /metrics` (the detailed health, §4.7) are behind the token.
 - Is **one shared secret** for all clients. No rotation mechanism, no per-client identity, no revocation short of restarting with a new token. The `consumer` name a bot passes is not tied to it (§1.4).
 
@@ -731,6 +733,7 @@ Therefore:
 - An empty or whitespace-only token disables auth without a word in the log (§5.4); the `ExecStartPre=` line in §4.2 exists for that.
 - Rotating it means restarting the daemon, which opens a window. The self-heal normally closes it (§4.5); keep a phone tap in reserve for what it cannot reach.
 - The **channel** token is separate and self-managing: 24 random bytes, regenerated on every daemon start, published in `daemon-channel.json` at `0600`, only valid on loopback. You never configure it. Its security rests entirely on the file mode: **anyone who can read `daemon-channel.json` can send messages as the account.** That is one more reason the service user must own the config dir alone.
+- **OAuth is separate, and off unless configured** (since 3.0.1): `--auth` alone never turns it on, and a client secret is not a bearer token. When a remote connector needs it, every connection is approved by the owner on a one-time page with the approver password; tokens rotate, can be revoked and are bound to this account and its public URL. Setup: [configuration.md](configuration.md) §3.4 "OAuth for remote connectors". The token-signing key is derived from `ZALO_MCP_AUTH_TOKEN` (else a client secret), so rotating it also signs every OAuth client out.
 
 ### 5.4 Binding, and the `--host` trap
 

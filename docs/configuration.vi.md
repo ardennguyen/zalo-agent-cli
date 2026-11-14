@@ -251,13 +251,17 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 | `ZALO_DATA_DIR` (bí danh `ZALO_DB_DIR`) |  | cơ sở dữ liệu và tệp chạy theo tài khoản. Mặc định `<CONFIG_DIR>/accounts` | `--data-dir` |  |
 | `ZALO_MEDIA_DIR` |  | thư mục gốc media tải về | `--media-dir` | `media.downloadDir` (chỉ MCP server) |
 | `ZALO_OA_DIR` |  | thư mục credentials của các API chính thức. Mặc định `~/.zalo-agent` (không có `-cli`): `oa-credentials.json` (đăng nhập OA, mỗi `--oa-id` một bản ghi, `zbs` dùng chung) và `social-credentials.json` (đăng nhập Social API, mỗi `--profile` một bản ghi), cả hai ở quyền `0600` | `--oa-dir` |  |
+| `ZALO_OA_APP_SECRET`, `ZALO_SOCIAL_APP_SECRET` |  | app secret cho `oa login` / `oa init`, và cho `social setup` / `social login`, khi không truyền `--secret` (cờ hiện ra trong danh sách tiến trình). Không có cả hai thì hỏi tại một dấu nhắc không hiện ký tự trong terminal | `--secret` |  |
 | `ZALO_ACCOUNT` |  | tài khoản cho lệnh chạy một lần | `--account` |  |
 | `ZALO_ENV_FILE` |  | thêm một `.env` để nạp | `--env-file` |  |
 | `ZALO_MCP_HTTP_PORT` | có | phục vụ HTTP/HTTPS trên port này thay vì stdio | `--http` | `httpPort` |
 | `ZALO_MCP_HOST` | có | địa chỉ bind. Mặc định `127.0.0.1` | `--host` | `host` |
 | `ZALO_MCP_AUTH_TOKEN` | có | bearer token cho `/mcp` và `/events/wait` | `--auth` (hiện trong `ps`; nên dùng biến) |  |
 | `ZALO_MCP_TLS_CERT`, `ZALO_MCP_TLS_KEY` | có | phục vụ HTTPS; có cả hai hoặc không có | `--cert`, `--key` | `tls.cert`, `tls.key` |
-| `ZALO_MCP_OAUTH_CLIENT_ID`, `ZALO_MCP_OAUTH_CLIENT_SECRET` | có | OAuth client chính (secret cũng dùng được làm bearer token) | `--client-id`, `--client-secret` | `oauth.clientId`, `oauth.clientSecret` |
+| `ZALO_MCP_OAUTH_CLIENT_ID`, `ZALO_MCP_OAUTH_CLIENT_SECRET` | có | OAuth client chính (§3.4). Đặt secret là bật OAuth; secret chỉ xác thực client đó tại `/token` và không phải bearer token (từ 3.0.1). `--auth` không bao giờ là client secret | `--client-id`, `--client-secret` | `oauth.clientId`, `oauth.clientSecret` |
+| `ZALO_MCP_OAUTH_REDIRECT_URIS` | có | các callback URL của client chính, ngăn bởi dấu phẩy (`https://claude.ai/api/mcp/auth_callback`). So khớp chính xác, trừ URL `http://127.0.0.1`, `[::1]` hoặc `localhost` khớp với mọi port; chỉ `https`, hoặc `http` trên loopback | | `oauth.redirectUris` |
+| `ZALO_MCP_OAUTH_DYNAMIC_REGISTRATION` | có | `true` mở `/register` (RFC 7591) và bật OAuth: client tự đăng ký (Claude Code, MCP Inspector). Mặc định `false` | | `oauth.allowDynamicRegistration` |
+| `ZALO_MCP_OAUTH_SECRETS_AS_BEARER` | có | `true` giữ hành vi 3.0.0: client secret đã cấu hình cũng dùng được làm bearer token cho `/mcp`. Mặc định `false` | | `oauth.secretsAsBearer` |
 | `ZALO_MCP_PUBLIC_URL` | có | địa chỉ công khai duy nhất của server khi đứng sau reverse proxy hoặc TLS (`https://zalo.example.com`, có thể kèm base path như `https://zalo.example.com/a/<ownId>`): endpoint MCP, OAuth issuer, và link tới trang nhập bảo mật dùng một lần (`/zalo/secure/<token>`) và trang đăng nhập QR (`/zalo/qr/<token>`). Phải là `https`, trừ `http` trên `localhost`, `127.0.0.1` hoặc `[::1]`; không có query hay fragment; dấu `/` cuối bị bỏ. Giá trị sai quy tắc làm server từ chối khởi động. Không đặt: link dùng địa chỉ của chính server và chỉ metadata OAuth còn suy từ header `Host` của request | `--public-url` (`mcp start`, `login`, `account login`) | `publicUrl` |
 | `ZALO_MCP_ISSUER_URL` | có | tên cũ (deprecated) của `ZALO_MCP_PUBLIC_URL`, vẫn được đọc sau mọi nguồn `publicUrl`, kèm một ghi chú mỗi tiến trình | `--issuer-url` (deprecated) | `oauth.issuerUrl` (deprecated) |
 | `ZALO_WEBHOOK_URL` | có | POST mỗi tin nhắn đến tới đây | `-w`, `--webhook` | `webhook` |
@@ -303,10 +307,12 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 
 ### API chính thức (`oa`, `zbs`, `social`)
 
-Các API chính thức không có khóa `mcp-config.json` nào và không đọc biến môi trường nào ngoài `ZALO_OA_DIR`: thiết lập của chúng là cờ dòng lệnh, còn đăng nhập là các file trong thư mục `ZALO_OA_DIR` (ở trên), tách khỏi `~/.zalo-agent-cli/` của tài khoản cá nhân.
+Các API chính thức không có khóa `mcp-config.json` nào; biến môi trường của chúng chỉ có `ZALO_OA_DIR`, các app secret dưới đây và `ZALO_OA_SECRET`. Các thiết lập khác là cờ dòng lệnh, còn đăng nhập là các file trong thư mục `ZALO_OA_DIR` (ở trên, tạo với quyền `0700`), tách khỏi `~/.zalo-agent-cli/` của tài khoản cá nhân.
 
-- `oa login` / `oa init` lưu App ID, secret key và token của OA vào `oa-credentials.json` theo `--oa-id` (mặc định `default`); mọi lệnh gọi OA và ZBS sau đó gửi kèm `appsecret_proof`, tính từ secret key đó, nên sau khi đặt lại secret key của app hãy đăng nhập lại với khóa mới (`oa login --secret <key>` hoặc `oa init`).
-- `social login` lưu một đăng nhập người dùng Social API vào `social-credentials.json` theo `--profile` (mặc định `default`); `--dpop` gắn token với một cặp khóa.
+- `oa login` / `oa init` lưu App ID, secret key và token của OA vào `oa-credentials.json` theo `--oa-id` (mặc định `default`); mọi lệnh gọi OA và ZBS sau đó gửi kèm `appsecret_proof`, tính từ secret key đó, nên sau khi đặt lại secret key của app hãy đăng nhập lại với khóa mới (`oa login` hoặc `oa init`). App secret lấy từ `--secret`, nếu không thì biến môi trường `ZALO_OA_APP_SECRET`, nếu không nữa thì hỏi tại một dấu nhắc không hiện ký tự (khi chạy trong terminal): biến môi trường hoặc dấu nhắc giữ nó khỏi danh sách tiến trình và lịch sử shell.
+- `oa login` và `social login` chờ callback 5 phút (`--timeout <giây>`, từ 10 đến 3600). Chỉ câu trả lời cho đúng lần đăng nhập này mới kết thúc nó: request mang `state` khác, hoặc không có `state` khi bắt buộc, hoặc không có code, nhận `400` và lần đăng nhập vẫn tiếp tục chờ. `social login` bắt buộc callback có `state`; `oa login` vẫn nhận callback không có `state`, vì ví dụ trong tài liệu OA của Zalo không có. Một request lấy token bỏ cuộc sau 30 giây.
+- `social setup` và `social login` đọc app secret từ `--secret`, nếu không thì `ZALO_SOCIAL_APP_SECRET`, nếu không nữa thì (chỉ `social setup`) hỏi tại dấu nhắc không hiện ký tự; `social login` sau đó dùng secret đã lưu.
+- `social login` lưu một đăng nhập người dùng Social API vào `social-credentials.json` theo `--profile` (mặc định `default`); `--dpop` gắn token với một cặp khóa (mỗi proof mang một `jti` ngẫu nhiên).
 - `oa listen` phục vụ webhook OA và ZBS: `--port` (mặc định 3000; engine không đọc `ZALO_OA_WEBHOOK_PORT`), `--path` (mặc định `/webhook`), `--secret <OA secret key>` hoặc, tốt hơn cho một dịch vụ, biến môi trường `ZALO_OA_SECRET` (cờ hiện ra trong danh sách tiến trình) để kiểm tra `X-ZEvent-Signature` (`--no-verify` bỏ qua bước này), `--app-id` cho sự kiện không có `app_id` trong body (mặc định: App ID đã lưu), và xác thực domain bằng `--verify-file <file.html>` (phục vụ nguyên văn theo tên file) hoặc `--verify-meta '<meta …>'` (chèn vào phần head của trang chủ). Chạy `oa init` không kèm cờ sẽ hỏi các khóa một cách tương tác, nên chúng không nằm trong lịch sử shell.
 
 ### Các khóa của `mcp-config.json`
@@ -336,7 +342,11 @@ Các API chính thức không có khóa `mcp-config.json` nào và không đọc
 | `httpPort`, `host` | `null` | port HTTP và địa chỉ bind |
 | `tls.cert`, `tls.key` | `null` | HTTPS |
 | `publicUrl` | `null` | địa chỉ công khai duy nhất của server (xem `ZALO_MCP_PUBLIC_URL`): endpoint MCP, OAuth issuer, link trang bảo mật và trang QR. Theo tài khoản: `accounts.<ownId>.publicUrl` |
-| `oauth.clientId`, `.clientSecret`, `.clients[]` | | các consumer OAuth 2.0; `clients[]` là danh sách `{clientId, clientSecret}` |
+| `oauth.clientId`, `.clientSecret`, `.redirectUris` | `null`, `null`, `[]` | OAuth client chính (§3.4 "OAuth cho connector từ xa"). Có secret thì là client bảo mật (confidential); không secret mà có `redirectUris` thì là client công khai (chỉ PKCE). Cả hai đều bật OAuth |
+| `oauth.clients[]` | `[]` | thêm OAuth client: mỗi mục `{clientId, clientSecret?, redirectUris?}` |
+| `oauth.allowDynamicRegistration` | chưa đặt (= `false`) | xem `ZALO_MCP_OAUTH_DYNAMIC_REGISTRATION` |
+| `oauth.secretsAsBearer` | chưa đặt (= `false`) | xem `ZALO_MCP_OAUTH_SECRETS_AS_BEARER` |
+| `oauth.accessTokenTtl`, `.refreshTokenTtl` | chưa đặt (= `1h`, `30d`) | thời hạn token OAuth; của refresh token là trượt (mỗi lần refresh tính lại từ đầu). Tối thiểu `1m` |
 | `oauth.issuerUrl` | `null` | tên cũ (deprecated) của `publicUrl`, vẫn được đọc khi không nguồn `publicUrl` nào được đặt |
 | `confirmMode` | chưa đặt (= `agent`) | `agent`, `human` hoặc `off`: ai xác nhận một thao tác không hoàn tác được của tool. Đặt `agent` cho AI agent; `human` để server tự hỏi người dùng |
 | `hiddenChats` | chưa đặt (= `exclude`) | `exclude`, `contentless` hoặc `include`: agent thấy gì về trò chuyện ẩn (xem biến ở trên) |
@@ -420,9 +430,43 @@ Giữ engine trên loopback và đặt reverse proxy TLS phía trước.
 
 - Tệp: [`env/internet-server.env`](config-samples/env/internet-server.env), [`mcp-config/internet.json`](config-samples/mcp-config/internet.json) và một mẫu proxy: [`proxy/Caddyfile.internet`](config-samples/proxy/Caddyfile.internet) hoặc [`proxy/nginx.internet.conf`](config-samples/proxy/nginx.internet.conf).
 - Proxy không được đệm phản hồi và phải cho phép đọc tối thiểu 310 giây: `/events/wait` giữ một request tới 300 giây. Cả hai mẫu đều được kiểm thử điều này.
-- **Xác thực:** bearer token cho script và backend; OAuth 2.0 cho các connector từ xa đòi hỏi nó. Đặt `ZALO_MCP_PUBLIC_URL` (hoặc `publicUrl`) là địa chỉ `https://` công khai: OAuth issuer, endpoint MCP và mọi link tới trang dùng một lần đều được dựng từ đó. Nếu không, link dùng địa chỉ của chính server, còn metadata OAuth và header `WWW-Authenticate` được dựng từ chính các header `X-Forwarded-Host` / `Host` của request, mà client nào cũng đặt được. (`ZALO_MCP_ISSUER_URL`, `--issuer-url` và `oauth.issuerUrl` là tên cũ của nó từ 2.x, vẫn dùng được.) Nhiều consumer: liệt kê trong `oauth.clients[]` của `mcp-config.json`.
+- **Xác thực:** bearer token cho script và backend; OAuth 2.1 cho các connector từ xa đòi hỏi nó (bên dưới). Đặt `ZALO_MCP_PUBLIC_URL` (hoặc `publicUrl`) là địa chỉ `https://` công khai: OAuth issuer, endpoint MCP và mọi link tới trang dùng một lần đều được dựng từ đó. Nếu không, link dùng địa chỉ của chính server, còn metadata OAuth và header `WWW-Authenticate` được dựng từ header `Host` của request (`X-Forwarded-Host` / `X-Forwarded-Proto` chỉ được tin khi đến từ một proxy trong `trustedProxies`); khi OAuth bật và server nghe ngoài loopback, server từ chối khởi động nếu thiếu nó. (`ZALO_MCP_ISSUER_URL`, `--issuer-url` và `oauth.issuerUrl` là tên cũ của nó từ 2.x, vẫn dùng được.)
 - HTTPS gốc (`--cert` / `--key`) không qua proxy chạy được, nhưng engine **còn cố nghe thêm port 443** bên cạnh port của bạn. Nên dùng proxy.
-- Thêm những gì engine không có: danh sách IP được phép tại proxy, giới hạn tốc độ, và log không bao giờ ghi header `Authorization`. Máy chủ trả `Access-Control-Allow-Origin: *` cho mọi origin; xóa hoặc thay header này tại proxy nếu không muốn trình duyệt gọi.
+- Thêm những gì engine không có: danh sách IP được phép tại proxy, và log không bao giờ ghi header `Authorization`. Engine chỉ giới hạn tốc độ request ở các endpoint OAuth. Máy chủ trả `Access-Control-Allow-Origin: *` cho hầu hết origin (trừ câu trả lời `/register` có chứa client secret); xóa hoặc thay header này tại proxy nếu không muốn trình duyệt gọi.
+
+#### OAuth cho connector từ xa (Claude.ai, Claude Desktop, Gemini)
+
+OAuth **tắt trừ khi bạn bật** (từ 3.0.1): server chỉ có `--auth` / `ZALO_MCP_AUTH_TOKEN` phục vụ bearer token và trả `404` cho mọi route OAuth, kể cả các tài liệu discovery. OAuth bật khi có một client được cấu hình (`ZALO_MCP_OAUTH_CLIENT_SECRET`, `oauth.redirectUris`, hoặc một mục `oauth.clients[]`) hoặc khi bật đăng ký động.
+
+**Trước lần kết nối đầu tiên**
+
+1. Địa chỉ công khai: `ZALO_MCP_PUBLIC_URL=https://zalo.example.com`. Đó là issuer, và endpoint MCP là `<publicUrl>/mcp`. Base path cũng được (`https://zalo.example.com/a/<ownId>`): server trả lời cả các URL discovery chèn đường dẫn (`/.well-known/oauth-authorization-server/a/<ownId>`), và Caddyfile nhiều tài khoản (`fleet generate --domain`) chuyển chúng từ gốc host vào tài khoản.
+2. Một secret của server để ký token: bearer token (`ZALO_MCP_AUTH_TOKEN`), nếu không có thì client secret đầu tiên. Khóa ký được dẫn xuất từ nó theo từng tài khoản, nên token của tài khoản này bị tài khoản khác từ chối. Đổi nó là đăng xuất mọi OAuth client.
+3. Mật khẩu người duyệt: `zalo-agent mcp approver set --account <ownId>`. Mỗi lần kết nối mở một trang dùng một lần trên server này trong trình duyệt của người đang kết nối; trang cho biết client nào xin quyền và sẽ quay về đâu, rồi hỏi mật khẩu này (với `approval.secret: "pin"` thì hỏi PIN chat ẩn). Chỉ sau khi bấm **Approve** client mới nhận được code. Chưa đặt bí mật người duyệt thì `/authorize` từ chối và nói rõ lý do.
+
+**Client tĩnh hay đăng ký động**
+
+- **Client tĩnh** (khuyên dùng): bạn chọn id và secret, đưa cả hai cho connector, và liệt kê callback URL của connector. Một client: `ZALO_MCP_OAUTH_CLIENT_ID`, `ZALO_MCP_OAUTH_CLIENT_SECRET`, `ZALO_MCP_OAUTH_REDIRECT_URIS`. Nhiều hơn: `oauth.clients[]` trong `mcp-config.json`, mỗi mục `{clientId, clientSecret, redirectUris}`. Secret chỉ xác thực đúng client của nó tại `/token`: nó không phải bearer token cho `/mcp` (`oauth.secretsAsBearer: true` khôi phục hành vi 3.0.0). Client có `redirectUris` mà không có secret là client công khai.
+- **Đăng ký động** (`ZALO_MCP_OAUTH_DYNAMIC_REGISTRATION=true`): connector tự đăng ký tại `/register` (RFC 7591) và nhận một client riêng, công khai trừ khi nó xin secret; secret đó ngẫu nhiên theo từng client và chỉ được lưu dạng hash. Bắt buộc có `redirect_uris`. Tối đa 100 client (client chưa từng dùng bị bỏ sau một ngày khi danh sách đầy) và 10 lần đăng ký mỗi giờ cho mỗi địa chỉ; đăng ký vẫn còn sau khi khởi động lại. Mỗi lần kết nối vẫn cần bạn duyệt.
+- Redirect URI so khớp chính xác. Chỉ `https`, hoặc `http` trên `127.0.0.1`, `[::1]` hay `localhost`, nơi mọi port đều khớp (RFC 8252). `javascript:`, scheme tùy chỉnh và `http` ở nơi khác bị từ chối.
+
+**Custom connector của Claude.ai, và Claude Desktop** (Claude Desktop dùng các connector của tài khoản Claude):
+
+1. Trên server: `ZALO_MCP_OAUTH_CLIENT_ID=zalo-connector`, `ZALO_MCP_OAUTH_CLIENT_SECRET=<openssl rand -hex 32>`, `ZALO_MCP_OAUTH_REDIRECT_URIS=https://claude.ai/api/mcp/auth_callback,https://claude.com/api/mcp/auth_callback`; khởi động lại.
+2. Trong Claude: Settings → Connectors → Add custom connector. URL `https://zalo.example.com/mcp`; trong Advanced settings, điền OAuth Client ID và Client Secret ở trên. (Nếu bật đăng ký động thì để trống cả hai.)
+3. Connect. Một tab mở trang duyệt của server này: nhập mật khẩu người duyệt, bấm Approve. Claude quay lại cuộc trò chuyện đã kết nối.
+
+**Gemini** (custom MCP connector của Gemini Enterprise, Connected Apps):
+
+1. Trên server, một client cho Gemini với callback mà form thiết lập của nó hiển thị (của Google là `https://vertexaisearch.cloud.google.com/oauth-redirect`), ví dụ trong `oauth.clients[]`: `{"clientId": "gemini", "clientSecret": "<ngẫu nhiên>", "redirectUris": ["https://vertexaisearch.cloud.google.com/oauth-redirect"]}`.
+2. Trong form của Gemini: MCP URL `https://zalo.example.com/mcp`, authorization URL `https://zalo.example.com/authorize`, token URL `https://zalo.example.com/token`, client id và secret, scope `mcp:tools` (hoặc `ACCESS_VIEW_MANAGE_MCP_CONTENT` nếu nó yêu cầu scope đó).
+3. Authorize: trang duyệt mở ra; nhập mật khẩu người duyệt, bấm Approve.
+
+**Giao thức.** Authorization code với PKCE chỉ `S256` (`plain` và thiếu challenge bị từ chối); gửi lại `redirect_uri` tại `/token`; `iss` trong câu trả lời authorization (RFC 9207); `resource` (RFC 8707) nếu có phải là `<publicUrl>/mcp`. Scope: `mcp:tools`, `offline_access`, `ACCESS_VIEW_MANAGE_MCP_CONTENT`; scope nào cũng cấp toàn bộ tool của tài khoản này, không có scope hẹp hơn. `client_credentials` dành cho client bảo mật tự hành động (một backend). Route: `/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server`, `/authorize`, `/token`, `/register` (khi bật), `/revoke`. Không có OpenID Connect (`/.well-known/openid-configuration` là `404`). `/register`, `/authorize`, `/token` và `/revoke` bị giới hạn tốc độ theo địa chỉ client (`429` kèm `Retry-After`).
+
+**Thời hạn token và thu hồi.** Access token sống 1 giờ (`oauth.accessTokenTtl`) và mang issuer cùng audience, cả hai đều được kiểm tra. Refresh token sống 30 ngày kể từ lần dùng cuối (`oauth.refreshTokenTtl`) và được xoay vòng mỗi lần refresh; một refresh token dùng hai lần sẽ thu hồi toàn bộ kết nối đó, và connector phải được cấp quyền lại. Để kết thúc một kết nối: `POST /revoke` (RFC 7009) kèm token và thông tin xác thực của client; hoặc bỏ client khỏi cấu hình rồi khởi động lại (token của nó ngừng hoạt động ngay); hoặc, khi server đã dừng, xóa `<thư mục tài khoản>/oauth-state.json` (mọi kết nối và đăng ký OAuth). File đó (`0600`) giữ các client đã đăng ký và một bản ghi cho mỗi kết nối, chỉ có hash; authorization code nằm trong bộ nhớ và không còn sau khi khởi động lại.
+
+**Nâng cấp từ 3.0.0.** `--auth` một mình không còn bật OAuth, và client secret OAuth không còn mặc định lấy giá trị của nó: đặt `ZALO_MCP_OAUTH_CLIENT_SECRET` (và các redirect URI của nó) để giữ connector. Đăng ký động mặc định tắt. Client secret không còn là bearer token. Token do 3.0.0 cấp không còn được chấp nhận: mọi connector phải cấp quyền lại, qua trang duyệt.
 
 ### 3.5 Backend cho CRM
 
@@ -488,7 +532,7 @@ curl -s -H "Authorization: Bearer $TOKEN" http://HOST:PORT/status | head -c 400
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://HOST:PORT/mcp
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://HOST:PORT/mcp -H 'Authorization: Bearer wrong'
 
-# các tool được phục vụ (mong đợi 36 tên):
+# các tool được phục vụ (mong đợi 37 tên):
 curl -s http://HOST:PORT/mcp -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | grep -o '"name":"zalo_[a-z_]*"' | wc -l

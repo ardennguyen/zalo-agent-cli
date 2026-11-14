@@ -76,7 +76,7 @@ Vì vậy quyết định triển khai đầu tiên là bắt buộc: **bạn c�
 > | | `listen` | `mcp start` |
 > |---|---|---|
 > | Bề mặt MCP tool (37 tool trong `src/mcp/mcp-tools.js`) | không | **có** |
-> | HTTP / HTTPS `/health`, `/ready`, `/status`, `/metrics`, `/events/wait`, các endpoint OAuth 2.0 | không | **có** (chỉ với `--http`) |
+> | HTTP / HTTPS `/health`, `/ready`, `/status`, `/metrics`, `/events/wait`, các endpoint OAuth 2.1 (chỉ khi đã cấu hình một OAuth client) | không | **có** (chỉ với `--http`) |
 > | Đẩy ra ngoài qua `-w, --webhook <url>` + `--webhook-secret <secret>` | **có** | **có** |
 > | Lưu trữ JSONL `--save <dir>` | **có** | không |
 > | In sự kiện (`--events`, `--filter`, `--no-self`), `--auto-accept` | **có** | không |
@@ -633,6 +633,8 @@ Dữ liệu của một tài khoản chỉ đi theo thư mục của nó khi má
 
 Dù cách nào: hãy dừng mọi daemon và client của tài khoản trên máy cũ trước, và không bao giờ khởi động lại cái nào ở đó nữa. **Hai bản sao của cùng một phiên đăng nhập đã lưu không bao giờ được chạy cùng lúc**: chúng sẽ đá nhau (daemon always-on thoát mã 3, lặp đi lặp lại; daemon on-demand thì nhường và từ chối mọi yêu cầu cho đến `presence resume --yes`). Trên máy cũ, `logout --no-remote` (thêm `--yes` trên 3.0) bỏ phiên đăng nhập đã lưu mà không kết thúc phiên mà máy mới đang dùng. Từng bước, từ Windows 2.5.9 sang một VPS: [MIGRATE.vi.md](config-samples/use-cases/c-vps-few-accounts/MIGRATE.vi.md).
 
+File passphrase chỉ định bằng `--passphrase-file` trên máy cũ được ghi vào keyring. Trên máy mới, khi đường dẫn đó không tồn tại và dịch vụ có credential của systemd (`$CREDENTIALS_DIRECTORY/zalo-storage-passphrase`, ở trên), credential sẽ được dùng (3.0.1; trước đó đường dẫn cũ thắng và keyring không mở được). File chỉ định trong `storage.json` hoặc `ZALO_STORAGE_PASSPHRASE_FILE` vẫn thắng cả hai.
+
 > [!CAUTION]
 > **Nâng cấp một thư mục cấu hình 2.5.x lên 3.0, trên cùng máy hay máy khác.** Lệnh 3.0 đầu tiên mở một tài khoản (bất kỳ lệnh nào, kể cả `listen` và `mcp start`) sẽ niêm phong phiên đăng nhập đã lưu và các tệp bí mật của nó bằng bộ cung cấp khóa của máy, và mã hóa ngay tại chỗ `zalo.db`, `webhook-outbox.db` cùng media đã tải. **Niêm phong là một chiều**: không lệnh nào đưa thư mục 3.0 trở lại dạng 2.5.x, và engine 2.5.x không đọc được nó. Vì vậy:
 >
@@ -722,7 +724,7 @@ Từ 3.0.0, cơ sở dữ liệu tin nhắn `zalo.db` được **mã hóa** (SQL
 
 Token (`ZALO_MCP_AUTH_TOKEN`, hoặc cờ `--auth <token>`, vốn hiện ra trong `ps`) cài một middleware Express. Những gì nó làm và không làm:
 
-- So bằng `timingSafeEqual` sau khi kiểm tra độ dài: thời gian hằng định, đúng.
+- So sánh trong thời gian hằng định (cả hai vế được băm trước, nên độ dài không bị lộ).
 - Bảo vệ mọi route trừ `GET /health` và `GET /ready`, được miễn có chủ ý: chúng chỉ cho biết tiến trình có trả lời không và socket Zalo có lên không. `GET /status` và `GET /metrics` (thông tin sức khỏe chi tiết, §4.7) nằm sau token.
 - Là **một bí mật dùng chung** cho mọi client. Không có cơ chế xoay vòng, không có định danh theo client, không có thu hồi nào ngoài việc khởi động lại với token mới. Tên `consumer` mà bot truyền không gắn với nó (§1.4).
 
@@ -733,6 +735,7 @@ Vì vậy:
 - Một token rỗng hoặc chỉ có khoảng trắng tắt xác thực mà không ghi một lời nào vào log (§5.4); dòng `ExecStartPre=` ở §4.2 có ra là vì vậy.
 - Xoay vòng nó nghĩa là khởi động lại daemon, mở ra một khoảng trống. Self-heal thường đóng được nó (§4.5); hãy dự phòng một lần chạm điện thoại cho phần nó không với tới.
 - Token **của channel** là riêng và tự quản lý: 24 byte ngẫu nhiên, sinh lại mỗi lần daemon khởi động, công bố trong `daemon-channel.json` quyền `0600`, chỉ hợp lệ trên loopback. Bạn không bao giờ cấu hình nó. Tính bảo mật của nó dựa hoàn toàn vào quyền file: **ai đọc được `daemon-channel.json` là gửi được tin nhắn dưới danh nghĩa tài khoản.** Thêm một lý do để user dịch vụ một mình sở hữu thư mục cấu hình.
+- **OAuth là chuyện riêng, và tắt trừ khi được cấu hình** (từ 3.0.1): `--auth` một mình không bao giờ bật nó, và client secret không phải bearer token. Khi một connector từ xa cần OAuth, mỗi lần kết nối đều được chủ tài khoản duyệt trên một trang dùng một lần bằng mật khẩu người duyệt; token được xoay vòng, thu hồi được và gắn với tài khoản này cùng URL công khai của nó. Thiết lập: [configuration.vi.md](configuration.vi.md) §3.4 "OAuth cho connector từ xa". Khóa ký token được dẫn xuất từ `ZALO_MCP_AUTH_TOKEN` (nếu không có thì từ một client secret), nên xoay vòng nó cũng đăng xuất mọi OAuth client.
 
 ### 5.4 Bind địa chỉ, và cái bẫy `--host`
 

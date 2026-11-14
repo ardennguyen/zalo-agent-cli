@@ -273,7 +273,7 @@ zalo-agent mcp start --status                       # Check background daemon st
 zalo-agent mcp start --stop                         # Gracefully stop the background daemon
 ZALO_MCP_AUTH_TOKEN=<token> zalo-agent mcp start --http <port>   # Bearer token auth (HTTP mode; never --auth on a command line: ps shows it)
 zalo-agent mcp start --http <port> --cert <pem> --key <pem>  # Native HTTPS (+ auto-443 listener when port != 443)
-zalo-agent mcp start --http <port> --client-id <id> --client-secret <sec>  # Built-in OAuth 2.0 / 2.1 server
+ZALO_MCP_OAUTH_CLIENT_SECRET=<sec> ZALO_MCP_OAUTH_REDIRECT_URIS=<callback> zalo-agent mcp start --http <port> --client-id <id>  # Built-in OAuth 2.1 server (off unless a client is set; each connection approved with `mcp approver set`'s password)
 zalo-agent mcp start -w <url> --webhook-secret <sec>         # Signed outbound webhook on every watched message
 zalo-agent mcp start --http <port> --host <LAN address>   # Bind address (default 127.0.0.1; a server stays on loopback behind a TLS proxy)
 zalo-agent mcp start --config <path>                # Custom config (default ~/.zalo-agent-cli/mcp-config.json)

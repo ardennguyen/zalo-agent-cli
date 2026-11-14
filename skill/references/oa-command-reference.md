@@ -52,7 +52,7 @@ zalo-agent oa setup <access-token>
 zalo-agent oa whoami
 ```
 
-`oa login` sends a fresh PKCE `code_challenge` and a `state` with the permission URL, exchanges the code with its `code_verifier`, and saves the access token, refresh token, `expiresIn` and `expiresAt`. It times out after 2 minutes.
+`oa login` sends a fresh PKCE `code_challenge` and a `state` with the permission URL, exchanges the code with its `code_verifier`, and saves the access token, refresh token, `expiresIn` and `expiresAt`. It waits 5 minutes for the callback (`--timeout`). Only this login's answer ends it: a request to `/callback` with another `state`, or with no code and no matching `state`, gets 400 and the login keeps waiting (in VPS mode the port is open to anyone). A callback without `state` is still taken, since the example in Zalo's OA docs has none. The token request gives up after 30 s.
 
 `oa refresh` uses the stored refresh token. Zalo makes a refresh token single use and stops the old access token at once, so the refresh runs under a file lock and the new pair is saved before anything uses it.
 
@@ -62,8 +62,9 @@ zalo-agent oa whoami
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--app-id <id>` / `--secret <key>` | — | App credentials (from developers.zalo.me) |
+| `--app-id <id>` / `--secret <key>` | — | App credentials (from developers.zalo.me). Without `--secret`: `ZALO_OA_APP_SECRET`, else a prompt that does not echo (a flag shows in the process list) |
 | `-p, --port <port>` | `3456` | Local OAuth callback server port |
+| `--timeout <seconds>` | `300` | How long to wait for the callback (10–3600) |
 | `--callback-host <host>` | — | VPS mode: bind `0.0.0.0`, don't open a browser, use this public base in the redirect URI |
 | `--oa-id <id>` | `default` | OA identifier |
 
@@ -398,8 +399,8 @@ zalo-agent social status
 
 | Command | Description |
 |---------|-------------|
-| `setup --app-id <id> --secret <key> [--profile <name>]` | Save the app's ID and secret key. |
-| `login [--app-id <id>] [--secret <key>] [-p, --port <port>] [--callback-host <host>] [--dpop] [--profile <name>]` | Open Zalo's permission page (`oauth.zaloapp.com/v4/permission`, PKCE and `state`), wait for the callback on 127.0.0.1 (0.0.0.0 with `--callback-host`), check `state`, exchange the code with the verifier, save the tokens, then show the user. Port default 3457. `--dpop` binds the tokens to a new P-256 key pair (DPoP, ES256): every later call and refresh carries a proof signed with it, so a stolen token is useless on its own. |
+| `setup --app-id <id> [--secret <key>] [--profile <name>]` | Save the app's ID and secret key (without `--secret`: `ZALO_SOCIAL_APP_SECRET`, else a prompt that does not echo). |
+| `login [--app-id <id>] [--secret <key>] [-p, --port <port>] [--callback-host <host>] [--dpop] [--timeout <seconds>] [--profile <name>]` | Open Zalo's permission page (`oauth.zaloapp.com/v4/permission`, PKCE and `state`), wait for the callback on 127.0.0.1 (0.0.0.0 with `--callback-host`), check `state`, exchange the code with the verifier, save the tokens, then show the user. Port default 3457; `--timeout` default 300 s. `state` is required on the callback: one without it, or with another, gets 400 and the login keeps waiting. The secret also comes from `ZALO_SOCIAL_APP_SECRET`. DPoP proofs carry a random `jti`. `--dpop` binds the tokens to a new P-256 key pair (DPoP, ES256): every later call and refresh carries a proof signed with it, so a stolen token is useless on its own. |
 | `refresh [--profile <name>]` | Renew the access token now (the refresh token is single use; serialized under a lock). Refused, with nothing sent, once the 30-day login ended. |
 | `me [--fields <list>] [--picture small\|normal\|large] [--profile <name>]` | `GET graph.zalo.me/v2.0/me`: `id` (this app's ID for the user, not usable by other apps), `name`, `picture` (smallest unless `--picture`), and `is_sensitive` when asked (a user the law requires special handling for). Other fields are refused before any request. |
 | `status [--profile <name>]` | Whether a user is logged in, when the access token and the login end, DPoP on or off. Never shows a token. |

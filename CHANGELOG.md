@@ -9,6 +9,34 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+## [3.0.1] — unreleased
+
+A security release for the MCP server's OAuth, the official-API logins and moving an account between machines.
+
+#### Breaking changes
+
+- **OAuth is no longer on with `--auth` alone.** A server with only a bearer token (`--auth` / `ZALO_MCP_AUTH_TOKEN`) now answers 404 on every OAuth route, the discovery documents included. OAuth is on when a client is configured (`ZALO_MCP_OAUTH_CLIENT_SECRET`, `ZALO_MCP_OAUTH_REDIRECT_URIS`, `oauth.clients[]`) or dynamic registration is turned on, and the client secret no longer defaults to the bearer token.
+- **Every OAuth connection is approved by the account owner.** `/authorize` opens a one-time page that asks for the approver password (`zalo-agent mcp approver set`), or the hidden-chat PIN with `approval.secret: "pin"`. Set one before connecting an app: without it, `/authorize` refuses.
+- **Each client needs its callback URLs.** Codes go only to a redirect URI registered for that client: `ZALO_MCP_OAUTH_REDIRECT_URIS` / `oauth.redirectUris`, or `redirectUris` in an `oauth.clients[]` entry (for Claude.ai: `https://claude.ai/api/mcp/auth_callback`).
+- **Dynamic client registration is off by default** (`ZALO_MCP_OAUTH_DYNAMIC_REGISTRATION=true` turns it on).
+- **A client secret is no longer a bearer token** for `/mcp`; `oauth.secretsAsBearer: true` keeps the old behavior.
+- **Connectors must authorize again after the upgrade**: tokens issued by 3.0.0 are not accepted.
+- **Shorter token lifetimes**: access tokens last 1 hour and refresh tokens 30 days from their last use (they used to last 30 and 365 days); both are configurable (`oauth.accessTokenTtl`, `oauth.refreshTokenTtl`).
+- **PKCE with `S256` is required** for every authorization; `plain` is refused.
+
+#### Fixed
+
+- `/register` no longer returns the server's secret. Registered clients are public, or get a secret of their own that is stored only as a hash; registration needs `redirect_uris`, is rate limited and capped, and survives a restart.
+- Redirect URIs must be `https`, or `http` on `127.0.0.1`, `[::1]` or `localhost` (any port); `javascript:` and other schemes are refused.
+- Refresh tokens rotate on every use, and a reused one revokes the connection; `/revoke` works; a removed client's tokens stop working.
+- Tokens are bound to the account, the issuer and `<publicUrl>/mcp`, and are checked on each request: a token of one account is refused by another.
+- The OAuth issuer is no longer taken from an `X-Forwarded-Host` header sent by a client that is not a trusted proxy, and a server with OAuth on and a bind address off loopback refuses to start without `publicUrl`.
+- An issuer with a base path (`https://host/a/<ownId>`) serves its path-inserted discovery documents, and the multi-account Caddyfile routes them.
+- OAuth errors are JSON, failed client authentication carries a `Basic` challenge, `/mcp`'s 401 follows RFC 6750, the authorization response carries `iss`, the OAuth endpoints are rate limited, and the OpenID discovery document the server could not honor is gone.
+- `oa login` and `social login` no longer end on a stray request to their callback (wrong `state`, no code): it gets 400 and the login keeps waiting. `social login` requires `state`. Both wait 5 minutes by default (`--timeout`), and a token request gives up after 30 seconds.
+- `oa login`, `oa init`, `social setup` and `social login` take the app secret from `ZALO_OA_APP_SECRET` / `ZALO_SOCIAL_APP_SECRET` or a prompt that does not echo, so it stays out of the process list. The OA data folder is created readable by its owner only, and DPoP proofs carry a random `jti`.
+- A keyring protected with `account security provider passphrase --passphrase-file <file>` and moved to another machine now opens with the systemd credential there when the recorded file does not exist.
+
 ## [3.0.0] — 2026-11-15
 
 ### What's changed since v2.5.9

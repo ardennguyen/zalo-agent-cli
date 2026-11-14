@@ -1,6 +1,6 @@
 # Hướng dẫn Zalo MCP Server
 
-Model Context Protocol (MCP) cho phép Claude Code, Google Gemini và các MCP client tương tác với Zalo (tài khoản cá nhân) trực tiếp qua **36 tools**.
+Model Context Protocol (MCP) cho phép Claude Code, Google Gemini và các MCP client tương tác với Zalo (tài khoản cá nhân) trực tiếp qua **37 tools**.
 
 Từ 3.0, **mọi lệnh CLI của tài khoản cá nhân đều có một hành động MCP** (bạn bè, nhóm, hội thoại, hồ sơ, auto-reply, quick-msg, catalog, ngân hàng, zCloud, sticker, link, các read/write thô của Zalo, và mọi stage sync qua `zalo_sync` / `zalo_sync_status`). Chỉ còn Official Account (`oa …`, API chính thức riêng), đăng nhập/đăng xuất, quản lý tài khoản trên máy, `listen`, `mcp start`, `fleet`, `policy`, `presence status|wake|park` và các lệnh `db` (trừ `db usage`, có ở `zalo_profile` `usage`) là chỉ có trên CLI; agent gọi chúng bằng CLI với `--json` khi được phép. Xem bảng [Phạm vi tool](#phạm-vi-tool--cái-gì-có-cái-gì-phải-gọi-cli).
 
@@ -14,12 +14,12 @@ Tool nào mô phỏng một lệnh CLI (`zalo_react` ↔ `msg react`, `zalo_undo
 |------|----------|--------|
 | `--account <id>` | Active lúc khởi động, sau đó ghim | ID số đầy đủ của tài khoản đã đăng ký; giữ nguyên qua reconnect/retry, không đổi active chung. [Chi tiết](../../docs/account-pinning.vi.md) |
 | `--http <port>` | *(stdio)* | Dùng HTTP/HTTPS transport trên port này (`ZALO_MCP_HTTP_PORT[_<ownId>]` hoặc `httpPort` trong `mcp-config.json`). Bỏ trống = stdio |
-| `--auth <token>` | `ZALO_MCP_AUTH_TOKEN[_<ownId>]` | Yêu cầu header `Authorization: Bearer <token>` (hoặc OAuth 2.0 `access_token`) cho mọi endpoint trừ `/health`, `/ready` và các endpoint OAuth discovery/handshake |
+| `--auth <token>` | `ZALO_MCP_AUTH_TOKEN[_<ownId>]` | Yêu cầu header `Authorization: Bearer <token>` (hoặc một access token OAuth do server cấp) cho mọi endpoint trừ `/health`, `/ready` và các endpoint OAuth. Một mình nó **không** bật OAuth (từ 3.0.1) |
 | `--host <address>` | `127.0.0.1` | Địa chỉ bind cho HTTP/HTTPS mode (`ZALO_MCP_HOST[_<ownId>]` hoặc `host`). Đặt `0.0.0.0` để nhận kết nối từ ngoài |
 | `--cert <path>` | `tls.cert` / `ZALO_MCP_TLS_CERT[_<ownId>]` | Đường dẫn chứng chỉ PEM để phục vụ HTTPS trực tiếp (cần `--http` và `--key`; khi chạy trên port khác 443 sẽ tự thử bind thêm port 443 song song) |
 | `--key <path>` | `tls.key` / `ZALO_MCP_TLS_KEY[_<ownId>]` | Đường dẫn private key PEM để phục vụ HTTPS trực tiếp |
-| `--client-id <id>` | `zalo-mcp` / `ZALO_MCP_OAUTH_CLIENT_ID[_<ownId>]` | OAuth 2.0 Client ID cho các remote MCP client (Gemini Connected Apps, Claude Custom Connectors, …) |
-| `--client-secret <secret>` | `--auth` / `ZALO_MCP_OAUTH_CLIENT_SECRET[_<ownId>]` | OAuth 2.0 Client Secret cho bước đổi token tại `/token` |
+| `--client-id <id>` | `zalo-mcp` / `ZALO_MCP_OAUTH_CLIENT_ID[_<ownId>]` | OAuth Client ID cho các remote MCP client (Gemini Connected Apps, Claude Custom Connectors, …) |
+| `--client-secret <secret>` | *(không có)* / `ZALO_MCP_OAUTH_CLIENT_SECRET[_<ownId>]` | OAuth Client Secret của client đó, chỉ dùng tại `/token` (không phải bearer token, không mặc định lấy `--auth`). Đặt nó là bật OAuth; callback URL của client đặt ở `ZALO_MCP_OAUTH_REDIRECT_URIS[_<ownId>]` / `oauth.redirectUris`. Mỗi lần kết nối phải được duyệt bằng mật khẩu người duyệt (`mcp approver set`). Xem "OAuth cho connector từ xa" trong `docs/configuration.vi.md` §3.4 |
 | `--public-url <url>` | *(địa chỉ của chính server)* | Địa chỉ công khai duy nhất khi đứng sau reverse proxy/TLS (`ZALO_MCP_PUBLIC_URL[_<ownId>]`, `publicUrl`): endpoint MCP, OAuth issuer, link trang bảo mật `/zalo/secure/<token>` và trang QR `/zalo/qr/<token>`. `https` (chỉ `http` cho localhost), có thể kèm base path, không query/fragment. Không đặt: link dùng địa chỉ local, OAuth suy issuer từ header `Host` |
 | `--issuer-url <url>` | *(deprecated)* | Tên cũ của `--public-url` (`ZALO_MCP_ISSUER_URL[_<ownId>]`, `oauth.issuerUrl`), vẫn dùng được, in một ghi chú |
 | `-w, --webhook <url>` | `webhook` / `ZALO_WEBHOOK_URL[_<ownId>]` | POST mỗi tin nhắn mới (đã lọc theo `watchThreads`) dạng JSON tới URL này |
@@ -34,7 +34,7 @@ Tool nào mô phỏng một lệnh CLI (`zalo_react` ↔ `msg react`, `zalo_undo
 | `--status` | `false` | Xem trạng thái daemon chạy ngầm (PID, cổng channel, đường dẫn log) |
 
 > [!WARNING]
-> Bind `--host 0.0.0.0` mà không có token (`ZALO_MCP_AUTH_TOKEN` hoặc `--client-secret`) là để lộ toàn bộ phiên Zalo của bạn cho bất kỳ ai truy cập được port đó. Luôn đặt token khi mở ra ngoài loopback, và đặt nó qua biến môi trường chứ không qua cờ `--auth` (cờ lộ trong danh sách tiến trình).
+> Bind `--host 0.0.0.0` mà không có token (`ZALO_MCP_AUTH_TOKEN`, hoặc OAuth đã cấu hình) là để lộ toàn bộ phiên Zalo của bạn cho bất kỳ ai truy cập được port đó. Luôn đặt token khi mở ra ngoài loopback, và đặt nó qua biến môi trường chứ không qua cờ `--auth` (cờ lộ trong danh sách tiến trình).
 
 ---
 
@@ -59,21 +59,26 @@ Thêm vào `.claude/settings.json` (yêu cầu `zalo-agent` đã cài global ho�
 }
 ```
 
-### Chế độ HTTP / HTTPS & OAuth 2.0 (VPS — Remote / Gemini Connected Apps)
+### Chế độ HTTP / HTTPS & OAuth 2.1 (VPS — Remote / Gemini Connected Apps)
 
 ```bash
 # HTTP + Bearer token (token đặt qua biến môi trường: cờ --auth lộ trong danh sách tiến trình)
 export ZALO_MCP_AUTH_TOKEN=your-secret
 zalo-agent mcp start --http 3847 --host 192.168.1.10   # một địa chỉ LAN, không phải 0.0.0.0
 
-# HTTPS gốc + OAuth 2.0 (tự thử bind song song cả port 3100 lẫn 443)
-zalo-agent mcp start --http 3100 --host 0.0.0.0 \
+# HTTPS gốc + OAuth 2.1 cho một connector (tự thử bind song song cả port 3100 lẫn 443).
+# OAuth chỉ bật khi có client; nghe ngoài loopback thì phải có --public-url; mỗi kết nối được duyệt
+# bằng mật khẩu người duyệt.
+zalo-agent mcp approver set
+export ZALO_MCP_OAUTH_CLIENT_ID=zalo-connector ZALO_MCP_OAUTH_CLIENT_SECRET="$(openssl rand -hex 32)"
+export ZALO_MCP_OAUTH_REDIRECT_URIS=https://claude.ai/api/mcp/auth_callback
+zalo-agent mcp start --http 3100 --host 0.0.0.0 --public-url https://your-vps.example.com:3100 \
   --cert /path/to/fullchain.pem --key /path/to/privkey.pem -d
 ```
 
 Trên VPS, nên đặt server sau reverse proxy (Caddy) với `--public-url https://<domain>/a/<id>` và bind `127.0.0.1`; `zalo-agent fleet generate --domain <domain>` tạo sẵn bộ tệp đó (xem `docs/deployment.vi.md`). Chế độ HTTP mặc định chạy on-demand: xem [Hiện diện on-demand](#zalo_get_messages).
 
-Endpoint MCP là **`POST /mcp`** (hỗ trợ cả `HEAD`, `GET`, `POST`, `DELETE` cho Streamable HTTP; đồng thời cung cấp máy chủ OAuth 2.0 / 2.1 tích hợp sẵn tại `/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`, `/register`, `/authorize`, `/token`, `/revoke`). Thêm vào cấu hình MCP client:
+Endpoint MCP là **`POST /mcp`** (hỗ trợ cả `HEAD`, `GET`, `POST`, `DELETE` cho Streamable HTTP; khi OAuth bật, có thêm máy chủ OAuth 2.1 tích hợp tại `/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`, `/authorize` (mở trang duyệt dùng một lần), `/token`, `/revoke`, và `/register` khi bật đăng ký động; PKCE S256 bắt buộc, access token 1 giờ, refresh token 30 ngày xoay vòng mỗi lần dùng; server chỉ có `--auth` trả 404 cho mọi route OAuth). Thêm vào cấu hình MCP client:
 
 ```json
 {
@@ -102,13 +107,14 @@ curl -s -H "Authorization: Bearer $TOKEN" http://localhost:3847/status
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:3847/metrics
 
 # Chờ tin nhắn tiếp theo (tối đa 300s) hoặc trả về ngay nếu đã có tin sau cursor `since`
-curl -s "http://localhost:3847/events/wait?timeout=300&since=0"
+# Cần bearer token như /status (chỉ /health và /ready không cần)
+curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:3847/events/wait?timeout=300&since=0"
 # → {"status":"message","message":{...},"cursor":1762400000001}
 ```
 
 ### Qua wrapper `zalo-mcp`
 
-Dự án [`zalo-mcp`](https://github.com/ardennguyen/zalo-mcp) (v2.0.0+) là bộ cài đặt và CLI launcher mỏng: cài lệnh global `zalo-mcp` (hoặc chạy `node mcp-server.js`). Khi không kèm lệnh con, nó chạy `zalo-agent mcp start`; khi kèm lệnh con (`zalo-mcp login`, `zalo-mcp status`, `zalo-mcp --account <ID> conv recent --json`, `zalo-mcp sync`, …), nó chuyển tiếp nguyên vẹn sang CLI. **Danh sách 36 MCP tool hoàn toàn giống nhau** — tool surface do `src/mcp/mcp-tools.js` của `zalo-agent-cli` quyết định.
+Dự án [`zalo-mcp`](https://github.com/ardennguyen/zalo-mcp) (v2.0.0+) là bộ cài đặt và CLI launcher mỏng: cài lệnh global `zalo-mcp` (hoặc chạy `node mcp-server.js`). Khi không kèm lệnh con, nó chạy `zalo-agent mcp start`; khi kèm lệnh con (`zalo-mcp login`, `zalo-mcp status`, `zalo-mcp --account <ID> conv recent --json`, `zalo-mcp sync`, …), nó chuyển tiếp nguyên vẹn sang CLI. **Danh sách 37 MCP tool hoàn toàn giống nhau** — tool surface do `src/mcp/mcp-tools.js` của `zalo-agent-cli` quyết định.
 
 - **Forward đầy đủ mọi flag của `mcp start` và global storage flags:** `--account <id>` (`ZALO_ACCOUNT`), `--http [port]`, `--auth <token>`, `--host <addr>`, `--cert <path>`, `--key <path>`, `--client-id <id>`, `--client-secret <secret>`, `--public-url <url>`, `--issuer-url <url>`, `-w`/`--webhook <url>`, `--webhook-secret <secret>`, `--config <path>`, `--no-self-heal`, `--no-delivered-receipts`, `-d`/`--daemon`, `--stop`, `--status`, cùng `--env-file`, `--config-dir`, `--credentials-dir`, `--data-dir`, `--media-dir`, `--oa-dir`.
 - **Phiên bản engine:** Wrapper chạy phiên bản `@ardennguyen/zalo-agent-cli` được cài trong `node_modules/` của nó (cập nhật lên bản mới nhất bằng `zalo-mcp.ps1 update` / `./zalo-mcp.sh update`). Kiểm tra phiên bản engine hiện tại bằng:

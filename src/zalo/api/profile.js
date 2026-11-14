@@ -20,6 +20,7 @@
  */
 import { readFile } from "node:fs/promises";
 import { ZaloApiError } from "../errors.js";
+import { stripImageMetadata } from "../strip-metadata.js";
 
 /** The avatar size asked for in the own-profile and avatar-url calls. */
 export const WEB_AVATAR_SIZE = 160;
@@ -204,7 +205,8 @@ export const LINKED_DEVICES = Object.freeze({
 
 /**
  * An avatar image's bytes and size: a file path (read here, measured by the session's `imageMetadataGetter`) or an
- * attachment `{data, metadata: {width, height, totalSize}}`.
+ * attachment `{data, metadata: {width, height, totalSize}}`. Its embedded metadata is stripped first
+ * (src/zalo/strip-metadata.js), and `size` is then the stripped bytes' length.
  *
  * @param {object} ctx - the session
  * @param {string|{data: Uint8Array, metadata?: {width?: number, height?: number, totalSize?: number}}} source
@@ -226,6 +228,11 @@ async function avatarImage(ctx, source) {
     } else {
         meta = source?.metadata ?? {};
         bytes = source?.data;
+    }
+    const clean = stripImageMetadata(bytes);
+    if (clean.bytes !== bytes || typeof source === "string") {
+        bytes = clean.bytes;
+        meta = { ...meta, totalSize: bytes.length };
     }
     return {
         bytes,

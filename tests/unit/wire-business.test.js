@@ -12,6 +12,9 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { jpegWithMetadata } from "../helpers/metadata-images.js";
+import { stripImageMetadata } from "../../src/zalo/strip-metadata.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { FAKE, T0, expectGolden, openWire } from "../helpers/wire-diff/index.js";
 import { businessMethods, PRODUCT_PHOTO, PRODUCT_VIEW, bankHolderName, ruleUids } from "../../src/zalo/api/business.js";
@@ -27,6 +30,11 @@ const PHOTO_URL = "https://photo.zalo.invalid/p/normal.jpg";
 
 const IMAGE_BYTES = Buffer.from("fake-jpeg-bytes-for-a-product-photo-0123456789");
 const IMAGE_PATH = join(SANDBOX_HOME, "product.jpg");
+
+/** A phone-like JPEG (EXIF with GPS, make, model, a thumbnail; XMP; a comment) and the bytes it must go up as. */
+const CAMERA = jpegWithMetadata().bytes;
+const CAMERA_CLEAN = stripImageMetadata(CAMERA).bytes;
+const sha256 = (b) => createHash("sha256").update(b).digest("hex");
 
 /** What Zalo answers an uploaded product photo with. */
 const UPLOADED = Object.freeze({
@@ -357,6 +365,19 @@ describe("wire: business (src/zalo/api/business.js)", () => {
             );
             assert.equal(req.parts[0].size, IMAGE_BYTES.length);
             assert.deepEqual(rec.own.result, UPLOADED);
+        });
+
+        it("uploadProductPhoto: a photo goes up without its metadata, totalSize the stripped bytes'", async () => {
+            const file = join(SANDBOX_HOME, "product-camera.jpg");
+            writeFileSync(file, CAMERA);
+            const rec = await wire.run("uploadProductPhoto", [{ file }], { reply: UPLOADED });
+            assert.equal(rec.own.error, null);
+            const [req] = rec.own.requests;
+            // Red if the file's own bytes went up, or totalSize named them.
+            assert.deepEqual(
+                [req.parts[0].size, req.parts[0].sha256, req.params.totalSize],
+                [CAMERA_CLEAN.length, sha256(CAMERA_CLEAN), CAMERA_CLEAN.length],
+            );
         });
 
         it("uploadProductPhoto is marked not verified until a live run (its fields are not known)", () => {

@@ -17,6 +17,7 @@
  */
 import { readFile } from "node:fs/promises";
 import { ZaloApiError } from "../errors.js";
+import { stripImageMetadata } from "../strip-metadata.js";
 import { sealParams } from "../kernel/http.js";
 
 /** The currency the catalog's products are priced in (Zalo's default, Vietnamese dong). */
@@ -350,7 +351,8 @@ export function ruleUids(scope, uids) {
 
 /**
  * A product photo's bytes and size: a file path (read here, measured by the session's `imageMetadataGetter`) or an
- * attachment `{data, metadata: {totalSize}}`.
+ * attachment `{data, metadata: {totalSize}}`. Its embedded metadata is stripped first (src/zalo/strip-metadata.js), and
+ * `size` is then the stripped bytes' length.
  *
  * @param {object} ctx
  * @param {string|{data: Uint8Array, metadata?: {totalSize?: number}}} file
@@ -365,8 +367,11 @@ async function photoOf(ctx, file) {
         }
         const got = await measure(file);
         if (!got) throw new ZaloApiError("Failed to get image metadata");
-        return { bytes: await readFile(file), size: got.size || 0 };
+        const { bytes } = stripImageMetadata(await readFile(file));
+        return { bytes, size: bytes.length };
     }
+    const clean = stripImageMetadata(file?.data);
+    if (clean.bytes !== file?.data) return { bytes: clean.bytes, size: clean.bytes.length };
     return { bytes: file?.data, size: file?.metadata?.totalSize || 0 };
 }
 

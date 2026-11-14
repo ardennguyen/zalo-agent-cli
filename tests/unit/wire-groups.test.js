@@ -18,6 +18,9 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { jpegWithMetadata } from "../helpers/metadata-images.js";
+import { stripImageMetadata } from "../../src/zalo/strip-metadata.js";
 import { groupMethods } from "../../src/zalo/api/groups.js";
 import { FAKE, T0, expectGolden, openWire } from "../helpers/wire-diff/index.js";
 
@@ -35,6 +38,11 @@ const AVATAR = Buffer.concat([
 const AVATAR_PATH = join(SANDBOX_HOME, "avatar.jpg");
 /** What the session's imageMetadataGetter says about AVATAR_PATH (the engine's getter reads real images). */
 const AVATAR_META = { width: 640, height: 480, size: AVATAR.length };
+
+/** A phone-like JPEG (EXIF with GPS, make, model, a thumbnail; XMP; a comment) and the bytes it must go up as. */
+const CAMERA = jpegWithMetadata().bytes;
+const CAMERA_CLEAN = stripImageMetadata(CAMERA).bytes;
+const sha256 = (b) => createHash("sha256").update(b).digest("hex");
 
 /** n fake group ids, 9000000000000000000 + i (i < 1000 keeps them fakes by the convention). */
 const groupIds = (n) => Array.from({ length: n }, (_, i) => `9000000000000000${String(i).padStart(3, "0")}`);
@@ -292,6 +300,18 @@ describe("groups on the wire (wire-groups)", () => {
             });
             const bytes = only("changeGroupAvatar/bytes");
             assert.deepEqual([bytes.params.originWidth, bytes.params.originHeight], [10, 20]);
+        });
+
+        it("changeGroupAvatar: a photo goes up without its metadata", async () => {
+            const file = join(SANDBOX_HOME, "group-camera.jpg");
+            writeFileSync(file, CAMERA);
+            const rec = await wire.run("changeGroupAvatar", [file, G], { reply: "" });
+            assert.equal(rec.own.error, null);
+            // Red if the file's own bytes (GPS, make, model, thumbnail) went up.
+            assert.deepEqual(
+                [rec.own.requests[0].parts[0].size, rec.own.requests[0].parts[0].sha256],
+                [CAMERA_CLEAN.length, sha256(CAMERA_CLEAN)],
+            );
         });
 
         it("changeGroupAvatar: a size that cannot be read goes out as 1080 px, each edge on its own", () => {

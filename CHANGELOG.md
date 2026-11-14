@@ -26,6 +26,7 @@ A security release for the MCP server's OAuth, the official-API logins and movin
 
 #### Fixed
 
+- Photos sent through the CLI or MCP (`msg send-image`, `send-file` with a photo, `zalo_send_message` with `filePath`/`files`, a video's thumbnail, avatars, catalog and quick-message photos) no longer carry the camera's location and other metadata. EXIF (GPS position, device make and model, times, the embedded thumbnail), XMP, comments and text chunks are removed from JPEG, PNG and WebP before upload; the color profile and the image data are kept unchanged, and a JPEG's orientation is kept so the photo still shows upright. GIF, HEIC and other formats are sent as they are.
 - `/register` no longer returns the server's secret. Registered clients are public, or get a secret of their own that is stored only as a hash; registration needs `redirect_uris`, is rate limited and capped, and survives a restart.
 - Redirect URIs must be `https`, or `http` on `127.0.0.1`, `[::1]` or `localhost` (any port); `javascript:` and other schemes are refused.
 - Refresh tokens rotate on every use, and a reused one revokes the connection; `/revoke` works; a removed client's tokens stop working.

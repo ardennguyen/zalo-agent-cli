@@ -34,7 +34,7 @@ On the active version branch (`v2.5-dev` for 2.5.x, `v3.0-dev` for 3.0):
    defaults to `v3.0-dev`, so for a 2.5.x release pass `branch: v2.5-dev`. Run in the wrapper's repository, it sets the
    wrapper's engine range to `^N.0.0` for the newest published engine major (`^3.0.0` once 3.0.0 is out), or to the
    `engine_range` input when one is given.
-7. Wait for `ci.yml` (Ubuntu, Node 22) to pass on the merge commit — the offline suite has failed on
+7. Wait for `ci.yml` (Ubuntu, Node 22) to pass on the merge commit — the offline suite can fail on
    Linux after passing on Windows — then tag the merge commit and push the tag: `git tag vX.Y.Z <merge-sha> && git push origin vX.Y.Z`.
    The tag is the only name a release has; never create a branch named after it.
 8. Create the GitHub Release from the tag with the CHANGELOG section as its body

@@ -11,7 +11,7 @@ This document covers deploying the **`zalo-mcp`** wrapper — a self-contained, 
 ## How the two repos relate
 
 - **`zalo-agent-cli`** (this repo) — the core engine. All API logic, auth, and the actual MCP server source (`src/mcp/`) live here. Since 3.0.0 it speaks to Zalo through its own implementation of Zalo's protocol (`src/zalo/`), with no zca-js.
-- **`zalo-mcp`** — a lightweight deployment wrapper (separate repo: [github.com/ardennguyen/zalo-mcp](https://github.com/ardennguyen/zalo-mcp)). It contains no engine code; its install script pulls `zalo-agent-cli` into an isolated local folder, links the global `zalo-mcp` and `zalo-agent` CLI commands, and writes a `.env` so an AI client can run it immediately. When invoked without a CLI subcommand (`zalo-mcp` or `node mcp-server.js`), it spawns `zalo-agent mcp start` and forwards all `mcp start` flags (`--account`, `--http`, `--auth`, `--host`, `--config`, `--no-self-heal`, `--no-delivered-receipts`, plus global storage flags); when invoked with a CLI subcommand (`zalo-mcp login`, `zalo-mcp --account <ID> msg list --json`, `zalo-mcp sync`, …), it forwards the arguments directly to `zalo-agent`.
+- **`zalo-mcp`** — a lightweight deployment wrapper (separate repo: [github.com/ardennguyen/zalo-mcp](https://github.com/ardennguyen/zalo-mcp)). It contains no engine code; its install script pulls `zalo-agent-cli` into an isolated local folder, links the global `zalo-mcp` and `zalo-agent` CLI commands, and writes a `.env` so an AI client can run it immediately. When invoked without a CLI subcommand (`zalo-mcp` or `node mcp-server.js`), it spawns `zalo-agent mcp start` and forwards all `mcp start` flags (`--account`, `--http`, `--auth`, `--host`, `--cert`, `--key`, `--client-id`, `--client-secret`, `--public-url`, `--issuer-url`, `-w`/`--webhook`, `--webhook-secret`, `--config`, `--no-self-heal`, `--no-delivered-receipts`, `--log-level`, `-d`/`--daemon`, `--stop`, `--status`, plus the global storage flags); when invoked with a CLI subcommand (`zalo-mcp login`, `zalo-mcp --account <ID> conv recent --json`, `zalo-mcp sync`, …), it forwards the arguments directly to `zalo-agent`.
 
 Because the wrapper is a pass-through, **the MCP tool surface is defined entirely by `src/mcp/mcp-tools.js` in this repo** — whichever `zalo-agent-cli` version `zalo-mcp` has installed.
 
@@ -285,7 +285,7 @@ Each registered personal account has its own isolated SQLite database (`<DATA_DI
 
 ### MCP tools exposed
 
-This engine source registers **36 MCP tools** in `src/mcp/mcp-tools.js`, all covering the **personal account**:
+This engine source registers **37 MCP tools** in `src/mcp/mcp-tools.js`: 36 for the **personal account**, and `zalo_official` for the official APIs:
 
 | Tool | Purpose |
 |:---|:---|
@@ -325,10 +325,11 @@ This engine source registers **36 MCP tools** in `src/mcp/mcp-tools.js`, all cov
 | `zalo_cloud` | The local zCloud index: summary, cleanup plan, and the cleanup itself (guarded) |
 | `zalo_sticker` | Find stickers by keyword, and their details |
 | `zalo_link` | A link's preview, and whether Zalo considers it safe |
+| `zalo_official` | Runs an Official Account, ZBS or Social API command (`oa …`, `zbs …`, `social …`) by its CLI name, on the owner's official logins; omit `command` to list them |
 
 See [Sync usage and details](docs/mcp-sync.md) / [Tiếng Việt](docs/mcp-sync.vi.md).
 
-Every personal CLI command has an MCP action. **CLI-only** are the Official Account, ZBS and Social API commands (`oa …`, `zbs …`, `social …`, separate official APIs), logging in and out (`login`, `logout`, `status`), the local account registry (`account list|login|switch|remove|info|export`), the operator's steps on this machine's keys and data (`account security …`, `db query|backup|export|verify|purge`), the runtime policy (`policy …`: an agent never sees or changes its own limits), the daemon and fleet commands (`listen`, `mcp start`, `mcp webhook …`, `mcp approver`, `presence status|wake|park`, `fleet …`), `update`, `profile lost-focus`, and `cloud get` (it takes the account's cloud key); agents reach them by shelling out to `zalo-agent <command> --json` (or `zalo-mcp <command> --json`).
+Every CLI command has an MCP action. **CLI-only** are the official-API logins and listener (`oa login|setup|init|listen`, `social setup|login`: they take a secret, open a browser or run a server), logging in and out (`login`, `logout`, `status`), the local account registry (`account list|login|switch|remove|info|export`), the operator's steps on this machine's keys and data (`account security …`, `db query|backup|export|verify|purge`), the runtime policy (`policy …`: an agent never sees or changes its own limits), the daemon and fleet commands (`listen`, `mcp start`, `mcp webhook …`, `mcp approver`, `presence status|wake|park`, `fleet …`), `update`, `profile lost-focus`, and `cloud get` (it takes the account's cloud key); agents reach them by shelling out to `zalo-agent <command> --json` (or `zalo-mcp <command> --json`).
 
 Full tool reference (parameters, return shapes, config): [skill/references/mcp-guide.md](skill/references/mcp-guide.md).
 
@@ -415,8 +416,7 @@ Append `--json` to any command for machine-readable output. This is a shortlist 
 | `npx zalo-agent whoami` | Show the logged-in user's full profile |
 | `npx zalo-agent login [--qr-url] [--public-url <url>] [--credentials <path>] [-p <proxy>] [--no-sync] [--sync-days <n>] [--verbose]` | QR login, or restore from an exported credentials file. After a QR login it reads the phone's "sync messages to this device" tick: ticked, the history is restored at once (no tap); not ticked, it prints the `sync --from <date>` run to use. `--no-sync` only reports; `--verbose` lists what it read. A re-login keeps the device id |
 | `npx zalo-agent logout --yes [--delete-history] [--purge] [--no-remote] [--keep-session]` | Sign the device out at Zalo (as Zalo's own apps do) and delete the saved credentials; `--keep-session` only ends the session key (the pre-v3.0 behavior, after which the login ends at Zalo only when the device is removed from the phone's list); optionally delete the local cache or wipe the account entirely |
-| `npx zalo-agent sync-mobile --transfer [-d <days>]` | **Restore message history from your phone** into the local cache (one confirmation on the phone). Full history by default; `-d/--days <n>` limits it to the last *n* days and finishes much sooner |
-| `npx zalo-agent sync-mobile [-F] [-w <s>]` | Restore history from your phone — prompts the phone once. Add `--socket` for the old server probe, which contacts no phone and usually returns nothing |
+| `npx zalo-agent sync-mobile [-d <days>]` | **Restore message history from your phone** into the local cache (one confirmation on the phone). Full history by default; `-d/--days <n>` limits it to the last *n* days and finishes much sooner |
 | `npx zalo-agent update` | Self-update to the latest published version |
 | `npx zalo-agent mcp start [--http <port>] [--host <addr>] [-d]` | Start the MCP server (token from `ZALO_MCP_AUTH_TOKEN`; HTTP runs on-demand presence) |
 | `npx zalo-agent presence status\|wake\|park` / `presence resume --yes` | The running daemon's socket under on-demand presence; `resume` takes the account back after a yield |
@@ -483,8 +483,8 @@ See [`.env.example`](.env.example) for a template.
 | `ZALO_MEDIA_DIR` | Root directory for downloaded media `<threadId>/` and `_conversations.json` across all commands (default `<DATA_DIR>/<ownId>/media`; also overridable via `--media-dir`) |
 | `ZALO_OA_DIR` | Directory for Official Account `oa-credentials.json` (default `~/.zalo-agent`; also overridable via `--oa-dir`) |
 | `ZALO_AGENT_NO_UPDATE_CHECK` | Set to any value to disable the background update-version check |
-| `ZALO_API_VERSION` | Protocol version announced to Zalo (`zpw_ver` / `client_version`), on the HTTP calls and the WebSocket URL alike. Default `695` (the value Zalo currently expects); set an older value such as `685` to roll back. Must be a positive whole number — `0685`, `6.91`, `1e3`, `0x2b3`, `-685` and `0` are refused before Zalo is contacted, so a bad value fails every login rather than quietly falling back. Whitespace-only counts as unset. Only logins read it. |
-| `ZALO_QR_FLOW` | Which QR login `login` uses: `official` (the default: the sequence Zalo's own login makes, no `verify-client`, `continue=https://chat.zalo.me/`, the session redirects through `jr.zaloapp.com` and `jr.chat.zalo.me`, and the second QR an account with a trusted device is asked to scan, which makes this client a trusted companion device). It is the only QR login: `legacy` was removed in 3.0.0 and, like any value other than `official`, is refused before Zalo is contacted. Only QR logins read it |
+| `ZALO_API_VERSION` | Protocol version announced to Zalo (`zpw_ver` / `client_version`), on the HTTP calls and the WebSocket URL alike. Default `695` (the value Zalo currently expects); set an older value such as `685` to roll back. Must be a positive whole number: anything else is refused before Zalo is contacted, so a bad value fails every login rather than quietly falling back. Only logins read it. |
+| `ZALO_QR_FLOW` | Which QR login `login` uses: `official` (the default, and the only value: it includes the second QR an account with a trusted device is asked to scan, which makes this client a trusted companion device). `legacy` was removed in 3.0.0 and, like any value other than `official`, is refused before Zalo is contacted. Only QR logins read it |
 | `ZALO_NET_PROBE` | What a daemon asks to learn whether the network is up while its socket is down (every 10 s). A URL, by default a global search engine's lightweight page; `off` assumes the network is always up and contacts nothing but Zalo |
 | `ZALO_JSON_MODE` | Set automatically by the CLI in `--json` and `mcp` modes, so that stdout carries only machine-readable output. Don't set it by hand |
 | `ZALO_MCP_HTTP_PORT` | Read by `mcp start` and the `zalo-mcp` wrapper as the fallback `--http` port (supports `ZALO_MCP_HTTP_PORT_<ownId>`) |
@@ -524,7 +524,7 @@ This is a shortlist. Every variable, `mcp-config.json` key, `storage.json` key a
 | `--no-self-heal cannot run with on-demand presence` at start | The catch-up is how a parked window comes back. Drop `--no-self-heal`, or set `presence.mode: "always-on"` |
 | A bot that opened `zalo.db` gets `file is not a database` | Since 3.0.0 the database is encrypted (SQLCipher). Use `zalo-agent db query` / `db export` or the MCP tools |
 | A read-only command stops with `PLAINTEXT` | A 2.x file it may not migrate itself; run `zalo-agent account security migrate --all` (with no daemon running) |
-| `logout` (any form) / `account remove` refuses with a PID | A `listen` or `mcp start` daemon holds `daemon.lock` for that account. Stop it first |
+| `logout` (any form) / `account remove` refuses with a PID | A `listen` or `mcp start` daemon holds `daemon.lock` for that account. Stop it first (`--stop`) |
 | `Thread name cache not initialized yet` from `zalo_search_threads` | The cache builds at MCP startup by fetching all groups + friends. Retry after a few seconds |
 | HTTP MCP server unreachable from another machine | By default `--http` binds `127.0.0.1` (loopback only). On a LAN, set `ZALO_MCP_HOST` to the LAN address and `ZALO_MCP_AUTH_TOKEN` in the environment (never `--auth` on a command line); on the internet, keep loopback behind a TLS reverse proxy (docs/config-samples/use-cases) (supported on both `zalo-mcp` and `zalo-agent mcp start`) |
 | `zalo_view_media` saves somewhere other than `accounts/<ownId>/media/<threadId>/` | Only when `--media-dir` / `ZALO_MEDIA_DIR` is set, or `media.downloadDir` is set in `mcp-config.json`. Unset, the server uses the same per-account folder as every other command |

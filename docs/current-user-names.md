@@ -2,7 +2,7 @@
 
 [Tiếng Việt](current-user-names.vi.md)
 
-How this client names a person in every output (3.0), then the 2.x change that introduced current labels ([PR #2](https://github.com/ardennguyen/zalo-agent-cli/pull/2)), kept as history. Where this page and [the command reference](../skill/references/command-reference.md) differ, the command reference is current.
+How this client names a person in every output. Where this page and [the command reference](../skill/references/command-reference.md) differ, the command reference is current.
 
 ## How names work in 3.0: alias first, everywhere
 
@@ -14,7 +14,7 @@ and `group` commands, mentions, quoted messages (`replyTo`), reactions, typing a
 
 | Field | On a message | Meaning |
 |---|---|---|
-| `senderName` | yes | the name to show: the owner's alias when one is set, else the name the message carried, else the current profile name. **Changed in 3.0:** it used to be the name the message carried |
+| `senderName` | yes | the name to show: the owner's alias when one is set, else the name the message carried, else the current profile name. **Changed in 3.0:** in 2.x it was the name the message carried |
 | `senderAlias` | yes | the alias, or `null` |
 | `senderZaloName` | yes | the name the message carried (the stored snapshot, never rewritten) |
 | `senderDisplayName`, `senderDisplayNameSource` | yes | the current label and where it came from: `alias`, `phonebook`, `zalo`, `display` or `uid` |
@@ -32,73 +32,20 @@ snapshot (an absent entry means the owner removed that alias, so only a complete
 (the account's own name changed on another device) rereads the account's name. An incoming direct message costs no
 alias request: the daemon's snapshot answers it.
 
-The rest of this page is the 2.x change that introduced current labels, kept as history.
+## Messages restored from the phone
 
-## The 2.x change (history)
+A phone-backed restore (`zalo-agent sync`) resolves each sender before it stores a batch: a 1-1 conversation's
+identity comes from the conversation map, anyone else's from a batched profile lookup. Group identities never become
+sender names, and no identity is guessed from message text or the conversation name. A sender that cannot be
+resolved keeps its id with an empty name and is tried again by a later restore; a later restore can also fill a
+missing id or an empty name, but never replaces a known id or a name already stored.
 
-Phone-restored messages previously stored opaque sender IDs and empty names.
-Sync now resolves senders before each chunk's SQLite transaction, reusing DM
-identities from the conversation map and the existing batched profile
-`gid/decrypt` + `getUserInfo` fallback for other users. Group identities never
-seed sender names. A per-run cache avoids repeated requests, including failed
-lookups. Unresolved IDs remain intact with an empty name; no identity is inferred
-from message text or the conversation name.
+## Notes
 
-The existing message upsert can enrich an opaque/missing sender ID and fill an
-empty name on replay. It preserves established numeric identities, nonempty
-names, recall tombstones, attachment paths, and monotonic receipt status.
-
-Current display labels are now separate from message snapshots:
-
-- `senderName` remained the stored historical/first-known snapshot (in 3.0 that value is `senderZaloName`). Phone restores
-  that do not carry the original name can only fill an empty snapshot from the
-  profile observed during restoration; this does not reconstruct past names.
-- `senderDisplayName` is resolved at read time by UID: this account's explicit
-  alias, then the profile's `zaloName`, then UID. `senderDisplayNameSource` was
-  `alias`, `zalo`, or `uid` (3.0: alias, phonebook name, `zaloName`, display name, UID, with the sources
-  `alias`, `phonebook`, `zalo`, `display`, `uid`). The ambiguous API `displayName` is not a substitute
-  for `zaloName` in this hierarchy.
-- MCP buffered/history reads and CLI message history expose these additive
-  fields. CLI human-readable history prints the current label. Display reads
-  do not modify SQLite or the message buffer's historical names.
-- Current labels used fresh account-scoped API reads, with alias pagination and
-  profile batches of 100 (in 3.0 a daemon keeps a complete alias snapshot instead,
-  replaced by every complete read, see above).
-  Failure/partial alias snapshots are discarded; unavailable profiles fall
-  back to UID rather than a stale historical name.
-- Sync refreshes cached DM titles, including non-friends outside the requested
-  message window, without changing activity order. MCP DM conversation lists,
-  thread lists, and searches also refresh current labels. Group titles are
-  never replaced by a member's alias.
-
-## Validation (2.x)
-
-- Shipped in 2.x through [PR #2](https://github.com/ardennguyen/zalo-agent-cli/pull/2).
-- Regression suite: `tests/unit/sync-v2-senders.test.js`, including SQLite-to-MCP
-  history output and protection against conflicting sender identities.
-- Required gate: `npm run format`, `npm run lint`, `npm run format:check`, `npm test`.
-- Full gate passed on Node 24.11.0: 1,922 tests passed, 4 skipped, 0 failed
-  (`npm test -- --test-concurrency=4`). Loopback daemon tests required execution
-  outside the socket-restricted sandbox. Formatting and zero-warning lint passed.
-- No live account sync, production database edits, wrapper update, or deployment
-  was performed. Offline tests use synthetic identities and isolated databases.
-
-## Operation and limitations
-
-No schema migration is needed. Existing rows are enriched when they are replayed
-by a later phone-backed message restore using the fixed engine. Merely restarting
-MCP or reading history does not rewrite them. Back up the account database (`zalo-agent db backup -o <file>`; the database is
-encrypted at rest since 3.0) before an operational restore and use the documented `sync-mobile` options in
-`skill/references/command-reference.md`; a restore requires phone confirmation.
-
-Profile lookups are best-effort. A resolved UID falls back to its own ID for
-current display when alias/profile data is unavailable. An opaque sender is
-retried on a later restore rather than once per message. Current-name reads
-add alias/profile REST requests, batched rather than one request per message;
-they open no listener and introduce no new account credentials. No live API
-rate-limit or load measurement has been performed. The wrapper continues using
-its pinned published engine until
-its normal release/update process installs a version containing the fix.
-
-Existing project references: `README.md`, `docs/deployment.md`,
-`docs/agent-notes.md`, and `skill/references/command-reference.md`.
+- A restored message that did not carry its sender's original name gets the name the profile has at restore time;
+  past names are not reconstructed.
+- Profile lookups are best-effort: with no alias or profile available, a person is shown by their id.
+- Showing current names adds batched alias and profile requests, never one request per message, and opens no
+  second listener.
+- Existing rows are enriched only by a later restore; restarting the MCP server or reading history does not rewrite
+  them. Back up the account database first (`zalo-agent db backup -o <file>`); a restore needs a tap on the phone.

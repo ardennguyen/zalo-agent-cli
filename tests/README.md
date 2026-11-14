@@ -13,7 +13,7 @@ contacts Zalo or reads your real `~/.zalo-agent-cli/`. Some tests use disposable
 loopback servers and subprocess transports.
 
 ```bash
-npm test                      # 6367 offline tests — no Zalo session needed
+npm test                      # 6384 offline tests — no Zalo session needed
 npm run test:unit             # just tests/unit/
 npm run test:cli              # just tests/cli/
 npm run lint                  # ESLint over src/ and tests/
@@ -225,7 +225,7 @@ bare `ETIMEDOUT`, and keeps the original error as its `cause`.
 | `unit/zalo-boundary.test.js`                                                                                                                          | `src/zalo/` imports nothing from the app (`src/core`, `src/utils`, `src/commands`, `src/mcp`, `src/index.js`): every static import, re-export and dynamic import of every file in the layer, a planted file per way out to prove the check can go red, and the public entry `src/zalo/index.js` loading on its own                                                                                                                                                                                                                                                      |
 | `unit/daemon-channel.test.js`                                                                                                                         | The loopback channel a daemon serves: descriptor lifecycle, token rejection, stale-pid cleanup, dead-port fallback, and that the daemon's _current_ api is used after a reconnect. Plus the `sync` stage routes — progress streaming while the stage is still running, the one-sync-at-a-time guard, uploads still served during a sync, NDJSON reassembly across a split write, and the rule that only a truly absent daemon reads as "no daemon"                                                                                                                      |
 | `unit/sync-v2-plan.test.js`                                                                                                                           | What one `zalo-agent sync` run does: at most one phone prompt across every stage combination, one socket window, a running daemon never evicted — and, when that daemon lends its socket, that the run never both hands off _and_ opens one of its own                                                                                                                                                                                                                                                                                                                  |
-| `unit/sync-v2-conv-state.test.js`                                                                                                                     | Pinned/unread state with the live-measured shapes: `g`/`u`-prefixed pin ids, unread ids rounded past 2^53 and matched only when unique                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `unit/sync-v2-conv-state.test.js`                                                                                                                     | Pinned/unread state with the shapes Zalo sends: `g`/`u`-prefixed pin ids, unread ids rounded past 2^53 and matched only when unique                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `unit/sync-v2-restore-success.test.js`                                                                                                                | A confirmed restore records success and resolves only the gaps its window covered, so the debounce stops re-pinging the phone                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `unit/sync-socket-rules.test.js`                                                                                                                      | Static: `sync.js` starts a listener only in `connectListener`, the unified run never calls an exiting `run*` body, and no `run*` command opens a socket without first asking whether a daemon already holds one                                                                                                                                                                                                                                                                                                                                                         |
 | `unit/packaging.test.js`                                                                                                                              | The published tarball carries no third-party Zalo client and runs no install step of its own; `ws` and `tough-cookie` are declared, and no install script needs a devDependency in a consumer's tree                                                                                                                                                                                                                                                                                                                                                                    |
@@ -392,11 +392,9 @@ of `targets.json`, was the only thing between `--tier 5 --destructive` and a
 bare `npm run test:e2e` cannot end your session.
 
 `run-e2e.js` **strips all three gate variables from the environment** it
-passes down and then sets them from its own flags. It used to spread
-`process.env` and only ever add, so an ambient `ZALO_TEST_END_SESSION=1`
-left over in a shell passed straight through to the real-logout tier — and
-the banner keys off the flag variable rather than the environment, so
-nothing warned. An inherited value is now discarded and named on stderr.
+passes down and then sets them from its own flags, so an ambient
+`ZALO_TEST_END_SESSION=1` left over in a shell never reaches the real-logout
+tier. An inherited value is discarded and named on stderr.
 
 | Gate                        | Unlocks                                                                                   |
 | --------------------------- | ----------------------------------------------------------------------------------------- |
@@ -446,11 +444,8 @@ cp tests/targets.example.json tests/targets.json
 - `home` — the throwaway config directory the live suite is allowed to drive
   (this is what `USERPROFILE`/`HOME` are set to for every CLI subprocess).
   **Required, and validated**: a missing key, a path that does not exist, or
-  your real home directory all refuse the run outright. It used to be
-  unvalidated and fell back to `process.env.USERPROFILE`, so anyone who
-  copied `targets.example.json` on another machine and deleted the
-  machine-specific line rather than editing it silently pointed the
-  destructive tiers at their own account.
+  your real home directory all refuse the run outright, so the destructive
+  tiers can never fall back to your own account.
 - `accountOwnId` — the account the suite expects to be logged in as. A
   mismatch aborts before anything is written: tier 1 probes it, and tiers
   2–5 each call `assertSession()` in a `before()` hook, so a `--tier 5` run
@@ -551,11 +546,9 @@ Step 2 also **locks** every poll the ledger holds. Locking is not deletion;
 it is the only closure the product has (see the cleanup note above), so a
 tier-4 run leaves polls closed but present.
 
-`conv delete` **used to be step 4 here** and has moved to tier 5a. Execution
-order was never the problem — blast radius was. Wiping a conversation
-destroys history with no undo, and tier 4 runs on a bare
-`npm run test:e2e`, which put permanent history loss behind `ZALO_TEST_LIVE=1`
-— the same gate that unlocks read-only tier 1.
+`conv delete` is not in tier 4: wiping a conversation destroys history with no
+undo, and tier 4 runs on a bare `npm run test:e2e`, behind the same
+`ZALO_TEST_LIVE=1` gate that unlocks read-only tier 1. It runs in tier 5a.
 
 **Tier 5 — irreversible.** Split by how hard each step is to come back from:
 
@@ -580,14 +573,12 @@ destroys history with no undo, and tier 4 runs on a bare
   deletes the credentials. **Nothing restores this**; you must scan a QR code
   on your phone. Behind its own gate, last.
 
-Every `logout` deletes the saved credentials since 2026-09-30, so none of them
-is safe outside tier 5's backup. What the older logout did at Zalo was measured
-that day: its calls end only this device's session _key_ — with the credentials
-kept, the next command logged straight back in, and the phone kept listing the
-web session as signed in (`logout --keep-session` still does exactly that). Since
-v3.0 the default `logout` makes Zalo's six sign-out calls and then tries the
-saved login once; tier 5e checks that it is refused. Tier 4 used to run `logout --no-remote`
-as a harmless no-op; that no-op was the bug, and tier 4 no longer logs out.
+Every `logout` deletes the saved credentials, so none of them is safe outside
+tier 5's backup. `logout --keep-session` ends only this device's session _key_:
+with the credentials kept, the next command logs straight back in, and the phone
+keeps listing the web session as signed in. The default `logout` makes Zalo's six
+sign-out calls and then tries the saved login once; tier 5e checks that it is
+refused. Tier 4 does not log out.
 
 ### Transient failures
 
@@ -693,9 +684,8 @@ returned for a deliberately wrong id in testing.
 
 Ground truth is the server's own push: with `listen` running, a real recall
 emits `{"event":"undo", "msgId": …, "applied":true}`, and a one-sided delete
-emits `deleted_for_me`. Prefer that over the REST history, which lagged by a
-full day when this was measured and did not show messages sent minutes
-earlier.
+emits `deleted_for_me`. Prefer that over the REST history, which can lag and
+may not show messages sent minutes earlier.
 
 The DM recall endpoint is a different URL (`/api/message/undo`) and may well
 validate the id. It is deliberately **untested** — the only DM target is a real
@@ -873,7 +863,7 @@ Zalo allows one web session per account and this CLI occupies it. Verified
 
 - [ ] `listen` — messages stream live; reconnects after a network drop
 - [ ] `listen --events message,friend,group,reaction` — group/reaction events appear
-- [ ] `listen --events read`, then open a disposable thread on the phone — a `read` event names that thread, and `conv_state.lastReadMsgId` moves; mark it unread on the phone — an `unread_mark` event (the triage's probe 3; not yet measured)
+- [ ] `listen --events read`, then open a disposable thread on the phone — a `read` event names that thread, and `conv_state.lastReadMsgId` moves; mark it unread on the phone — an `unread_mark` event
 - [ ] `listen --webhook <url>` — one JSON POST per event; a dead webhook does not stall processing
 - [ ] `listen --save ./logs` — one `<threadId>.jsonl` per thread
 - [ ] A second `listen` for the same account is refused (`daemon.lock`)

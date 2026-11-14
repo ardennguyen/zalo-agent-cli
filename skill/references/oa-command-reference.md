@@ -6,7 +6,7 @@ Zalo's official APIs (OA OpenAPI v2.0/v3.0, ZBS Template Message and the Social 
 - `zbs` uses the same OA access token and credentials as `oa`: log in once with `oa login` (or `oa init`), then both work.
 - `oa`/`zbs` commands skip the unofficial-API disclaimer and the personal-account auto-login — they manage their own OAuth token.
 - Credentials live in `~/.zalo-agent/oa-credentials.json` — a **different directory** from the personal account's `~/.zalo-agent-cli/` (moved with the global `--oa-dir <dir>` or `ZALO_OA_DIR`).
-- **No `oa` or `zbs` command is exposed as an MCP tool.** Agents connected over MCP shell out: `zalo-agent --json oa <command>` / `zalo-agent --json zbs <command>`.
+- **Over MCP**, the `zalo_official` tool runs these commands by their CLI name (`{"command": "oa msg text", "args": ["<uid>", "…"]}`); omit `command` to list them. `oa login`, `oa setup`, `oa init`, `oa listen`, `social setup` and `social login` stay on the CLI.
 - The access token goes in the `access_token` header, never the URL. An expired token (`-216`/`-220`, ZBS `-124`) is refreshed once with the stored refresh token (serialized under a file lock) and the call retried once.
 - Documented limits (text length, upload type and size, page sizes) are checked before anything is sent.
 

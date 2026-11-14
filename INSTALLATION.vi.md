@@ -11,7 +11,7 @@ Tài liệu này hướng dẫn triển khai bộ wrapper **`zalo-mcp`** — b�
 ## Mối quan hệ giữa hai repository
 
 - **`zalo-agent-cli`** (repo này) — engine cốt lõi. Toàn bộ logic API, xác thực và mã nguồn MCP server (`src/mcp/`) nằm tại đây. Từ 3.0.0 engine giao tiếp với Zalo bằng phần cài đặt giao thức Zalo của chính nó (`src/zalo/`), không còn zca-js.
-- **`zalo-mcp`** — bộ wrapper triển khai gọn nhẹ (repo riêng: [github.com/ardennguyen/zalo-mcp](https://github.com/ardennguyen/zalo-mcp)). Repo này không chứa code engine; script cài đặt của nó tải `zalo-agent-cli` vào thư mục cục bộ cô lập, liên kết lệnh toàn cục `zalo-mcp` và `zalo-agent`, đồng thời tạo file `.env` để AI client có thể chạy ngay. Khi gọi không kèm lệnh con (`zalo-mcp` hoặc `node mcp-server.js`), nó khởi chạy `zalo-agent mcp start` và chuyển tiếp toàn bộ các flag của `mcp start` (`--account`, `--http`, `--auth`, `--host`, `--cert`, `--key`, `--client-id`, `--client-secret`, `--public-url`, `--issuer-url`, `-w`/`--webhook`, `--webhook-secret`, `--config`, `--no-self-heal`, `--no-delivered-receipts`, `-d`/`--daemon`, `--stop`, `--status`, cùng các flag lưu trữ toàn cục); khi gọi kèm lệnh con CLI (`zalo-mcp login`, `zalo-mcp --account <ID> msg list --json`, `zalo-mcp sync`, …), nó chuyển tiếp trực tiếp các tham số sang `zalo-agent`.
+- **`zalo-mcp`** — bộ wrapper triển khai gọn nhẹ (repo riêng: [github.com/ardennguyen/zalo-mcp](https://github.com/ardennguyen/zalo-mcp)). Repo này không chứa code engine; script cài đặt của nó tải `zalo-agent-cli` vào thư mục cục bộ cô lập, liên kết lệnh toàn cục `zalo-mcp` và `zalo-agent`, đồng thời tạo file `.env` để AI client có thể chạy ngay. Khi gọi không kèm lệnh con (`zalo-mcp` hoặc `node mcp-server.js`), nó khởi chạy `zalo-agent mcp start` và chuyển tiếp toàn bộ các flag của `mcp start` (`--account`, `--http`, `--auth`, `--host`, `--cert`, `--key`, `--client-id`, `--client-secret`, `--public-url`, `--issuer-url`, `-w`/`--webhook`, `--webhook-secret`, `--config`, `--no-self-heal`, `--no-delivered-receipts`, `--log-level`, `-d`/`--daemon`, `--stop`, `--status`, cùng các flag lưu trữ toàn cục); khi gọi kèm lệnh con CLI (`zalo-mcp login`, `zalo-mcp --account <ID> conv recent --json`, `zalo-mcp sync`, …), nó chuyển tiếp trực tiếp các tham số sang `zalo-agent`.
 
 Vì wrapper hoạt động theo cơ chế chuyển tiếp nguyên vẹn (pass-through), **danh sách MCP tool được quyết định hoàn toàn bởi `src/mcp/mcp-tools.js` trong repo này** — theo đúng phiên bản `zalo-agent-cli` đang cài trong `zalo-mcp`.
 
@@ -283,9 +283,9 @@ Mỗi tài khoản cá nhân đã đăng ký có cơ sở dữ liệu SQLite (`<
    zalo-mcp --account 202 sync --days 7
    ```
 
-### Danh sách 36 MCP tools
+### Danh sách 37 MCP tools
 
-Engine này đăng ký **36 MCP tools** trong `src/mcp/mcp-tools.js`, phục vụ cho **tài khoản cá nhân**:
+Engine này đăng ký **37 MCP tools** trong `src/mcp/mcp-tools.js`: 36 tool cho **tài khoản cá nhân**, và `zalo_official` cho các API chính thức:
 
 | Tool | Công dụng |
 |:---|:---|
@@ -325,10 +325,11 @@ Engine này đăng ký **36 MCP tools** trong `src/mcp/mcp-tools.js`, phục v�
 | `zalo_cloud` | Chỉ mục zCloud cục bộ: tóm tắt, kế hoạch dọn dẹp và dọn dẹp thật (được bảo vệ) |
 | `zalo_sticker` | Tìm sticker theo từ khóa và xem chi tiết |
 | `zalo_link` | Xem trước một liên kết và kiểm tra Zalo có coi nó là an toàn không |
+| `zalo_official` | Chạy một lệnh Official Account, ZBS hoặc Social API (`oa …`, `zbs …`, `social …`) theo tên lệnh CLI, trên các lần đăng nhập chính thức của chủ tài khoản; bỏ `command` để liệt kê |
 
 Xem thêm [Chi tiết sử dụng đồng bộ qua MCP](docs/mcp-sync.vi.md) / [English](docs/mcp-sync.md).
 
-Mọi lệnh CLI của tài khoản cá nhân đều có hành động MCP tương ứng. **Chỉ có trên CLI**: các lệnh Official Account, ZBS và Social API (`oa …`, `zbs …`, `social …`, các API chính thức riêng), đăng nhập và đăng xuất (`login`, `logout`, `status`), danh sách tài khoản trên máy (`account list|login|switch|remove|info|export`), các bước của người vận hành trên khóa và dữ liệu của máy này (`account security …`, `db query|backup|export|verify|purge`), chính sách runtime (`policy …`: agent không bao giờ xem hay đổi giới hạn của chính nó), các lệnh daemon và fleet (`listen`, `mcp start`, `mcp webhook …`, `mcp approver`, `presence status|wake|park`, `fleet …`), `update`, `profile lost-focus`, và `cloud get` (cần khóa cloud của tài khoản); AI agent dùng chúng bằng cách gọi `zalo-agent <lệnh> --json` (hoặc `zalo-mcp <lệnh> --json`).
+Mọi lệnh CLI đều có hành động MCP tương ứng. **Chỉ có trên CLI**: các lệnh đăng nhập và listener của API chính thức (`oa login|setup|init|listen`, `social setup|login`: nhận secret, mở trình duyệt hoặc chạy máy chủ), đăng nhập và đăng xuất (`login`, `logout`, `status`), danh sách tài khoản trên máy (`account list|login|switch|remove|info|export`), các bước của người vận hành trên khóa và dữ liệu của máy này (`account security …`, `db query|backup|export|verify|purge`), chính sách runtime (`policy …`: agent không bao giờ xem hay đổi giới hạn của chính nó), các lệnh daemon và fleet (`listen`, `mcp start`, `mcp webhook …`, `mcp approver`, `presence status|wake|park`, `fleet …`), `update`, `profile lost-focus`, và `cloud get` (cần khóa cloud của tài khoản); AI agent dùng chúng bằng cách gọi `zalo-agent <lệnh> --json` (hoặc `zalo-mcp <lệnh> --json`).
 
 Tham chiếu đầy đủ về MCP tools (tham số, cấu trúc trả về, cấu hình): [skill/references/mcp-guide.md](skill/references/mcp-guide.md).
 
@@ -415,7 +416,7 @@ Thêm `--json` vào bất kỳ lệnh nào để nhận kết quả JSON phục 
 | `npx zalo-agent whoami` | Xem hồ sơ đầy đủ của tài khoản đang đăng nhập |
 | `npx zalo-agent login [--qr-url] [--public-url <url>] [--credentials <path>] [-p <proxy>] [--no-sync] [--sync-days <n>] [--verbose]` | Đăng nhập QR, hoặc khôi phục từ file credentials đã xuất. Sau khi đăng nhập QR, lệnh đọc ô "Đồng bộ tin nhắn về thiết bị này" trên điện thoại: có tick thì khôi phục lịch sử ngay (không cần chạm); không tick thì in ra lệnh `sync --from <ngày>` cần chạy. `--no-sync` chỉ báo; `--verbose` liệt kê những gì đã đọc. Đăng nhập lại giữ nguyên mã thiết bị |
 | `npx zalo-agent logout --yes [--delete-history] [--purge] [--no-remote] [--keep-session]` | Đăng xuất thiết bị khỏi Zalo (như ứng dụng Zalo) và xóa credentials đã lưu; `--keep-session` chỉ kết thúc khóa phiên (cách cũ trước v3.0, khi đó phiên chỉ kết thúc hẳn nếu gỡ thiết bị trong danh sách trên điện thoại); tùy chọn xóa cache cục bộ hoặc xóa sạch dữ liệu tài khoản |
-| `npx zalo-agent sync-mobile --transfer [-d <days>]` | **Khôi phục lịch sử tin nhắn từ điện thoại** vào cache cục bộ (xác nhận một lần trên điện thoại). Mặc định lấy toàn bộ lịch sử; `-d/--days <n>` giới hạn trong *n* ngày gần nhất |
+| `npx zalo-agent sync-mobile [-d <days>]` | **Khôi phục lịch sử tin nhắn từ điện thoại** vào cache cục bộ (xác nhận một lần trên điện thoại). Mặc định lấy toàn bộ lịch sử; `-d/--days <n>` giới hạn trong *n* ngày gần nhất và xong nhanh hơn nhiều |
 | `npx zalo-agent update` | Tự cập nhật lên phiên bản mới nhất đã phát hành |
 | `npx zalo-agent mcp start [--http <port>] [--host <addr>] [-d]` | Khởi chạy MCP server (token lấy từ `ZALO_MCP_AUTH_TOKEN`; HTTP chạy hiện diện on-demand) |
 | `npx zalo-agent presence status\|wake\|park` / `presence resume --yes` | Socket của daemon đang chạy theo hiện diện on-demand; `resume` lấy lại tài khoản sau khi nhường |
@@ -482,8 +483,8 @@ Xem file mẫu tại [`.env.example`](.env.example).
 | `ZALO_MEDIA_DIR` | Thư mục gốc chứa media tải về `<threadId>/` và `_conversations.json` cho mọi lệnh (mặc định `<DATA_DIR>/<ownId>/media`; tương đương `--media-dir`) |
 | `ZALO_OA_DIR` | Thư mục chứa `oa-credentials.json` của Official Account (mặc định `~/.zalo-agent`; tương đương `--oa-dir`) |
 | `ZALO_AGENT_NO_UPDATE_CHECK` | Đặt bất kỳ giá trị nào để tắt kiểm tra phiên bản mới chạy ngầm |
-| `ZALO_API_VERSION` | Phiên bản giao thức công bố với Zalo (`zpw_ver` / `client_version`) trên cả HTTP và WebSocket. Mặc định `695` (giá trị Zalo hiện yêu cầu); đặt một giá trị cũ hơn như `685` nếu muốn quay lại. Phải là số nguyên dương hợp lệ. |
-| `ZALO_QR_FLOW` | Cách `login` đăng nhập bằng QR: `official` (mặc định: đúng trình tự đăng nhập của Zalo, không gọi `verify-client`, `continue=https://chat.zalo.me/`, chuyển hướng phiên qua `jr.zaloapp.com` và `jr.chat.zalo.me`, kèm mã QR thứ hai mà tài khoản có thiết bị tin cậy phải quét, khiến client này thành một thiết bị tin cậy đi kèm). Đây là cách đăng nhập QR duy nhất: `legacy` đã bị bỏ ở 3.0.0 và, như mọi giá trị khác `official`, bị từ chối trước khi liên hệ Zalo. Chỉ đăng nhập QR đọc biến này |
+| `ZALO_API_VERSION` | Phiên bản giao thức công bố với Zalo (`zpw_ver` / `client_version`) trên cả HTTP và WebSocket. Mặc định `695` (giá trị Zalo hiện yêu cầu); đặt một giá trị cũ hơn như `685` nếu muốn quay lại. Phải là số nguyên dương: mọi giá trị khác bị từ chối trước khi liên hệ Zalo, nên một giá trị sai làm mọi lần đăng nhập thất bại thay vì âm thầm quay về mặc định. Chỉ đăng nhập đọc biến này. |
+| `ZALO_QR_FLOW` | Cách `login` đăng nhập bằng QR: `official` (mặc định, và là giá trị duy nhất: kèm mã QR thứ hai mà tài khoản có thiết bị tin cậy phải quét, khiến client này thành một thiết bị tin cậy đi kèm). `legacy` đã bị bỏ ở 3.0.0 và, như mọi giá trị khác `official`, bị từ chối trước khi liên hệ Zalo. Chỉ đăng nhập QR đọc biến này |
 | `ZALO_NET_PROBE` | Thứ daemon hỏi để biết mạng còn hoạt động hay không khi socket đang đứt (mỗi 10 giây). Một URL, mặc định là một trang nhẹ của công cụ tìm kiếm toàn cầu; `off` coi như mạng luôn hoạt động và không liên hệ nơi nào ngoài Zalo |
 | `ZALO_JSON_MODE` | Được CLI tự động đặt ở chế độ `--json` và `mcp`, để stdout chỉ chứa kết quả dạng máy đọc được. Không cần tự đặt bằng tay |
 | `ZALO_MCP_HTTP_PORT` | Cổng fallback cho `--http` của `mcp start` và wrapper `zalo-mcp` (hỗ trợ hậu tố theo tài khoản `ZALO_MCP_HTTP_PORT_<ownId>`) |
@@ -536,7 +537,7 @@ Xem file mẫu tại [`.env.example`](.env.example).
 
 ## Phương án dự phòng khi npm Registry gặp sự cố
 
-Nếu gói `@ardennguyen/zalo-agent-cli` tạm thời không tải được từ npm, lệnh `update` sẽ không dùng được vì cả hai bước của nó đều đọc từ npm registry. Khi đó, như một ngoại lệ chủ đích, bạn có thể cài trực tiếp engine từ mã nguồn trên GitHub bên trong thư mục triển khai:
+Nếu gói `@ardennguyen/zalo-agent-cli` tạm thời không tải được từ npm, lệnh `update` sẽ không dùng được: cả hai bước của nó đều đọc từ npm registry, và bước đầu ghi đè `package.json` bằng bản của wrapper đã phát hành, nên trỏ dependency sang GitHub rồi chạy `update` sẽ hoàn tác thay đổi đó. Khi đó, như một ngoại lệ chủ đích, bạn có thể cài trực tiếp engine từ mã nguồn trên GitHub bên trong thư mục triển khai:
 ```bash
 npm install github:ardennguyen/zalo-agent-cli
 ```

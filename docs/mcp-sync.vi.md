@@ -2,18 +2,18 @@
 
 [English](mcp-sync.md)
 
-Engine cung cấp 36 MCP tool, bao gồm `zalo_sync` và `zalo_sync_status` (có từ
+Engine cung cấp 37 MCP tool, bao gồm `zalo_sync` và `zalo_sync_status` (có từ
 `@ardennguyen/zalo-agent-cli` v2.1.0+ và `@ardennguyen/zalo-mcp` v2.0.0+).
 `mcp start --account <ID>` (hoặc `ZALO_ACCOUNT=<ID>`) ghim tiến trình vào đúng
 tài khoản đã đăng ký lúc khởi động và qua các lần reconnect; hai tool sync chỉ
 dùng runner và khóa của tài khoản đó, không nhận tham số đổi tài khoản theo
 từng request.
 
+## Cách dùng
+
 > **3.0 đã đổi hợp đồng MCP.** Từ `zalo-agent-cli` 3.0.0 (wrapper `zalo-mcp` 2.1.0), mọi tool gọi id tin nhắn là `msgId` và id người dùng là `userId` (không còn `id`, `messageId` hay `uid`), `threadType` là `"dm"` hoặc `"group"` (số bị từ chối), và mọi id là chuỗi. Bản thân `zalo_sync` không đổi; phần còn lại xem mục usage notices của 3.0.0 trong CHANGELOG.
 
 Ngoài `messages` và `reactions`, `stage` nhận `cloud` (đi qua chỉ mục zCloud, như `sync-cloud`; `full: true` đi lại từ đầu), `media` (tải các tệp đính kèm mà lần khôi phục đã ghi, như `sync-media`: `threadId`, `kinds`, `days`, và `limit` số tệp lần này) và `boards` (ghi chú, ghim, bình chọn, nhắc hẹn, như `sync-boards`: `threadId`, `limit` số hội thoại). Chỉ `messages` cần xác nhận trên điện thoại; tham số không thuộc stage đã chọn bị từ chối.
-
-## Cách dùng
 
 Chỉ gọi `zalo_sync` khi chủ tài khoản yêu cầu đồng bộ rõ ràng. Kết quả coverage
 hoặc tìm kiếm thiếu tin tự nó không cho phép gửi yêu cầu xác nhận tới điện thoại.
@@ -84,29 +84,21 @@ cùng khóa sẽ báo lỗi. Stage đang bận trả lỗi MCP ngay, không xế
 Process chỉ giữ mười job gần nhất và hai mươi sự kiện tiến độ gần nhất mỗi job
 trong RAM. Job, kết quả và chống lặp mất khi restart hoặc bị thay thế. Nếu mất
 response khởi động, xem job mới nhất. Sau khi daemon restart, kiểm tra coverage
-trước khi quyết định sync lại. Đóng request MCP không hủy job. Chưa có tool hủy
-vì runner chưa có cơ chế abort an toàn; không tạo job mới để hủy job cũ. Dừng
+trước khi quyết định sync lại. Đóng request MCP không hủy job. Không có tool hủy;
+không tạo job mới để hủy job cũ. Dừng
 daemon ngắt công việc và có thể để lại restore dở. Mất socket thì khác: stage chờ daemon tự kết nối lại (tối đa 120 giây) rồi chạy tiếp, tối đa ba lần, chỉ hỏi điện thoại phần chưa về.
 
-## Kiến trúc, bảo mật và kiểm thử
+## Kiến trúc và bảo mật
 
-`mcp start` tạo một `createSyncJobs` dùng chung cho stdio và HTTP. HTTP tạo MCP
-server mới mỗi request nhưng giữ chung bộ theo dõi job. Hai tool dùng đúng
-`createSyncRunners` của daemon channel CLI, lấy API hiện tại mỗi lần chạy và
-giữ chung khóa stage với history/self-heal. Không thêm login, WebSocket,
-kết nối database hay writer thứ hai. Reconnect cập nhật các lần chạy sau;
-mất socket giữa restore thì chờ daemon tự kết nối lại (tối đa 120 giây) và chạy tiếp,
+`mcp start` giữ một bộ theo dõi job sync dùng chung cho stdio và HTTP (HTTP tạo MCP
+server mới mỗi request nhưng giữ chung bộ theo dõi job). Hai tool chạy đúng các bước
+sync của daemon channel CLI, dùng phiên hiện tại cho mỗi lần chạy và giữ chung khóa
+stage với việc lấy lịch sử và self-heal. Không thêm login, WebSocket, kết nối database
+hay writer thứ hai. Mất socket giữa restore thì chờ daemon tự kết nối lại và chạy tiếp,
 tối đa ba lần, rồi mới kết thúc dở, như CLI sync qua daemon.
 
 Tool dùng quyền MCP hiện có: cùng bearer token HTTP cho phép sync; stdio dùng
 quyền process cục bộ của client. Không có ranh giới quyền riêng từng bot.
-`zalo_sync_status` chỉ đọc, không liên hệ Zalo. Log vẫn ở stderr; không lưu job
-bền vững hay migration schema. Rollback bằng engine đã phát hành trước đó và
-restart client theo [hướng dẫn deploy](deployment.vi.md).
-
-Kiểm thử offline gồm kiểm tra tham số qua SDK, khóa chống chạy chồng, retry
-không lặp, giới hạn lưu trữ, lỗi/kết quả dở, cô lập trạng thái tài khoản và chọn
-session hiện tại. Transport stdio thật và HTTP stateless dùng runner giả, dữ
-liệu giả. Chưa chạy sync điện thoại thật hay deploy. Trước phát hành, maintainer
-nên yêu cầu restore ngắn, xác nhận điện thoại, xem tiến độ tới khi xong và kiểm
-tra coverage, rồi thử ngắt restore; dùng tài khoản test ngoài production.
+`zalo_sync_status` chỉ đọc, không liên hệ Zalo. Log vẫn ở stderr; job không được
+lưu bền vững. Rollback bằng engine đã phát hành trước đó và restart client theo
+[hướng dẫn deploy](deployment.vi.md).

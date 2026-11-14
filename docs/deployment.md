@@ -2,7 +2,7 @@
 
 [Tiếng Việt](deployment.vi.md)
 
-**Status:** updated for `zalo-agent-cli` `3.0.0` and `zalo-mcp` `2.1.0`: the engine's own Zalo protocol layer (no zca-js), on-demand presence for daemons (park and wake, CRM leases, yield, signed out; §4.10), the encrypted message store and sealed files, the runtime policy and its admin API, storage quotas, the fleet controller (`fleet serve`) and the five use-case config sets, 36 MCP tools, the confirmation guard on destructive actions (`--yes` on the CLI, `confirm` and `confirmMode` over MCP), the socket supervisor's log lines, restores in waves with three reconnects, the official QR login and its trusted-device file, native HTTPS `--cert`/`--key`, the built-in OAuth 2.0 / 2.1 authorization server, signed webhooks on both `listen` and `mcp start`, `GET /events/wait` + `zalo_wait_for_message` zero-CPU long-polling, and the `-d, --daemon` / `--stop` / `--status` background lifecycle. First written 2026-09-29.
+**Status:** updated for `zalo-agent-cli` `3.0.0` and `zalo-mcp` `2.1.0`: the engine's own Zalo protocol layer (no zca-js), on-demand presence for daemons (park and wake, CRM leases, yield, signed out; §4.10), the encrypted message store and sealed files, the runtime policy and its admin API, storage quotas, the fleet controller (`fleet serve`) and the five use-case config sets, 37 MCP tools, the confirmation guard on destructive actions (`--yes` on the CLI, `confirm` and `confirmMode` over MCP), the socket supervisor's log lines, restores in waves with three reconnects, the official QR login and its trusted-device file, native HTTPS `--cert`/`--key`, the built-in OAuth 2.0 / 2.1 authorization server, signed webhooks on both `listen` and `mcp start`, `GET /events/wait` + `zalo_wait_for_message` zero-CPU long-polling, and the `-d, --daemon` / `--stop` / `--status` background lifecycle.
 **Licensing:** from 2.0.1 this software is licensed CC BY-NC-SA 4.0; use in a company's business operations needs a separate commercial license (see [NOTICE](../NOTICE)).
 **Audience:** whoever runs this on a server and gets paged when it stops.
 
@@ -20,7 +20,7 @@
 | d. Accounts as the backend of a CRM (webhooks, approvals, admin API, fleet controller) | [d-crm-backend](config-samples/use-cases/d-crm-backend/README.md) |
 | e. A SaaS host with a KMS key per tenant (a design to start from) | [e-saas-kms](config-samples/use-cases/e-saas-kms/README.md) |
 
-Every architectural claim below is traced to a file in `src/`, or, for the command surface, to [`skill/references/command-reference.md`](../skill/references/command-reference.md), which wins whenever two docs disagree. Line numbers refer to `9e47020` (a few commits before the `2.0.0` tag) and will drift; the function and handler names next to them will not. Numbers come from `package.json`, the lockfile, the code, the npm registry, or one account directory measured once (labeled where it is used). The [Appendix](#appendix--re-measure-everything-yourself) has the commands to measure your own. Where a sentence is an assessment rather than something the code shows (the sizing tables, and all of §6), it says so. On this codebase the general answer about "how messaging bots usually work" is often wrong, so this document avoids it.
+Every architectural claim below is traced to a file in `src/`, or, for the command surface, to [`skill/references/command-reference.md`](../skill/references/command-reference.md), which wins whenever two docs disagree. Numbers come from `package.json`, the lockfile, the code, the npm registry, or one example account directory (labeled where it is used). The [Appendix](#appendix--re-measure-everything-yourself) has the commands to measure your own. Where a sentence is an assessment rather than something the code shows (the sizing tables, and all of §6), it says so.
 
 Two conventions used throughout:
 
@@ -38,7 +38,7 @@ Two conventions used throughout:
 
 **Biggest constraint.** Zalo permits one web session per account; a duplicate is closed with code `3000`, and neither `listen` nor `mcp start` ever reconnects after it, because two clients that each reconnect evict each other forever. An always-on daemon releases the lock and exits with code `3`; an on-demand daemon (the default for `mcp start --http` and `listen --daemon`, §4.10) lets the socket go and stays up **`yielded`**, refusing every request with `YIELDED` until a person confirms `zalo-agent presence resume --yes`. This is not a tunable.
 
-**One web login per account: the measured Zalo facts.**
+**One web login per account.**
 
 - Zalo keeps **one web login per account**, and the server is that login. A QR login into **Zalo in a browser** anywhere else revokes the server's: its next login is refused three times, and the daemon stays up **`signed_out`**, refusing every request with `SIGNED_OUT` until the account is added again by QR (`zalo-agent login`, then a restart, or the fleet controller's QR add). `ZALO_EXIT_ON_SIGNED_OUT=1` restores the 2.x behavior, exit `4`.
 - The **phone and the Zalo desktop app are separate logins and coexist with the server.** Tell users to keep the phone or the desktop app beside the server, never a browser.
@@ -75,7 +75,7 @@ So the very first deployment decision is forced: **you get one socket-holding pr
 >
 > | | `listen` | `mcp start` |
 > |---|---|---|
-> | MCP tool surface (the 36 tools in `src/mcp/mcp-tools.js`) | no | **yes** |
+> | MCP tool surface (the 37 tools in `src/mcp/mcp-tools.js`) | no | **yes** |
 > | HTTP / HTTPS `/health`, `/ready`, `/status`, `/metrics`, `/events/wait`, OAuth 2.0 endpoints | no | **yes** (`--http` only) |
 > | `-w, --webhook <url>` + `--webhook-secret <secret>` outbound fan-out | **yes** | **yes** |
 > | `--save <dir>` JSONL archive | **yes** | no |
@@ -92,7 +92,7 @@ So the very first deployment decision is forced: **you get one socket-holding pr
 > `tests/unit/listener-lifecycle-rules.test.js` holds both to the same gap rules (each builds a `SyncManager` and files a startup gap), and `tests/unit/self-heal-wiring.test.js` runs its wiring checks against both files. Loss detection is therefore no longer a reason to pick one over the other: pick `mcp start` for MCP bots (and webhook push / long-polling), `listen` for a CLI-only webhook or JSONL consumer.
 
 > [!NOTE]
-> **`mcp start`'s tools follow a re-login.** A socket the supervisor cannot keep alive on its session (Zalo refused the session, or no usable socket came up after 8 tries in a row) is handled inside the process by the socket host: `clearSession()`, then a login, which builds a new API object (`loginWithCredentials` in `src/core/zalo-client.js`). The listener handlers, the self-heal, the daemon channel and media downloads follow the new object through `getApi()`, and so do the 36 tools and the notifier: they are handed `liveApi(getApi)` (`src/core/live-api.js`), which reads the current session at every call. Before 2.0.0's fix they were handed the start-up object once, so after a `Re-login successful` line they kept calling the replaced session, and `zalo_get_history`'s socket scan paged a closed listener. While a re-login is in flight, a tool call fails with "The Zalo session is logging in again after a dropped connection; try again in a few seconds."
+> **`mcp start`'s tools follow a re-login.** A socket the supervisor cannot keep alive on its session (Zalo refused the session, or no usable socket came up after 8 tries in a row) is handled inside the process by the socket host: `clearSession()`, then a login, which builds a new API object (`loginWithCredentials` in `src/core/zalo-client.js`). The listener handlers, the self-heal, the daemon channel and media downloads follow the new object through `getApi()`, and so do the 37 tools and the notifier: they are handed `liveApi(getApi)` (`src/core/live-api.js`), which reads the current session at every call. Before 2.0.0's fix they were handed the start-up object once, so after a `Re-login successful` line they kept calling the replaced session, and `zalo_get_history`'s socket scan paged a closed listener. While a re-login is in flight, a tool call fails with "The Zalo session is logging in again after a dropped connection; try again in a few seconds."
 
 ### 1.2 What `daemon-channel.js` actually is
 
@@ -301,7 +301,7 @@ Do not size for the steady state. Size for `zalo-agent sync --from <old date>`, 
 
 ### 3.3 Disk — the media cache is the whole story
 
-One account directory, measured once on 2026-09-29 after **36 days** of continuous operation. It has not been re-measured for this revision, and it is one account, so treat it as an order of magnitude and measure your own (Appendix):
+One example account directory after **36 days** of continuous operation. It is one account, so treat it as an order of magnitude and measure your own (Appendix):
 
 | Item | Measured | Derived rate |
 |---|---|---|
@@ -387,7 +387,7 @@ The QR is saved to `~/.zalo-agent-cli/qr.png`, named in the terminal (`--json` a
 Headless alternative: on a machine that is already logged in, `zalo-agent account export --yes` writes the saved credentials to a JSON file with mode `0600` (default `./zalo-creds.json`), and `zalo-agent login --credentials <file>` on the server logs in from it with no QR. That file is a live login: move it over an encrypted channel, delete it after the import, and never run a listener for the account on the exporting machine (one web session per account). To drop the exporting machine's copy, `zalo-agent logout --no-remote --yes` deletes its saved credentials without contacting Zalo (`logout` is guarded on 3.0: without `--yes` it does nothing and exits 2; 2.5.x has no `--yes`); a plain `logout` would ask Zalo to end the session key of the very credentials the server now uses.
 
 > [!CAUTION]
-> **Never run `zalo-agent login` from an elevated shell** (`sudo` to root, or an Administrator PowerShell). Measured on Windows: the credential files end up owned by `BUILTIN\Administrators`; the normal service account can read and rewrite them but not delete them, so `logout --purge` and `account remove` fail with `EPERM` while everything else looks fine (`AGENTS.md` §13, "Elevated login" in [`docs/agent-notes.md`](agent-notes.md)).
+> **Never run `zalo-agent login` from an elevated shell** (`sudo` to root, or an Administrator PowerShell). On Windows the credential files end up owned by `BUILTIN\Administrators`; the normal service account can read and rewrite them but not delete them, so `logout --purge` and `account remove` fail with `EPERM` while everything else looks fine.
 
 ### 4.2 systemd — the socket holder
 
@@ -490,7 +490,7 @@ Say this plainly, because the marketing version of it is false:
 - **A parked window is a planned gap.** Under on-demand presence (§4.10) the time the socket was parked is filed as an `idle` gap and pulled back from the offline queue on the next wake, like a restart window; health and `fleet status` do not warn about it. What the queue no longer holds becomes a real gap, `idle-evicted`, with the `sync --from` advice.
 - **The queue belongs to a device.** Zalo keeps the offline queue per device id (imei). A QR re-login keeps the account's device id (the saved user agent and imei are presented again), so the queue survives it; a first login, a login after `logout` deleted the credentials, or another account gets a new device id. Coverage never starts before the device id came into use: the saved credentials carry `deviceSince`, and the window before it stays a pending `new-device` gap with its `sync --from` command, unless a phone-backed restore reached past it. `login` says which it was (`Device: the same device id …` / `Device: a new device id …`).
 - **A queue overflow is repaired for groups.** When Zalo says it dropped part of the group queue (`evict`, a queue reset), the self-heal reads the groups' cloud message store (most recently active first, at most 50 groups and 200 messages each) and closes the group gap when every group was read back to it; a 1-1 overflow stays pending. Either way a `queue_overflow` event goes to the webhook, the MCP buffer and `listen`'s output.
-- How far back Zalo's offline queue reaches is not documented in this repository. One measured case: a 75-minute outage came back in full from both queues with no prompt on the phone (the `listen` row of `command-reference.md`). `--no-self-heal` records and reports gaps without the catch-up.
+- Zalo does not publish how far back its offline queue reaches: after a long outage, check `sync_gaps` and restore what is still missing with `zalo-agent sync --from <date>`. `--no-self-heal` records and reports gaps without the catch-up.
 
 **The procedure that minimizes the window:**
 
@@ -695,7 +695,7 @@ Operational consequences, in order of importance:
 
 1. **Never use a person's primary Zalo account.** Use a dedicated account whose loss is an inconvenience, not an outage.
 2. **Treat a ban as a `when`, not an `if`.** Have the re-login runbook and a second account ready. Your bots talk to the daemon, not to Zalo, so a swap is a re-login and a restart, which is the whole point of the topology in §2.
-3. **The Official Account API (`oa …`) is the sanctioned path**: OAuth 2.0, separate credentials at `~/.zalo-agent/oa-credentials.json`, no ban risk. It is a **different product** with a different command surface: OA messages go to the OA's followers, and none of it is exposed as MCP tools (`INSTALLATION.md`). Where your use case fits the OA model, use it and skip this entire risk. Do not conflate the two directories or the two auth flows.
+3. **The Official Account API (`oa …`) is the sanctioned path**: OAuth 2.0, separate credentials at `~/.zalo-agent/oa-credentials.json`, no ban risk. It is a **different product** with a different command surface: OA messages go to the OA's followers. Over MCP it is the `zalo_official` tool, which runs the `oa`, `zbs` and `social` commands on the official logins. Where your use case fits the OA model, use it and skip this entire risk. Do not conflate the two directories or the two auth flows.
 4. **Rate-limit your own bots.** Nothing in the codebase throttles outbound sends: `zalo_send_message` calls `api.sendMessage` directly. N bots on one account multiply the send rate by N against an API with undocumented limits. Put the throttle in the consumer layer (the §1.4c profile map is where it belongs) before you add the second bot.
 
 ### 5.2 Credentials and message data at rest
@@ -834,7 +834,7 @@ Three tiers that work today:
 3. **Prompt-resident facts.** The small, always-true set: who the company is, the escalation contact, opening hours, the refusal policy. Put it in the system prompt and use prompt caching so you are not paying for it in full on every message.
 
 > [!NOTE]
-> **Proposal:** a `zalo_search_knowledge` MCP tool, so the retrieval step is a tool call rather than consumer-side plumbing. Attractive, but it would put a vector store or FTS index inside the socket-holding process, the one process whose event loop must never block (§1.5, §3.2). If it is ever built, it should be a **separate** MCP server that the bot mounts alongside `zalo`, not a tool added to this one.
+> Keep retrieval out of this server: a vector store or full-text index inside the socket-holding process would block the event loop the socket needs (§1.5, §3.2). To offer retrieval as an MCP tool, run it as a separate MCP server that the bot mounts alongside `zalo`.
 
 ### 7.2 How instructions reach the bot
 

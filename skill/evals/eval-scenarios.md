@@ -449,25 +449,25 @@ media hàng loạt, board, cloud và trạng thái hội thoại vẫn dùng CLI
 
 **Expected reasoning:**
 1. Find the thread → `zalo_search_threads(query: "ke toan", type: "group")` (accent-insensitive)
-2. `zalo_send_message` natively supports local file/image attachments via `filePath` (or `files` for multiple) — call `zalo_send_message(threadId: <groupId>, threadType: 1, filePath: "./receipt.jpg")`
+2. `zalo_send_message` natively supports local file/image attachments via `filePath` (or `files` for multiple) — call `zalo_send_message(threadId: <groupId>, threadType: "group", filePath: "./receipt.jpg")`
 3. Report success from the tool response (`sent: true`, `attachmentsSent: 1`)
 
-**Must include:** `zalo_search_threads` for lookup, `zalo_send_message` with `filePath: "./receipt.jpg"` and `threadType: 1`
+**Must include:** `zalo_search_threads` for lookup, `zalo_send_message` with `filePath: "./receipt.jpg"` and `threadType: "group"`
 **Must NOT:** Claim `zalo_send_message` only sends text, shell out to `msg send-image` when MCP `zalo_send_message` is available
 
 ---
 
-## E27b: MCP — Capability Outside the Tool Set (CLI Fallback)
+## E27b: MCP — Sending a Sticker
 
 **Prompt:** (agent is connected over MCP) "Send a happy sticker to the Ke Toan group"
 
 **Expected reasoning:**
-1. Stickers have no dedicated MCP tool (`zalo_send_message` handles text, local file/image attachments, link previews, and contact cards, not stickers)
-2. Find the thread → `zalo_search_threads(query: "ke toan", type: "group")`
-3. Fall back to the CLI with `--json`: search stickers via `zalo-agent --json msg sticker-search "happy"`, then send via `zalo-agent --json msg sticker <groupId> <stickerId> -t 1`
+1. Find the thread → `zalo_search_threads(query: "ke toan", type: "group")`
+2. `zalo_send_message` sends a sticker: `zalo_send_message(threadId: <groupId>, threadType: "group", sticker: "happy")` sends the first match for the keyword, as `msg sticker` does
+3. To let the user pick one first, list matches with `zalo_sticker(action: "search", keyword: "happy")` (and `detail` for previews)
 
-**Must include:** `zalo_search_threads` for lookup, CLI `msg sticker-search` / `msg sticker` with `-t 1` and `--json`
-**Must NOT:** Claim sending stickers is impossible just because there is no MCP tool for it
+**Must include:** `zalo_search_threads` for lookup, `zalo_send_message` with `sticker` and `threadType: "group"`
+**Must NOT:** Claim sending stickers is impossible, or shell out to the CLI when the MCP tools cover it
 
 ---
 
@@ -478,7 +478,7 @@ media hàng loạt, board, cloud và trạng thái hội thoại vẫn dùng CLI
 **Expected reasoning:**
 1. Last week is older than the in-memory ring buffer (`bufferMaxAge` default 2h) → `zalo_get_messages` won't have it
 2. Resolve the thread → `zalo_search_threads(query: "Phuc", type: "dm")` (or `zalo_list_conversations`)
-3. Read history via `zalo_get_history(threadId, threadType: 0, limit: 50)` — this reads the **local SQLite cache (`zalo.db`) first** (`source: "cache"`, paginated with `before: <cursor>`), and only falls back to the Zalo server (`source: "server"`, paginated with `lastMsgId: <cursor>`, which serves only messages since this login) when the local cache has no rows for that thread
+3. Read history via `zalo_get_history(threadId, threadType: "dm", limit: 50)` — this reads the **local SQLite cache (`zalo.db`) first** (`source: "cache"`, paginated with `before: <cursor>`), and only falls back to the Zalo server (`source: "server"`, paginated with `lastMsgId: <cursor>`, which serves only messages since this login) when the local cache has no rows for that thread
 4. Or search specific keywords directly across `zalo.db` with `zalo_search_messages(query: "...", threadId)`
 
 **Must include:** `zalo_get_history`, distinction between `source: "cache"` (`before` pagination) and `source: "server"` (`lastMsgId` pagination)

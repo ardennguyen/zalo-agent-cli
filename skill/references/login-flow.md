@@ -72,7 +72,7 @@ Zalo keeps the offline queue (what arrives while no client is connected) **per d
 
 The saved credentials record **`deviceSince`**: when this device id came into use (stamped whenever the imei changes, by every login path; a login saved before 3.0 uses its file's last write time). Zalo's own `first_time_login_device`, when the login settings carry it, counts too (the later of the two). A daemon's coverage never starts before that time: nothing from before it can come from Zalo's queue for this device, so the next `listen`/`mcp` start keeps that window as a pending **`new-device`** gap and names the `zalo-agent sync --from <date>` run that closes it, unless a phone-backed restore that finished after the login already reached back past it. Tick "sync messages" at the QR to avoid the extra step.
 
-**What the phone shows (measured):** each QR login adds a new entry to the phone's list of logged-in devices, and the older entries of this CLI are logged out. That is expected: the offline queue survives a re-login because the device id is kept, not because the list entry is.
+**What the phone shows:** each QR login adds a new entry to the phone's list of logged-in devices, and the older entries of this CLI are logged out. That is expected: the offline queue survives a re-login because the device id is kept, not because the list entry is.
 
 ### Troubleshooting
 | Issue | Fix |
@@ -131,7 +131,7 @@ zalo-agent account switch <ownerId>
 ```
 
 ## Proxy Support
-Formats: `http://user:pass@host:port`, `socks5://user:pass@host:port`
+Formats: `http://user:pass@host:port`, `https://user:pass@host:port` (HTTP CONNECT proxies; a `socks5://` URL is refused)
 Tested: IPRoyal residential, datacenter proxies.
 Rule: 1 unique proxy per account — shared proxies risk ban.
 
@@ -149,13 +149,13 @@ Pick by how much you want gone. All four are distinct:
 | `account remove <ownerId>` | device signed out (if that account is active) | **deleted** | **deleted** | **removed** |
 
 - **Every `logout` is a real logout on this device**: the saved credentials are deleted, so the next command needs a new QR login. The chat cache is kept for that next login unless `--delete-history` or `--purge` removes it.
-- **What a logout does at Zalo**: it runs the six calls Zalo's own sign-out makes (a one-time token from `id.zalo.me`, the profile `deactive` call, the `v2` logout, `id.zalo.me`'s own logout, the `setsid` hops, the login page), then tries the saved login once. "Signed out" is printed only when Zalo refuses that login; a login that still works is a warning, and a check that could not be made (no network, no saved login) is said to be unverified. Before v3.0 the calls were the production `GET /api/login/logOut` and `logoutV2`, which end only the session *key* (measured 2026-09-30: with the credentials kept, the next command logged straight back in); `--keep-session` keeps that behavior, and then the login ends at Zalo only when the web session is removed from the phone's list of logged-in devices.
+- **What a logout does at Zalo**: it runs the six calls Zalo's own sign-out makes (a one-time token from `id.zalo.me`, the profile `deactive` call, the `v2` logout, `id.zalo.me`'s own logout, the `setsid` hops, the login page), then tries the saved login once. "Signed out" is printed only when Zalo refuses that login; a login that still works is a warning, and a check that could not be made (no network, no saved login) is said to be unverified. `--keep-session` ends only the session *key* (the pre-3.0 behavior: with the credentials kept, the next command logs straight back in), and then the login ends at Zalo only when the web session is removed from the phone's list of logged-in devices.
 - **A new web login signs the previous web session out** — Zalo allows one per account (see below).
 - **Stopping a daemon is not a logout.** Ctrl+C on `listen`/`mcp start` is the "close the browser and reopen" case: the credentials stay, the next start logs back in, and self-heal catches up what arrived meanwhile from Zalo's offline queue.
 - `logout` (every form) and `account remove` **refuse before changing anything** while a `listen`/`mcp` daemon holds that account's `daemon.lock`, naming the PID. Stop the daemon first.
 - `zalo-agent account devices` lists the sessions Zalo currently has linked to the active account (read-only). After a default logout, check that this session is gone; a `--keep-session` logout leaves it listed until it is removed from the phone.
 
-- **The companion-device identity.** The official QR login makes this CLI a trusted companion device of the account (the phone's linked-device list shows it; `account devices` marks the entry `<- this CLI`). Its identity is `accounts/<ownerId>/trusted-device.json` (0600, a secret). `logout` and `logout --delete-history` **keep** it; `logout --purge` and `account remove` **delete** it with the account's folder, and both say so. Zalo keeps listing a deleted identity's entry on the phone until it is removed there. Measured in 3.0: each QR login still shows as a new entry in the phone's list, with the CLI's older entries logged out (see "Device id across re-logins" above).
+- **The companion-device identity.** The official QR login makes this CLI a trusted companion device of the account (the phone's linked-device list shows it; `account devices` marks the entry `<- this CLI`). Its identity is `accounts/<ownerId>/trusted-device.json` (0600, a secret). `logout` and `logout --delete-history` **keep** it; `logout --purge` and `account remove` **delete** it with the account's folder, and both say so. Zalo keeps listing a deleted identity's entry on the phone until it is removed there. Each QR login shows as a new entry in the phone's list, with the CLI's older entries logged out (see "Device id across re-logins" above).
 
 After a purge, `~/.zalo-agent-cli/credentials/` is empty, `accounts.json` is `[]`, and `accounts/<ownId>/` is gone.
 
@@ -163,7 +163,7 @@ After a purge, `~/.zalo-agent-cli/credentials/` is empty, `accounts.json` is `[]
 
 ## One web session per account
 
-Zalo keeps **one web login per account**, and this CLI occupies it (measured 2026-09-20, rechecked for 3.0):
+Zalo keeps **one web login per account**, and this CLI occupies it:
 
 - **A QR login into Zalo in a browser logs the server out.** It revokes the CLI's login server-side at once, even with no CLI process running; the next API call fails with `Đăng nhập thất bại`. **Use the phone or the Zalo desktop app beside the server, never a browser.**
 - The reverse also holds: `zalo-agent login` signs the browser session out.

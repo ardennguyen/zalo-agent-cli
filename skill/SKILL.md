@@ -13,7 +13,7 @@ Automate Zalo messaging, groups, contacts, payments, and real-time events via `z
 Handles: login/logout, messaging (text/image/file/sticker/voice/video/link), reactions, mentions, recall, message history, friends, groups, conversations, profile, polls, reminders, auto-reply, quick messages, labels, catalogs, listen (WebSocket), webhooks, local SQLite cache + mobile sync, bank cards, VietQR, multi-account with proxy, **Official Account (OA) API v3.0** (OAuth login, OA messaging, followers, tags, articles, store, webhook listener), **MCP Server** (Model Context Protocol for Claude Code and MCP clients).
 Does NOT handle: Zalo Mini App, Zalo Ads, ZNS templates, non-Zalo platforms.
 
-Surface: **321 CLI commands** across 40 command containers (24 top-level groups + 11 OA subgroups + 3 ZBS subgroups + `mcp webhook` + `account security`) + **36 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
+Surface: **321 CLI commands** across 40 command containers (24 top-level groups + 11 OA subgroups + 3 ZBS subgroups + `mcp webhook` + `account security`) + **37 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
 
 ## Prerequisites
 
@@ -29,7 +29,7 @@ Use `--account <ID>` (or `ZALO_ACCOUNT=<ID>`) on any personal-account CLI comman
 3. Execute command (Quick Reference below or `references/command-reference.md`)
 4. Append `--json` for machine-readable output
 5. For continuous monitoring → `listen --webhook` (`references/listen-mode-guide.md`)
-6. When running as an MCP server inside an AI client → use the 36 MCP tools: every personal CLI command has an MCP action (messages, long-poll waiting, search, user lookup, conversations, groups, friends, profile, catalog, bank, auto-replies, quick messages, labels, reminders, notes/pins, polls, sync stages, the zCloud index); shell out to the CLI only for the CLI-only commands listed in `references/mcp-guide.md` (login, the account registry, the daemon and fleet, `cloud get`, `db …`, `oa …`)
+6. When running as an MCP server inside an AI client → use the 37 MCP tools: every CLI command has an MCP action (the official `oa`/`zbs`/`social` commands through `zalo_official`) (messages, long-poll waiting, search, user lookup, conversations, groups, friends, profile, catalog, bank, auto-replies, quick messages, labels, reminders, notes/pins, polls, sync stages, the zCloud index); shell out to the CLI only for the CLI-only commands listed in `references/mcp-guide.md` (login, the account registry, the daemon and fleet, `cloud get`, `db …`, `oa …`)
 
 ## Quick Reference
 
@@ -72,7 +72,7 @@ zalo-agent msg send <ID> "text" -t 1                    # Group
 zalo-agent msg send-image <ID> ./img.jpg -m "caption"   # Image
 zalo-agent msg send-file <ID> ./doc.pdf                 # File
 zalo-agent msg send-voice <ID> <url>                    # Voice
-zalo-agent msg send-video <ID> <url|file> --thumb <url|file>   # Video (a local file: unverified live)
+zalo-agent msg send-video <ID> <url|file> --thumb <url|file>   # Video (URL or local file)
 zalo-agent msg send-link <ID> <url>                     # Link preview
 zalo-agent msg sticker <ID> "keyword"                   # Sticker
 zalo-agent msg react <msgId> <ID> ":>"                  # React (cliMsgId from cache; refused if absent)
@@ -118,8 +118,8 @@ the local cache: its `cliMsgId` and bubble properties exist nowhere else. A runn
 `msg history <threadId> -t <0|1>` backfill older ones.
 
 **You cannot quote a message you just sent unless a daemon is running.** `msg send`
-does not write to `zalo.db`, and a group's history endpoint has been measured
-returning nothing from the same day — so `send` then `send --quote <that msgId>`
+does not write to `zalo.db`, and a group's history endpoint can return
+nothing from the same day — so `send` then `send --quote <that msgId>`
 fails with no daemon up.
 
 ### Listen (one WebSocket per account)
@@ -156,8 +156,8 @@ zalo-agent sync-media --kind photo,video --dry-run   # ...plan the fetch without
 zalo-agent sync-boards                       # Notes, pinned messages, polls, reminders of every conversation — NOT in the message stream
 zalo-agent sync-cloud                        # Walk the zCloud media index (records where backups live; follows removals; --full sweeps)
 zalo-agent cloud ls | cloud plan [--type video --older-than 365 --larger-than 50 --only-saved-locally]   # Reports on the local index: what a cleanup would cover. Deletes nothing
-zalo-agent cloud apply <same filters> --dry-run | --yes # Deletes the messages behind those items for this account, as Zalo's own cloud view does (no undo; unverified)
-zalo-agent cloud get <noiseId> -o <file> [--key-stdin]  # One item's file; an encrypted one needs the account's cloud key at run time, never stored (unverified)
+zalo-agent cloud apply <same filters> --dry-run | --yes # Deletes the messages behind those items for this account, as Zalo's own cloud view does (no undo)
+zalo-agent cloud get <noiseId> -o <file> [--key-stdin]  # One item's file; an encrypted one needs the account's cloud key at run time, never stored
 
 # The cache is encrypted (SQLCipher): read it through db, never by opening zalo.db. All local, no login, safe beside a daemon.
 zalo-agent --json db query "SELECT msgId, text FROM messages WHERE threadId = '<id>' ORDER BY timestamp DESC LIMIT 20"   # One read-only statement; hidden chats left out
@@ -219,7 +219,7 @@ zalo-agent group rename <gID> "New Name"        # Rename
 ```
 Full commands: `references/command-reference.md`
 
-### Bank & VietQR (55+ VN banks)
+### Bank & VietQR (60+ VN banks)
 ```bash
 zalo-agent msg send-bank <ID> <ACCT> --bank ocb --name "HOLDER"
 zalo-agent msg send-qr-transfer <ID> <ACCT> --bank vcb --amount 500000 --content "note"
@@ -280,11 +280,11 @@ zalo-agent mcp start --config <path>                # Custom config (default ~/.
 zalo-agent mcp wait [since] -t <ID> --timeout 55 -c <bot> --json  # Zero-polling wait on the running MCP daemon's buffer: every message already waiting (-n caps it)
 zalo-agent mcp mark-read <cursor> -c <bot> --json   # Advance consumer read cursor in the running MCP daemon's buffer
 ```
-The `zalo-mcp` deployment wrapper (`zalo-mcp` or `node mcp-server.js`) spawns `zalo-agent mcp start` when given no subcommand, and forwards any CLI subcommand (`zalo-mcp --account <ID> msg list --json`, `zalo-mcp login`, etc.) directly to `zalo-agent`. Both the **MCP tool surface** and the **flag surface** (`--account`, `--http`, `--auth`, `--host`, `--cert`, `--key`, `--client-id`, `--client-secret`, `--public-url`, `--issuer-url`, `-w`/`--webhook`, `--webhook-secret`, `--config`, `--no-self-heal`, `--no-delivered-receipts`, `-d`/`--daemon`, `--stop`, `--status`, plus global storage flags) are identical. Note that a deployed `zalo-mcp` folder serves the `@ardennguyen/zalo-agent-cli` version installed inside its `node_modules/` (update with `zalo-mcp.ps1 update` / `./zalo-mcp.sh update`).
+The `zalo-mcp` deployment wrapper (`zalo-mcp` or `node mcp-server.js`) spawns `zalo-agent mcp start` when given no subcommand, and forwards any CLI subcommand (`zalo-mcp --account <ID> conv recent --json`, `zalo-mcp login`, etc.) directly to `zalo-agent`. Both the **MCP tool surface** and the **flag surface** (`--account`, `--http`, `--auth`, `--host`, `--cert`, `--key`, `--client-id`, `--client-secret`, `--public-url`, `--issuer-url`, `-w`/`--webhook`, `--webhook-secret`, `--config`, `--no-self-heal`, `--no-delivered-receipts`, `--log-level`, `-d`/`--daemon`, `--stop`, `--status`, plus global storage flags) are identical. Note that a deployed `zalo-mcp` folder serves the `@ardennguyen/zalo-agent-cli` version installed inside its `node_modules/` (update with `zalo-mcp.ps1 update` / `./zalo-mcp.sh update`).
 
 To run **multiple Zalo accounts live at once**, launch one MCP server per account with `--account <ID>` (e.g. multiple entries in `.claude/settings.json` `mcpServers` for stdio, or separate `--http <port>` instances on a VPS) and pass `--account <ID>` when shelling out to CLI commands. See `references/mcp-guide.md`.
 
-**MCP tools exposed (36 — personal account only):**
+**MCP tools exposed (37 — 36 for the personal account, plus `zalo_official` for the official APIs):**
 
 | Tool | Purpose | Key params |
 |------|---------|-----------|
@@ -321,6 +321,7 @@ To run **multiple Zalo accounts live at once**, launch one MCP server per accoun
 | `zalo_catalog` / `zalo_bank` | Zalo Shop catalogs and products / supported banks and saved bank accounts (`catalog`, `bank`) | `action`, `catalogId?`, `productId(s)?` / `bankAccountId?`, `bank?`, `accountNumber?`, `holderName?` |
 | `zalo_cloud` | zCloud index summary and cleanup plan (`cloud ls`, `cloud plan`), and the guarded cleanup (`cloud apply`) | `action` (`summary`｜`plan`｜`apply`), filters, `confirm?`, `dryRun?` |
 | `zalo_sticker` / `zalo_link` | Find stickers (`msg sticker-list`, `sticker-detail`) / a link's preview and safety (`msg link-preview`, `scan-url`) | `action`, `keyword?`, `stickerIds?` / `url` |
+| `zalo_official` | Any `oa`, `zbs` or `social` command by its CLI name, on the official logins (not `oa login\|setup\|init\|listen`, `social setup\|login`); omit `command` to list them | `command?`, `args?`, `options?` (flag names without dashes), `confirm?`, `dryRun?` |
 
 Sync requests share the daemon socket and lock. Reuse requestId and arguments after a timeout; keep polling the same job. Ten jobs are held in RAM, lost on restart. No safe cancellation is exposed. Never initiate restore merely because coverage reports a gap. [Details](../docs/mcp-sync.md) / [Tiếng Việt](../docs/mcp-sync.vi.md).
 
@@ -404,7 +405,7 @@ Every write changes something. 26 of the 27 have been answered by a live account
 
 | File | Contents |
 |------|----------|
-| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 321 commands + 36 MCP tools) |
+| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 321 commands + 37 MCP tools) |
 | `references/mcp-guide.md` | MCP tools, parameters, return shapes, `mcp-config.json`, architecture (Vietnamese) |
 | `references/oa-command-reference.md` | Official Account, ZBS and Social API reference: every `oa`/`zbs`/`social` command, webhook events and signature, error codes, ZBS permissions, webhook checklist |
 | `references/login-flow.md` | QR login, headless credentials login, multi-account, proxy formats, troubleshooting |
@@ -438,6 +439,7 @@ When any of these disagree, `references/command-reference.md` wins — it is gen
 - Some OA APIs require tier upgrade (error -224) → see zalo.cloud/oa/pricing
 - OA webhook needs HTTPS + verified domain + VN IP for full user data
 - `catalog` commands require a zBusiness Pro account
+- Not yet confirmed on a live account: `msg send-video` with a local file, `cloud apply`, `cloud get`, `quick-msg enable`/`disable`, `catalog product` (their `--json` reply says `verified: false` where it has that field). Tell the user before relying on one
 
 ## Security Model
 - **No code execution**: This skill only invokes the `zalo-agent` CLI binary — it does not run arbitrary code, install packages, or modify system files

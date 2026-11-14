@@ -438,10 +438,10 @@ zalo-agent social status
 | Pre-command auto-login | Yes | No — `oa` manages its own OAuth token |
 | Command count | 227 (of 321 total CLI commands) | 94 (70 `oa` + 18 `zbs` + 6 `social`) |
 | Real-time events | WebSocket (`listen`) | HTTP Webhook (`oa listen`) |
-| Exposed as MCP tools? | Yes — 36 tools (see [mcp-guide](../skill/references/mcp-guide.md)) | **No** — CLI only |
+| Over MCP | 36 tools (see [mcp-guide](../skill/references/mcp-guide.md)) | The `zalo_official` tool (all but the logins and `oa listen`) |
 
 > [!NOTE]
-> `oa` and `zbs` commands are **not** exposed as MCP tools. AI agents that need to act on an Official Account should invoke the CLI directly with `--json`, e.g., `zalo-agent --json oa msg text <uid> "..."`.
+> Over MCP, the `zalo_official` tool runs these commands by their CLI name, e.g. `{"command": "oa msg text", "args": ["<uid>", "..."]}`, on the official logins. `oa login`, `oa setup`, `oa init`, `oa listen`, `social setup` and `social login` stay on the CLI: they take a secret or open a browser, or run a server.
 
 ---
 

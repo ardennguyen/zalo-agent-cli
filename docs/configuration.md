@@ -181,7 +181,7 @@ The `presence` keys (in `mcp-config.json` `presence`, `accounts.<ownId>.presence
 | `presence.maxWakesPerHour` | `12` | over it, the idle timeout doubles per wake (up to an hour) |
 | `presence.warmWait` | `10s` | how long a cache read waits for a waking socket |
 | `presence.connectOnStart` | `true` | one catch-up at start, then park |
-| `presence.catchUpEvery` | `off` | a periodic catch-up while parked (e.g. `6h`); off until the offline queue's retention is measured |
+| `presence.catchUpEvery` | `off` | a periodic catch-up while parked (e.g. `6h`) |
 | `presence.maxLeases`, `presence.leaseTtl`, `presence.leaseTtlMax` | `64`, `90s`, `600s` | CRM leases per account |
 | `presence.waitHoldsSocket` | `true` | a pending `zalo_wait_for_message` / `/events/wait` holds the socket (a tier may turn it off; held time is metered) |
 | `presence.onKick` | `yield` | on-demand only: when another session **of the same login** (a second copy of these credentials, a second tab of one browser) takes the socket, let it go and refuse every request until the user confirms `presence resume` (`yield`), or end the daemon with exit 3 (`exit`) |
@@ -251,7 +251,7 @@ Both take an `_<ownId>` form. `/status` and `/metrics` carry `lastWakeMs` / `las
 | `ZALO_CREDENTIALS_DIR` |  | credential files. Default `<CONFIG_DIR>/credentials` | `--credentials-dir` |  |
 | `ZALO_DATA_DIR` (alias `ZALO_DB_DIR`) |  | per-account databases and runtime files. Default `<CONFIG_DIR>/accounts` | `--data-dir` |  |
 | `ZALO_MEDIA_DIR` |  | downloaded media root | `--media-dir` | `media.downloadDir` (MCP server only) |
-| `ZALO_OA_DIR` |  | Official Account credentials. Default `~/.zalo-agent` | `--oa-dir` |  |
+| `ZALO_OA_DIR` |  | the official APIs' credentials folder. Default `~/.zalo-agent` (no `-cli`): `oa-credentials.json` (the OA login, one record per `--oa-id`, also used by `zbs`) and `social-credentials.json` (the Social API login, one record per `--profile`), both mode `0600` | `--oa-dir` |  |
 | `ZALO_ACCOUNT` |  | account for one-shot commands | `--account` |  |
 | `ZALO_ENV_FILE` |  | an extra `.env` to load | `--env-file` |  |
 | `ZALO_MCP_HTTP_PORT` | yes | serve HTTP/HTTPS on this port instead of stdio | `--http` | `httpPort` |
@@ -283,6 +283,7 @@ Both take an `_<ownId>` form. `/status` and `/metrics` carry `lastWakeMs` / `las
 | `ZALO_LOGIN_SLOTS` | yes | at most this many daemons on the machine logging in and loading their lists at once (0–64; default 0, no cap); the rest wait for a slot. `ZALO_LOGIN_SLOT_WAIT` (seconds, default 900) is how long one waits before going ahead anyway | | |
 | `ZALO_CONNECT_SLOTS` | yes | at most this many daemons on the machine waking their parked socket at once (on-demand presence; 0–64, default 0, no cap; fleet samples 16): a wake holds its slot until its first catch-up ends, at most 60 s. `ZALO_CONNECT_SLOT_WAIT` (seconds, default 120) is how long one waits before going ahead anyway | | |
 | `ZALO_EXIT_ON_SIGNED_OUT` | yes | `1`: a login Zalo keeps refusing ends the daemon with exit 4, as before 3.0 (`ZALO_EXIT_ON_SIGNED_OUT_<ownId>` for one account). Default: the daemon stays up in `signed_out` and refuses requests until the account is added again by QR | | |
+| `ZALO_PRESENCE_MODE`, `ZALO_PRESENCE_IDLE_TIMEOUT` | yes | `on-demand` or `always-on`; the idle time before the socket parks (`5m`, at least `30s`). Between the files and the runtime policy (see [on-demand presence](#users-the-always-on-cap-and-on-demand-presence)) | | `presence.mode`, `presence.idleTimeout` |
 | `ZALO_FLEET_CONTROLLER_PORT` |  | the port `fleet serve` binds when `--http` is not given. Default `3899` | `fleet serve --http` | |
 | `ZALO_FLEET_DOMAIN` |  | the proxy host of `fleet generate --domain`: an account added by QR through `fleet serve` gets `ZALO_MCP_PUBLIC_URL=https://<host>/a/<ownId>` in its env file | `fleet serve --domain` | |
 | `ZALO_FLEET_QR_FLOWS` |  | QR logins the fleet controller runs at once (more is `429`). Default `4` | | |
@@ -299,9 +300,15 @@ Both take an `_<ownId>` form. `/status` and `/metrics` carry `lastWakeMs` / `las
 | `ZALO_RETENTION_MESSAGES`, `ZALO_RETENTION_MEDIA` | yes | `keep` or `<N>d`: the age rules of the local cache, over `storage.json`'s `retention.messages` / `retention.media` (see [Storage quotas and retention](#storage-quotas-and-retention)) | | |
 | `ZALO_GROUPS_ON_LEAVE` | yes | `purge` (default) or `keep`: what a left, removed-from, blocked-from or disbanded group's local history becomes, over `storage.json`'s `groups.onLeave` (see [Leaving a group](#leaving-a-group-groupsonleave)) | | |
 | `ZALO_STORAGE_DKEY_LAYER` |  | `1` / `0`: lock everything a login does not need under the account's login `dkey` as well. Default off | | |
-| `ZALO_DPAPI_SCOPE`, `ZALO_SYSTEMD_CREDS_WITH_KEY`, `ZALO_KMS_BACKEND`, `ZALO_KMS_KEY`, `ZALO_STORAGE_PASSPHRASE_FILE`, `ZALO_STORAGE_KEY` |  | the chosen provider's options (`ZALO_STORAGE_KEY`: the `env` provider's key, weak by design) | | |
+| `ZALO_DPAPI_SCOPE`, `ZALO_SYSTEMD_CREDS_WITH_KEY`, `ZALO_KMS_BACKEND`, `ZALO_KMS_KEY`, `ZALO_STORAGE_PASSPHRASE_FILE`, `ZALO_STORAGE_KEY` |  | the chosen provider's options (`ZALO_STORAGE_KEY`: the `env` provider's key, weak by design). The `vault` KMS backend also reads `VAULT_ADDR`, `VAULT_TOKEN` and `VAULT_NAMESPACE` when `storage.json` does not name them | | |
 
-`oa listen` takes its port from `--port` (default 3000). The engine does not read `ZALO_OA_WEBHOOK_PORT`, although older copies of the wrapper's `.env.example` listed it.
+### Official APIs (`oa`, `zbs`, `social`)
+
+The official APIs take no `mcp-config.json` key and no environment variable besides `ZALO_OA_DIR`: their settings are flags, and their logins are files in the `ZALO_OA_DIR` folder (above), apart from the personal account's `~/.zalo-agent-cli/`.
+
+- `oa login` / `oa init` save the OA's App ID, secret key and tokens in `oa-credentials.json` under `--oa-id` (default `default`); every OA and ZBS call then sends `appsecret_proof`, computed from that secret key, so after resetting the app's secret key log in again with the new one (`oa login --secret <key>` or `oa init`).
+- `social login` saves a Social API user login in `social-credentials.json` under `--profile` (default `default`); `--dpop` binds its tokens to a key pair.
+- `oa listen` serves the OA and ZBS webhook: `--port` (default 3000; the engine does not read `ZALO_OA_WEBHOOK_PORT`), `--path` (default `/webhook`), `--secret <OA secret key>` or, better for a service, the `ZALO_OA_SECRET` environment variable (a flag is visible in the process list) for the `X-ZEvent-Signature` check (`--no-verify` skips it), `--app-id` for events whose body has no `app_id` (default: the saved App ID), and domain verification with `--verify-file <file.html>` (served as is at its name) or `--verify-meta '<meta …>'` (served in the home page's head). `oa init` run without flags asks for the keys interactively, which keeps them out of shell history.
 
 ### `mcp-config.json` keys
 
@@ -345,6 +352,26 @@ Both take an `_<ownId>` form. `/status` and `/metrics` carry `lastWakeMs` / `las
 
 A key that is not in this table is ignored without a message. (The `mode` key in older files is accepted and never read.)
 
+### `storage.json` keys
+
+`<CONFIG_DIR>/storage.json` is read by **every** command, not only the MCP server: it chooses how the saved files, the message database and the media are sealed, and sets the local cache's quota, retention and group-exit rules. It holds no secret. Samples per platform: [`storage/`](config-samples/storage/).
+
+| Key | Default | Meaning |
+|---|---|---|
+| `provider` | by platform: `dpapi` (Windows), `keychain` (macOS), `secret-service` (Linux desktop) | `dpapi`, `keychain`, `secret-service`, `systemd-creds`, `kms`, `passphrase` or `env` (`ZALO_STORAGE_PROVIDER` wins). A Linux server without a desktop keyring must set one; nothing falls back to plaintext. On a VPS: `passphrase`, handed over by systemd through `LoadCredentialEncrypted=` ([security.md](security.md)) |
+| `dkeyLayer` | `false` | also lock everything a login does not need under the key Zalo returns at each login (`ZALO_STORAGE_DKEY_LAYER`); local data then opens only after a login |
+| `dpapi.scope` | `CurrentUser` | or `LocalMachine` (a Windows service) (`ZALO_DPAPI_SCOPE`) |
+| `systemdCreds.withKey`, `systemdCreds.user` | `auto` | `host`, `tpm2`, `host+tpm2` or `auto` (`ZALO_SYSTEMD_CREDS_WITH_KEY`); `user: true` for a unit with `User=` (needs systemd 256) |
+| `kms.backend`, `kms.key` | | `aws`, `gcp`, `azure` or `vault`, and the key id (`ZALO_KMS_BACKEND`, `ZALO_KMS_KEY`); the cloud SDK is an optional peer dependency you install |
+| `passphrase.file` | | a file holding the passphrase (`ZALO_STORAGE_PASSPHRASE_FILE`); under systemd, `$CREDENTIALS_DIRECTORY/zalo-storage-passphrase` is found with no setting |
+| `env.variable` | `ZALO_STORAGE_KEY` | the variable that holds the `env` provider's key (weak: warned about on every start) |
+| `accounts.<ownId>.<provider section>`, `accounts.<ownId>.dkeyLayer` | | one account set apart, e.g. a tenant's KMS key (`accounts.<ownId>.kms.key`): it beats the top level **and** the environment for that account, so the daemon, `za`, the purge and the backup units all open its keyring. `account security provider kms <ownId> --key <id>` writes it |
+| `rowMac.verifyOnRead` | `actions` | `off`: quote, forward, delete, recall, react, pin and `msg media` no longer check the cached row's MAC first |
+| `quota.*`, `retention.*` | no limit, `keep` | storage quotas and age rules, also per account under `accounts.<ownId>`: [Storage quotas and retention](#storage-quotas-and-retention) |
+| `groups.onLeave` | `purge` | what a left group's local history becomes, also under `accounts.<ownId>.groups`: [Leaving a group](#leaving-a-group-groupsonleave) |
+
+A `storage.json` that is not valid JSON stops every command that needs a key (a setting that might weaken the protection is never guessed). The provider keys are read at start only: the runtime policy refuses them as `restartRequired`.
+
 ---
 
 ## 3. Recommended setups
@@ -364,9 +391,13 @@ For Claude Code, Claude Desktop or Cursor on the machine that holds the account.
 For a backend, n8n or a container on the same host that cannot use stdio.
 
 ```bash
-ZALO_MCP_HTTP_PORT=3847 ZALO_MCP_AUTH_TOKEN=CHANGE_ME_64_HEX_CHARACTERS \
-  zalo-agent mcp start --account 1000000000000000001
+# the port, the bind address and the token in a file only you can read:
+install -m 600 docs/config-samples/env/loopback-server.env ~/.zalo-agent-cli/loopback.env
+sed -i "s/CHANGE_ME_64_HEX_CHARACTERS/$(openssl rand -hex 32)/" ~/.zalo-agent-cli/loopback.env
+zalo-agent --env-file ~/.zalo-agent-cli/loopback.env mcp start --account 1000000000000000001
 ```
+
+- File: [`env/loopback-server.env`](config-samples/env/loopback-server.env). The token stays out of the command line, where `ps` and the shell history would show it.
 
 - The default bind is `127.0.0.1`: nothing off the machine can connect. **Still set a token**: any local user, and any web page in a browser on the machine, can otherwise reach it (the server answers every origin).
 - A Docker container reaches a loopback-bound server through `host.docker.internal` on Docker Desktop (Windows, macOS). On Linux, give the container `--add-host=host.docker.internal:host-gateway` and bind to the Docker bridge address (`ZALO_MCP_HOST=172.17.0.1`) rather than `0.0.0.0`.
@@ -409,7 +440,7 @@ A CRM needs three things from an account: to **hear** new messages, to **send**,
 
 **Hear: pull.** `GET /events/wait?timeout=55&since=<cursor>` returns every message already waiting in the buffer (`&limit=<n>` caps how many), or `{"status":"timeout"}`, with a cursor to resume from. The reply has `messages` (in order), `count`, `hasMore` and `cursor`, the **last** message's, so `since=<cursor>` continues exactly where the batch ended; `message` is the first. **Breaking in 3.0.0:** the default was one message per call; a client that reads only `message` and continues from `cursor` now skips the rest of the batch: read `messages`, or send `limit=1`. With a `limit`, drain a backlog by calling again at once while `hasMore` is true; `settle=200` (ms, at most 5000) waits that long after the first message so a burst lands in one reply. The same `limit` and `settleMs` exist on the `zalo_wait_for_message` tool and as `mcp wait --limit --settle`. The buffer behind it holds up to `limits.bufferMaxSize` messages per thread for `limits.bufferMaxAge` (the CRM sample raises both to 2,000 and 6 h). Past that, read the cache with `zalo_get_history` / `zalo_get_messages`.
 
-**Send.** A JSON-RPC call to `POST /mcp`: [`clients/crm-send-message.sh`](config-samples/clients/crm-send-message.sh). Send `Accept: application/json, text/event-stream` (without both the server answers 406); the reply is one SSE `data:` line, and a successful send returns `{"success":true,"msgId":…,"cliMsgId":…,"threadType":…}`. `threadId` is a user id for a direct message or a group id for a group. Each `/mcp` request builds a fresh server with all 36 tools, which costs a few milliseconds of CPU: fine for a CRM, and the reason one account tops out at roughly 60–170 requests/s (see [`docs/deployment.md`](deployment.md) §1.4).
+**Send.** A JSON-RPC call to `POST /mcp`: [`clients/crm-send-message.sh`](config-samples/clients/crm-send-message.sh). Send `Accept: application/json, text/event-stream` (without both the server answers 406); the reply is one SSE `data:` line, and a successful send returns `{"success":true,"msgId":…,"cliMsgId":…,"threadType":…}`. `threadId` is a user id for a direct message or a group id for a group. Each `/mcp` request builds a fresh server with all 37 tools, which costs a few milliseconds of CPU: fine for a CRM, and the reason one account tops out at roughly 60–170 requests/s (see [`docs/deployment.md`](deployment.md) §1.4).
 
 **Catch up.** After downtime, ask for what was missed: `zalo_get_history` per thread, or `zalo-agent sync --from <date>` (which can ask the owner's phone to confirm).
 
@@ -430,7 +461,7 @@ One account is one process, one WebSocket, one SQLite file and one port: there i
 - A port plan, e.g. `3900 + n`, kept in one table (`fleet ports` keeps it for you). Behind one hostname: [`proxy/Caddyfile.multi-account`](config-samples/proxy/Caddyfile.multi-account) routes `/a/<ownId>/…` to the right port; use bearer tokens, one per account.
 - Give each account **its own proxy** at login (`zalo-agent login --proxy …`) and its own device fingerprint (automatic): hundreds of accounts from one address is what gets accounts banned.
 - Shared settings in `mcp-config.json`, per-account differences in its `accounts` block ([`mcp-config/multi-account.json`](config-samples/mcp-config/multi-account.json)).
-- Read §1.4 of [`docs/deployment.md`](deployment.md) and the scaling notes in `docs/agent-notes.md` before going past a few dozen accounts.
+- Read §1.4 and §3 of [`docs/deployment.md`](deployment.md) before going past a few dozen accounts.
 - Whole sets per use case (desktop, LAN, VPS, CRM, SaaS), each with a README: [`config-samples/use-cases/`](config-samples/use-cases/).
 
 ---

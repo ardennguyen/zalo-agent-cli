@@ -438,10 +438,10 @@ zalo-agent social status
 | Auto-login trước lệnh | Có | Không — `oa` tự quản lý token riêng |
 | Số lệnh | 227 (trong tổng 321 lệnh CLI) | 94 (70 `oa` + 18 `zbs` + 6 `social`) |
 | Realtime | WebSocket (`listen`) | Webhook HTTP (`oa listen`) |
-| Có MCP tool? | Có — 36 tools (xem [mcp-guide](../skill/references/mcp-guide.md)) | **Chưa** — chỉ dùng được qua CLI |
+| Qua MCP | 36 tool (xem [mcp-guide](../skill/references/mcp-guide.md)) | Tool `zalo_official` (mọi lệnh trừ đăng nhập và `oa listen`) |
 
 > [!NOTE]
-> Các lệnh `oa` và `zbs` **chưa** được expose thành MCP tool. AI agent muốn dùng OA phải gọi CLI trực tiếp, ví dụ `zalo-agent --json oa msg text <uid> "..."`.
+> Qua MCP, tool `zalo_official` chạy các lệnh này theo tên lệnh CLI, ví dụ `{"command": "oa msg text", "args": ["<uid>", "..."]}`, trên các lần đăng nhập chính thức. `oa login`, `oa setup`, `oa init`, `oa listen`, `social setup` và `social login` vẫn chỉ chạy trên CLI: chúng nhận secret, mở trình duyệt, hoặc chạy một máy chủ.
 
 ---
 

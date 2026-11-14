@@ -2,7 +2,7 @@
 
 [English](deployment.md)
 
-**Trạng thái:** cập nhật cho `zalo-agent-cli` `3.0.0` và `zalo-mcp` `2.1.0`: lớp giao thức Zalo riêng của engine (không còn zca-js), hiện diện theo nhu cầu cho daemon (tạm nghỉ và đánh thức, lease của CRM, nhường phiên, bị đăng xuất; §4.10), kho tin nhắn được mã hóa và các tệp được niêm phong, chính sách runtime cùng admin API, hạn mức lưu trữ, bộ điều khiển fleet (`fleet serve`) và năm bộ cấu hình mẫu theo tình huống, 36 MCP tool, cơ chế xác nhận trước thao tác phá hủy (`--yes` trên CLI, `confirm` và `confirmMode` qua MCP), các dòng log của bộ giám sát socket, khôi phục theo từng đợt với ba lần kết nối lại, đăng nhập QR chính thức cùng tệp thiết bị tin cậy, HTTPS gốc `--cert`/`--key`, máy chủ ủy quyền OAuth 2.0 / 2.1 tích hợp sẵn, webhook có chữ ký trên cả `listen` lẫn `mcp start`, long-polling 0% CPU qua `GET /events/wait` + `zalo_wait_for_message`, và vòng đời chạy nền `-d, --daemon` / `--stop` / `--status`. Viết lần đầu ngày 2026-09-29.
+**Trạng thái:** cập nhật cho `zalo-agent-cli` `3.0.0` và `zalo-mcp` `2.1.0`: lớp giao thức Zalo riêng của engine (không còn zca-js), hiện diện theo nhu cầu cho daemon (tạm nghỉ và đánh thức, lease của CRM, nhường phiên, bị đăng xuất; §4.10), kho tin nhắn được mã hóa và các tệp được niêm phong, chính sách runtime cùng admin API, hạn mức lưu trữ, bộ điều khiển fleet (`fleet serve`) và năm bộ cấu hình mẫu theo tình huống, 37 MCP tool, cơ chế xác nhận trước thao tác phá hủy (`--yes` trên CLI, `confirm` và `confirmMode` qua MCP), các dòng log của bộ giám sát socket, khôi phục theo từng đợt với ba lần kết nối lại, đăng nhập QR chính thức cùng tệp thiết bị tin cậy, HTTPS gốc `--cert`/`--key`, máy chủ ủy quyền OAuth 2.0 / 2.1 tích hợp sẵn, webhook có chữ ký trên cả `listen` lẫn `mcp start`, long-polling 0% CPU qua `GET /events/wait` + `zalo_wait_for_message`, và vòng đời chạy nền `-d, --daemon` / `--stop` / `--status`.
 **Giấy phép:** từ bản 2.0.1 phần mềm này được cấp phép theo CC BY-NC-SA 4.0; việc sử dụng trong hoạt động kinh doanh của doanh nghiệp cần giấy phép thương mại riêng (xem [NOTICE](../NOTICE)).
 **Đối tượng đọc:** người vận hành hệ thống này trên máy chủ và bị gọi dậy khi nó ngừng chạy.
 
@@ -20,7 +20,7 @@
 | d. Các tài khoản làm backend cho một CRM (webhook, phê duyệt, admin API, bộ điều khiển fleet) | [d-crm-backend](config-samples/use-cases/d-crm-backend/README.vi.md) |
 | e. Một host SaaS với mỗi tenant một khóa KMS (một thiết kế để bắt đầu) | [e-saas-kms](config-samples/use-cases/e-saas-kms/README.vi.md) |
 
-Mọi khẳng định kiến trúc bên dưới đều được đối chiếu tới một file trong `src/`, hoặc (đối với bề mặt lệnh) tới [`skill/references/command-reference.md`](../skill/references/command-reference.md), tài liệu thắng thế bất cứ khi nào hai tài liệu mâu thuẫn nhau. Số dòng trỏ tới `9e47020` (vài commit trước tag `2.0.0`) và sẽ lệch dần; tên hàm và handler ghi bên cạnh thì không. Các con số lấy từ `package.json`, lockfile, mã nguồn, npm registry, hoặc một thư mục tài khoản được đo một lần (có ghi chú ở chỗ dùng). Phần [Phụ lục](#phụ-lục--tự-đo-đạc-lại-mọi-thông-số) liệt kê các lệnh để bạn tự đo. Câu nào là đánh giá chứ không phải điều mã nguồn cho thấy (các bảng định cỡ, và toàn bộ §6) đều nói rõ như vậy. Với codebase này, câu trả lời chung chung kiểu "bot nhắn tin thường hoạt động thế nào" hay sai, nên tài liệu này tránh nó.
+Mọi khẳng định kiến trúc bên dưới đều được đối chiếu tới một file trong `src/`, hoặc (đối với bề mặt lệnh) tới [`skill/references/command-reference.md`](../skill/references/command-reference.md), tài liệu thắng thế bất cứ khi nào hai tài liệu mâu thuẫn nhau. Các con số lấy từ `package.json`, lockfile, mã nguồn, npm registry, hoặc một thư mục tài khoản mẫu (có ghi chú ở chỗ dùng). Phần [Phụ lục](#phụ-lục--tự-đo-đạc-lại-mọi-thông-số) liệt kê các lệnh để bạn tự đo. Câu nào là đánh giá chứ không phải điều mã nguồn cho thấy (các bảng định cỡ, và toàn bộ §6) đều nói rõ như vậy.
 
 Hai quy ước dùng xuyên suốt tài liệu:
 
@@ -38,7 +38,7 @@ Hai quy ước dùng xuyên suốt tài liệu:
 
 **Ràng buộc lớn nhất.** Zalo chỉ cho phép một phiên web trên mỗi tài khoản; phiên trùng lặp bị đóng với mã `3000`, và cả `listen` lẫn `mcp start` đều không bao giờ kết nối lại sau đó, vì hai client cùng kết nối lại sẽ đá nhau mãi. Một daemon always-on nhả khóa và thoát với mã `3`; một daemon on-demand (mặc định của `mcp start --http` và `listen --daemon`, §4.10) buông socket và vẫn chạy ở trạng thái **`yielded`** (đã nhường), từ chối mọi yêu cầu với `YIELDED` cho đến khi có người xác nhận `zalo-agent presence resume --yes`. Đây không phải thông số chỉnh được.
 
-**Mỗi tài khoản một lần đăng nhập web: những điều đã đo được ở Zalo.**
+**Mỗi tài khoản một lần đăng nhập web.**
 
 - Zalo chỉ giữ **một lần đăng nhập web cho mỗi tài khoản**, và máy chủ chính là lần đăng nhập đó. Đăng nhập QR vào **Zalo trên trình duyệt** ở bất kỳ đâu sẽ thu hồi lần đăng nhập của máy chủ: lần đăng nhập kế tiếp của nó bị từ chối ba lần, và daemon vẫn chạy ở trạng thái **`signed_out`** (đã bị đăng xuất), từ chối mọi yêu cầu với `SIGNED_OUT` cho đến khi tài khoản được thêm lại bằng QR (`zalo-agent login` rồi khởi động lại, hoặc luồng thêm bằng QR của bộ điều khiển fleet). `ZALO_EXIT_ON_SIGNED_OUT=1` trả lại hành vi của 2.x, thoát mã `4`.
 - **Điện thoại và ứng dụng Zalo trên máy tính là các lần đăng nhập riêng, tồn tại song song với máy chủ.** Hãy dặn người dùng giữ điện thoại hoặc ứng dụng trên máy tính bên cạnh máy chủ, không bao giờ dùng trình duyệt.
@@ -75,7 +75,7 @@ Vì vậy quyết định triển khai đầu tiên là bắt buộc: **bạn c�
 >
 > | | `listen` | `mcp start` |
 > |---|---|---|
-> | Bề mặt MCP tool (36 tool trong `src/mcp/mcp-tools.js`) | không | **có** |
+> | Bề mặt MCP tool (37 tool trong `src/mcp/mcp-tools.js`) | không | **có** |
 > | HTTP / HTTPS `/health`, `/ready`, `/status`, `/metrics`, `/events/wait`, các endpoint OAuth 2.0 | không | **có** (chỉ với `--http`) |
 > | Đẩy ra ngoài qua `-w, --webhook <url>` + `--webhook-secret <secret>` | **có** | **có** |
 > | Lưu trữ JSONL `--save <dir>` | **có** | không |
@@ -92,7 +92,7 @@ Vì vậy quyết định triển khai đầu tiên là bắt buộc: **bạn c�
 > `tests/unit/listener-lifecycle-rules.test.js` giữ cả hai theo cùng quy tắc khoảng hở (mỗi bên dựng một `SyncManager` và ghi một khoảng hở lúc khởi động), và `tests/unit/self-heal-wiring.test.js` chạy các kiểm tra nối dây trên cả hai file. Vì vậy phát hiện mất tin không còn là lý do để chọn bên nào: chọn `mcp start` cho bot MCP (và webhook push / long-polling), `listen` cho bên tiêu thụ webhook hoặc JSONL chỉ dùng CLI.
 
 > [!NOTE]
-> **Các tool của `mcp start` đi theo lần đăng nhập lại.** Một socket mà bộ giám sát không giữ sống được trên phiên của nó (Zalo từ chối phiên, hoặc sau 8 lần thử liên tiếp vẫn không có socket dùng được) được socket host xử lý ngay trong tiến trình: `clearSession()`, rồi đăng nhập, tạo một đối tượng API mới (`loginWithCredentials` trong `src/core/zalo-client.js`). Các handler của listener, self-heal, kênh daemon và việc tải media đi theo đối tượng mới qua `getApi()`, và 36 tool cùng bộ thông báo cũng vậy: chúng nhận `liveApi(getApi)` (`src/core/live-api.js`), đọc phiên hiện hành ở mỗi lần gọi. Trước bản sửa của 2.0.0, chúng nhận đối tượng lúc khởi động một lần duy nhất, nên sau dòng `Re-login successful` chúng vẫn gọi vào phiên đã bị thay, và việc quét socket của `zalo_get_history` lật trang trên một listener đã đóng. Trong lúc đang đăng nhập lại, một lần gọi tool thất bại với "The Zalo session is logging in again after a dropped connection; try again in a few seconds."
+> **Các tool của `mcp start` đi theo lần đăng nhập lại.** Một socket mà bộ giám sát không giữ sống được trên phiên của nó (Zalo từ chối phiên, hoặc sau 8 lần thử liên tiếp vẫn không có socket dùng được) được socket host xử lý ngay trong tiến trình: `clearSession()`, rồi đăng nhập, tạo một đối tượng API mới (`loginWithCredentials` trong `src/core/zalo-client.js`). Các handler của listener, self-heal, kênh daemon và việc tải media đi theo đối tượng mới qua `getApi()`, và 37 tool cùng bộ thông báo cũng vậy: chúng nhận `liveApi(getApi)` (`src/core/live-api.js`), đọc phiên hiện hành ở mỗi lần gọi. Trước bản sửa của 2.0.0, chúng nhận đối tượng lúc khởi động một lần duy nhất, nên sau dòng `Re-login successful` chúng vẫn gọi vào phiên đã bị thay, và việc quét socket của `zalo_get_history` lật trang trên một listener đã đóng. Trong lúc đang đăng nhập lại, một lần gọi tool thất bại với "The Zalo session is logging in again after a dropped connection; try again in a few seconds."
 
 ### 1.2 `daemon-channel.js` thực chất là gì
 
@@ -303,7 +303,7 @@ Khuyến nghị, không phải phép đo: không có gì trong repository này �
 
 ### 3.3 Đĩa — bộ nhớ đệm media là toàn bộ câu chuyện
 
-Một thư mục tài khoản, đo một lần vào 2026-09-29 sau **36 ngày** vận hành liên tục. Nó chưa được đo lại cho bản sửa đổi này, và chỉ là một tài khoản, nên hãy coi đây là bậc độ lớn và tự đo của bạn (Phụ lục):
+Một thư mục tài khoản mẫu sau **36 ngày** vận hành liên tục. Đây chỉ là một tài khoản, nên hãy coi đây là bậc độ lớn và tự đo của bạn (Phụ lục):
 
 | Thành phần | Đo được | Tốc độ suy ra |
 |---|---|---|
@@ -389,7 +389,7 @@ Mã QR được lưu vào `~/.zalo-agent-cli/qr.png`, có đường dẫn in ra 
 Phương án không màn hình: trên một máy đã đăng nhập, `zalo-agent account export --yes` ghi thông tin đăng nhập đã lưu ra một file JSON với quyền `0600` (mặc định `./zalo-creds.json`), và `zalo-agent login --credentials <file>` trên máy chủ đăng nhập từ nó mà không cần QR. File đó là một phiên đăng nhập đang sống: chuyển nó qua kênh mã hóa, xóa nó sau khi nhập, và không bao giờ chạy listener cho tài khoản trên máy xuất (một phiên web mỗi tài khoản). Để bỏ bản sao trên máy xuất, `zalo-agent logout --no-remote --yes` xóa thông tin đăng nhập đã lưu của nó mà không liên hệ Zalo (`logout` có bước xác nhận từ 3.0: thiếu `--yes` thì không làm gì và thoát mã 2; 2.5.x không có `--yes`); một lệnh `logout` thường sẽ yêu cầu Zalo kết thúc khóa phiên của chính thông tin đăng nhập mà máy chủ đang dùng.
 
 > [!CAUTION]
-> **Không bao giờ chạy `zalo-agent login` từ một shell nâng quyền** (`sudo` lên root, hoặc PowerShell Administrator). Đo trên Windows: các file thông tin đăng nhập thuộc sở hữu `BUILTIN\Administrators`; tài khoản dịch vụ bình thường đọc và ghi lại được nhưng không xóa được, nên `logout --purge` và `account remove` thất bại với `EPERM` trong khi mọi thứ khác trông vẫn ổn (`AGENTS.md` §13, "Elevated login" trong [`docs/agent-notes.md`](agent-notes.md)).
+> **Không bao giờ chạy `zalo-agent login` từ một shell nâng quyền** (`sudo` lên root, hoặc PowerShell Administrator). Trên Windows, các file thông tin đăng nhập thuộc sở hữu `BUILTIN\Administrators`; tài khoản dịch vụ bình thường đọc và ghi lại được nhưng không xóa được, nên `logout --purge` và `account remove` thất bại với `EPERM` trong khi mọi thứ khác trông vẫn ổn.
 
 ### 4.2 systemd — tiến trình giữ socket
 
@@ -492,7 +492,7 @@ Hãy nói thẳng điều này, vì phiên bản quảng cáo của nó là sai:
 - **Khoảng thời gian socket nghỉ là một khoảng hở đã lên kế hoạch.** Với hiện diện theo nhu cầu (§4.10), thời gian socket nghỉ được ghi thành khoảng hở `idle` và được kéo lại từ hàng đợi ngoại tuyến ở lần đánh thức kế tiếp, như khoảng trống của một lần khởi động lại; health và `fleet status` không cảnh báo về nó. Phần hàng đợi không còn giữ trở thành một khoảng hở thật, `idle-evicted`, kèm lời khuyên `sync --from`.
 - **Hàng đợi thuộc về một thiết bị.** Zalo giữ hàng đợi ngoại tuyến theo mã thiết bị (imei). Một lần đăng nhập QR lại giữ nguyên mã thiết bị của tài khoản (user agent và imei đã lưu được trình ra lại), nên hàng đợi vẫn còn sau đó; lần đăng nhập đầu tiên, một lần đăng nhập sau khi `logout` đã xóa thông tin đăng nhập, hoặc một tài khoản khác thì nhận mã thiết bị mới. Độ bao phủ không bao giờ bắt đầu trước thời điểm mã thiết bị đó được dùng: thông tin đăng nhập đã lưu mang `deviceSince`, và khoảng thời gian trước đó là một khoảng hở `new-device` chờ xử lý kèm lệnh `sync --from` của nó, trừ khi một lần khôi phục từ điện thoại đã với tới trước đó. `login` cho biết là trường hợp nào (`Device: the same device id …` / `Device: a new device id …`).
 - **Hàng đợi nhóm bị tràn được sửa lại.** Khi Zalo báo đã bỏ một phần hàng đợi nhóm (`evict`, hàng đợi bị đặt lại), self-heal đọc kho tin nhắn đám mây của các nhóm (nhóm hoạt động gần nhất trước, tối đa 50 nhóm và 200 tin mỗi nhóm) và đóng khoảng hở nhóm khi mọi nhóm đã được đọc lùi tới đó; tràn hàng đợi 1-1 thì vẫn chờ xử lý. Dù thế nào, một sự kiện `queue_overflow` cũng được gửi tới webhook, bộ đệm MCP và đầu ra của `listen`.
-- Hàng đợi ngoại tuyến của Zalo với xa tới đâu không được ghi lại trong repository này. Một trường hợp đã đo: một lần gián đoạn 75 phút được lấy lại đầy đủ từ cả hai hàng đợi mà không có lời nhắc nào trên điện thoại (dòng `listen` của `command-reference.md`). `--no-self-heal` ghi và báo khoảng hở mà không bù.
+- Zalo không công bố hàng đợi ngoại tuyến giữ lại được bao xa: sau một lần gián đoạn dài, hãy xem `sync_gaps` và khôi phục phần còn thiếu bằng `zalo-agent sync --from <ngày>`. `--no-self-heal` ghi và báo khoảng hở mà không bù.
 
 **Quy trình giảm khoảng trống xuống ít nhất:**
 
@@ -697,7 +697,7 @@ Hệ quả vận hành, theo thứ tự quan trọng:
 
 1. **Không bao giờ dùng tài khoản Zalo chính của một người.** Hãy dùng một tài khoản chuyên biệt mà mất nó chỉ là bất tiện, không phải sự cố ngừng dịch vụ.
 2. **Coi việc bị khóa là chuyện `khi nào`, không phải `liệu có`.** Chuẩn bị sẵn quy trình đăng nhập lại và một tài khoản thứ hai. Bot của bạn nói chuyện với daemon, không phải với Zalo, nên đổi tài khoản chỉ là đăng nhập lại và khởi động lại, đó chính là mục đích của mô hình ở §2.
-3. **Official Account API (`oa …`) là con đường được chấp thuận**: OAuth 2.0, thông tin xác thực riêng tại `~/.zalo-agent/oa-credentials.json`, không có rủi ro bị khóa. Đó là một **sản phẩm khác** với bề mặt lệnh khác: tin nhắn OA đi tới người theo dõi OA, và không phần nào được cung cấp dưới dạng MCP tool (`INSTALLATION.md`). Khi bài toán của bạn hợp với mô hình OA, hãy dùng nó và bỏ qua toàn bộ rủi ro này. Đừng nhầm lẫn hai thư mục hay hai luồng xác thực.
+3. **Official Account API (`oa …`) là con đường được chấp thuận**: OAuth 2.0, thông tin xác thực riêng tại `~/.zalo-agent/oa-credentials.json`, không có rủi ro bị khóa. Đó là một **sản phẩm khác** với bề mặt lệnh khác: tin nhắn OA đi tới người theo dõi OA. Qua MCP, đó là tool `zalo_official`, chạy các lệnh `oa`, `zbs` và `social` trên các lần đăng nhập chính thức. Khi bài toán của bạn hợp với mô hình OA, hãy dùng nó và bỏ qua toàn bộ rủi ro này. Đừng nhầm lẫn hai thư mục hay hai luồng xác thực.
 4. **Tự giới hạn tốc độ cho bot của bạn.** Không có gì trong codebase điều tiết tin gửi đi: `zalo_send_message` gọi thẳng `api.sendMessage`. N bot trên một tài khoản nhân tốc độ gửi lên N lần với một API có giới hạn không được công bố. Hãy đặt bộ điều tiết ở tầng consumer (bảng profile ở §1.4c là chỗ của nó) trước khi thêm bot thứ hai.
 
 ### 5.2 Thông tin đăng nhập và dữ liệu tin nhắn khi lưu trữ
@@ -836,7 +836,7 @@ Ba lớp dùng được hôm nay:
 3. **Sự thật nằm sẵn trong prompt.** Tập nhỏ, luôn đúng: công ty là ai, người liên hệ khi cần chuyển tiếp, giờ làm việc, chính sách từ chối. Đặt nó trong system prompt và dùng prompt caching để không phải trả đầy đủ cho nó ở mỗi tin nhắn.
 
 > [!NOTE]
-> **Đề xuất:** một MCP tool `zalo_search_knowledge`, để bước truy xuất là một lần gọi tool thay vì phần nối dây phía consumer. Hấp dẫn, nhưng nó sẽ đặt một vector store hoặc chỉ mục FTS bên trong tiến trình giữ socket, tiến trình duy nhất mà event loop không bao giờ được bị chặn (§1.5, §3.2). Nếu có lúc được xây, nó nên là một máy chủ MCP **riêng** mà bot gắn bên cạnh `zalo`, không phải một tool thêm vào máy chủ này.
+> Hãy để phần truy xuất ngoài máy chủ này: một vector store hoặc chỉ mục toàn văn bên trong tiến trình giữ socket sẽ chặn event loop mà socket cần (§1.5, §3.2). Muốn có truy xuất dưới dạng MCP tool, hãy chạy nó thành một máy chủ MCP riêng mà bot gắn bên cạnh `zalo`.
 
 ### 7.2 Chỉ dẫn đến được bot bằng cách nào
 

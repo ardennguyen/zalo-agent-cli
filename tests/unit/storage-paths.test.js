@@ -163,7 +163,7 @@ describe("separated storage paths (unit + CLI)", () => {
                 senderId: TEST_UID,
                 senderName: "Tester",
                 text: "[photo]",
-                timestamp: 1700000000000,
+                timestamp: Date.now() - 3_600_000, // inside the CDN's keeping window (src/core/sync-v2/media-age.js)
                 type: "photo",
                 has_attachment: 1,
                 raw_data: JSON.stringify({

@@ -266,6 +266,11 @@ export function registerSyncCommands(program) {
             "Also re-fetch media you previously pruned. Pruning is treated as a decision, so it is " +
                 "skipped by automatic fetches until you ask for it back",
         )
+        .option(
+            "--retry-dead",
+            "Ask again for links that answered 404/410 on an earlier run. They are remembered and skipped " +
+                "without a request by default; a new link a later sync hands out is always tried",
+        )
         .option("--dry-run", "Report what would be fetched without downloading anything")
         .action(async (opts) => {
             if (opts.pruneOrphans) {
@@ -453,6 +458,7 @@ async function runMediaDownload(activeAcc, opts) {
                 timeoutMs: (opts.timeout || 60) * 1000,
                 thumbs: Boolean(opts.thumbs),
                 includePruned: Boolean(opts.includePruned),
+                retryDead: Boolean(opts.retryDead),
                 dryRun: Boolean(opts.dryRun),
                 threadNames: getThreadNames(),
                 signal,
@@ -478,6 +484,12 @@ async function runMediaDownload(activeAcc, opts) {
     if (stats.deferred) {
         info(
             `${stats.deferred} more attachment(s) are waiting (this run was capped at ${opts.mediaLimit}); run it again to continue.`,
+        );
+    }
+    if (stats.dead) {
+        info(
+            `${stats.dead} link(s) known dead from an earlier run (HTTP 404/410) were skipped without a request; ` +
+                "`zalo-agent sync-media --retry-dead` asks again.",
         );
     }
     if (stats.expired) {
@@ -1635,8 +1647,9 @@ export function mediaProgressPrinter({
         if (p.attempted !== p.total && p.attempted - lastCount < every && t - lastAt < everyMs) return;
         lastCount = p.attempted;
         lastAt = t;
+        const dead = p.dead ? `, ${p.dead} known dead` : "";
         print(
-            `  ${p.attempted}/${p.total} files — ${p.downloaded} saved, ${p.failed} failed (${formatBytes(p.bytes)})`,
+            `  ${p.attempted}/${p.total} files — ${p.downloaded} saved, ${p.failed} failed${dead} (${formatBytes(p.bytes)})`,
         );
     };
 }
@@ -1700,6 +1713,12 @@ async function fetchMediaAfterRestore(accountDir, api, since, { limit } = {}) {
     if (stats.deferred) {
         info(
             `${stats.deferred} more file(s) are waiting (this run was capped at ${limit}); run \`zalo-agent sync-media\` to continue.`,
+        );
+    }
+    if (stats.dead) {
+        info(
+            `${stats.dead} link(s) known dead from an earlier run (HTTP 404/410) were skipped without a request; ` +
+                "`zalo-agent sync-media --retry-dead` asks again.",
         );
     }
     if (stats.expired) {

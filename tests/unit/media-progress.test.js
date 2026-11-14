@@ -45,6 +45,15 @@ describe("mediaProgressPrinter", () => {
         assert.match(lines[1], /^ {2}3\/3 files — 2 saved, 1 failed/);
     });
 
+    it("names the links skipped as known dead, and only when there are some", () => {
+        const lines = [];
+        const p = mediaProgressPrinter({ every: 1, print: (l) => lines.push(l) });
+        p(at(1, 2, 0, 1));
+        p({ ...at(2, 2, 0, 1), dead: 1 });
+        assert.doesNotMatch(lines[0], /known dead/);
+        assert.match(lines[1], /^ {2}2\/2 files — 0 saved, 1 failed, 1 known dead/);
+    });
+
     it("ignores every other event", () => {
         const lines = [];
         const p = mediaProgressPrinter({ every: 1, print: (l) => lines.push(l) });

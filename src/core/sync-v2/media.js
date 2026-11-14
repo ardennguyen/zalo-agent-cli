@@ -44,6 +44,7 @@ import { createDownloadFetch } from "../../zalo/download-fetch.js";
 import { readSealedJson, writeSealedJson } from "../keystore/index.js";
 import { scopeOfDir } from "../keystore/keyring.js";
 import { mediaPlainSize, writeSealedMedia } from "../keystore/media-seal.js";
+import { openDeadLinks } from "./dead-links.js";
 
 /** Kinds that point at a byte stream worth saving. */
 export const DOWNLOADABLE_KINDS = new Set(["photo", "video", "file", "gif", "voice", "audio", "doodle"]);
@@ -156,6 +157,7 @@ export const DOWNLOAD_REASONS = {
     "empty-body": { verdict: "unknown", label: "an empty body" },
     network: { verdict: "unknown", label: "no response at all" },
     timeout: { verdict: "unknown", label: "no answer before the deadline" },
+    dead: { verdict: "dead", label: "known dead (404/410 on an earlier run)" },
 };
 
 /**
@@ -165,7 +167,7 @@ export const DOWNLOAD_REASONS = {
  * instead of inferring a cause the classifier never established.
  *
  * @param {Record<string, number>} [reasons] - `stats.reasons` from a download run
- * @param {"expired"|"throttled"|"unknown"|"failed"} verdict
+ * @param {"expired"|"throttled"|"unknown"|"failed"|"dead"} verdict
  * @returns {string} e.g. `HTTP 403 ×3, no response at all ×2`; empty when nothing matched
  */
 export function describeDownloadReasons(reasons, verdict) {
@@ -493,15 +495,19 @@ function writeConversationIndex(mediaRoot, names, scope) {
  *   0 disables the pause (tests)
  * @param {number} [opts.timeoutMs=60000] - per-request deadline over the whole exchange; without one a stalled
  *   connection blocks its worker indefinitely
+ * @param {boolean} [opts.retryDead=false] - ask again for links remembered as dead (404/410 on an earlier run);
+ *   by default they are skipped without a request and counted in `dead`
+ * @param {object} [opts.deadLinks] - the dead-link list to use (tests); default: the account's own
+ *   (`<accountDir>/media/_dead-links.json`, ./dead-links.js)
  * @param {AbortSignal} [opts.signal] - stops the run: no new file is started, the requests in flight are cut short,
  *   and everything not saved stays pending for the next run (`interrupted` is then true)
  * @param {(msgId: string, zKey?: string|null) => {found: boolean}} [opts.cloudLookup] - whether the local zCloud index lists a message's
  *   backup (defaults to {@link lookupCloudBackup}); a file that is gone from the CDN and listed there is counted in
  *   `cloudBacked`: it exists, but the copy is end-to-end encrypted under the account's cloud key, which this client never holds
  * @param {(p: object) => void} [opts.onProgress] - `saved` per file written, `fail` per failure, `throttled` per
- *   backoff, and `attempted` once per file finished either way (`{attempted, total, downloaded, failed, bytes}`), so a
+ *   backoff, and `attempted` once per file finished either way (`{attempted, total, downloaded, failed, dead, bytes}`), so a
  *   run whose files all fail still shows it is moving
- * @returns {Promise<{considered:number, attempted:number, downloaded:number, skipped:number, failed:number,
+ * @returns {Promise<{considered:number, attempted:number, downloaded:number, skipped:number, failed:number, dead:number,
  *   expired:number, cloudBacked:number, throttled:number, unknown:number, renewed:number, bytes:number,
  *   abortedEarly:boolean, interrupted:boolean, deferred:number, reasons:Record<string,number>, failures:Array<object>}>}
  *   `renewed` is always 0 (no link is renewed; kept so a reader of the result keeps its shape).
@@ -529,6 +535,7 @@ export async function downloadSyncedMedia(opts = {}) {
         mediaRoot: mediaRootOpt,
         backoffBaseMs = 1000,
         signal,
+        retryDead = false,
         onProgress = () => {},
     } = opts;
     const kinds = opts.kinds ? new Set(opts.kinds) : DOWNLOADABLE_KINDS;
@@ -571,6 +578,8 @@ export async function downloadSyncedMedia(opts = {}) {
         downloaded: 0,
         skipped: 0,
         failed: 0,
+        // Links remembered as dead (404/410 on an earlier run): skipped without a request, not counted as failed.
+        dead: 0,
         expired: 0,
         // Of the files that are gone, the ones the local zCloud index lists: the cloud holds a copy this client cannot open.
         cloudBacked: 0,
@@ -613,6 +622,8 @@ export async function downloadSyncedMedia(opts = {}) {
     // Every file is sealed for the account the folder names (keystore/media-seal.js).
     const scope = scopeOfDir(resolve(accountDir));
     writeConversationIndex(mediaRoot, names, scope);
+    // Always the account's own media folder, never a shared override root: the list is the account's alone.
+    const deadLinks = opts.deadLinks ?? openDeadLinks(resolve(accountDir, "media"), scope);
     let cursor = 0;
     // Consecutive throttled responses across all workers. Zalo starts dropping
     // connections under sustained load, and charging on through nine thousand
@@ -661,6 +672,7 @@ export async function downloadSyncedMedia(opts = {}) {
                 total: jobs.length,
                 downloaded: stats.downloaded,
                 failed: stats.failed,
+                dead: stats.dead,
                 bytes: stats.bytes,
             });
         }
@@ -679,11 +691,22 @@ export async function downloadSyncedMedia(opts = {}) {
             // id -> name mapping a human needs to find anything.
             const dir = join(mediaRoot, String(row.threadId));
 
+            // Answered 404/410 on an earlier run: gone, so not asked again. Keyed by the link, so a new link a
+            // later sync hands out for the same message is tried normally.
+            if (!retryDead && deadLinks.has(url)) {
+                stats.dead++;
+                stats.skipped++;
+                stats.reasons.dead = (stats.reasons.dead || 0) + 1;
+                return;
+            }
             const got = await fetchBytes(url, timeoutMs, download, signal);
             // Stopped mid-request: not a failure, and the row stays pending.
             if (got.aborted) return "stopped";
             const wasGone = !got.ok && Boolean(got.expired);
             if (wasGone) stats.expired++;
+            // Only a status that says the object no longer exists is remembered; a lapsed-signature body, a
+            // timeout or a 5xx says nothing that lasts.
+            if (got.code === "not-found") deadLinks.add(url);
 
             if (!got.ok) {
                 if (wasGone && isInCloudIndex(row)) stats.cloudBacked++;
@@ -767,7 +790,11 @@ export async function downloadSyncedMedia(opts = {}) {
         }
     };
 
-    await Promise.all(Array.from({ length: Math.max(1, Math.min(16, concurrency)) }, worker));
+    try {
+        await Promise.all(Array.from({ length: Math.max(1, Math.min(16, concurrency)) }, worker));
+    } finally {
+        deadLinks.flush();
+    }
     // A stop that landed after the last file finished interrupted nothing.
     if (stats.attempted >= jobs.length) stats.interrupted = false;
     return stats;

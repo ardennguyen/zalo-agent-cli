@@ -12,7 +12,7 @@ import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { createServer as createTcpServer } from "node:net";
-import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -37,7 +37,8 @@ import {
 } from "../../src/core/sync-v2/media.js";
 import { extractRenewedUrls } from "../../src/zalo/custom/renewlink.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { readSealedJson } from "../../src/core/keystore/index.js";
+import { fileState, readSealedJson } from "../../src/core/keystore/index.js";
+import { DEAD_LINKS_FILE, deadLinkKey, openDeadLinks } from "../../src/core/sync-v2/dead-links.js";
 import { scopeOfDir } from "../../src/core/keystore/keyring.js";
 import { mediaFileState, readMediaFile } from "../../src/core/keystore/media-seal.js";
 
@@ -130,6 +131,10 @@ before(async () => {
         if (path === "/gone.jpg") {
             res.writeHead(404);
             return res.end("nope");
+        }
+        if (path === "/gone410.jpg") {
+            res.writeHead(410);
+            return res.end("gone");
         }
         if (path === "/empty.jpg") {
             res.writeHead(200, { "content-type": "image/jpeg" });
@@ -490,7 +495,7 @@ describe("downloadSyncedMedia — expiry", () => {
     });
 
     it("records a bounded list of failures", async () => {
-        for (let i = 0; i < 30; i++) row({}, [photo("/gone.jpg")]);
+        for (let i = 0; i < 30; i++) row({}, [photo(`/gone.jpg?n=${i}`)]);
         const stats = await downloadSyncedMedia({ accountDir: dir, limit: 50, backoffBaseMs: 0 });
         assert.equal(stats.failed, 30);
         assert.ok(stats.failures.length <= 20, "failure list should stay bounded");
@@ -911,7 +916,7 @@ describe("every wait is bounded, and the run keeps going", () => {
     });
 
     it("reports progress per file attempted, even when every file fails", async () => {
-        for (let i = 0; i < 4; i++) row({}, [photo("/gone.jpg")]);
+        for (let i = 0; i < 4; i++) row({}, [photo(`/gone.jpg?n=${i}`)]);
         const seen = [];
         const stats = await downloadSyncedMedia({
             accountDir: dir,
@@ -986,6 +991,110 @@ describe("every wait is bounded, and the run keeps going", () => {
         assert.equal(hits["/ok.jpg"], undefined);
         assert.equal(stats.interrupted, true);
         assert.equal(stats.attempted, 0);
+    });
+});
+
+describe("a link answered 404/410 is remembered and not asked again", () => {
+    const run = (extra = {}) => downloadSyncedMedia({ accountDir: dir, limit: 50, backoffBaseMs: 0, ...extra });
+
+    it("records a 404 and a 410, then skips both on the next run without a request", async () => {
+        row({ msgId: "m404" }, [photo("/gone.jpg")]);
+        row({ msgId: "m410" }, [photo("/gone410.jpg")]);
+        const first = await run();
+        assert.equal(first.expired, 2);
+        assert.equal(first.dead, 0);
+
+        const second = await run();
+        // Red if the list is not consulted: each link would be asked for a second time.
+        assert.equal(hits["/gone.jpg"], 1);
+        assert.equal(hits["/gone410.jpg"], 1);
+        assert.equal(second.dead, 2);
+        assert.equal(second.failed, 0, "a known-dead skip is not a failure");
+        assert.equal(second.expired, 0);
+        assert.equal(second.attempted, 2, "but it is a file finished, for progress");
+        assert.deepEqual(second.reasons, { dead: 2 });
+        assert.equal(countPendingAttachments(), 2, "the rows themselves stay as they are");
+    });
+
+    it("remembers nothing else: a lapsed-signature body, a 5xx, a 403 and a timeout are asked again", async () => {
+        row({}, [photo("/expired.jpg")]);
+        row({}, [photo("/servererr.jpg")]);
+        row({}, [photo("/forbidden.jpg")]);
+        row({}, [photo("/hang.jpg")]);
+        await run({ timeoutMs: 300 });
+        const again = await run({ timeoutMs: 300 });
+        assert.equal(again.dead, 0);
+        for (const path of ["/expired.jpg", "/servererr.jpg", "/forbidden.jpg", "/hang.jpg"]) {
+            assert.equal(hits[path], 2, `${path} was not asked again`);
+        }
+    });
+
+    it("tries a new link for the same message normally: the memory is keyed by link, not message", async () => {
+        row({ msgId: "m-relinked" }, [photo("/gone.jpg")]);
+        await run();
+        // A later sync hands out a fresh link for the same message.
+        row({ msgId: "m-relinked" }, [photo("/ok.jpg")]);
+        const stats = await run();
+        assert.equal(stats.dead, 0);
+        assert.equal(stats.downloaded, 1);
+        assert.equal(hits["/ok.jpg"], 1);
+        assert.equal(countPendingAttachments(), 0);
+    });
+
+    it("retryDead asks again for every remembered link", async () => {
+        row({}, [photo("/gone.jpg")]);
+        await run();
+        const again = await run({ retryDead: true });
+        assert.equal(hits["/gone.jpg"], 2);
+        assert.equal(again.dead, 0);
+        assert.equal(again.expired, 1);
+        // And the list still holds it afterwards.
+        const later = await run();
+        assert.equal(later.dead, 1);
+        assert.equal(hits["/gone.jpg"], 2);
+    });
+
+    it("keeps the list sealed in the account's media folder, with no link in it", async () => {
+        row({}, [photo("/gone.jpg")]);
+        await run();
+        const file = join(dir, "media", DEAD_LINKS_FILE);
+        assert.equal(fileState(file).state, "sealed");
+        const raw = readFileSync(file);
+        assert.equal(raw.includes(Buffer.from("gone.jpg")), false, "the link is not in the file");
+        assert.equal(raw.includes(Buffer.from("127.0.0.1")), false);
+        // What it holds, once opened: the link's hash, and nothing that reads as a link.
+        const saved = readSealedJson(file, scopeOfDir(dir), { kind: "media-dead-links", use: "data" });
+        assert.deepEqual(saved.keys, [deadLinkKey(`${base}/gone.jpg`)]);
+        assert.equal(JSON.stringify(saved).includes("http"), false);
+    });
+
+    it("caps the list, dropping the oldest first, and the cap survives a reload", () => {
+        const mediaDir = join(dir, "media");
+        const scope = scopeOfDir(dir);
+        const list = openDeadLinks(mediaDir, scope, { cap: 3 });
+        for (const u of ["https://x/1", "https://x/2", "https://x/3", "https://x/4"]) list.add(u);
+        list.flush();
+        assert.equal(list.size, 3);
+        assert.equal(list.has("https://x/1"), false, "the oldest went");
+        assert.equal(list.has("https://x/4"), true);
+
+        const reopened = openDeadLinks(mediaDir, scope, { cap: 3 });
+        assert.deepEqual(
+            ["https://x/1", "https://x/2", "https://x/3", "https://x/4"].map((u) => reopened.has(u)),
+            [false, true, true, true],
+        );
+        reopened.add("https://x/5");
+        reopened.flush();
+        assert.equal(openDeadLinks(mediaDir, scope, { cap: 3 }).has("https://x/2"), false);
+    });
+
+    it("an unreadable list starts empty instead of failing the run", async () => {
+        const mediaDir = join(dir, "media");
+        mkdirSync(mediaDir, { recursive: true });
+        writeFileSync(join(mediaDir, DEAD_LINKS_FILE), "not a sealed file");
+        row({}, [photo("/ok.jpg")]);
+        const stats = await run();
+        assert.equal(stats.downloaded, 1);
     });
 });
 
@@ -1172,7 +1281,7 @@ describe("the summary reports what was observed, not what it assumes", () => {
         for (const [code, spec] of Object.entries(DOWNLOAD_REASONS)) {
             assert.ok(spec.label, `${code} has no label`);
             assert.ok(
-                ["expired", "throttled", "unknown", "failed"].includes(spec.verdict),
+                ["expired", "throttled", "unknown", "failed", "dead"].includes(spec.verdict),
                 `${code} has verdict ${spec.verdict}`,
             );
         }

@@ -51,7 +51,7 @@ Two separate API surfaces live in one binary, and **must never be conflated**:
 | Surface | API | Credentials | Risk |
 |---|---|---|---|
 | Personal (`msg`, `friend`, `group`, `listen`, `mcp`, …) | **Unofficial** (own protocol layer, from Zalo's wire format), QR login | `~/.zalo-agent-cli/` | Account can be banned |
-| Official Account (`oa …`) | **Official** Zalo OA REST v3.0, OAuth 2.0 | `~/.zalo-agent/` (no `-cli`) | None — sanctioned |
+| Official (`oa`, `zbs`) | **Official** OA + ZBS APIs, OAuth 2.0 | `~/.zalo-agent/` (no `-cli`) | None — sanctioned |
 
 One parent folder (locally `F:/Coding/zalo-mcp/`, its `README.md` is the map): **`zalo-agent-cli`** (this repo, the engine), **`zalo-mcp`** (thin wrapper, no engine code, pins a *published* version — §13), **`zalo-agent-cli-wiki`** (public wiki, EN + VN pairs). Live account state lives **outside** the workspace (`F:/zalo-live-state/`) — never copy from it.
 
@@ -189,7 +189,7 @@ Full checklist, including the wrapper and wiki steps after an engine release: **
 | `skill/references/command-reference.md` | Any command, subcommand, flag or default (**source of truth**) |
 | `skill/SKILL.md` | Any user-visible command surface change |
 | `skill/references/mcp-guide.md` (VN), `login-flow.md`, `listen-mode-guide.md`, `skill/evals/eval-scenarios.md` | The matching MCP / login / listener / skill behavior changes |
-| `skill/references/oa-command-reference.md` (EN), `docs/official-account.{md,vi.md}` | Any `oa …` change |
+| `skill/references/oa-command-reference.md` (EN), `docs/official-account.{md,vi.md}` | Any `oa`/`zbs` change |
 | `README.md` (VN/EN) | A command group is added/removed, or a headline feature ships |
 | `INSTALLATION.{md,vi.md}`, `docs/deployment.{md,vi.md}` | Install/update flow, MCP transport/daemon flags, or config keys |
 | `docs/configuration.{md,vi.md}`, `docs/config-samples/**`, wiki `Configuration` ⇄ `Cấu-Hình` | An env var, `mcp-config.json` key, or MCP HTTP/webhook behavior changes (`config-samples.test.js` enforces the samples) |
@@ -201,7 +201,7 @@ Full checklist, including the wrapper and wiki steps after an engine release: **
 
 ### Numbers quoted across many docs
 
-CLI commands (**259**), command groups (**31** containers), MCP tools (**36**), OA commands (**32**), offline tests (**5954** as of 2026-11-13). Changing the code behind one means changing every doc that quotes it. **Re-measure with `node scripts/count-surface.mjs`; never trust a written number** — method and pitfalls: [`docs/agent-notes.md`](docs/agent-notes.md).
+CLI commands (**315**), command groups (**39** containers), MCP tools (**36**), OA/ZBS commands (**88**), offline tests (**6336** as of 2026-11-14). Changing the code behind one means changing every doc that quotes it. **Re-measure with `node scripts/count-surface.mjs`; never trust a written number** — method and pitfalls: [`docs/agent-notes.md`](docs/agent-notes.md).
 
 **Every MCP tool list must match `src/mcp/mcp-tools.js`**: `zalo_get_messages`, `zalo_send_message`, `zalo_list_threads`, `zalo_search_threads`, `zalo_mark_read`, `zalo_get_history`, `zalo_view_media`, `zalo_react`, `zalo_undo`, `zalo_get_group_members`, `zalo_list_conversations`, `zalo_coverage`, `zalo_sync`, `zalo_sync_status`, `zalo_search_messages`, `zalo_lookup_user`, `zalo_forward_message`, `zalo_delete_message`, `zalo_reminder`, `zalo_note`, `zalo_poll`, `zalo_wait_for_message`, `zalo_label`, `zalo_friend`, `zalo_group`, `zalo_read`, `zalo_write`, `zalo_conversation`, `zalo_profile`, `zalo_auto_reply`, `zalo_quick_message`, `zalo_catalog`, `zalo_bank`, `zalo_cloud`, `zalo_sticker`, `zalo_link`.
 

@@ -1,10 +1,10 @@
-# Zalo Official Account (OA)
+# Zalo Official Account (OA) and ZBS
 
 [Tiếng Việt](official-account.vi.md)
 
-Manage a Zalo Official Account via the official Zalo OA REST API v3.0 — completely independent from personal Zalo accounts (the unofficial API).
+Manage a Zalo Official Account through Zalo's official APIs — the OA OpenAPI (v2.0/v3.0) with `oa …`, and ZBS Template Message with `zbs …` — completely independent from personal Zalo accounts (the unofficial API). Both groups use the same OA login.
 
-> **Note:** Several OA APIs require a paid OA tier. See [zalo.cloud/oa/pricing](https://zalo.cloud/oa/pricing).
+> **Note:** Several OA APIs require a verified OA or a paid OA package. See [zalo.cloud/oa/pricing](https://zalo.cloud/oa/pricing).
 
 ## Quick Start
 
@@ -22,8 +22,8 @@ Step-by-step guided wizard: enter credentials → OAuth login → webhook setup.
 # Login + skip webhook
 zalo-agent oa init --app-id <APP_ID> --secret <SECRET> --skip-webhook
 
-# Login + ngrok tunnel
-zalo-agent oa init --app-id <APP_ID> --secret <SECRET> --tunnel ngrok -p 3000
+# Login + ngrok tunnel, checking event signatures
+zalo-agent oa init --app-id <APP_ID> --secret <SECRET> --tunnel ngrok -p 3000 --oa-secret <OA_SECRET_KEY>
 
 # Login + existing webhook URL (VPS/n8n)
 zalo-agent oa init --app-id <APP_ID> --secret <SECRET> --webhook-url https://your-server.com/webhook
@@ -45,18 +45,18 @@ zalo-agent oa login --app-id <APP_ID> --secret <SECRET> --callback-host https://
 
 ## Commands
 
-There are **32 commands** in the `oa` group. Every command accepts `--oa-id <id>` (default `default`) for managing multiple OAs, and `--json` for machine-readable output.
+There are **88 commands**: 70 in the `oa` group and 18 in the `zbs` group. Every command accepts `--oa-id <id>` (default `default`) for managing multiple OAs, and `--json` for machine-readable output. Every option and default is in [`skill/references/oa-command-reference.md`](../skill/references/oa-command-reference.md); this page shows the shape of each area.
 
 ### Setup & Auth
 
 | Command | Description |
 |---------|-------------|
 | `oa init [flags]` | Guided setup wizard (interactive + non-interactive) — see flag table below |
-| `oa login --app-id <id> --secret <key> [-p, --port <port>]` | OAuth login (opens browser). Callback server listens on `127.0.0.1:<port>`, default port `3456`. 2-minute timeout |
+| `oa login --app-id <id> --secret <key> [-p, --port <port>]` | OAuth v4 login with PKCE (`code_challenge` + `state`; the code is exchanged with its `code_verifier`). Opens the browser; the callback server listens on `127.0.0.1:<port>`, default port `3456`. 2-minute timeout |
 | `oa login ... --callback-host <url>` | Headless VPS OAuth login — binds `0.0.0.0`, skips opening a browser, and prints the auth URL to open on a local machine |
-| `oa refresh` | Refresh the access token using the saved refresh token |
-| `oa setup <access-token>` | Set an access token manually (bypassing OAuth) |
-| `oa whoami` | View OA profile: name, ID, description, follower count, OA type, service package (and expiry date), and ZCA link status. The package determines which APIs work: OA messaging, ZBS, and Article APIs require a verified OA on a paid Advanced/Premium package |
+| `oa refresh` | Refresh the access token using the saved refresh token. Zalo makes the refresh token single use, so the refresh is serialized under a file lock and the new pair saved before use |
+| `oa setup <access-token>` | Set an access token manually (bypassing OAuth; no refresh possible) |
+| `oa whoami` | View the OA's profile: name, ID, description, verification, type, category, followers, package (valid-through date), linked Zalo Cloud Account. The package and verification decide which APIs work (`-224`: package too low; `-221`: the OA must be verified) |
 
 #### `oa init` flags
 
@@ -70,6 +70,7 @@ The wizard automatically switches to **agent (non-interactive) mode** whenever `
 | `--tunnel <type>` | `ngrok` (agent mode) | `ngrok` \| `cloudflared` \| `none` |
 | `--webhook-url <url>` | — | Use an existing webhook URL (VPS, n8n, …) instead of starting a tunnel |
 | `--verify-code <code>` | — | Zalo domain verification code |
+| `--oa-secret <key>` | — | OA Secret Key (the app's Webhook settings): the wizard's listener checks each event's signature |
 | `-p, --port <port>` | `3000` | Local webhook listener port |
 | `--skip-webhook` | `false` | Skip webhook setup completely |
 | `--skip-login` | `false` | Skip OAuth login (reuse an already-saved token) |
@@ -78,54 +79,146 @@ The wizard runs through 5 steps: (1) save app-id/secret → (2) OAuth login + pr
 
 ### Messaging
 
-```bash
-# Send text (message type: cs | transaction | promotion)
-zalo-agent oa msg text <user-id> "Message content" [-m cs]
-
-# Send image (direct URL or attachment_id)
-zalo-agent oa msg image <user-id> --image-url https://...
-zalo-agent oa msg image <user-id> --image-id <attachment_id>
-
-# Send file (must upload first)
-zalo-agent oa msg file <user-id> <file-id>
-
-# Send list card
-zalo-agent oa msg list <user-id> '[{"title":"Item 1"},{"title":"Item 2"}]'
-
-# Check message delivery status
-zalo-agent oa msg status <message-id>
-```
-
-### Followers
+`oa msg` sends consultation (CS) messages only. Zalo stopped transaction and promotion messages on the OA API on 01/03/2026: send those as ZBS template messages (`zbs send`, `zbs uid`, below).
 
 ```bash
-zalo-agent oa follower list [--offset 0] [--count 50]
-zalo-agent oa follower info <user-id>
-zalo-agent oa follower update <user-id> '{"name":"...","phone":"..."}'
-```
+# Text (≤ 2000 characters), optionally quoting a message
+zalo-agent oa msg text <user-id> "Message content" [--quote <message-id>]
 
-### Tags
+# Image (jpg/png ≤ 1 MB) by URL, attachment_id, or a local file uploaded first
+zalo-agent oa msg image <user-id> --url https://... [--caption "..."]
+zalo-agent oa msg image <user-id> --file ./photo.jpg
 
-```bash
-zalo-agent oa tag list
-zalo-agent oa tag assign <user-id> <tag-name>
-zalo-agent oa tag remove <tag-name>
-zalo-agent oa tag untag <user-id> <tag-name>
+# GIF, file, sticker
+zalo-agent oa msg gif <user-id> --file ./anim.gif --width 320 --height 240
+zalo-agent oa msg file <user-id> --file ./document.pdf
+zalo-agent oa msg sticker <user-id> <sticker-id>
+
+# Ask a follower to share their information
+zalo-agent oa msg request-info <user-id> --title "..." --subtitle "..." --image-url https://...
+
+# React to a message (like, heart, remove, or the documented codes)
+zalo-agent oa msg react <user-id> <message-id> like
+
+# Message an anonymous user, in the conversation from their webhook event
+zalo-agent oa msg anonymous <anonymous-id> --conversation <conversation-id> --text "..."
+
+# A user's last interaction and remaining messages; the OA's quota
+zalo-agent oa msg user-quota <user-id>
+zalo-agent oa quota
 ```
 
 ### Media Upload
 
+Zalo keeps uploads 7 days and allows 5000 upload requests a month.
+
 ```bash
-zalo-agent oa upload image ./photo.jpg    # Returns attachment_id
-zalo-agent oa upload file ./document.pdf  # Returns file token
+zalo-agent oa upload image ./photo.jpg    # jpg/png ≤ 1 MB → attachment_id
+zalo-agent oa upload file ./document.pdf  # PDF/DOC/DOCX/CSV ≤ 5 MB → token
+zalo-agent oa upload gif ./anim.gif       # GIF ≤ 5 MB → attachment_id
 ```
 
 ### Conversations
 
 ```bash
-zalo-agent oa conv recent [--offset 0] [--count 10]
-zalo-agent oa conv history <user-id> [--offset 0] [--count 10]
+zalo-agent oa conv recent [--offset 0] [--count 10] [--all]
+zalo-agent oa conv history <user-id> [--offset 0] [--count 10] [--all]
 ```
+
+At most 10 messages per request; `--all` walks every page (`--max <n>` stops early).
+
+### Users, user fields, tags
+
+```bash
+zalo-agent oa follower list [--count 50] [--tag <name>] [--last-interaction L7D] [--followers-only] [--all]
+zalo-agent oa follower info <user-id>
+
+# Update what the OA stores about a user: shared_info fields by name, plus alias and external id
+zalo-agent oa follower update <user-id> --name "Nguyen Van A" --phone 0901234567 --alias "VIP"
+zalo-agent oa follower update <user-id> --data '{"shared_info":{"address":"..."},"user_external_id":"crm-42"}'
+
+zalo-agent oa follower custom-info <user-id>
+zalo-agent oa follower custom-update <user-id> '{"custom_info":{"tier":"gold"}}'
+zalo-agent oa follower delete-info <user-id> --yes
+
+zalo-agent oa userfield list
+zalo-agent oa userfield create <key> <name> --type text
+zalo-agent oa userfield delete <key> --yes
+
+zalo-agent oa tag list
+zalo-agent oa tag assign <user-id> <tag-name>
+zalo-agent oa tag untag <user-id> <tag-name>
+zalo-agent oa tag remove <tag-name> --yes
+```
+
+`follower list` returns user ids (50 a page, at most 10,000 users); `follower info` gives one user's details.
+
+### Zalo Ads forms, purchases
+
+```bash
+zalo-agent oa form get <form-id> --from 2026-11-01 --to 2026-11-13
+zalo-agent oa purchase create-order --product-id <id> --yes         # price + one-time token, nothing charged yet
+zalo-agent oa purchase confirm-order <order-id> <verified-token> --yes   # pays (within 5 minutes)
+```
+
+### Articles
+
+```bash
+zalo-agent oa article create @article.json          # waits until Zalo gives the article id (--no-wait: the token)
+zalo-agent oa article verify <token>
+zalo-agent oa article update <article-id> @article.json
+zalo-agent oa article list [--type normal|video] [--all]
+zalo-agent oa article detail <article-id>
+zalo-agent oa article remove <article-id> --yes
+zalo-agent oa article video-upload ./clip.mp4 --wait
+zalo-agent oa article video-status <token>
+```
+
+### Group chats (GMF) and voice calls
+
+```bash
+zalo-agent oa group quota                                    # asset ids
+zalo-agent oa group create "Support" --asset-id <id> --members <user-id>,<user-id>
+zalo-agent oa group send <group-id> "Hello [@<user-id>]"
+zalo-agent oa group members <group-id> --all
+zalo-agent oa group remove-members <group-id> <user-ids> --yes
+zalo-agent oa group delete <group-id> --yes
+
+zalo-agent oa call consent-request 0901234567 --reason 101
+zalo-agent oa call consent-check 0901234567
+zalo-agent oa call outbound <user-id> --agent <agent-id>
+zalo-agent oa call mcc-info
+```
+
+`oa group` also has `info`, `update`, `avatar`, `update-asset`, `invite`, `pending`, `accept`, `reject`, `add-admins`, `remove-admins`, `list`, `recent` and `history`; `oa call` also has `inbound`. Group chats need a verified OA on the Advanced or Premium package.
+
+### ZBS Template Message
+
+Template messages by phone number or user id, with the OA's token (`oa login` first).
+
+```bash
+zalo-agent zbs template list [--status enable] [--all]
+zalo-agent zbs template detail <template-id>
+zalo-agent zbs template sample <template-id>          # a template_data to start from
+zalo-agent zbs template create template.json          # checked locally against Zalo's rules first
+zalo-agent zbs upload-image ./logo.png --kind logo
+
+zalo-agent zbs send 0901234567 <template-id> '{"customer_name":"A","order_code":"X1"}'
+zalo-agent zbs send 84901234567 <template-id> data.json --hash-phone
+zalo-agent zbs send 0901234567 <template-id> data.json --dev          # test send to the OA's admins
+zalo-agent zbs send 0901234567 <template-id> data.json --rsa          # encrypted with the OA's RSA key
+zalo-agent zbs uid <user-id> <template-id> data.json
+
+zalo-agent zbs status <message-id>
+zalo-agent zbs quota
+zalo-agent zbs quality
+```
+
+`zbs` also has `template update|rating|quick-reply`, `rsa-key create|get` and `journey token|check|send`. Each area needs a permission the OA grants the app: templates and `upload-image` need *manage message templates* (create, update and uploads also *asset management*); sends by phone number, RSA keys, journeys, status, quota and quality need *send messages by phone number*; `zbs uid` needs the OA *send messages* permission.
+
+### Guarded commands
+
+`oa follower delete-info`, `oa userfield delete`, `oa tag remove`, `oa purchase create-order`, `oa purchase confirm-order`, `oa article remove`, `oa group remove-members` and `oa group delete` send nothing without `-y, --yes` (they exit 2); `--dry-run` says what would happen.
 
 ### Webhook Listener
 
@@ -133,7 +226,7 @@ zalo-agent oa conv history <user-id> [--offset 0] [--count 10]
 # Basic
 zalo-agent oa listen -p 3000
 
-# With MAC verification
+# With signature verification
 zalo-agent oa listen -p 3000 -s <OA_SECRET_KEY>
 
 # Filter events
@@ -154,42 +247,49 @@ done
 | Flag | Default | Description |
 |------|----------|--------|
 | `-p, --port <port>` | `3000` | Listen port |
-| `-s, --secret <key>` | — | OA Secret Key for MAC verification (HMAC-SHA256, timing-safe comparison). Warns if omitted |
-| `--no-verify` | `false` | Disable MAC verification even when a secret is provided (development only) |
+| `-s, --secret <key>` | — | OA Secret Key (the app's Webhook settings) for the `X-ZEvent-Signature` check. Warns if omitted |
+| `--no-verify` | `false` | Skip the signature check even when a secret is provided (development only) |
 | `-e, --events <list>` | `all` | Comma-separated list of event names to filter |
 | `--path <path>` | `/webhook` | Webhook URL path |
 | `--verify-domain <code>` | — | Serve `/zalo_verifier<code>.html` for Zalo domain verification |
 
-**Events:** `--events` accepts every event name documented by Zalo, including `follow`, `unfollow`, `user_send_text`, `user_send_image`, `user_send_file`, `user_send_audio`, `user_send_video`, `user_send_sticker`, `user_send_link`, `user_send_business_card`, `user_send_location`, `user_click_chatnow` (user clicked the OA's "Chat now" button), `user_seen_message`, `user_received_message`, `user_reacted_message`, `oa_send_*` echo events, GMF group events, voice call events, and ZBS events — see [`skill/references/oa-command-reference.md`](../skill/references/oa-command-reference.md) for the exhaustive list. `user_send_gif`, `user_click_button`, and `user_click_link` are not valid Zalo event names (listed by mistake prior to 2.0.0); filtering on an undocumented name prints an immediate warning at startup because that filter can never match.
+**Signature:** as Zalo's OA webhook docs give it, each event carries `X-ZEvent-Signature: mac=sha256(app_id + body + timestamp + OA secret key)` — a plain SHA-256 (hex) over the body's `app_id`, the raw body exactly as sent, the body's `timestamp` and the OA secret key, **not** an HMAC. The listener recomputes it, compares in constant time, and answers a bad or missing signature with 401.
 
-The listener answers Zalo's `hub.challenge` (GET) verification automatically and caps request bodies at 1 MB. It **responds with `200 OK` immediately upon accepting an event** before printing it, because Zalo requires a 200 response within 2 seconds. When Zalo retries an event (`num_retry` header), the JSON output includes `_num_retry` and the printed line marks it as a redelivery so consumers do not process it as a brand-new event.
+**Events:** `--events` accepts every event name in Zalo's OA and ZBS docs: follow/unfollow, inbound messages (`user_send_*`, `user_click_chatnow`), message lifecycle (`user_seen_message`, `user_received_message`, `user_reacted_message`, `oa_reacted_message`), `oa_send_*` echoes, anonymous users, user management, widget, GMF group management and group messages, voice calls, `extension_purchased`, and ZBS events — see [`skill/references/oa-command-reference.md`](../skill/references/oa-command-reference.md) for the exhaustive list. Filtering on an undocumented name prints a warning at startup because that filter can never match. `follow`/`unfollow` events name the user by `follower.id`.
 
-### Menu, Articles, Store
+The listener caps request bodies at 1 MB. It **responds with `200 OK` immediately upon accepting an event** before printing it, because Zalo requires a 200 response within 2 seconds. When Zalo retries an event (`num_retry` header), the JSON output includes `_num_retry` and the printed line marks it as a redelivery so consumers do not process it as a brand-new event. A GET with `?hub.challenge=<x>` is echoed back: that is this listener's own convenience for tools that probe webhooks that way, not part of Zalo's webhook.
 
-```bash
-zalo-agent oa menu '{"buttons":[...]}'                        # Update OA chat menu
+### Removed in 3.0.0
 
-zalo-agent oa article create '{"title":"..."}'                 # Create article (broadcast)
-zalo-agent oa article list [--offset 0] [--limit 10]           # List articles
-zalo-agent oa article detail <article-id>                      # Article details
-
-zalo-agent oa store product-create '{"name":"..."}'            # Create product
-zalo-agent oa store product-list [--offset 0] [--limit 10]     # List products
-zalo-agent oa store product-info <product-id>                  # Product details
-zalo-agent oa store category-create '{"name":"..."}'           # Create category
-zalo-agent oa store category-list                              # List categories
-zalo-agent oa store order-create '{"...":"..."}'               # Create order
-```
+| Removed | Why | Use instead |
+|---|---|---|
+| `oa store …` | Zalo Shop is not in Zalo's current OA docs | — |
+| `oa menu` | Zalo documents no menu API; the menu is set in the OA's management page | — |
+| `oa msg list` | The list template exists only on the v2 message API, which Zalo shut down | `oa msg text`, `oa msg image`, … |
+| `oa msg status` | It read ZBS phone-message status | `zbs status <message-id>` |
+| `-m transaction` / `-m promotion` | Zalo stopped them on the OA API on 01/03/2026 | `zbs send` / `zbs uid` |
 
 ---
 
 ## Common Error Codes
 
+A Zalo error prints as `OA API error <code>: <Zalo's message> (<what the code means>). <What to do>` and the command exits 1. The meanings come from the error tables in Zalo's OA and ZBS docs; the full list the CLI knows is in the [reference](../skill/references/oa-command-reference.md#errors).
+
 | Code | Meaning | Resolution |
 |------|---------|-----|
-| `-216` | Access token is invalid or expired | Run `zalo-agent oa refresh` or re-run `oa login` |
-| `-224` | OA service package tier is too low for this API | Upgrade at [zalo.cloud/oa/pricing](https://zalo.cloud/oa/pricing) |
-| `-14029` | App is not approved | Complete app verification at [developers.zalo.me](https://developers.zalo.me) |
+| `-216` / `-220` | Access token is invalid / expired | Refreshed automatically once if a refresh token is stored; otherwise `zalo-agent oa refresh` or `oa login` |
+| `-124` (ZBS) | Access token is invalid | As above |
+| `-32` | Rate limit reached | Slow down and retry in the next minute |
+| `-201` | A parameter is invalid | Check the request's parameters |
+| `-213` | The user does not follow the OA | — |
+| `-221` | The OA must be verified for this feature | Verify the OA |
+| `-223` | The OA has not granted the app this API | Grant the permission in the app's OA settings |
+| `-224` | The OA's package does not include this feature | Upgrade at [zalo.cloud/oa/pricing](https://zalo.cloud/oa/pricing) |
+| `-230` | The user has not interacted with the OA in the past 7 days | See Zalo's OA messaging policy |
+| `-240` | The v2 message API was shut down | Use the v3 API |
+| `-135` (ZBS) | The OA may not send by phone number | Verify the OA / use a paid plan |
+| `-144` (ZBS) | The OA's daily quota for phone-number messages is used up | `zbs quota` |
+| `http_<status>` | The endpoint answered a non-2xx status or a non-JSON body (e.g. `HTTP 404 (no such endpoint)`) | — |
 
 ---
 
@@ -206,9 +306,9 @@ zalo-agent oa store order-create '{"...":"..."}'               # Create order
 
 1. **Official Account → Callback URL**: set `http://localhost:3456/callback` (or `<callback-host>/callback` when logging in from a VPS)
 2. **API Registration → Official Account API**: toggle ON
-3. **Official Account → Permissions**: select all required permissions → Save
+3. **Official Account → Permissions**: select the permissions the commands need (including the ZBS groups for `zbs`) → Save
 4. **Domain Verification**: serve the verification file or meta tag (use `oa listen --verify-domain <code>`)
-5. **Webhook**: configure the HTTPS URL and toggle on the desired event subscriptions
+5. **Webhook**: configure the HTTPS URL, toggle on the desired event subscriptions, and copy the OA Secret Key for `oa listen -s`
 
 ### Ways to Expose the Webhook
 
@@ -223,7 +323,7 @@ zalo-agent oa store order-create '{"...":"..."}'               # Create order
 
 ```bash
 # Terminal 1: listener
-zalo-agent oa listen -p 3000 --no-verify --verify-domain <CODE>
+zalo-agent oa listen -p 3000 -s <OA_SECRET_KEY> --verify-domain <CODE>
 
 # Terminal 2: tunnel
 ngrok http 3000
@@ -249,7 +349,7 @@ pm2 start "zalo-agent oa listen -p 3000 -s <SECRET>" --name zalo-oa
 
 ## Credentials
 
-Saved at `~/.zalo-agent/oa-credentials.json` (mode `0600`, owner-readable only; overridable via `--oa-dir <dir>` or `ZALO_OA_DIR`).
+Saved at `~/.zalo-agent/oa-credentials.json` (mode `0600`, owner-readable only, written atomically under a lock; overridable via `--oa-dir <dir>` or `ZALO_OA_DIR`). `oa` and `zbs` read the same file.
 
 > [!IMPORTANT]
 > The default directory is `~/.zalo-agent/` — **with no `-cli` suffix**. Personal accounts use `~/.zalo-agent-cli/`. These two paths are completely separate: wiping one never affects the other, and `logout --purge` on a personal account never touches OA credentials.
@@ -261,13 +361,14 @@ Saved at `~/.zalo-agent/oa-credentials.json` (mode `0600`, owner-readable only; 
     "secretKey": "...",
     "accessToken": "...",
     "refreshToken": "...",
-    "expiresIn": 90000,
-    "updatedAt": "2026-03-17T..."
+    "expiresIn": "90000",
+    "expiresAt": "2026-11-14T...",
+    "updatedAt": "2026-11-13T..."
   }
 }
 ```
 
-`expiresIn` is in seconds — `90000` ≈ **25 hours**. After expiry, OA commands fail with error `-216`. Renew anytime with `zalo-agent oa refresh` (uses the stored refresh token without opening a browser). For long-running listeners, schedule a cron job to refresh the token every ~12–24 hours:
+`expiresIn` is in seconds — `90000` ≈ **25 hours**; `expiresAt` is when the token stops working. After expiry a call answers `-216`/`-220`, and the CLI refreshes the token once with the stored refresh token and retries. You can also renew anytime with `zalo-agent oa refresh` (no browser). The refresh token itself lasts 3 months and is single use, so a token that is never used for 3 months needs a new `oa login`. For long-running listeners that make no calls, a cron refresh keeps the pair fresh:
 
 ```bash
 0 */12 * * * zalo-agent oa refresh --oa-id default >/dev/null 2>&1
@@ -279,7 +380,7 @@ Saved at `~/.zalo-agent/oa-credentials.json` (mode `0600`, owner-readable only; 
 zalo-agent oa login --app-id <ID1> --secret <KEY1> --oa-id shop1
 zalo-agent oa login --app-id <ID2> --secret <KEY2> --oa-id shop2
 zalo-agent oa whoami --oa-id shop1
-zalo-agent oa whoami --oa-id shop2
+zalo-agent zbs quota --oa-id shop2
 ```
 
 ---
@@ -287,10 +388,11 @@ zalo-agent oa whoami --oa-id shop2
 ## Security
 
 - Credentials file: `chmod 600` (owner-only)
-- MAC verification: HMAC-SHA256 with timing-safe comparison
-- Message type allowlist: `cs`, `transaction`, `promotion` only
+- Access token sent in the `access_token` header, never in the URL
+- Webhook signature: `sha256(app_id + body + timestamp + OA secret key)` per Zalo's docs, compared in constant time
+- Destructive and paying commands need `--yes`
 - Webhook body size limit: 1 MB max
-- OAuth callback: binds `127.0.0.1` (local) or `0.0.0.0` (VPS mode)
+- OAuth: PKCE with `state`; the callback binds `127.0.0.1` (local) or `0.0.0.0` (VPS mode)
 - No hardcoded secrets — all secrets come from CLI flags or the credential file
 - Not sealed: the at-rest encryption 3.0 brought to the personal account's files ([security.md](security.md)) does not cover `oa-credentials.json`. Keep the OA directory on an encrypted disk and readable by the service account only.
 
@@ -298,29 +400,29 @@ zalo-agent oa whoami --oa-id shop2
 
 ## Personal vs Official Account Comparison
 
-| | `zalo-agent` (personal) | `zalo-agent oa` (official) |
+| | `zalo-agent` (personal) | `zalo-agent oa` / `zbs` (official) |
 |---|---|---|
-| API | Unofficial (Zalo's own protocol) | Official (Zalo OA API v3.0) |
-| Auth | QR code login | OAuth 2.0 |
+| API | Unofficial (Zalo's own protocol) | Official (Zalo OA API v2.0/v3.0, ZBS) |
+| Auth | QR code login | OAuth 2.0 (v4, PKCE) |
 | Scope | Personal Zalo account | Official Account |
 | Risk | Account can be banned | Safe — sanctioned official API |
-| Features | Chat, friends, groups, polls, … | Messaging, followers, tags, articles, store, webhook |
+| Features | Chat, friends, groups, polls, … | CS messages, users, tags, articles, group chats, calls, template messages, webhook |
 | Credentials | `~/.zalo-agent-cli/` | `~/.zalo-agent/` (no `-cli` suffix) |
 | Runtime disclaimer | Shown | Suppressed (official API) |
 | Pre-command auto-login | Yes | No — `oa` manages its own OAuth token |
-| Command count | 227 (of 259 total CLI commands) | 32 |
+| Command count | 227 (of 315 total CLI commands) | 88 (70 `oa` + 18 `zbs`) |
 | Real-time events | WebSocket (`listen`) | HTTP Webhook (`oa listen`) |
 | Exposed as MCP tools? | Yes — 36 tools (see [mcp-guide](../skill/references/mcp-guide.md)) | **No** — CLI only |
 
 > [!NOTE]
-> `oa` commands are **not** exposed as MCP tools. AI agents that need to act on an Official Account should invoke the CLI directly with `--json`, e.g., `zalo-agent --json oa msg text <uid> "..."`.
+> `oa` and `zbs` commands are **not** exposed as MCP tools. AI agents that need to act on an Official Account should invoke the CLI directly with `--json`, e.g., `zalo-agent --json oa msg text <uid> "..."`.
 
 ---
 
 ## Related Documentation
 
 - [docs/official-account.vi.md](official-account.vi.md) — Vietnamese version of this guide
-- [skill/references/oa-command-reference.md](../skill/references/oa-command-reference.md) — concise OA quick reference for AI agents
+- [skill/references/oa-command-reference.md](../skill/references/oa-command-reference.md) — every `oa` and `zbs` option, the webhook events, the error codes
 - [skill/references/command-reference.md](../skill/references/command-reference.md) — exhaustive CLI reference (source of truth)
 - [INSTALLATION.md](../INSTALLATION.md) / [INSTALLATION.vi.md](../INSTALLATION.vi.md) — installation, MCP client setup, and OA configuration
 - [Wiki: Official Account](https://github.com/ardennguyen/zalo-agent-cli/wiki/Official-Account)

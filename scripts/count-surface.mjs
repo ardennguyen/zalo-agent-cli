@@ -3,7 +3,7 @@
  * Measures the numbers that docs quote (AGENTS.md §10) straight from the code, so nobody has to
  * trust a number written down:
  *
- *   node scripts/count-surface.mjs            # commands, groups, OA commands, MCP tools
+ *   node scripts/count-surface.mjs            # commands, groups, OA/ZBS commands, MCP tools
  *   node scripts/count-surface.mjs --json     # the same as one JSON object
  *   node scripts/count-surface.mjs --tests    # also run `npm test` and report its summary line
  *
@@ -12,6 +12,8 @@
  * fresh Commander tree, walk it, count nodes with no subcommands as invokable leaves and nodes with
  * subcommands as containers, then add the commands src/index.js registers inline with
  * `.command("...")`. MCP tools are the `server.registerTool("name", …)` calls in src/mcp/mcp-tools.js.
+ * The official-API commands (`oa …` and `zbs …`, both on the OA's OAuth token) count together as "OA/ZBS";
+ * everything else is the personal-account surface.
  *
  * Importing the command modules has no side effects beyond reading the environment; the config
  * directory is pointed at a throwaway folder so nothing real is touched.
@@ -63,7 +65,9 @@ for (const { fn, file } of registrars) {
 }
 if (inline.length) perGroup["(inline top-level)"] = inline.length;
 
-const oa = acc.leaves.filter((l) => l === "oa" || l.startsWith("oa ")).length;
+/** The official-API surface: `oa …` and `zbs …` (ZBS uses the OA's token). */
+const OFFICIAL = ["oa", "zbs"];
+const oa = acc.leaves.filter((l) => OFFICIAL.some((g) => l === g || l.startsWith(`${g} `))).length;
 const mcpSrc = readFileSync(join(root, "src", "mcp", "mcp-tools.js"), "utf8");
 const tools = [...mcpSrc.matchAll(/registerTool\(\s*"([\w-]+)"/g)].map((m) => m[1]);
 
@@ -88,7 +92,7 @@ if (process.argv.includes("--tests")) {
 if (process.argv.includes("--json")) {
     console.log(JSON.stringify(result, null, 2));
 } else {
-    console.log(`CLI commands (invokable leaves): ${result.commands} (${result.personalCommands} personal + ${oa} OA)`);
+    console.log(`CLI commands (invokable leaves): ${result.commands} (${result.personalCommands} personal + ${oa} OA/ZBS)`);
     console.log(`Command groups (containers):     ${result.groups}`);
     console.log(`MCP tools:                       ${result.mcpTools}`);
     console.log(`  ${tools.join(", ")}`);

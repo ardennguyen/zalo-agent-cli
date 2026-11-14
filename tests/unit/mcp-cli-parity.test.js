@@ -8,7 +8,7 @@
  * - a mapping names a tool that does not exist, or an action (an `action`, a zalo_read/zalo_write `name`, a zalo_sync
  *   `stage`) that tool does not take;
  * - a mapped or CLI-only command no longer exists, so the lists cannot rot.
- * Official Account commands (`oa …`) are out of scope: they are a separate, official API.
+ * Official Account and ZBS commands (`oa …`, `zbs …`) are out of scope: they are a separate, official API.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
@@ -216,7 +216,7 @@ before(async () => {
         }
     };
     walk(program, []);
-    leaves = leaves.filter((l) => l !== "oa" && !l.startsWith("oa "));
+    leaves = leaves.filter((l) => !["oa", "zbs"].includes(l.split(" ")[0]));
 });
 
 const { tools } = tool();

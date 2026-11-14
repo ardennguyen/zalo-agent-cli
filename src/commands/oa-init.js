@@ -13,8 +13,10 @@
 
 import { createServer } from "node:http";
 import { createInterface } from "node:readline";
-import { exec } from "node:child_process";
-import { saveOACreds, loadOACreds, getOAuthUrl, exchangeCode, getOAProfile } from "../core/oa-client.js";
+import { exec, execFile } from "node:child_process";
+import { saveOACreds, loadOACreds, getOAProfile } from "../core/oa-client.js";
+import { startOAuthLogin, openInBrowser, escapeHtml } from "../core/oa/oauth.js";
+import { readWebhookBody, verifyZaloSignature, signatureFromHeaders, eventUser } from "./oa-listen.js";
 import { success, error, info, warning, output } from "../utils/output.js";
 
 /** Prompt user for input. In agent mode, returns the provided default. */
@@ -35,117 +37,67 @@ async function waitForEnter(msg, agentMode) {
     await ask(`\n  ${msg}`, false);
 }
 
-/** Open URL in default browser. */
-function openBrowser(url) {
-    const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
-    exec(`${cmd} "${url}"`);
-}
-
-/** Check if a CLI tool exists. */
+/** Check if a CLI tool exists (`where` on Windows, `which` elsewhere). */
 function hasCli(name) {
-    return new Promise((resolve) => exec(`which ${name}`, (err) => resolve(!err)));
+    const finder = process.platform === "win32" ? "where" : "which";
+    return new Promise((resolve) => execFile(finder, [name], (err) => resolve(!err)));
 }
 
-/** Run OAuth login flow — starts callback server and waits for browser redirect. */
+/** Run the OAuth login flow (PKCE + state, callback on 127.0.0.1) and wait for the browser's redirect. */
 async function runOAuthLogin(appId, secretKey, oaId, callbackPort = 3456) {
-    const redirectUri = `http://localhost:${callbackPort}/callback`;
-    const authUrl = getOAuthUrl(appId, redirectUri);
-    openBrowser(authUrl);
-
-    return new Promise((resolve, reject) => {
-        const server = createServer(async (req, res) => {
-            if (!req.url?.startsWith("/callback")) {
-                res.writeHead(404);
-                res.end();
-                return;
-            }
-            const url = new URL(req.url, `http://localhost:${callbackPort}`);
-            const code = url.searchParams.get("code");
-            const returnedOaId = url.searchParams.get("oa_id");
-
-            if (!code) {
-                const msg = url.searchParams.get("error_description") || "No authorization code";
-                res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
-                res.end(`<h2>Login failed</h2><p>${msg}</p>`);
-                server.close();
-                reject(new Error(msg));
-                return;
-            }
-
-            try {
-                const data = await exchangeCode(code, appId, secretKey, redirectUri);
-                if (data.error) {
-                    throw new Error(`Token error ${data.error}: ${data.error_description || data.error_name}`);
-                }
-                saveOACreds(
-                    {
-                        accessToken: data.access_token,
-                        refreshToken: data.refresh_token,
-                        expiresIn: data.expires_in,
-                        oaId: returnedOaId || oaId,
-                    },
-                    oaId,
-                );
-                res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-                res.end("<h2>Login successful!</h2><p>Return to terminal.</p>");
-                server.close();
-                resolve(data);
-            } catch (e) {
-                res.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
-                res.end(`<h2>Login failed</h2><p>${e.message}</p>`);
-                server.close();
-                reject(e);
-            }
-        });
-        server.listen(callbackPort);
-        setTimeout(() => {
-            server.close();
-            reject(new Error("Login timed out (2 min)"));
-        }, 120_000);
-    });
+    const flow = startOAuthLogin({ appId, secretKey, port: callbackPort, oaId });
+    openInBrowser(flow.authUrl);
+    const { tokenData } = await flow.done;
+    return tokenData;
 }
 
-/** Create webhook listener HTTP server with domain verification support. */
-function createWebhookServer(oaId) {
-    return createServer((req, res) => {
-        // Domain verification file
-        if (req.url?.includes("zalo_verifier")) {
+/**
+ * The wizard's webhook listener, with domain verification support. Bodies are capped at 1 MB; with the OA secret
+ * key each event's X-ZEvent-Signature is checked the documented way (src/commands/oa-listen.js) and a bad one gets
+ * 401. Without it events are printed unverified (the tunnel URL is public: anyone who knows it can post).
+ *
+ * @param {string} oaId
+ * @param {{ oaSecret?: string }} [opts]
+ * @returns {import("node:http").Server}
+ */
+export function createWebhookServer(oaId, { oaSecret } = {}) {
+    return createServer(async (req, res) => {
+        // Domain verification file / root meta tag
+        if (req.url?.includes("zalo_verifier") || req.url === "/") {
             const creds = loadOACreds(oaId);
-            const code = creds?.verifyCode || "placeholder";
-            const html = `<html><head><meta name="zalo-platform-site-verification" content="${code}" /></head><body>zalo verification</body></html>`;
+            const code = escapeHtml(creds?.verifyCode || (req.url === "/" ? "" : "placeholder"));
+            const body = req.url === "/" ? "Zalo OA Webhook" : "zalo verification";
             res.writeHead(200, { "Content-Type": "text/html" });
-            res.end(html);
+            res.end(
+                `<html><head><meta name="zalo-platform-site-verification" content="${code}" /></head><body>${body}</body></html>`,
+            );
             return;
         }
 
-        // Root with meta tag
-        if (req.url === "/") {
-            const creds = loadOACreds(oaId);
-            const code = creds?.verifyCode || "";
-            const html = `<html><head><meta name="zalo-platform-site-verification" content="${code}" /></head><body>Zalo OA Webhook</body></html>`;
-            res.writeHead(200, { "Content-Type": "text/html" });
-            res.end(html);
-            return;
-        }
-
-        // Webhook POST
         if (req.method === "POST" && req.url?.startsWith("/webhook")) {
-            let body = "";
-            req.on("data", (c) => (body += c));
-            req.on("end", () => {
-                try {
-                    const event = JSON.parse(body);
-                    const eventName = event.event_name || "unknown";
-                    const sender = event.sender?.id || "N/A";
-                    const msg = event.message?.text || "";
-                    if (eventName === "user_send_text") info(`[text] ${sender}: ${msg}`);
-                    else info(`[${eventName}] from ${sender}`);
-                } catch {
-                    /* test ping */
+            const raw = await readWebhookBody(req, res);
+            if (raw === null) return;
+            if (oaSecret) {
+                const check = verifyZaloSignature(raw, signatureFromHeaders(req.headers), oaSecret);
+                if (!check.ok) {
+                    warning(`Rejected an event: ${check.reason}`);
+                    res.writeHead(401, { "Content-Type": "application/json" });
+                    res.end('{"error":"Invalid signature"}');
+                    return;
                 }
-                res.writeHead(200, { "Content-Type": "application/json" });
-                res.end('{"status":"ok"}');
-            });
+            }
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end('{"status":"ok"}');
+            try {
+                const event = JSON.parse(raw.toString("utf8"));
+                const eventName = event.event_name || "unknown";
+                const who = eventUser(event);
+                const tag = oaSecret ? "" : " (unverified)";
+                if (eventName === "user_send_text") info(`[text] ${who}: ${event.message?.text || ""}${tag}`);
+                else info(`[${eventName}] from ${who}${tag}`);
+            } catch {
+                /* test ping */
+            }
             return;
         }
 
@@ -203,6 +155,7 @@ export function registerOAInitCommand(oaCommand, program) {
         .option("--tunnel <type>", "Tunnel type: ngrok | cloudflared | none (non-interactive mode)")
         .option("--webhook-url <url>", "Pre-existing webhook URL (VPS, n8n, etc.)")
         .option("--verify-code <code>", "Zalo domain verification code")
+        .option("--oa-secret <key>", "OA Secret Key (app's Webhook settings): checks each event's X-ZEvent-Signature")
         .option("-p, --port <port>", "Webhook listener port", "3000")
         .option("--skip-webhook", "Skip webhook setup entirely")
         .option("--skip-login", "Skip OAuth login (use existing token)")
@@ -306,7 +259,7 @@ export function registerOAInitCommand(oaCommand, program) {
             try {
                 const profile = await getOAProfile(opts.oaId);
                 const d = profile.data || profile;
-                result.oa = { name: d.name, id: d.oa_id, followers: d.num_follower };
+                result.oa = { name: d.name, id: d.oa_id ?? d.oaid, followers: d.num_follower, verified: d.is_verified };
                 result.steps.push("profile_verified");
                 if (!agentMode) success(`Connected to OA: ${d.name} (${d.num_follower} followers)\n`);
             } catch (e) {
@@ -429,7 +382,17 @@ export function registerOAInitCommand(oaCommand, program) {
 
                     if (!agentMode) console.log(`\n  Starting listener + ${tunnelCmd}...\n`);
 
-                    const webhookServer = createWebhookServer(opts.oaId);
+                    let oaSecret = opts.oaSecret;
+                    if (!oaSecret && !agentMode) {
+                        oaSecret = await ask(
+                            "  OA Secret Key for the webhook signature check (Enter to skip): ",
+                            false,
+                        );
+                    }
+                    if (!oaSecret) {
+                        warning("No OA secret key: events are printed unverified, and the tunnel URL is public.");
+                    }
+                    const webhookServer = createWebhookServer(opts.oaId, { oaSecret });
                     webhookServer.listen(port);
                     result.steps.push("listener_started");
                     if (!agentMode) success(`Listener on port ${port}`);

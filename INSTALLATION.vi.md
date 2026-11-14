@@ -133,7 +133,7 @@ Sau khi đăng nhập QR:
 > **Lưu trữ:** `~/.zalo-agent-cli/` (quyền `0600`), được niêm phong trên đĩa bằng bộ cung cấp khóa của máy ([docs/security.vi.md](docs/security.vi.md)).
 > **Rủi ro:** đây là API không chính thức (giao thức riêng của Zalo, không có tài liệu công khai) — lạm dụng tự động hóa tần suất cao có thể khiến tài khoản bị khóa/ban. Không nên dùng tài khoản cá nhân chính của bạn.
 
-### B. Zalo Official Account (API chính thức v3.0)
+### B. Zalo Official Account và ZBS (API chính thức)
 ```bash
 zalo-mcp oa init --app-id <YOUR_APP_ID> --secret <YOUR_APP_SECRET>
 ```
@@ -143,7 +143,7 @@ zalo-mcp oa login --app-id <ID> --secret <KEY> --callback-host https://your-doma
 ```
 
 > **Lưu trữ:** `~/.zalo-agent/oa-credentials.json` (quyền `0600`) — lưu ý đây là **thư mục hoàn toàn khác** với `~/.zalo-agent-cli/` của tài khoản cá nhân.
-> Access token của OA hết hạn sau ~25 giờ — làm mới bất kỳ lúc nào bằng `zalo-mcp oa refresh`.
+> Access token của OA hết hạn sau ~25 giờ; lệnh gọi gặp token hết hạn sẽ tự làm mới một lần bằng refresh token đã lưu, và `zalo-mcp oa refresh` làm mới bất kỳ lúc nào. `zbs …` (ZBS Template Message) dùng chung lần đăng nhập này.
 
 Hướng dẫn chi tiết về OA, cách mở webhook và bảng mã lỗi: [docs/official-account.vi.md](docs/official-account.vi.md) / [English](docs/official-account.md).
 
@@ -328,7 +328,7 @@ Engine này đăng ký **36 MCP tools** trong `src/mcp/mcp-tools.js`, phục v�
 
 Xem thêm [Chi tiết sử dụng đồng bộ qua MCP](docs/mcp-sync.vi.md) / [English](docs/mcp-sync.md).
 
-Mọi lệnh CLI của tài khoản cá nhân đều có hành động MCP tương ứng. **Chỉ có trên CLI**: các lệnh Official Account (`oa …`, một API riêng), đăng nhập và đăng xuất (`login`, `logout`, `status`), danh sách tài khoản trên máy (`account list|login|switch|remove|info|export`), các bước của người vận hành trên khóa và dữ liệu của máy này (`account security …`, `db query|backup|export|verify|purge`), chính sách runtime (`policy …`: agent không bao giờ xem hay đổi giới hạn của chính nó), các lệnh daemon và fleet (`listen`, `mcp start`, `mcp webhook …`, `mcp approver`, `presence status|wake|park`, `fleet …`), `update`, `profile lost-focus`, và `cloud get` (cần khóa cloud của tài khoản); AI agent dùng chúng bằng cách gọi `zalo-agent <lệnh> --json` (hoặc `zalo-mcp <lệnh> --json`).
+Mọi lệnh CLI của tài khoản cá nhân đều có hành động MCP tương ứng. **Chỉ có trên CLI**: các lệnh Official Account và ZBS (`oa …`, `zbs …`, các API chính thức riêng), đăng nhập và đăng xuất (`login`, `logout`, `status`), danh sách tài khoản trên máy (`account list|login|switch|remove|info|export`), các bước của người vận hành trên khóa và dữ liệu của máy này (`account security …`, `db query|backup|export|verify|purge`), chính sách runtime (`policy …`: agent không bao giờ xem hay đổi giới hạn của chính nó), các lệnh daemon và fleet (`listen`, `mcp start`, `mcp webhook …`, `mcp approver`, `presence status|wake|park`, `fleet …`), `update`, `profile lost-focus`, và `cloud get` (cần khóa cloud của tài khoản); AI agent dùng chúng bằng cách gọi `zalo-agent <lệnh> --json` (hoặc `zalo-mcp <lệnh> --json`).
 
 Tham chiếu đầy đủ về MCP tools (tham số, cấu trúc trả về, cấu hình): [skill/references/mcp-guide.md](skill/references/mcp-guide.md).
 
@@ -406,7 +406,7 @@ Thông tin xác thực Official Account được lưu riêng tại `~/.zalo-agen
 
 ## Tham chiếu nhanh lệnh CLI (qua `npx zalo-agent <lệnh>`)
 
-Thêm `--json` vào bất kỳ lệnh nào để nhận kết quả JSON phục vụ tự động hóa. Dưới đây là các lệnh tiêu biểu — tài liệu tham chiếu đầy đủ cho toàn bộ 259 lệnh nằm tại [skill/references/command-reference.md](skill/references/command-reference.md).
+Thêm `--json` vào bất kỳ lệnh nào để nhận kết quả JSON phục vụ tự động hóa. Dưới đây là các lệnh tiêu biểu — tài liệu tham chiếu đầy đủ cho toàn bộ 315 lệnh nằm tại [skill/references/command-reference.md](skill/references/command-reference.md).
 
 ### Phiên đăng nhập & bảo trì
 | Lệnh | Mô tả |
@@ -447,12 +447,14 @@ Thêm `--json` vào bất kỳ lệnh nào để nhận kết quả JSON phục 
 | Lệnh | Mô tả |
 |:---|:---|
 | `npx zalo-agent oa whoami` | Xem thông tin hồ sơ OA |
-| `npx zalo-agent oa msg text <userId> "text"` | Gửi tin nhắn OA cho người quan tâm (follower) |
-| `npx zalo-agent oa follower list` | Danh sách follower của OA |
+| `npx zalo-agent oa msg text <userId> "text"` | Gửi tin tư vấn (CS) cho người dùng |
+| `npx zalo-agent oa follower list` | Danh sách user id của OA |
 | `npx zalo-agent oa tag assign <userId> <tag>` | Gắn tag cho follower |
 | `npx zalo-agent oa upload image <path>` | Tải ảnh lên OA, trả về `attachment_id` |
-| `npx zalo-agent oa listen -p <port> [-s <secret>]` | Khởi chạy webhook listener cục bộ cho OA |
+| `npx zalo-agent oa listen -p <port> [-s <oa-secret-key>]` | Khởi chạy webhook listener cục bộ cho OA (kiểm tra chữ ký event bằng OA secret key) |
 | `npx zalo-agent oa refresh` | Làm mới access token của OA |
+| `npx zalo-agent zbs send <phone> <templateId> <data-json>` | Gửi tin template ZBS qua số điện thoại (tin giao dịch/truyền thông) |
+| `npx zalo-agent zbs status <messageId>` | Trạng thái gửi của tin ZBS |
 
 Tham chiếu đầy đủ: [skill/references/command-reference.md](skill/references/command-reference.md) và [docs/official-account.vi.md](docs/official-account.vi.md).
 

@@ -504,7 +504,7 @@ The socket of the active (or `--account`) account's running daemon under on-dema
 | `zalo_sticker` | `msg sticker-list` (`search`: sticker ids for `keyword`) and `msg sticker-detail` (`detail`: `stickerIds`). Read-only; send one with `zalo_send_message` `sticker` | `action`, `keyword?`, `stickerIds?` |
 | `zalo_link` | `msg link-preview` (`preview`: title, description, source, thumbnail) and `msg scan-url` (`scan`: `isSafe`). Read-only | `action`, `url` |
 
-**Every personal command has an MCP action** (`tests/unit/mcp-cli-parity.test.js` holds the map). **CLI-only:** `oa …` (a separate, official API), `login`, `logout`, `status`, `account list|login|switch|remove|info|export`, `account security …` (an operator's steps on this machine's keys), `listen`, `mcp start`, `mcp webhook …`, `fleet …`, `update`, `profile lost-focus`, and `cloud get` (it takes the account's cloud key, which never passes through an agent or a tool input).
+**Every personal command has an MCP action** (`tests/unit/mcp-cli-parity.test.js` holds the map). **CLI-only:** `oa …` and `zbs …` (separate, official APIs), `login`, `logout`, `status`, `account list|login|switch|remove|info|export`, `account security …` (an operator's steps on this machine's keys), `listen`, `mcp start`, `mcp webhook …`, `fleet …`, `update`, `profile lost-focus`, and `cloud get` (it takes the account's cloud key, which never passes through an agent or a tool input).
 
 **Guarded tool actions.** `zalo_undo`, `zalo_delete_message`, `zalo_group` `leave`/`remove_member`/`remove_admin`/`transfer_owner`/`block_member`/`disperse`/`disable_link` (and `settings` turning `joinAppr` off), `zalo_friend` `reject`/`undo`/`remove`/`block`, `zalo_conversation` `unhide`/`hidden_pin_reset`/`delete`/`forget`, `zalo_reminder` `remove`, `zalo_poll` `lock`, `zalo_label` `update` (only when the new list leaves a label out), `zalo_catalog` `delete`/`delete_product`, `zalo_bank` `remove`, `zalo_auto_reply` `delete`, `zalo_quick_message` `remove`, `zalo_profile` `delete_avatar`, `zalo_cloud` `apply` and `zalo_write` take **`confirm`** and **`dryRun`**; `dryRun` on any other action is refused, and nothing is done. `dryRun: true` returns `{dryRun: true, sent: false, action, wouldDo, target, irreversible}` and sends nothing. What `confirm` means is the deployment's **confirm mode** (`confirmMode` in `mcp-config.json`, or `ZALO_MCP_CONFIRM_MODE[_<ownId>]`, which wins): **`agent`** (default) — the call needs `confirm: true`; without it the reply is an error whose first text is the CLI's JSON (`retryWith: {"confirm": true}`) and whose second is a line to read. **`human`** — the server asks the user itself through MCP elicitation (`elicitation/create`, a yes/no form saying exactly what will happen); only the user's accept-and-yes acts, and the caller's `confirm: true` does not stand in for it; a client that declared only URL-mode elicitation is sent a one-time approve page and the call waits for it; a client with no elicitation, and every call over the stateless HTTP transport (a fresh server per request cannot hear an answer), gets an error reply with `confirmationRequired: true`, `secureUrl` (the page, `/zalo/secure/<token>` on the server's port or under `publicUrl`), `ticketExpiresAt` (5 minutes) and `retryWith: {ticket}`: once the user approved there, the same call with `ticket` goes ahead, once (a ticket is bound to the account, the action and its target). Every guarded tool takes `ticket`. The approve page can ask for an **approver secret** (`approval.secret`: `password` set with `mcp approver set`, `pin` the hidden-chat PIN, `none`, or `auto`, the default: the password when one is set and the link reaches the agent); the reply says `approverSecret: true|false`. With **`approval.deliver: "webhook"`** the link is POSTed to the MCP webhook as `{event: "approval_requested", accountId, kind, action, wouldDo, target, secureUrl, expiresAt, approverSecret}` (signed like every webhook event) and the reply carries no link, only `confirmationRequired`, `approvalPending: true`, `ticket` (a claim token, not the page's), `ticketExpiresAt` and `deliveredTo: "webhook"`; `both` does both; PIN pages follow the same key. Under URL-mode elicitation the link goes only through the client's prompt and is never in the reply. **`off`** — no question (`dryRun` still works). `zalo_write` runs raw endpoints and stays guarded even when the mode is `off`. The deprecated `groupConfirm: false` and `ZALO_MCP_GROUP_CONFIRM=0` still mean `off` (`1` means `agent`); an explicit confirm mode wins over them. The server's instructions tell an agent to ask the user, the first time it meets a guarded action, how they want these handled, and to remember the answer.
 
@@ -542,81 +542,141 @@ See [MCP sync](../../docs/mcp-sync.md) / [Tiếng Việt](../../docs/mcp-sync.vi
 
 ---
 
-## Official Account — `oa` (official REST API v3.0, ~32 commands)
+## Official Account — `oa` and ZBS — `zbs` (official APIs, 88 commands: 70 `oa` + 18 `zbs`)
 
-Completely independent from the personal (unofficial-API) account: separate OAuth credentials, separate storage (`~/.zalo-agent/oa-credentials.json`, note: **no `-cli` suffix** — different directory from personal `~/.zalo-agent-cli/`), no unofficial-API disclaimer shown. Multi-OA supported everywhere via `--oa-id <id>` (default: `"default"`).
+Completely independent from the personal (unofficial-API) account: separate OAuth credentials, separate storage (`~/.zalo-agent/oa-credentials.json`, note: **no `-cli` suffix** — different directory from personal `~/.zalo-agent-cli/`), no unofficial-API disclaimer shown. `zbs` uses the same OA token and credentials as `oa`. Multi-OA supported everywhere via `--oa-id <id>` (default: `"default"`); every command below takes it. The access token goes in the `access_token` header; an expired token (`-216`/`-220`, ZBS `-124`) is refreshed once under a file lock and the call retried once. A Zalo error prints `OA API error <code>: <Zalo's message> (<meaning from Zalo's error table>). <What to do>` and exits 1; a non-2xx or non-JSON answer is `http_<status>`. Webhook events, the error table, ZBS permissions and examples: [`oa-command-reference.md`](oa-command-reference.md).
+
+**Guarded** (`-y, --yes` to act — without it nothing is sent, exit 2; `--dry-run` to preview): `follower delete-info`, `userfield delete`, `tag remove`, `purchase create-order`, `purchase confirm-order`, `article remove`, `group remove-members`, `group delete`.
+
+**Removed in 3.0.0:** `oa store …` (Zalo Shop is not in Zalo's current OA docs), `oa menu` (no documented API), `oa msg list` (the list template exists only on the shut-down v2 message API), `oa msg status` (→ `zbs status`), and `-m, --msg-type transaction|promotion` (Zalo stopped them on the OA API on 01/03/2026 → `zbs send` / `zbs uid`).
 
 ### Auth & Setup
 
 | Command | Description |
 |---------|-------------|
-| `login --app-id <id> --secret <key> [-p, --port <port>] [--callback-host <host>] [--oa-id <id>]` | OAuth login: opens a browser to the Zalo consent screen and starts a local callback server (default port 3456) to receive the auth code. `--callback-host <url>` switches to VPS/headless mode: binds the callback server to `0.0.0.0` instead of `127.0.0.1`, skips auto-opening a browser (prints the URL to open manually on a local machine instead), and uses that host for the redirect URI. 2-minute timeout. |
-| `refresh [--oa-id <id>]` | Refresh the access token using the stored refresh token. |
-| `setup <access-token> [--oa-id <id>]` | Manually set an access token, bypassing OAuth entirely (e.g. copied from another machine). |
-| `whoami [--oa-id <id>]` | Show the OA's profile: name, ID, description, follower count, and — when Zalo returns them — its type, package (with its valid-through date) and linked-ZCA flag. The package decides which APIs answer: a `-224` means it is too low for that call. |
-| `init [--oa-id <id>] [--app-id <id>] [--secret <key>] [--tunnel ngrok\|cloudflared\|none] [--webhook-url <url>] [--verify-code <code>] [-p, --port <port>] [--skip-webhook] [--skip-login]` | **Guided setup wizard** — works both interactively (human, prompts at each step) and non-interactively (agent mode, triggered automatically whenever `--app-id` is passed). Walks through: (1) save app-id/secret, offering to reuse existing saved creds; (2) OAuth login (skippable with `--skip-login`, or auto-skipped in agent mode if a token is already saved) and profile verification; (3) an interactive-only prerequisite checklist (callback URL, API enablement, permissions at developers.zalo.me); (4) webhook exposure — `--skip-webhook` skips entirely; `--webhook-url` saves a pre-existing URL (VPS/n8n/etc., optionally with `--verify-code`); otherwise picks a tunnel type (interactively prompted 1-5, or `--tunnel` non-interactively, defaulting to `ngrok` in agent mode) among **ngrok**, **cloudflared**, **none**, plus two interactive-only paths (`n8n`, `own server`) that just prompt for a URL to save. For ngrok/cloudflared it checks the CLI tool is installed, starts a local webhook listener on `-p/--port` (default 3000), starts the tunnel, and saves the resulting `<tunnelUrl>/webhook` as the webhook URL; (5) prints a quick-reference summary (JSON in `--json` mode). |
+| `login --app-id <id> --secret <key> [-p, --port <port>] [--callback-host <host>] [--oa-id <id>]` | OAuth v4 login with PKCE: a fresh `code_verifier`, the permission URL with `code_challenge` and `state`, the code exchanged with `code_verifier`. Opens a browser (also on Windows) and starts a local callback server on `127.0.0.1` (default port 3456). `--callback-host <host>` switches to VPS/headless mode: binds `0.0.0.0`, skips the browser (prints the URL to open elsewhere), and uses that host for the redirect URI. 2-minute timeout, cleared as soon as the login finishes. Saves `accessToken`, `refreshToken`, `expiresIn`, `expiresAt`. |
+| `refresh [--oa-id <id>]` | Refresh the access token with the stored refresh token. The refresh token is single use (3 months) and the old access token stops at once, so the refresh is serialized under a file lock and the new pair saved before use. |
+| `setup <access-token> [--oa-id <id>]` | Manually set an access token, bypassing OAuth (no refresh possible). |
+| `whoami [--oa-id <id>]` | The OA's profile (`v2.0/oa/getoa`): name, ID, alias, description, verification (`is_verified`), type (`oa_type`), category (`cate_name`), followers, package (`package_name`, valid through `package_valid_through_date`), auto-renew date, linked ZCA. `-224`: the package does not include a feature; `-221`: the OA must be verified. |
+| `init [--oa-id <id>] [--app-id <id>] [--secret <key>] [--tunnel ngrok\|cloudflared\|none] [--webhook-url <url>] [--verify-code <code>] [--oa-secret <key>] [-p, --port <port>] [--skip-webhook] [--skip-login]` | **Guided setup wizard** — works both interactively (human, prompts at each step) and non-interactively (agent mode, triggered automatically whenever `--app-id` is passed). Walks through: (1) save app-id/secret, offering to reuse existing saved creds; (2) OAuth login (the same PKCE flow as `login`, callback on 127.0.0.1; skippable with `--skip-login`, or auto-skipped in agent mode if a token is already saved) and profile verification; (3) an interactive-only prerequisite checklist (callback URL, API enablement, permissions at developers.zalo.me); (4) webhook exposure — `--skip-webhook` skips entirely; `--webhook-url` saves a pre-existing URL (VPS/n8n/etc., optionally with `--verify-code`); otherwise picks a tunnel type (interactively prompted 1-5, or `--tunnel` non-interactively, defaulting to `ngrok` in agent mode) among **ngrok**, **cloudflared**, **none**, plus two interactive-only paths (`n8n`, `own server`) that just prompt for a URL to save. For ngrok/cloudflared it checks the CLI tool is installed, starts a local webhook listener on `-p/--port` (default 3000) that checks event signatures when `--oa-secret` is given (body capped at 1 MB), starts the tunnel, and saves the resulting `<tunnelUrl>/webhook` as the webhook URL; (5) prints a quick-reference summary (JSON in `--json` mode). |
 
-### Messaging — `oa msg`
+### Messaging — `oa msg`, `oa upload`, `oa conv`, `oa quota`
 
-| Command | Description |
-|---------|-------------|
-| `msg text <user-id> <text> [-m, --msg-type cs\|transaction\|promotion] [--oa-id <id>]` | Send a text message to a follower. `-m/--msg-type` defaults to `cs` (customer service). |
-| `msg image <user-id> [--image-url <url>] [--image-id <id>] [-m ...] [--oa-id <id>]` | Send an image — either a direct URL or a pre-uploaded `attachment_id` (from `upload image`). |
-| `msg file <user-id> <file-id> [-m ...] [--oa-id <id>]` | Send a file message (requires a pre-uploaded file token from `upload file`). |
-| `msg list <user-id> <elements-json> [-m ...] [--oa-id <id>]` | Send a list-card message; `elements-json` e.g. `'[{"title":"A"},{"title":"B"}]'`. |
-| `msg status <message-id> [--oa-id <id>]` | Check a sent message's delivery status. |
-
-### Followers — `oa follower`
+Consultation (CS) messages only (`v3.0/oa/message/cs`); transaction and promotion messages moved to `zbs`. Text and captions ≤ 2000 characters.
 
 | Command | Description |
 |---------|-------------|
-| `follower info <user-id> [--oa-id <id>]` | Get a follower's details. |
-| `follower list [--offset <n>] [--count <n>] [--oa-id <id>]` | List followers, paginated (default offset 0, count 50). |
-| `follower update <user-id> <updates-json> [--oa-id <id>]` | Update follower info, e.g. `'{"name":"...","phone":"..."}'`. |
+| `msg text <user-id> <text> [--quote <message-id>]` | Send a CS text, optionally quoting a message (a `message_id` from a webhook or `oa conv`). |
+| `msg image <user-id> [--url <url>] [--attachment-id <id>] [--file <path>] [--caption <text>]` | Send a CS image (jpg/png ≤ 1 MB) by URL, attachment id (`upload image`), or a local file uploaded first. |
+| `msg gif <user-id> [--url <url>] [--attachment-id <id>] [--file <path>] --width <px> --height <px> [--caption <text>]` | Send a CS GIF (≤ 5 MB); width and height are required by Zalo. |
+| `msg file <user-id> [--token <token>] [--file <path>]` | Send a CS file (PDF/DOC/DOCX/CSV ≤ 5 MB) by upload token, or a local file uploaded first. |
+| `msg sticker <user-id> <sticker-id>` | Send a CS sticker (id from stickers.zaloapp.com). |
+| `msg request-info <user-id> --title <text> --subtitle <text> --image-url <url>` | Ask a follower to share their information (`request_user_info`; title ≤ 100, subtitle ≤ 500). |
+| `msg react <user-id> <message-id> <reaction>` | React as the OA: `:>` `--b` `:-((` `/-strong` `/-heart` `:-h` `:o` `/-remove`, or `like`, `heart`, `remove` (takes the reaction back); at most 50 per message. |
+| `msg anonymous <anonymous-id> --conversation <id> [--text <t>] [--image <url\|path>] [--attachment-id <id>] [--file <path>] [--file-token <token>] [--sticker <id>]` | Message an anonymous user in the conversation from their webhook event; exactly one content option. |
+| `msg user-quota <user-id>` | A user's last interaction with the OA and the messages left for them. |
+| `upload image <file-path>` | Upload jpg/png ≤ 1 MB → `attachment_id`. Uploads are kept 7 days; 5000 upload requests a month. |
+| `upload file <file-path>` | Upload PDF/DOC/DOCX/CSV ≤ 5 MB → `token`. |
+| `upload gif <file-path>` | Upload a GIF ≤ 5 MB → `attachment_id`. |
+| `conv recent [--offset <n>] [--count <n>] [--all] [--max <n>]` | The OA's most recent messages (offset 0 = newest, default 0; count 1–10, default 10; `--all` walks every page, `--max` stops after n). |
+| `conv history <user-id> [--offset <n>] [--count <n>] [--all] [--max <n>]` | Messages between the OA and one user (same paging). |
+| `quota [--owner OA\|APP] [--product cs\|transaction] [--type sub_quota\|purchase_quota\|reward_quota]` | The OA's message quota by owner (default `OA`), product and source. |
 
-### Tags — `oa tag`
-
-| Command | Description |
-|---------|-------------|
-| `tag list [--oa-id <id>]` | List all tags with follower counts. |
-| `tag assign <user-id> <tag-name> [--oa-id <id>]` | Assign a tag to a follower. |
-| `tag remove <tag-name> [--oa-id <id>]` | Delete a tag entirely. |
-| `tag untag <user-id> <tag-name> [--oa-id <id>]` | Remove a follower from a tag (without deleting the tag). |
-
-### Media Upload — `oa upload`
-
-| Command | Description |
-|---------|-------------|
-| `upload image <file-path> [--oa-id <id>]` | Upload an image, returns an `attachment_id` for `msg image --image-id`. |
-| `upload file <file-path> [--oa-id <id>]` | Upload a file, returns a token for `msg file`. |
-
-### Conversations — `oa conv`
+### Users — `oa follower`, `oa userfield`, `oa tag`, `oa form`, `oa purchase`
 
 | Command | Description |
 |---------|-------------|
-| `conv recent [--offset <n>] [--count <n>] [--oa-id <id>]` | List recent OA conversations (default offset 0, count 10). |
-| `conv history <user-id> [--offset <n>] [--count <n>] [--oa-id <id>]` | Get conversation history with a specific follower. |
+| `follower info <user-id>` | A user's details: name, alias, follow status, last interaction, tags, shared info. |
+| `follower list [--offset <n>] [--count <n>] [--tag <name>] [--last-interaction <period>] [--followers-only] [--non-followers] [--all]` | List user ids (offset 0–9951, default 0; count 1–50, default 50; at most 10,000 users). `--last-interaction`: `TODAY`, `YESTERDAY`, `L7D`, `L30D` or `YYYY_MM_DD:YYYY_MM_DD`. `--all` walks every page. |
+| `follower update <user-id> [--name] [--phone] [--address] [--city-id] [--district-id] [--dob <dd/MM/yyyy>] [--alias] [--external-id] [--data <json>]` | Update what the OA stores about a user: `shared_info` fields by name (`--dob` from 01/01/1970; city/district are Vietnam administrative unit codes), `user_alias`, `user_external_id`. `--data` gives the body as JSON; flags override it. |
+| `follower delete-info <user-id> [-y] [--dry-run]` | **Guarded.** Delete what the OA stores about a user (the Zalo account is not changed). |
+| `follower custom-info <user-id> [--fields <keys>]` | A user's custom info (every value comes back as a string). |
+| `follower custom-update <user-id> <json>` | Update custom info: `name`, `phone`, `user_dob`, `gender` (`Nam`\|`Nữ`\|`Khác`), `full_address {user_city_id, user_ward_id, user_address}`, `user_external_id`, `custom_info {<key>: value}`. |
+| `userfield list [--type system\|oa_custom] [--fields <keys>]` | List the user field definitions. |
+| `userfield create <key> <name> [--type <data-type>] [--description] [--status active\|inactive] [--format <f>] [--table-fields <json>]` | Create a custom field; types `boolean`, `number`, `text`, `datetime`, `table`, `email`, `phone`, `url`; a table has ≤ 5 columns. Key and type cannot change afterwards. |
+| `userfield update <key> [--name] [--description] [--status] [--format] [--table-fields <json>]` | Update a field (table columns can only be added). |
+| `userfield delete <key> [-y] [--dry-run]` | **Guarded.** Delete a custom field and every user's value in it. |
+| `tag list` | The OA's tags. |
+| `tag assign <user-id> <tag-name>` | Tag a user (a new tag is created). |
+| `tag untag <user-id> <tag-name>` | Remove a tag from one user. |
+| `tag remove <tag-name> [-y] [--dry-run]` | **Guarded.** Delete a tag, untagging every user. |
+| `form get <form-id> [--from <time>] [--to <time>] [--offset <n>] [--limit <n>] [--all]` | A Zalo Ads form's questions and responses in a window of at most 30 days (Unix seconds or a date); limit 1–200, default 200. |
+| `purchase create-order [--product-id <id> \| --redeem-code <code>] [--voucher <code>] [--beneficiary OA\|APP] [-y] [--dry-run]` | **Guarded.** Create an order (nothing charged): the price and a one-time token valid 5 minutes; orders from 00:01 to 23:54. Beneficiary default `OA`. |
+| `purchase confirm-order <order-id> <verified-token> [-y] [--dry-run]` | **Guarded.** Pay the order: the ZCA account is charged. |
 
-### Menu, Articles, Store
+### Articles — `oa article`
 
 | Command | Description |
 |---------|-------------|
-| `menu <menu-json> [--oa-id <id>]` | Update the OA's chat menu, e.g. `'{"buttons":[...]}'`. |
-| `article create <article-json> [--oa-id <id>]` | Create/broadcast an article. |
-| `article list [--offset <n>] [--limit <n>] [--oa-id <id>]` | List articles (default offset 0, limit 10). |
-| `article detail <article-id> [--oa-id <id>]` | Get one article's details/status. |
-| `store product-create <product-json> [--oa-id <id>]` | Create a zBusiness store product. |
-| `store product-list [--offset <n>] [--limit <n>] [--oa-id <id>]` | List store products. |
-| `store product-info <product-id> [--oa-id <id>]` | Get a product's details. |
-| `store category-create <category-json> [--oa-id <id>]` | Create a store category. |
-| `store category-list [--oa-id <id>]` | List store categories. |
-| `store order-create <order-json> [--oa-id <id>]` | Create a store order. |
+| `article create <article-json> [--no-wait] [--timeout <s>] [--interval <s>]` | Create an article (`type: normal`) or video post (`type: video`) from JSON (inline or `@file`), then wait (default 60 s, checking every 2 s) for the article id; `--no-wait` prints Zalo's token. |
+| `article verify <token>` | Resolve a create/update token to the article id (fails while Zalo is processing). |
+| `article update <article-id> <article-json> [--no-wait] [--timeout <s>] [--interval <s>]` | Update an article or video post (the whole body), then wait. |
+| `article remove <article-id> [-y] [--dry-run]` | **Guarded.** Delete an article or video post. |
+| `article list [--type normal\|video] [--offset <n>] [--limit <n>] [--all]` | List articles or video posts (type default `normal`, offset 0, limit 10). |
+| `article detail <article-id>` | One article or video post. |
+| `article video-upload <file> [--wait] [--timeout <s>] [--interval <s>]` | Upload a video (mp4/avi ≤ 50 MB); prints the token; `--wait` (default 300 s, every 5 s) prints the `video_id`. |
+| `article video-status <token>` | Processing status: 1 ready, 3 processing, 4 failed, … |
+
+### Group chats — `oa group` (GMF; verified OA on Advanced or Premium)
+
+Paging options: `--offset <n>` (default 0), `--count <n>` (default 5, Zalo's default), `--all` on `pending`, `members`, `list`. `<user-ids>` are comma-separated.
+
+| Command | Description |
+|---------|-------------|
+| `group create <name> --asset-id <id> --members <user-ids> [--description <text>]` | Create a group chat (1–99 members, at least one an admin of the OA). |
+| `group info <group-id>` | A group's info, package and settings. |
+| `group update <group-id> [--name] [--avatar <url>] [--description] [--lock-send-msg on\|off] [--join-approval on\|off] [--msg-history on\|off] [--link-join on\|off]` | Change only the fields given. |
+| `group avatar <group-id> <image-url>` | Change the avatar. |
+| `group update-asset <group-id> <asset-id>` | Attach a GMF asset: renew or raise the member limit. |
+| `group invite <group-id> <user-ids>` | Invite followers or users who interacted in the past 7 days. |
+| `group pending <group-id>` / `accept` / `reject <group-id> <user-ids>` | Users waiting to join; approve; refuse. |
+| `group members <group-id>` | Members (the OA is listed by `oa_id`). |
+| `group add-admins` / `remove-admins <group-id> <user-ids>` | Give or take deputy admin. |
+| `group remove-members <group-id> <user-ids> [-y] [--dry-run]` | **Guarded.** Remove members. |
+| `group delete <group-id> [-y] [--dry-run]` | **Guarded.** Dissolve a group for every member. |
+| `group list` / `recent` / `history <group-id>` | The OA's groups; latest group messages; one group's messages, newest first. |
+| `group send <group-id> [text] [--mention <user-ids>] [--mention-all] [--image-url <url>] [--attachment-id <id>] [--gif --width <px> --height <px>] [--file-token <token>] [--sticker <id>]` | Send text (default), mentions, an image (text is the required caption), a file or a sticker. |
+| `group quota [--owner OA\|APP] [--product gmf10\|gmf50\|gmf100] [--quota-type <type>]` | The OA's GMF assets (owner default `OA`). |
+
+### Voice calls — `oa call`
+
+| Command | Description |
+|---------|-------------|
+| `call consent-request <phone> --reason <code> [--type audio\|video\|audio_and_video]` | Ask a user, by phone number, for permission to call (charged per request; 24 h to answer; an approval lasts 30 days). Reasons 101, 103, 105, 106, 107. Type default `audio`. |
+| `call consent-check <phone>` | Whether the user allowed the OA to call. |
+| `call outbound <user-id> --agent <agent-id> [--type <type>]` | A link and QR code for the OA to call a user. |
+| `call inbound [--branch <id>] [--agent <id>] [--type <type>]` | A link and QR code for a user to call the OA. |
+| `call mcc-info` | The call center's agents and branches. |
 
 ### Webhook Listener — `oa listen`
 
 | Command | Description |
 |---------|-------------|
-| `listen [-p, --port <port>] [-s, --secret <key>] [--no-verify] [-e, --events <list>] [--path <path>] [--verify-domain <code>]` | Start a local HTTP webhook server for OA events. `-p/--port` default 3000. `-s/--secret` enables **HMAC-SHA256 MAC verification** (timing-safe compare) against the `X-Zevent-Signature`/`mac` header — a warning is printed if no secret is given. `--no-verify` explicitly disables verification even with a secret set. `-e/--events` filters to a comma-separated subset (default `all`) of the 57 events Zalo documents (listed in `oa-command-reference.md`, source `OA_WEBHOOK_EVENTS` in `src/commands/oa-listen.js`); a name Zalo does not document prints a warning at start, since that filter can never match. `user_send_gif`, `user_click_button` and `user_click_link`, listed before 2.0.0, are not Zalo events. The listener **answers 200 as soon as an event is accepted**, before printing it — Zalo wants it within 2 seconds, redelivers, and eventually disables the webhook — and a redelivery (Zalo's `num_retry` header) is flagged as such, `_num_retry` in `--json`. `--path` changes the webhook URL path (default `/webhook`). `--verify-domain <code>` serves the Zalo domain-verification meta tag/HTML file needed at `developers.zalo.me`. Handles Zalo's `hub.challenge` GET verification automatically. Body size capped at 1MB. |
+| `listen [-p, --port <port>] [-s, --secret <key>] [--no-verify] [-e, --events <list>] [--path <path>] [--verify-domain <code>]` | Start a local HTTP webhook server for OA and ZBS events. `-p/--port` default 3000. `-s/--secret` (the OA Secret Key from the app's Webhook settings) checks each event's `X-ZEvent-Signature` as Zalo's docs define it: `sha256(app_id + body + timestamp + OA secret key)` in hex — a plain SHA-256 over the concatenation, not an HMAC — compared in constant time; a bad or missing signature gets 401. A warning is printed if no secret is given; `--no-verify` disables the check even with a secret set. `-e/--events` filters to a comma-separated subset (default `all`) of the 79 events Zalo's OA and ZBS docs give (listed in `oa-command-reference.md`, source `OA_WEBHOOK_EVENTS` in `src/commands/oa-listen.js`); a name Zalo does not document prints a warning at start. `follow`/`unfollow` name the user by `follower.id`. The listener **answers 200 as soon as an event is accepted**, before printing it — Zalo wants it within 2 seconds, redelivers, and eventually disables the webhook — and a redelivery (Zalo's `num_retry` header) is flagged as such, `_num_retry` in `--json`. `--path` changes the webhook URL path (default `/webhook`). `--verify-domain <code>` serves the domain-verification file needed at `developers.zalo.me`. A GET with `hub.challenge` is echoed back — this listener's own convenience for tools that probe webhooks that way, not part of Zalo's webhook. Body size capped at 1 MB. |
+
+### ZBS Template Message — `zbs`
+
+Uses the OA's token (`oa login`). Each area needs a permission the OA grants the app: templates/`upload-image` — manage message templates (create, update, uploads also asset management); phone-number sends, `rsa-key`, `journey`, `status`, `quota`, `quality` — send messages by phone number; `uid` — the OA messaging permission.
+
+| Command | Description |
+|---------|-------------|
+| `template list [--status enable\|pending\|reject\|disable] [--mine] [--offset <n>] [--limit <n>] [--all]` | The OA's templates, newest first (offset 0, limit 1–100, default 100; `--mine` = created by this app). |
+| `template detail <template-id>` | Status, tag, quality, prices, params and buttons. |
+| `template sample <template-id>` | Params with sample values (a `template_data` to start from). |
+| `template create <template-json> [--tracking-id <id>] [--no-check]` | Create a template from JSON (inline or a file path): `template_name`, `template_type`, `tag`, `layout`, `params`, `note`. Checked locally against Zalo's template rules first (`--no-check` skips); 100 a day. |
+| `template update <template-id> <template-json> [--tracking-id <id>] [--no-check]` | Edit a template in REJECT status; it goes back to review. |
+| `template rating <template-id> [--from <time>] [--to <time>] [--offset <n>] [--limit <n>] [--all]` | Ratings left through a service-rating template (times in ms or a date; `--to` default now; limit default 100). |
+| `template quick-reply <template-id> [--from <time>] [--to <time>] [--limit <n>]` | Answers given through a quick-response template (limit default 100). |
+| `upload-image <file> [--kind logo\|image]` | Upload a template image or logo (JPG/PNG ≤ 500 KB; 5,000 a month per app) → `media_id`; `--kind` also checks logo PNG 400×96 or image 16:9. |
+| `send <phone> <template-id> <data-json> [--tracking-id <id>] [--hash-phone] [--dev] [--rsa] [--rsa-key <file>] [--encrypted] [--rsa-mgf1 sha1\|sha256] [--sending-mode 1\|3]` | Send by phone number (`84xxxxxxxxx` or `0xxxxxxxxx`); `<data-json>` is `template_data`, inline or a file path; tracking id (≤ 48 letters/digits/`_`/`-`) generated if absent. Modes: plain (default), `--hash-phone` (SHA-256 of the number, or a 64-hex digest as `<phone>`), `--dev` (development mode, admins only), `--rsa` (number and values encrypted with the OA's RSA public key: `--rsa-key` file or fetched; `--encrypted` if already ciphertexts; MGF1 default `sha1`). `--sending-mode 3` (over quota) for whitelisted OAs, tag 3, plain mode only. |
+| `rsa-key create` / `rsa-key get` | Create the OA's RSA key pair (fails if one exists) / print the public key (Base64). |
+| `journey token <phone> [--type <type>]` | A journey token for a recipient: `token_logistics_7` (Zalo's default), `token_logistics_30`, `token_coach_bus_7`, `token_coach_bus_30`. |
+| `journey check <journey-token>` | A token's type, creation and expiry. |
+| `journey send <phone> <template-id> <data-json> --token <journey-token>` | Send a journey template with its token (same type). |
+| `uid <user-id> <template-id> <data-json>` | Send a template message to a user id of the OA (custom, rating, payment-request and voucher templates created since 10/12/2025). |
+| `status <message-id> [--phone <phone>]` | Delivery status of a message sent by phone number. |
+| `quota` | The OA's quota for phone-number messages: daily, and monthly promotion. |
+| `quality` | The OA's sending quality: last 48 hours and last 7 days. |
 
 ---
 
@@ -638,17 +698,18 @@ Completely independent from the personal (unofficial-API) account: separate OAut
 | `label` | 2 |
 | `read` | 2 |
 | `write` | 2 |
-| `catalog` | 10 |
-| `cloud` | 2 (`ls`, `plan`) |
+| `catalog` | 11 |
+| `cloud` | 4 (`ls`, `plan`, `apply`, `get`) |
 | `bank` | 5 |
 | `db` | 6 (`query`, `backup`, `export`, `verify`, `usage`, `purge`) |
 | `policy` | 4 (`get`, `set`, `unset`, `token`) |
 | `presence` | 4 (`status`, `wake`, `park`, `resume`) |
 | `listen` | 1 |
-| `mcp` | 7 (`start`, `wait`, `mark-read`, and `webhook status` / `list` / `retry` / `purge` — exposing 36 MCP tools) |
+| `mcp` | 8 (`start`, `wait`, `mark-read`, `approver`, and `webhook status` / `list` / `retry` / `purge` — exposing 36 MCP tools) |
 | `fleet` | 8 (`ports`, `status`, `start`, `stop`, `restart`, `purge`, `generate`, `serve`) |
-| `oa` (all subgroups) | 32 |
-| **Total** | **259 CLI commands** + 36 MCP tools |
+| `oa` (all subgroups) | 70 |
+| `zbs` (all subgroups) | 18 |
+| **Total** | **315 CLI commands** (227 personal + 88 OA/ZBS) + 36 MCP tools |
 
 ## Provenance
 

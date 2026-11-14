@@ -133,7 +133,7 @@ After a QR login:
 > **Storage:** `~/.zalo-agent-cli/` (mode `0600`), sealed at rest with the machine's key provider ([docs/security.md](docs/security.md)).
 > **Risk:** this is an unofficial API (Zalo's own undocumented protocol) — heavy/automated use can get the account banned. Don't use your primary personal account.
 
-### B. Zalo Official Account (official API v3.0)
+### B. Zalo Official Account and ZBS (official APIs)
 ```bash
 zalo-mcp oa init --app-id <YOUR_APP_ID> --secret <YOUR_APP_SECRET>
 ```
@@ -143,7 +143,7 @@ zalo-mcp oa login --app-id <ID> --secret <KEY> --callback-host https://your-doma
 ```
 
 > **Storage:** `~/.zalo-agent/oa-credentials.json` (mode `0600`) — note this is a **different directory** from the personal account's `~/.zalo-agent-cli/`.
-> OA access tokens expire after ~25h — refresh anytime with `zalo-mcp oa refresh`.
+> OA access tokens expire after ~25h; a call that finds the token expired refreshes it once with the stored refresh token, and `zalo-mcp oa refresh` renews it anytime. `zbs …` (ZBS Template Message) uses the same login.
 
 Full OA setup, webhook exposure options, and error codes: [docs/official-account.md](docs/official-account.md).
 
@@ -328,7 +328,7 @@ This engine source registers **36 MCP tools** in `src/mcp/mcp-tools.js`, all cov
 
 See [Sync usage and details](docs/mcp-sync.md) / [Tiếng Việt](docs/mcp-sync.vi.md).
 
-Every personal CLI command has an MCP action. **CLI-only** are Official Account commands (`oa …`, a separate API), logging in and out (`login`, `logout`, `status`), the local account registry (`account list|login|switch|remove|info|export`), the operator's steps on this machine's keys and data (`account security …`, `db query|backup|export|verify|purge`), the runtime policy (`policy …`: an agent never sees or changes its own limits), the daemon and fleet commands (`listen`, `mcp start`, `mcp webhook …`, `mcp approver`, `presence status|wake|park`, `fleet …`), `update`, `profile lost-focus`, and `cloud get` (it takes the account's cloud key); agents reach them by shelling out to `zalo-agent <command> --json` (or `zalo-mcp <command> --json`).
+Every personal CLI command has an MCP action. **CLI-only** are Official Account and ZBS commands (`oa …`, `zbs …`, separate official APIs), logging in and out (`login`, `logout`, `status`), the local account registry (`account list|login|switch|remove|info|export`), the operator's steps on this machine's keys and data (`account security …`, `db query|backup|export|verify|purge`), the runtime policy (`policy …`: an agent never sees or changes its own limits), the daemon and fleet commands (`listen`, `mcp start`, `mcp webhook …`, `mcp approver`, `presence status|wake|park`, `fleet …`), `update`, `profile lost-focus`, and `cloud get` (it takes the account's cloud key); agents reach them by shelling out to `zalo-agent <command> --json` (or `zalo-mcp <command> --json`).
 
 Full tool reference (parameters, return shapes, config): [skill/references/mcp-guide.md](skill/references/mcp-guide.md).
 
@@ -406,7 +406,7 @@ Official Account credentials are stored separately at `~/.zalo-agent/oa-credenti
 
 ## CLI Command Reference (via `npx zalo-agent <command>`)
 
-Append `--json` to any command for machine-readable output. This is a shortlist — the exhaustive reference for all 259 commands is [skill/references/command-reference.md](skill/references/command-reference.md).
+Append `--json` to any command for machine-readable output. This is a shortlist — the exhaustive reference for all 315 commands is [skill/references/command-reference.md](skill/references/command-reference.md).
 
 ### Session & maintenance
 | Command | Description |
@@ -448,12 +448,14 @@ Append `--json` to any command for machine-readable output. This is a shortlist 
 | Command | Description |
 |:---|:---|
 | `npx zalo-agent oa whoami` | View OA profile |
-| `npx zalo-agent oa msg text <userId> "text"` | Send an OA message to a follower |
-| `npx zalo-agent oa follower list` | List OA followers |
+| `npx zalo-agent oa msg text <userId> "text"` | Send a consultation (CS) message to a user |
+| `npx zalo-agent oa follower list` | List the OA's user ids |
 | `npx zalo-agent oa tag assign <userId> <tag>` | Tag a follower |
 | `npx zalo-agent oa upload image <path>` | Upload an image, returns an attachment ID |
-| `npx zalo-agent oa listen -p <port> [-s <secret>]` | Start a local OA webhook listener |
+| `npx zalo-agent oa listen -p <port> [-s <oa-secret-key>]` | Start a local OA webhook listener (checks event signatures with the OA secret key) |
 | `npx zalo-agent oa refresh` | Refresh the OA access token |
+| `npx zalo-agent zbs send <phone> <templateId> <data-json>` | Send a ZBS template message by phone number (transaction/promotion messages) |
+| `npx zalo-agent zbs status <messageId>` | Delivery status of a ZBS message |
 
 Full reference: [skill/references/command-reference.md](skill/references/command-reference.md) and [docs/official-account.md](docs/official-account.md).
 

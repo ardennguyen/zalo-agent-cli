@@ -4,7 +4,7 @@
 
 # zalo-agent-cli
 
-Công cụ CLI tự động hóa Zalo — đa tài khoản, proxy, chuyển khoản ngân hàng, thanh toán QR, Official Account API v3.0, và MCP server cho AI agent.
+Công cụ CLI tự động hóa Zalo — đa tài khoản, proxy, chuyển khoản ngân hàng, thanh toán QR, Official Account API và ZBS Template Message, và MCP server cho AI agent.
 Engine do dự án tự viết theo giao thức của Zalo (từ 3.0, không còn zca-js): mỗi request được dựng đúng định dạng Zalo yêu cầu, và engine theo sát giao thức hiện hành nên không phải chờ một thư viện bên thứ ba cập nhật.
 
 [![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc-sa/4.0/)
@@ -22,7 +22,7 @@ Engine do dự án tự viết theo giao thức của Zalo (từ 3.0, không cò
 > riêng, chạy song song với server được** — muốn xem tin nhắn bên cạnh server thì dùng hai ứng dụng này, đừng dùng trình duyệt.
 > Mỗi lần đăng nhập QR, điện thoại hiện thêm một mục trong danh sách thiết bị (các mục cũ của server bị đăng xuất),
 > nhưng hàng đợi tin nhắn offline vẫn còn, vì CLI giữ nguyên mã thiết bị của tài khoản khi đăng nhập lại.
-> Lệnh `oa` là ngoại lệ — chúng dùng **API chính thức** của Zalo OA, không có rủi ro ban.
+> Lệnh `oa` và `zbs` là ngoại lệ — chúng dùng **API chính thức** của Zalo OA và ZBS, không có rủi ro ban.
 
 > [!TIP]
 > **AI Agent Skill** — Dùng với OpenClaw, Claude Code, hoặc bất kỳ agent nào hỗ trợ SKILL.md:
@@ -30,19 +30,20 @@ Engine do dự án tự viết theo giao thức của Zalo (từ 3.0, không cò
 > clawhub install zalo-agent          # OpenClaw (từ ClawHub registry)
 > cp -r skill/ ~/.claude/skills/zalo-agent/   # Claude Code
 > ```
-> 22 nhóm lệnh · 259 lệnh · listen mode + webhook · 55+ ngân hàng VN · đa tài khoản + proxy
+> 23 nhóm lệnh · 315 lệnh · listen mode + webhook · 55+ ngân hàng VN · đa tài khoản + proxy
 > Xem [skill/SKILL.md](skill/SKILL.md) · [Tham chiếu lệnh đầy đủ](skill/references/command-reference.md) · [Eval scenarios](skill/evals/)
 
 > [!NOTE]
-> **Zalo Official Account (OA)** — Zalo OA API v3.0 chính thức:
+> **Zalo Official Account (OA) và ZBS** — API chính thức của Zalo OA và ZBS Template Message:
 > ```bash
 > zalo-agent oa init                                    # Setup wizard (interactive)
 > zalo-agent oa init --app-id <ID> --secret <KEY> --skip-webhook  # Non-interactive (AI agent)
 > zalo-agent oa whoami                                  # Xem thông tin OA
-> zalo-agent oa msg text <user-id> "Xin chào"           # Gửi tin nhắn
-> zalo-agent oa listen -p 3000                           # Webhook listener
+> zalo-agent oa msg text <user-id> "Xin chào"           # Gửi tin tư vấn
+> zalo-agent zbs send 0901234567 <template-id> '{...}'   # Gửi tin template ZBS qua SĐT
+> zalo-agent oa listen -p 3000 -s <oa-secret-key>        # Webhook listener
 > ```
-> OAuth login · gửi tin nhắn · follower · tag · bài viết · cửa hàng · webhook listener · multi-OA · VPS support
+> OAuth login · tin tư vấn · người dùng · tag · bài viết · nhóm chat GMF · gọi thoại · tin template ZBS · webhook listener · multi-OA · VPS support
 > Xem [docs/official-account.vi.md](docs/official-account.vi.md) · [English](docs/official-account.md)
 
 > [!TIP]
@@ -85,6 +86,7 @@ Muốn cài kèm MCP server dạng sandbox (khuyến nghị cho AI client) → x
 - **Rời nhóm (hoặc bị xóa, bị chặn, nhóm bị giải tán) thì lịch sử nhóm trên máy bị xóa**, như ứng dụng Zalo; `groups.onLeave: "keep"` giữ lại.
 - **`senderName` giờ ưu tiên tên gợi nhớ (alias)** mà chủ tài khoản đặt; tên Zalo gốc nằm ở `senderZaloName`.
 - **`ZALO_QR_FLOW=legacy` đã bị bỏ** — xóa khỏi môi trường hoặc `.env`.
+- **Official Account:** `oa msg` chỉ gửi tin tư vấn; tin giao dịch và truyền thông (`-m transaction|promotion`, Zalo đã dừng trên OA API từ 01/03/2026) chuyển sang nhóm lệnh mới `zbs` (`zbs send`, `zbs uid`). `oa store`, `oa menu`, `oa msg list` và `oa msg status` (thay bằng `zbs status`) đã bị bỏ; vài tùy chọn đổi tên theo tài liệu của Zalo (`oa msg image --url`/`--attachment-id`, `oa msg file --token`, `oa follower update` dùng flag theo tên).
 - **`logout` đăng xuất thiết bị** ở phía Zalo; `--keep-session` giữ cách cũ.
 - **Lệnh thất bại thoát với mã 1** (trước đây phần lớn thoát với mã 0). Mã thoát: 0 thành công, 1 thất bại, 2 cần xác nhận (`--yes`), 3 daemon always-on bị kick (phiên khác chiếm tài khoản), 4 Zalo liên tục từ chối phiên đăng nhập đã lưu (với daemon: chỉ khi `ZALO_EXIT_ON_SIGNED_OUT=1`). Với `--json`, lỗi là `{"error": …}`, và stdout luôn là một object hoặc mảng JSON (không còn `""` hay `null`).
 - Wrapper `@ardennguyen/zalo-mcp` 2.1.0 cần engine 3.0.0.
@@ -158,7 +160,8 @@ Tất cả lệnh hỗ trợ `--json`. Tài liệu đầy đủ: **[Wiki](https:
 | `policy` | 4 | Chính sách runtime đổi được khi server đang chạy (`get`, `set`, `unset`) và token của admin API (`token --rotate`) | [Cấu hình](docs/configuration.vi.md) |
 | `presence` | 4 | Socket của daemon theo hiện diện on-demand: trạng thái, thức ngay, tạm nghỉ ngay, lấy lại tài khoản sau khi nhường (`resume --yes`) | [Tham chiếu lệnh](skill/references/command-reference.md) |
 | `mcp` | 8 | MCP server (`start`, `wait`, `mark-read`, bốn lệnh `webhook` và `approver` đặt mật khẩu người duyệt) — 36 tools cho AI agent + zero-polling CLI | [MCP Server](https://github.com/ardennguyen/zalo-agent-cli/wiki/MCP-Server-(VN)) |
-| **`oa`** | **32** | **Zalo Official Account API v3.0 — OAuth, tin nhắn, follower, tag, bài viết, cửa hàng, webhook** | **[Official Account](https://github.com/ardennguyen/zalo-agent-cli/wiki/Official-Account-(VN))** |
+| **`oa`** | **70** | **Zalo Official Account API — OAuth, tin tư vấn, người dùng, tag, bài viết, nhóm chat GMF, gọi thoại, webhook** | **[Official Account](https://github.com/ardennguyen/zalo-agent-cli/wiki/Official-Account-(VN))** |
+| **`zbs`** | **18** | **ZBS Template Message — template, gửi tin qua SĐT (hash, RSA, journey) hoặc UID, trạng thái, quota, chất lượng** | **[Official Account](https://github.com/ardennguyen/zalo-agent-cli/wiki/Official-Account-(VN))** |
 
 Xem thêm: [Đa tài khoản & Proxy](https://github.com/ardennguyen/zalo-agent-cli/wiki/%C4%90a-T%C3%A0i-Kho%E1%BA%A3n-&-Proxy) · [Cài đặt VPS](https://github.com/ardennguyen/zalo-agent-cli/wiki/C%C3%A0i-%C4%90%E1%BA%B7t-VPS) · [Thẻ chuyển khoản & QR](https://github.com/ardennguyen/zalo-agent-cli/wiki/Th%E1%BA%BB-Chuy%E1%BB%83n-Kho%E1%BA%A3n-&-QR) · [Bộ nhớ đệm & Đồng bộ](https://github.com/ardennguyen/zalo-agent-cli/wiki/B%E1%BB%99-Nh%E1%BB%9B-%C4%90%E1%BB%87m-&-%C4%90%E1%BB%93ng-B%E1%BB%99) · [Bảo mật](https://github.com/ardennguyen/zalo-agent-cli/wiki/B%E1%BA%A3o-M%E1%BA%ADt)
 
@@ -168,8 +171,8 @@ Xem thêm: [Đa tài khoản & Proxy](https://github.com/ardennguyen/zalo-agent-
 
 - Đăng nhập QR qua HTTP server tự động (browser + terminal), báo ngay khi bị **từ chối trên điện thoại** thay vì treo tới khi mã hết hạn; trang QR báo đăng nhập thành công hay thất bại, và mã hết hạn có nút "Lấy mã mới"
 - Đa tài khoản với proxy riêng biệt (1:1), device fingerprint riêng cho từng tài khoản; chạy **nhiều tài khoản live đồng thời** (mỗi tài khoản một tiến trình `mcp start` hoặc `listen` kèm `--account <ID>`, và truyền `--account <ID>` / `ZALO_ACCOUNT` trên mọi lệnh CLI mà không ghi đè `accounts.json`)
-- **259 lệnh** phủ hết tính năng Zalo cá nhân
-- **Zalo Official Account (OA) API v3.0** — OAuth login, gửi tin nhắn, follower, tag, bài viết, cửa hàng, webhook listener, multi-OA
+- **315 lệnh** phủ hết tính năng Zalo cá nhân, cùng API chính thức OA và ZBS
+- **Zalo Official Account (OA) API và ZBS Template Message** — OAuth login, tin tư vấn, người dùng, tag, bài viết, nhóm chat GMF, gọi thoại, tin template qua SĐT hoặc UID, webhook listener, multi-OA
 - **MCP server** (stdio + HTTP/HTTPS + OAuth 2.0) — 36 tools cho Claude Code, Gemini và các MCP client: đọc, chờ tin nhắn đến (`zalo_wait_for_message`), gửi (văn bản, link preview, danh thiếp, vào My Documents, đánh dấu Quan trọng/Khẩn cấp), tìm kiếm tin nhắn trong cache, tra cứu người dùng, gắn/gỡ nhãn hội thoại (`zalo_label`), quản lý bạn bè và lời mời kết bạn (`zalo_friend`), quản trị nhóm đầy đủ (`zalo_group`), cài đặt hội thoại (`zalo_conversation`), hồ sơ (`zalo_profile`), trả lời tự động, tin nhắn nhanh, catalog, tài khoản ngân hàng, chỉ mục zCloud, sticker và link, thả cảm xúc, thu hồi, chuyển tiếp, xóa tin, nhắc hẹn, ghi chú/ghim tin, bình chọn, xem thành viên nhóm, liệt kê hội thoại gần đây và kiểm tra độ đầy đủ của cache; mọi lệnh CLI của tài khoản cá nhân đều có hành động MCP tương ứng
 - **Dữ liệu được mã hóa trên đĩa** — thông tin đăng nhập và các file nhỏ được niêm phong, `zalo.db` và hàng đợi webhook là SQLCipher v4, media tải về được mã hóa; khóa nằm trong bộ cung cấp khóa của máy (DPAPI, keychain, Secret Service, systemd-creds, KMS hoặc file passphrase). Mỗi tin nhắn có **row MAC** để phát hiện chỉnh sửa (`db verify`). Bot đọc dữ liệu qua `db query` / `db export` (chat ẩn chỉ khi có PIN) hoặc các MCP tool — xem [docs/security.vi.md](docs/security.vi.md)
 - **Hiện diện on-demand** — `mcp start --http` và `listen --daemon` chỉ giữ socket khi có việc (tool call, chờ tin, lease của CRM, lệnh CLI chuyển qua daemon) rồi tạm nghỉ; tin đến lúc nghỉ được lấy lại từ hàng đợi offline của Zalo. `presence.mode: "always-on"` cho thời gian thực, `presence status|wake|park|resume`, sự kiện `account_state`; bị phiên khác chiếm thì nhường (`YIELDED`), bị đăng xuất thì vẫn chạy (`SIGNED_OUT`) để thêm lại bằng QR
@@ -196,7 +199,7 @@ Xem thêm: [Đa tài khoản & Proxy](https://github.com/ardennguyen/zalo-agent-
 | Tài liệu | Nội dung |
 |----------|----------|
 | [INSTALLATION.vi.md](INSTALLATION.vi.md) ([EN](INSTALLATION.md)) | Cài đặt `zalo-mcp` wrapper, cấu hình MCP client, thiết lập OA |
-| [docs/official-account.vi.md](docs/official-account.vi.md) ([EN](docs/official-account.md)) | Tham chiếu đầy đủ lệnh OA (song ngữ VN / EN) |
+| [docs/official-account.vi.md](docs/official-account.vi.md) ([EN](docs/official-account.md)) | Tham chiếu đầy đủ lệnh OA và ZBS (song ngữ VN / EN) |
 | [docs/deployment.vi.md](docs/deployment.vi.md) ([EN](docs/deployment.md)) | Hướng dẫn triển khai production (một socket, nhiều bot, HTTPS, OAuth 2.0, systemd/Docker) |
 | [docs/configuration.vi.md](docs/configuration.vi.md) ([EN](docs/configuration.md)) | Mọi biến môi trường, khóa `mcp-config.json` / `storage.json`, chính sách runtime, hạn mức, hiện diện on-demand, `groups.onLeave` và các cách cấu hình khuyến nghị |
 | [docs/config-samples/use-cases/](docs/config-samples/use-cases/) | Bộ file cấu hình đầy đủ cho từng trường hợp: máy cá nhân (stdio), LAN qua HTTP, VPS vài tài khoản, backend CRM, SaaS với KMS (README song ngữ) |
@@ -204,7 +207,7 @@ Xem thêm: [Đa tài khoản & Proxy](https://github.com/ardennguyen/zalo-agent-
 | [skill/SKILL.md](skill/SKILL.md) | Skill cho AI agent |
 | [skill/references/command-reference.md](skill/references/command-reference.md) | Tham chiếu lệnh đầy đủ (nguồn chuẩn) |
 | [skill/references/mcp-guide.md](skill/references/mcp-guide.md) | Hướng dẫn MCP server (tiếng Việt) |
-| [skill/references/oa-command-reference.md](skill/references/oa-command-reference.md) | Tham chiếu nhanh lệnh OA cho agent |
+| [skill/references/oa-command-reference.md](skill/references/oa-command-reference.md) | Tham chiếu lệnh OA và ZBS cho agent |
 | [skill/references/login-flow.md](skill/references/login-flow.md) | Các cách đăng nhập (QR, proxy, credentials) |
 | [skill/references/listen-mode-guide.md](skill/references/listen-mode-guide.md) | Vận hành listener và webhook |
 | [tests/README.md](tests/README.md) | Cách chạy và viết test: bộ offline, E2E phân tầng + checklist thủ công |
@@ -226,7 +229,7 @@ zalo-agent-cli © 2026 Arden Nguyen Duc Huy được cấp phép theo [CC BY-NC-
 
 ## English
 
-CLI tool for Zalo automation — multi-account, proxy support, bank transfers, QR payments, Official Account API v3.0, and an MCP server for AI agents.
+CLI tool for Zalo automation — multi-account, proxy support, bank transfers, QR payments, the Official Account API and ZBS Template Message, and an MCP server for AI agents.
 Its engine is this project's own implementation of Zalo's protocol (since 3.0, no zca-js): requests are built in the wire format Zalo expects, and the engine tracks the current protocol instead of waiting for a third-party library.
 
 > [!IMPORTANT]
@@ -244,19 +247,20 @@ Its engine is this project's own implementation of Zalo's protocol (since 3.0, n
 > clawhub install zalo-agent                    # OpenClaw (from ClawHub registry)
 > cp -r skill/ ~/.claude/skills/zalo-agent/     # Claude Code
 > ```
-> 22 command groups · 259 commands · listen mode + webhook · 55+ VN banks · multi-account + proxy
+> 23 command groups · 315 commands · listen mode + webhook · 55+ VN banks · multi-account + proxy
 > See [skill/SKILL.md](skill/SKILL.md) · [Full command reference](skill/references/command-reference.md) · [Eval scenarios](skill/evals/)
 
 > [!NOTE]
-> **Zalo Official Account (OA)** — Official Zalo OA API v3.0:
+> **Zalo Official Account (OA) and ZBS** — Zalo's official OA API and ZBS Template Message:
 > ```bash
 > zalo-agent oa init                                    # Setup wizard (interactive)
 > zalo-agent oa init --app-id <ID> --secret <KEY> --skip-webhook  # Non-interactive (AI agent)
 > zalo-agent oa whoami                                  # OA profile
-> zalo-agent oa msg text <user-id> "Hello"              # Send message
-> zalo-agent oa listen -p 3000                           # Webhook listener
+> zalo-agent oa msg text <user-id> "Hello"              # Send a consultation message
+> zalo-agent zbs send 0901234567 <template-id> '{...}'   # Send a ZBS template message by phone
+> zalo-agent oa listen -p 3000 -s <oa-secret-key>        # Webhook listener
 > ```
-> OAuth login · messaging · followers · tags · articles · store · webhook listener · multi-OA · VPS support
+> OAuth login · consultation messages · users · tags · articles · GMF group chats · voice calls · ZBS template messages · webhook listener · multi-OA · VPS support
 > See [docs/official-account.md](docs/official-account.md) · [Tiếng Việt](docs/official-account.vi.md)
 
 > [!TIP]
@@ -303,6 +307,7 @@ For the sandboxed MCP-server install (recommended for AI clients), see [INSTALLA
 - **Leaving a group (or being removed or blocked, or a disband) deletes the group's local history**, as Zalo's own apps do; `groups.onLeave: "keep"` keeps it.
 - **`senderName` is now alias first** (the name the account owner set); the Zalo name itself is `senderZaloName`.
 - **`ZALO_QR_FLOW=legacy` is removed** — take it out of your environment or `.env`.
+- **Official Account:** `oa msg` sends consultation messages only; transaction and promotion messages (`-m transaction|promotion`, stopped by Zalo on the OA API on 01/03/2026) move to the new `zbs` group (`zbs send`, `zbs uid`). `oa store`, `oa menu`, `oa msg list` and `oa msg status` (replaced by `zbs status`) are removed; some options are renamed to match Zalo's docs (`oa msg image --url`/`--attachment-id`, `oa msg file --token`, `oa follower update` takes named flags).
 - **`logout` signs the device out** at Zalo; `--keep-session` keeps the old behavior.
 - **A command that fails exits 1** (before, most exited 0). Exit codes: 0 done, 1 failed, 2 confirmation needed (`--yes`), 3 an always-on daemon was kicked (another session took the account), 4 Zalo keeps refusing the saved login (for a daemon, only with `ZALO_EXIT_ON_SIGNED_OUT=1`). With `--json` a failure is `{"error": …}`, and stdout is always one JSON object or array (never `""` or `null`).
 - Wrapper `@ardennguyen/zalo-mcp` 2.1.0 requires engine 3.0.0.
@@ -338,7 +343,8 @@ Full docs: **[Wiki](https://github.com/ardennguyen/zalo-agent-cli/wiki)** · [Fu
 | `policy` | 4 | The runtime policy a running server takes without a restart (`get`, `set`, `unset`) and the admin API's token (`token --rotate`) | [Configuration](docs/configuration.md) |
 | `presence` | 4 | The daemon's socket under on-demand presence: status, wake now, park now, take the account back after a yield (`resume --yes`) | [Command reference](skill/references/command-reference.md) |
 | `mcp` | 8 | MCP server (`start`, `wait`, `mark-read`, the four `webhook` commands and `approver` for the approver password) — 36 tools for AI agents + zero-polling CLI | [MCP Server](https://github.com/ardennguyen/zalo-agent-cli/wiki/MCP-Server) |
-| **`oa`** | **32** | **Zalo Official Account API v3.0 — OAuth, messaging, followers, tags, articles, store, webhook** | **[Official Account](https://github.com/ardennguyen/zalo-agent-cli/wiki/Official-Account)** |
+| **`oa`** | **70** | **Zalo Official Account API — OAuth, consultation messages, users, tags, articles, GMF group chats, voice calls, webhook** | **[Official Account](https://github.com/ardennguyen/zalo-agent-cli/wiki/Official-Account)** |
+| **`zbs`** | **18** | **ZBS Template Message — templates, sends by phone number (hashed, RSA, journey) or UID, status, quota, quality** | **[Official Account](https://github.com/ardennguyen/zalo-agent-cli/wiki/Official-Account)** |
 
 See also: [Multi-Account & Proxy](https://github.com/ardennguyen/zalo-agent-cli/wiki/Multi-Account-&-Proxy) · [VPS Setup](https://github.com/ardennguyen/zalo-agent-cli/wiki/VPS-Setup) · [Bank Card & QR Payments](https://github.com/ardennguyen/zalo-agent-cli/wiki/Bank-Card-&-QR-Payments) · [Local Cache & Sync](https://github.com/ardennguyen/zalo-agent-cli/wiki/Local-Cache-&-Sync) · [Security](https://github.com/ardennguyen/zalo-agent-cli/wiki/Security)
 
@@ -346,8 +352,8 @@ See also: [Multi-Account & Proxy](https://github.com/ardennguyen/zalo-agent-cli/
 
 - QR login over an auto-started HTTP server (browser + terminal), reporting a **decline on the phone** immediately instead of hanging until the code expires; the QR page says whether the login succeeded or failed, and an expired code has a "Get a new code" button
 - Multi-account with a dedicated proxy (1:1) and a per-account device fingerprint; run **multiple live accounts simultaneously** (one `mcp start` or `listen` process per account with `--account <ID>`, plus `--account <ID>` / `ZALO_ACCOUNT` on any CLI command without mutating `accounts.json`)
-- **259 commands** covering the personal-account Zalo surface
-- **Zalo Official Account (OA) API v3.0** — OAuth login, messaging, followers, tags, articles, store, webhook listener, multi-OA
+- **315 commands** covering the personal-account Zalo surface plus the official OA and ZBS APIs
+- **Zalo Official Account (OA) API and ZBS Template Message** — OAuth login, consultation messages, users, tags, articles, GMF group chats, voice calls, template messages by phone number or UID, webhook listener, multi-OA
 - **MCP server** (stdio + HTTP/HTTPS + OAuth 2.0) — 36 tools for Claude Code, Gemini and other MCP clients: read, wait for incoming messages (`zalo_wait_for_message`), send (text, local file/image attachments, link previews, contact cards, to My Documents too, marked Important/Urgent), search cached messages, look up users, manage conversation labels (`zalo_label`), friends and friend requests (`zalo_friend`), full group administration (`zalo_group`), conversation settings (`zalo_conversation`), the profile (`zalo_profile`), auto-replies, quick messages, the catalog, bank accounts, the zCloud index, stickers and links, react, recall, forward, delete, reminders, group notes/pins, group polls, list a group's members, list recent conversations, and check how complete the cache is; every personal CLI command has an MCP action
 - **Data encrypted at rest** — the saved login and the small files are sealed, `zalo.db` and the webhook outbox are SQLCipher v4, downloaded media is encrypted; the keys stay with the machine's key provider (DPAPI, the keychain, Secret Service, systemd-creds, a KMS or a passphrase file). Every message carries a **row MAC** for tamper evidence (`db verify`). Bots read through `db query` / `db export` (hidden chats only with the PIN) or the MCP tools — see [docs/security.md](docs/security.md)
 - **On-demand presence** — `mcp start --http` and `listen --daemon` hold the socket only while something needs it (a tool call, a wait, a CRM lease, a CLI request routed to the daemon) and then park; what arrives meanwhile comes back from Zalo's offline queue. `presence.mode: "always-on"` for real time, `presence status|wake|park|resume`, `account_state` events; another session taking the account makes it yield (`YIELDED`), a revoked login leaves it up (`SIGNED_OUT`) to be added again by QR
@@ -374,7 +380,7 @@ See also: [Multi-Account & Proxy](https://github.com/ardennguyen/zalo-agent-cli/
 | Document | Contents |
 |----------|----------|
 | [INSTALLATION.md](INSTALLATION.md) ([VI](INSTALLATION.vi.md)) | `zalo-mcp` wrapper install, MCP client config, OA setup |
-| [docs/official-account.md](docs/official-account.md) ([VI](docs/official-account.vi.md)) | Full OA command reference (bilingual EN / VN) |
+| [docs/official-account.md](docs/official-account.md) ([VI](docs/official-account.vi.md)) | Full OA and ZBS command reference (bilingual EN / VN) |
 | [docs/deployment.md](docs/deployment.md) ([VI](docs/deployment.vi.md)) | Production deployment guide (one socket, many bots, HTTPS, OAuth 2.0, systemd/Docker) |
 | [docs/configuration.md](docs/configuration.md) ([VI](docs/configuration.vi.md)) | Every environment variable, `mcp-config.json` / `storage.json` key, the runtime policy, quotas, on-demand presence, `groups.onLeave`, and the recommended setups |
 | [docs/config-samples/use-cases/](docs/config-samples/use-cases/) | A complete config set per use case: desktop (stdio), LAN over HTTP, a VPS with a few accounts, a CRM backend, SaaS with KMS (bilingual READMEs) |
@@ -382,7 +388,7 @@ See also: [Multi-Account & Proxy](https://github.com/ardennguyen/zalo-agent-cli/
 | [skill/SKILL.md](skill/SKILL.md) | AI agent skill |
 | [skill/references/command-reference.md](skill/references/command-reference.md) | Exhaustive command reference (source of truth) |
 | [skill/references/mcp-guide.md](skill/references/mcp-guide.md) | MCP server guide (Vietnamese) |
-| [skill/references/oa-command-reference.md](skill/references/oa-command-reference.md) | OA quick reference for agents |
+| [skill/references/oa-command-reference.md](skill/references/oa-command-reference.md) | OA and ZBS reference for agents |
 | [skill/references/login-flow.md](skill/references/login-flow.md) | Login methods (QR, proxy, credentials file) |
 | [skill/references/listen-mode-guide.md](skill/references/listen-mode-guide.md) | Listener and webhook operation |
 | [tests/README.md](tests/README.md) | How to run and write the tests: offline suite, tiered live E2E, manual checklist |

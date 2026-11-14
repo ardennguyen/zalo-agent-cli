@@ -13,7 +13,7 @@ Automate Zalo messaging, groups, contacts, payments, and real-time events via `z
 Handles: login/logout, messaging (text/image/file/sticker/voice/video/link), reactions, mentions, recall, message history, friends, groups, conversations, profile, polls, reminders, auto-reply, quick messages, labels, catalogs, listen (WebSocket), webhooks, local SQLite cache + mobile sync, bank cards, VietQR, multi-account with proxy, **Official Account (OA) API v3.0** (OAuth login, OA messaging, followers, tags, articles, store, webhook listener), **MCP Server** (Model Context Protocol for Claude Code and MCP clients).
 Does NOT handle: Zalo Mini App, Zalo Ads, ZNS templates, non-Zalo platforms.
 
-Surface: **259 CLI commands** across 31 command containers (22 top-level groups + 7 OA subgroups + `mcp webhook` + `account security`) + **36 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
+Surface: **315 CLI commands** across 39 command containers (23 top-level groups + 11 OA subgroups + 3 ZBS subgroups + `mcp webhook` + `account security`) + **36 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
 
 ## Prerequisites
 
@@ -240,20 +240,25 @@ zalo-agent account status                                   # Plans: zBusiness p
 zalo-agent account remove <ownerId>                         # Invalidate remote session + wipe local data + delete creds
 ```
 
-### Official Account (OA) — API v3.0
+### Official Account (OA) and ZBS — official APIs
 ```bash
 zalo-agent oa init --app-id <ID> --secret <KEY> --skip-webhook  # Setup (non-interactive)
 zalo-agent oa init                                               # Setup (interactive wizard)
 zalo-agent oa whoami                                             # OA profile
-zalo-agent oa msg text <uid> "Hello" [-m cs|transaction|promotion]  # Send OA message
-zalo-agent oa follower list                                      # List followers
-zalo-agent oa tag assign <uid> <tag>                             # Tag follower
-zalo-agent oa listen -p 3000 [-s <secret>]                       # Webhook listener
-zalo-agent oa listen -p 3000 --verify-domain <code>              # With domain verify
+zalo-agent oa msg text <uid> "Hello" [--quote <msgId>]           # Consultation (CS) message
+zalo-agent oa msg image <uid> --file ./photo.jpg                 # Uploads, then sends
+zalo-agent oa follower list [--all]                              # List user ids
+zalo-agent oa follower update <uid> --name "..." --phone 0901234567  # shared_info by named flags
+zalo-agent oa tag assign <uid> <tag>                             # Tag a user
+zalo-agent oa article create @article.json                       # Waits for the article id
+zalo-agent oa group send <groupId> "text"                        # GMF group chat
+zalo-agent oa listen -p 3000 -s <oa-secret-key>                  # Webhook listener, signatures checked
 zalo-agent oa refresh                                            # Refresh token
-zalo-agent oa login --app-id <ID> --secret <KEY> --callback-host https://vps.com  # VPS login
+zalo-agent zbs send 0901234567 <templateId> '<template_data>'    # ZBS template message by phone
+zalo-agent zbs uid <uid> <templateId> '<template_data>'          # ZBS template message by user id
+zalo-agent zbs status <msgId>                                    # Delivery status
 ```
-OA uses official Zalo API (no ban risk). Separate auth from personal account.
+OA and ZBS use official Zalo APIs (no ban risk), with their own OAuth login, separate from the personal account. `oa msg` sends consultation messages only: transaction and promotion messages are ZBS templates (`zbs send`/`zbs uid`). `oa store`, `oa menu`, `oa msg list` and `oa msg status` were removed in 3.0.0 (`zbs status` replaces the last). Destructive or paying commands (`follower delete-info`, `userfield delete`, `tag remove`, `purchase …`, `article remove`, `group remove-members`, `group delete`) need `--yes`.
 Full reference: `references/oa-command-reference.md`
 
 ### MCP Server (Model Context Protocol)
@@ -346,7 +351,7 @@ Sync requests share the daemon socket and lock. Reuse requestId and arguments af
 | Profile, privacy, linked devices | `zalo_profile` | `zalo-agent --json profile …` / `account devices` |
 | Auto-reply, quick-msg, catalog, bank, zCloud index, stickers, links | `zalo_auto_reply`, `zalo_quick_message`, `zalo_catalog`, `zalo_bank`, `zalo_cloud`, `zalo_sticker`, `zalo_link` | `zalo-agent --json auto-reply\|quick-msg\|catalog\|bank\|cloud …` |
 | Login, the account registry, daemon and fleet, `update`, `profile lost-focus`, `cloud get`, `db …` | **none (CLI-only)** | `zalo-agent --json …` |
-| Official Account (all 32 commands) | **none** | `zalo-agent --json oa …` |
+| Official Account and ZBS (all 88 commands) | **none** | `zalo-agent --json oa …` / `zbs …` |
 
 **Rule of thumb:** use an MCP tool when one exists; otherwise shell out to `zalo-agent <command> --json` and parse the JSON. Do not claim a capability is unavailable just because it has no MCP tool.
 
@@ -397,9 +402,9 @@ Every write changes something. 26 of the 27 have been answered by a live account
 
 | File | Contents |
 |------|----------|
-| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 259 commands + 36 MCP tools) |
+| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 315 commands + 36 MCP tools) |
 | `references/mcp-guide.md` | MCP tools, parameters, return shapes, `mcp-config.json`, architecture (Vietnamese) |
-| `references/oa-command-reference.md` | Official Account quick reference, error codes, webhook checklist |
+| `references/oa-command-reference.md` | Official Account and ZBS reference: every `oa`/`zbs` command, webhook events and signature, error codes, ZBS permissions, webhook checklist |
 | `references/login-flow.md` | QR login, headless credentials login, multi-account, proxy formats, troubleshooting |
 | `references/listen-mode-guide.md` | Listener flags, webhook payloads, JSONL archival, pm2 deployment, local cache behavior |
 | `evals/eval-scenarios.md` | Behavior + security eval scenarios for this skill |
@@ -427,7 +432,7 @@ When any of these disagree, `references/command-reference.md` wins — it is gen
 - **`logout --purge` / `account remove` do NOT delete a custom `media.downloadDir`.** They wipe `accounts/<ownId>/`, media included, and by default the MCP server downloads there too; a root moved with `media.downloadDir` sits outside it, so its attachments survive. If a user asks you to remove an account for privacy and one is set, say this and point at that directory — do not delete it on your own initiative
 - MCP buffer is in-memory only — it holds messages received since the server started; use `zalo_get_history` for anything older
 - MCP HTTP mode binds `127.0.0.1` unless `--host` says otherwise; always pair a non-loopback `--host` with a bearer token (`ZALO_MCP_AUTH_TOKEN`; `--auth` works but shows in the process list)
-- OA token expires ~25h → use `oa refresh` to renew
+- OA token expires ~25h → refreshed automatically once on `-216`/`-220` when a refresh token is stored; `oa refresh` renews it by hand
 - Some OA APIs require tier upgrade (error -224) → see zalo.cloud/oa/pricing
 - OA webhook needs HTTPS + verified domain + VN IP for full user data
 - `catalog` commands require a zBusiness Pro account

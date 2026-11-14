@@ -326,6 +326,55 @@ export const GUARDS = Object.freeze({
             `send the "${t.name}" write to Zalo (${t.risk ?? "unknown risk"}` +
             `${t.verified === false ? ", not yet seen working" : ""})`,
     },
+    // Official Account (official API, CLI only).
+    "oa.tag.remove": {
+        cli: "oa tag remove",
+        mcp: null,
+        irreversible: true,
+        what: (t) =>
+            `delete tag "${t.tagName ?? t.name}" from Official Account ${t.oaId ?? "default"}, untagging every user`,
+    },
+    "oa.follower.deleteInfo": {
+        cli: "oa follower delete-info",
+        mcp: null,
+        irreversible: true,
+        what: (t) => `delete the information Official Account ${t.oaId ?? "default"} holds about user ${t.userId}`,
+    },
+    "oa.userfield.delete": {
+        cli: "oa userfield delete",
+        mcp: null,
+        irreversible: true,
+        what: (t) =>
+            `delete user field ${t.fieldId ?? t.name} of Official Account ${t.oaId ?? "default"}, with every user's value in it`,
+    },
+    "oa.purchase": {
+        cli: "oa purchase",
+        mcp: null,
+        irreversible: true,
+        what: (t) =>
+            `buy ${t.product ?? "an OA product"} for Official Account ${t.oaId ?? "default"}` +
+            (t.orderId ? ` (order ${t.orderId})` : "") +
+            ", which is charged",
+    },
+    "oa.article.remove": {
+        cli: "oa article remove",
+        mcp: null,
+        irreversible: true,
+        what: (t) => `delete article ${t.articleId ?? t.name} of Official Account ${t.oaId ?? "default"}`,
+    },
+    "oa.group.removeMembers": {
+        cli: "oa group remove-members",
+        mcp: null,
+        irreversible: true,
+        what: (t) =>
+            `remove ${count(t.userIds, "member")} (${ids(t.userIds)}) from Official Account group chat ${t.groupId}`,
+    },
+    "oa.group.delete": {
+        cli: "oa group delete",
+        mcp: null,
+        irreversible: true,
+        what: (t) => `delete Official Account group chat ${t.groupId} for every member`,
+    },
 });
 
 /**

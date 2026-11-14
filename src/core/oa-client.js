@@ -1,423 +1,57 @@
 /**
- * Zalo Official Account API v3.0 client.
- * Wraps OA REST endpoints with native fetch. Independent of the personal-account session.
- * Credentials stored in ~/.zalo-agent/oa-credentials.json.
+ * Zalo Official Account client: a re-export barrel over src/core/oa/*.js, so existing imports keep working.
+ *
+ * - transport.js: base URLs, credential storage (~/.zalo-agent/oa-credentials.json), oaRequest, OAError, uploadForm
+ * - oauth.js: PKCE permission URL, code exchange, locked refresh, the callback login flow
+ * - messages.js, users.js, content.js (and the other area modules): the endpoints
+ *
+ * Independent of the personal-account session; credentials live in ~/.zalo-agent/ (no `-cli`).
  */
 
-import fs from "node:fs";
-import { join, resolve } from "node:path";
-import { homedir } from "node:os";
-import { withFileLock, writeFileAtomic } from "../zalo/kernel/atomic-file.js";
+import { OPENAPI_V2, oaRequest } from "./oa/transport.js";
 
-const V3_BASE = "https://openapi.zalo.me/v3.0/oa";
-const V2_BASE = "https://openapi.zalo.me/v2.0/oa";
+export {
+    OPENAPI_V2,
+    OPENAPI_V3,
+    ZBS_BASE,
+    OAUTH_PERMISSION_URL,
+    OAUTH_TOKEN_URL,
+    OA_ERRORS,
+    ZBS_ERRORS,
+    UPLOAD_LIMITS,
+    OAError,
+    describeOAError,
+    getOADataDir,
+    getOACredsFile,
+    saveOACreds,
+    saveOAToken,
+    loadOACreds,
+    loadOAToken,
+    tokenFields,
+    getToken,
+    buildUrl,
+    oaRequest,
+    uploadForm,
+    mimeTypeOf,
+} from "./oa/transport.js";
+export {
+    getOAuthUrl,
+    exchangeCode,
+    refreshAccessToken,
+    refreshStoredToken,
+    createCodeVerifier,
+    codeChallengeFor,
+    startOAuthLogin,
+} from "./oa/oauth.js";
+export * from "./oa/messages.js";
+export * from "./oa/users.js";
+export * from "./oa/content.js";
 
 /**
- * Resolve the Official Account data directory (defaults to ~/.zalo-agent, or ZALO_OA_DIR).
- * @returns {string}
+ * The OA's own profile (`v2.0/oa/getoa`): name, `oa_id`, `is_verified`, `oa_type`, `cate_name`, package, …
+ * @param {string} [oaId]
+ * @returns {Promise<object>}
  */
-export function getOADataDir() {
-    return process.env.ZALO_OA_DIR ? resolve(process.env.ZALO_OA_DIR) : join(homedir(), ".zalo-agent");
-}
-
-function getOACredsFile() {
-    return join(getOADataDir(), "oa-credentials.json");
-}
-
-/** Ensure data directory exists. */
-function ensureDir() {
-    const dir = getOADataDir();
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-}
-
-const OAUTH_URL = "https://oauth.zaloapp.com/v4/oa/permission";
-const TOKEN_URL = "https://oauth.zaloapp.com/v4/oa/access_token";
-
-/** Save full OA credentials to disk with restricted file permissions. */
-export function saveOACreds(data, oaId = "default") {
-    ensureDir();
-    const credsFile = getOACredsFile();
-    // One file holds every OA: read-modify-write under a lock, replaced atomically.
-    withFileLock(`${credsFile}.lock`, () => {
-        let creds = {};
-        if (fs.existsSync(credsFile)) {
-            creds = JSON.parse(fs.readFileSync(credsFile, "utf8"));
-        }
-        creds[oaId] = { ...creds[oaId], ...data, updatedAt: new Date().toISOString() };
-        writeFileAtomic(credsFile, JSON.stringify(creds, null, 2));
-    });
-}
-
-/** Save OA access token to disk (backward compat). */
-export function saveOAToken(accessToken, oaId = "default") {
-    saveOACreds({ accessToken }, oaId);
-}
-
-/** Load full OA credentials from disk. */
-export function loadOACreds(oaId = "default") {
-    const credsFile = getOACredsFile();
-    if (!fs.existsSync(credsFile)) return null;
-    const creds = JSON.parse(fs.readFileSync(credsFile, "utf8"));
-    return creds[oaId] || null;
-}
-
-/** Load OA access token from disk. */
-export function loadOAToken(oaId = "default") {
-    return loadOACreds(oaId)?.accessToken || null;
-}
-
-/** Get token or throw. */
-function getToken(oaId) {
-    const creds = loadOACreds(oaId);
-    if (!creds?.accessToken) {
-        throw new Error("OA not configured. Run: zalo-agent oa login --app-id <id> --secret <key>");
-    }
-    return creds.accessToken;
-}
-
-/** Build OAuth authorization URL. */
-export function getOAuthUrl(appId, redirectUri = "http://localhost:3456/callback") {
-    const params = new URLSearchParams({
-        app_id: appId,
-        redirect_uri: redirectUri,
-    });
-    return `${OAUTH_URL}?${params}`;
-}
-
-/** Exchange authorization code for access + refresh tokens. */
-export async function exchangeCode(code, appId, secretKey, redirectUri = "http://localhost:3456/callback") {
-    const res = await fetch(TOKEN_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", secret_key: secretKey },
-        body: new URLSearchParams({
-            code,
-            app_id: appId,
-            grant_type: "authorization_code",
-            redirect_uri: redirectUri,
-        }),
-    });
-    return res.json();
-}
-
-/** Refresh access token using refresh token. */
-export async function refreshAccessToken(refreshToken, appId, secretKey) {
-    const res = await fetch(TOKEN_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", secret_key: secretKey },
-        body: new URLSearchParams({
-            refresh_token: refreshToken,
-            app_id: appId,
-            grant_type: "refresh_token",
-        }),
-    });
-    return res.json();
-}
-
-/** Make authenticated request to Zalo OA API. */
-async function oaFetch(url, { method = "GET", body, token, isFormData = false } = {}) {
-    const headers = { access_token: token };
-    if (!isFormData) headers["Content-Type"] = "application/json";
-
-    const opts = { method, headers };
-    if (body && !isFormData) opts.body = JSON.stringify(body);
-    if (body && isFormData) opts.body = body;
-
-    const res = await fetch(url, opts);
-    const data = await res.json();
-    if (data.error && data.error !== 0) {
-        throw new Error(`OA API error ${data.error}: ${data.message || JSON.stringify(data)}`);
-    }
-    return data;
-}
-
-// ─── Messaging (v3.0) ────────────────────────────────────────────────
-
-const VALID_MSG_TYPES = ["cs", "transaction", "promotion"];
-
-/** Validate messageType to prevent path injection. */
-function validateMsgType(messageType) {
-    if (!VALID_MSG_TYPES.includes(messageType)) {
-        throw new Error(`Invalid message type "${messageType}". Must be: ${VALID_MSG_TYPES.join(", ")}`);
-    }
-    return messageType;
-}
-
-/** Send text message via OA. messageType: cs | transaction | promotion */
-export async function sendText(userId, text, messageType = "cs", oaId = "default") {
-    const token = getToken(oaId);
-    return oaFetch(`${V3_BASE}/message/${validateMsgType(messageType)}`, {
-        method: "POST",
-        token,
-        body: { recipient: { user_id: userId }, message: { text } },
-    });
-}
-
-/** Send image message via OA (by URL or attachment_id). */
-export async function sendImage(userId, { imageUrl, imageId }, messageType = "cs", oaId = "default") {
-    const token = getToken(oaId);
-    const element = { media_type: "image" };
-    if (imageUrl) element.url = imageUrl;
-    else if (imageId) element.attachment_id = imageId;
-    else throw new Error("Provide --image-url or --image-id");
-
-    return oaFetch(`${V3_BASE}/message/${validateMsgType(messageType)}`, {
-        method: "POST",
-        token,
-        body: {
-            recipient: { user_id: userId },
-            message: {
-                attachment: {
-                    type: "template",
-                    payload: { template_type: "media", elements: [element] },
-                },
-            },
-        },
-    });
-}
-
-/** Send file message via OA (requires pre-uploaded file attachment_id). */
-export async function sendFile(userId, fileId, messageType = "cs", oaId = "default") {
-    const token = getToken(oaId);
-    return oaFetch(`${V3_BASE}/message/${validateMsgType(messageType)}`, {
-        method: "POST",
-        token,
-        body: {
-            recipient: { user_id: userId },
-            message: { attachment: { type: "file", payload: { token: fileId } } },
-        },
-    });
-}
-
-/** Send list message via OA. elements: [{ title, subtitle, image_url, default_action }] */
-export async function sendList(userId, elements, messageType = "cs", oaId = "default") {
-    const token = getToken(oaId);
-    return oaFetch(`${V3_BASE}/message/${validateMsgType(messageType)}`, {
-        method: "POST",
-        token,
-        body: {
-            recipient: { user_id: userId },
-            message: {
-                attachment: {
-                    type: "template",
-                    payload: { template_type: "list", elements },
-                },
-            },
-        },
-    });
-}
-
-/**
- * Get ZNS message delivery status.
- * NOTE: This endpoint only works for ZNS (template/notification) message IDs,
- * NOT for regular chat message IDs from conv recent/history.
- * Regular chat messages have no status API — use conv history instead.
- */
-export async function getMessageStatus(messageId, oaId = "default") {
-    const token = getToken(oaId);
-    // Correct host: business.openapi.zalo.me (different from openapi.zalo.me)
-    return oaFetch(`https://business.openapi.zalo.me/message/status?message_id=${messageId}`, { token });
-}
-
-// ─── User / Follower Management ──────────────────────────────────────
-
-/** Get OA profile info. */
 export async function getOAProfile(oaId = "default") {
-    const token = getToken(oaId);
-    // v2 fallback — v3 docs incomplete for getoa
-    return oaFetch(`${V2_BASE}/getoa`, { token });
-}
-
-/** Get follower info by user_id. */
-export async function getFollowerInfo(userId, oaId = "default") {
-    const token = getToken(oaId);
-    // Zalo v3 requires data={} JSON param format
-    const data = encodeURIComponent(JSON.stringify({ user_id: userId }));
-    return oaFetch(`${V3_BASE}/user/detail?data=${data}`, { token });
-}
-
-/** Get followers list (paginated). */
-export async function getFollowers(offset = 0, count = 50, oaId = "default") {
-    const token = getToken(oaId);
-    // Zalo v3 requires params as data={"offset":N,"count":N} JSON query param, NOT plain ?offset=N&count=N
-    const data = encodeURIComponent(JSON.stringify({ offset, count }));
-    return oaFetch(`${V3_BASE}/user/getlist?data=${data}`, { token });
-}
-
-/** Update follower info (name, phone, address, etc.). */
-export async function updateFollowerInfo(userId, updates, oaId = "default") {
-    const token = getToken(oaId);
-    return oaFetch(`${V3_BASE}/user/update`, {
-        method: "POST",
-        token,
-        body: { user_id: userId, ...updates },
-    });
-}
-
-// ─── Tags ────────────────────────────────────────────────────────────
-
-/** Get all tags. */
-export async function getTags(oaId = "default") {
-    const token = getToken(oaId);
-    // v2 endpoint — v3 not documented
-    return oaFetch(`${V2_BASE}/tag/gettagsofoa`, { token });
-}
-
-/** Assign tag to follower. */
-export async function assignTag(userId, tagName, oaId = "default") {
-    const token = getToken(oaId);
-    return oaFetch(`${V3_BASE}/tag/taguser`, {
-        method: "POST",
-        token,
-        body: { user_id: userId, tag_name: tagName },
-    });
-}
-
-/** Remove tag. */
-export async function removeTag(tagName, oaId = "default") {
-    const token = getToken(oaId);
-    return oaFetch(`${V3_BASE}/tag/rmtag`, {
-        method: "POST",
-        token,
-        body: { tag_name: tagName },
-    });
-}
-
-/** Remove follower from tag. */
-export async function removeFollowerFromTag(userId, tagName, oaId = "default") {
-    const token = getToken(oaId);
-    return oaFetch(`${V3_BASE}/tag/rmfollowerfromtag`, {
-        method: "POST",
-        token,
-        body: { user_id: userId, tag_name: tagName },
-    });
-}
-
-// ─── Media Upload ────────────────────────────────────────────────────
-
-/** Upload image to OA (returns attachment_id). */
-export async function uploadImage(filePath, oaId = "default") {
-    const token = getToken(oaId);
-    // Use native Blob and FormData
-    const fileData = fs.readFileSync(filePath);
-    const blob = new (await import("node:buffer")).Blob([fileData]);
-    const form = new globalThis.FormData();
-    form.append("file", blob, filePath.split("/").pop());
-
-    return oaFetch(`${V3_BASE}/upload/image`, {
-        method: "POST",
-        token,
-        body: form,
-        isFormData: true,
-    });
-}
-
-/** Upload file to OA (returns token/attachment_id). */
-export async function uploadFile(filePath, oaId = "default") {
-    const token = getToken(oaId);
-    const fileData = fs.readFileSync(filePath);
-    const blob = new (await import("node:buffer")).Blob([fileData]);
-    const form = new globalThis.FormData();
-    form.append("file", blob, filePath.split("/").pop());
-
-    return oaFetch(`${V3_BASE}/upload/file`, {
-        method: "POST",
-        token,
-        body: form,
-        isFormData: true,
-    });
-}
-
-// ─── Conversations ───────────────────────────────────────────────────
-
-/** Get recent chat list (v2 API). */
-export async function getRecentChat(offset = 0, count = 10, oaId = "default") {
-    const token = getToken(oaId);
-    // Zalo v2 requires params as data={"offset":N,"count":N} JSON query param
-    const data = encodeURIComponent(JSON.stringify({ offset, count }));
-    return oaFetch(`${V2_BASE}/listrecentchat?data=${data}`, { token });
-}
-
-/** Get conversation history with a user (v2 API). */
-export async function getConversation(userId, offset = 0, count = 10, oaId = "default") {
-    const token = getToken(oaId);
-    // Zalo v2 requires params as data={"user_id":"...","offset":N,"count":N} JSON query param
-    const data = encodeURIComponent(JSON.stringify({ user_id: userId, offset, count }));
-    return oaFetch(`${V2_BASE}/conversation?data=${data}`, { token });
-}
-
-// ─── Menu ────────────────────────────────────────────────────────────
-
-/** Update OA menu. */
-export async function updateMenu(menuData, oaId = "default") {
-    const token = getToken(oaId);
-    return oaFetch(`${V3_BASE}/menu`, { method: "POST", token, body: menuData });
-}
-
-// ─── Articles ────────────────────────────────────────────────────────
-
-/** Create article (broadcast). */
-export async function createArticle(articleData, oaId = "default") {
-    const token = getToken(oaId);
-    return oaFetch(`${V3_BASE}/article/create`, { method: "POST", token, body: articleData });
-}
-
-/** Get article list. */
-export async function getArticleList(offset = 0, limit = 10, oaId = "default", type = "normal") {
-    const token = getToken(oaId);
-    // Correct endpoint: v2.0/article/getslice (NOT v3.0/oa/article/getlist) with flat query params
-    const V2_ART_BASE = "https://openapi.zalo.me/v2.0/article";
-    return oaFetch(`${V2_ART_BASE}/getslice?offset=${offset}&limit=${limit}&type=${type}`, { token });
-}
-
-/** Get article detail. */
-export async function getArticleDetail(articleId, oaId = "default") {
-    const token = getToken(oaId);
-    const V2_ART_BASE = "https://openapi.zalo.me/v2.0/article";
-    return oaFetch(`${V2_ART_BASE}/getdetail?id=${articleId}`, { token });
-}
-
-// ─── Store ───────────────────────────────────────────────────────────
-
-/** Create product in OA store. */
-export async function createProduct(productData, oaId = "default") {
-    const token = getToken(oaId);
-    return oaFetch(`${V3_BASE}/store/product/create`, { method: "POST", token, body: productData });
-}
-
-/** Get product list. */
-export async function getProductList(offset = 0, limit = 10, oaId = "default") {
-    const token = getToken(oaId);
-    // Correct endpoint: v2.0/mstore (NOT v3.0/store) with flat query params
-    const V2_STORE = "https://openapi.zalo.me/v2.0/mstore";
-    return oaFetch(`${V2_STORE}/product/getproductofoa?offset=${offset}&limit=${limit}`, { token });
-}
-
-/** Get product detail. */
-export async function getProductInfo(productId, oaId = "default") {
-    const token = getToken(oaId);
-    const V2_STORE = "https://openapi.zalo.me/v2.0/mstore";
-    return oaFetch(`${V2_STORE}/product/getproduct?id=${productId}`, { token });
-}
-
-/** Create category in OA store. */
-export async function createCategory(categoryData, oaId = "default") {
-    const token = getToken(oaId);
-    return oaFetch(`${V3_BASE}/store/category/create`, {
-        method: "POST",
-        token,
-        body: categoryData,
-    });
-}
-
-/** Get category list. */
-export async function getCategoryList(oaId = "default") {
-    const token = getToken(oaId);
-    const V2_STORE = "https://openapi.zalo.me/v2.0/mstore";
-    return oaFetch(`${V2_STORE}/category/getcategoryofoa`, { token });
-}
-
-/** Create order. */
-export async function createOrder(orderData, oaId = "default") {
-    const token = getToken(oaId);
-    return oaFetch(`${V3_BASE}/store/order/create`, { method: "POST", token, body: orderData });
+    return oaRequest({ url: `${OPENAPI_V2}/oa/getoa`, oaId });
 }

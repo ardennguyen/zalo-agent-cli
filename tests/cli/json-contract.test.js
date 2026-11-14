@@ -128,7 +128,8 @@ async function personalLeaves() {
     }
     // `update` is registered inline in src/index.js.
     leaves.push({ path: ["update"], cmd: new Command("update") });
-    return leaves.filter((l) => l.path[0] !== "oa");
+    // The official APIs (`oa`, `zbs`) need an OA token and are covered by their own tests.
+    return leaves.filter((l) => l.path[0] !== "oa" && l.path[0] !== "zbs");
 }
 
 // ---------------------------------------------------------------------------------------------------------------

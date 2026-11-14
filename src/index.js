@@ -30,6 +30,7 @@ import { registerCatalogCommands } from "./commands/catalog.js";
 import { registerBankCommands } from "./commands/bank.js";
 import { registerListenCommand } from "./commands/listen.js";
 import { registerOACommands } from "./commands/oa.js";
+import { registerZbsCommands } from "./commands/zbs.js";
 import { registerMCPCommands } from "./commands/mcp.js";
 import { registerFleetCommands } from "./commands/fleet.js";
 import { registerSyncCommands } from "./commands/sync.js";
@@ -97,8 +98,8 @@ program
         if (globalOpts.json || cmdName === "mcp") {
             // Every human-facing line goes elsewhere (src/utils/output.js reads this)
             process.env.ZALO_JSON_MODE = "1";
-        } else if (cmdName !== "oa") {
-            // OA commands use official Zalo API — no disclaimer needed
+        } else if (cmdName !== "oa" && cmdName !== "zbs") {
+            // OA and ZBS commands use official Zalo APIs — no disclaimer needed
             warning(DISCLAIMER);
             console.log();
         }
@@ -109,7 +110,7 @@ program
         const requestedAccount = actionCommand.opts()?.account ?? globalOpts.account ?? envAccount;
         if (
             requestedAccount !== undefined &&
-            !["mcp", "listen", "oa", "update", "help", "version", "login", "fleet"].includes(cmdName)
+            !["mcp", "listen", "oa", "zbs", "update", "help", "version", "login", "fleet"].includes(cmdName)
         ) {
             try {
                 const pinned = selectDaemonAccount(requestedAccount);
@@ -129,7 +130,9 @@ program
         // commands, and for a logout that will not call Zalo at all).
         // Daemons authenticate their pinned identity after acquiring its lock.
         const skipAutoLogin =
-            ["login", "account", "help", "version", "update", "oa", "mcp", "listen", "fleet"].includes(cmdName) ||
+            ["login", "account", "help", "version", "update", "oa", "zbs", "mcp", "listen", "fleet"].includes(
+                cmdName,
+            ) ||
             // A command that only reads the local cache (`msg search`) needs no session.
             actionCommand.zaloLocalOnly === true ||
             (cmdName === "logout" && !logoutNeedsSession(actionCommand.opts(), getActive()));
@@ -174,6 +177,7 @@ registerCatalogCommands(program);
 registerBankCommands(program);
 registerListenCommand(program);
 registerOACommands(program);
+registerZbsCommands(program);
 registerMCPCommands(program);
 registerFleetCommands(program);
 registerSyncCommands(program);

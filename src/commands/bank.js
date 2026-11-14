@@ -38,7 +38,10 @@ export function registerBankCommands(program) {
 
     bank.command("list")
         .description("List the banks Zalo supports (name, short name and BIN)")
-        .option("-q, --query <text>", "Only banks whose name, short name or BIN contains this text")
+        .option(
+            "-q, --query <text>",
+            "Only banks whose name (Vietnamese or English), short name, keyword or BIN contains this text",
+        )
         .action(async (opts) => {
             try {
                 const result = await getApi().getListBank();

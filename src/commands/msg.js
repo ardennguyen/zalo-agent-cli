@@ -1162,10 +1162,7 @@ export function registerMsgCommands(program) {
         });
 
     msg.command("send-video <threadId> <video>")
-        .description(
-            "Send a video from a URL, or a local file uploaded in chunks and sent as a video as Zalo does " +
-                "(the local-file path is unverified live)",
-        )
+        .description("Send a video from a URL, or a local file uploaded in chunks and sent as a video as Zalo does")
         .requiredOption("--thumb <urlOrFile>", "Thumbnail: an image URL, or a local jpg/png/webp (uploaded)")
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .option("-m, --caption <text>", "Caption text", "")

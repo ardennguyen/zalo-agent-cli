@@ -122,7 +122,7 @@ export function registerListenCommand(program) {
         )
         .option(
             "-e, --events <types>",
-            "Comma-separated event types: message,friend,group,reaction,read (default), plus the opt-in typing (someone is typing), upload (Zalo finished processing a video or file you uploaded), catalog (a product catalog changed on another device), reminder (a DM reminder was removed), devices (the account's device list changed), online (a user's last-online time, as Zalo pushes it), settings (this account's own settings changed on another device), conversation (a conversation muted or unmuted, archived or back, its auto-delete time or the labels changed on another device) and quick-message (a quick message created, edited or deleted on another device)",
+            "Comma-separated event types: message,friend,group,reaction,read (default), plus the opt-in typing (someone is typing), upload (Zalo finished processing a video or file you uploaded), catalog (a product catalog changed on another device), reminder (a DM reminder was created, updated or removed on another device), devices (the account's device list changed), online (a user's last-online time, as Zalo pushes it), settings (this account's own settings changed on another device), conversation (a conversation muted or unmuted, archived or back, its auto-delete time or the labels changed on another device) and quick-message (a quick message created, edited or deleted on another device)",
             "message,friend,group,reaction,read",
         )
         .option("-f, --filter <type>", "Message filter: user (DM only), group (groups only), all", "all")

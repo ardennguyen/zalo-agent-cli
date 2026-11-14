@@ -210,7 +210,7 @@ export function registerLoginCommands(program) {
     program
         .command("login")
         .description("Login to Zalo via QR code scan or from exported credentials")
-        .option("-p, --proxy <url>", "Proxy URL (http/https/socks5://[user:pass@]host:port)")
+        .option("-p, --proxy <url>", "Proxy URL (http:// or https://[user:pass@]host:port)")
         .option("-n, --name <label>", "Friendly name for this account", "")
         .option("--qr-url", "Start local HTTP server to view QR in browser (for VPS/headless)")
         .option("-q, --qr-port <port>", "Port for QR HTTP server (default: 18927)", parseIntOption)

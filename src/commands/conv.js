@@ -433,7 +433,7 @@ export function registerConvCommands(program, deps = {}) {
         .description(
             'Mark a conversation as read, as Zalo\'s "Mark as read" does: a seen receipt for every cached ' +
                 "incoming message newer than your read position (up to 50), a reaction-seen receipt when a reaction " +
-                'is unread (unverified), and removing the manual unread mark when it is set. The sender sees "Seen" unless your ' +
+                'is unread, and removing the manual unread mark when it is set. The sender sees "Seen" unless your ' +
                 "seen status is hidden (profile set seen-status 0)",
         )
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
@@ -753,7 +753,7 @@ export function registerConvCommands(program, deps = {}) {
     conv.command("block-sharing <threadId> <state>")
         .description(
             "Turn block sharing on or off for one conversation (on|off): Zalo's setting that stops its messages " +
-                "being forwarded or saved. Needs a zBusiness Max account; unverified (never seen to succeed). " +
+                "being forwarded or saved. Needs a zBusiness Max account. " +
                 "`read run blocksharing-list` lists the conversations that have it",
         )
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
@@ -768,7 +768,7 @@ export function registerConvCommands(program, deps = {}) {
                     enabled: parseOnOff(state, "block-sharing"),
                 });
                 output(result, program.opts().json, () =>
-                    success(`Block sharing ${result.blockSharing ? "on" : "off"} for ${threadId} (unverified)`),
+                    success(`Block sharing ${result.blockSharing ? "on" : "off"} for ${threadId}`),
                 );
             } catch (e) {
                 error(`Block sharing failed: ${e.message}`);

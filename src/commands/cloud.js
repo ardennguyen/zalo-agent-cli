@@ -264,7 +264,7 @@ export function registerCloudCommands(program) {
             .command("apply")
             .description(
                 "Delete the planned items as Zalo's cloud view does: the chat message behind each, for this " +
-                    "account on every device (no undo; unverified). Same filters as `plan`; acts on every match " +
+                    "account on every device (no undo). Same filters as `plan`; acts on every match " +
                     "(or the first --limit), a page of 60 at a time, one delete per message",
             ),
     )
@@ -332,7 +332,7 @@ export function registerCloudCommands(program) {
     const get = cloud
         .command("get <noiseId>")
         .description(
-            "Download one zCloud item as Zalo opens it (unverified live). An encrypted item opens only with the " +
+            "Download one zCloud item as Zalo opens it. An encrypted item opens only with the " +
                 "account's cloud key, given at run time and never stored",
         )
         .requiredOption("-o, --out <file>", "Where to write the file (mode 0600)")

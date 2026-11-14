@@ -11,7 +11,7 @@
  *   wait     a long-poll: holds the socket while it waits (presence.waitHoldsSocket)
  *
  * Every class is refused while the account is yielded (YIELDED) or signed out (SIGNED_OUT), except the one call that
- * ends a yield: zalo_profile `presence_resume`.
+ * ends a yield, zalo_profile `presence_resume`, and zalo_official, which never uses the account's socket.
  */
 
 /** A file, a video or a voice clip goes up through the socket's upload callbacks; text, links and cards do not. */
@@ -55,10 +55,15 @@ export const TOOL_PRESENCE = Object.freeze({
     zalo_cloud: "none",
     zalo_sticker: "none",
     zalo_link: "none",
+    zalo_official: "none",
 });
 
-/** The calls that are let through while yielded: the ones that end it. */
-const passesRefusal = (tool, args) => tool === "zalo_profile" && args?.action === "presence_resume";
+/**
+ * The calls that skip presence: the one that ends a yield, and zalo_official, which uses the official APIs' own logins
+ * and never the account's socket.
+ */
+const passesRefusal = (tool, args) =>
+    (tool === "zalo_profile" && args?.action === "presence_resume") || tool === "zalo_official";
 
 /**
  * The class of one call.

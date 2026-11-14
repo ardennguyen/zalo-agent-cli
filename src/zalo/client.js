@@ -103,6 +103,7 @@ export function createProxyFetch(proxyUrl) {
  * @param {boolean} [opts.logging=true] - the session's own logging (the CLI turns it off in JSON mode)
  * @param {object} [opts.env] - where ZALO_API_VERSION is read, `process.env` by default (./profile.js)
  * @returns {object}
+ * @throws {Error} when the proxy URL is not http:// or https://
  * @throws {Error} when ZALO_API_VERSION is invalid -- before any request is made
  */
 export function buildSessionOptions(proxyUrl, { logging = true, env } = {}) {
@@ -126,6 +127,12 @@ export function buildSessionOptions(proxyUrl, { logging = true, env } = {}) {
         selfListen: true,
     };
     if (proxyUrl) {
+        // Both agents speak HTTP CONNECT only: a SOCKS URL would fail later with an unclear socket error.
+        const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(String(proxyUrl))?.[1]?.toLowerCase();
+        if (scheme !== "http" && scheme !== "https") {
+            const what = scheme ? `proxy scheme "${scheme}"` : "proxy URL without a scheme";
+            throw new Error(`Unsupported ${what}: use an http:// or https:// proxy URL`);
+        }
         // HttpsProxyAgent for WebSocket (ws lib), ProxyAgent dispatcher for HTTP fetch
         opts.agent = new HttpsProxyAgent(proxyUrl);
         opts.polyfill = createProxyFetch(proxyUrl);

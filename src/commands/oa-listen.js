@@ -7,7 +7,7 @@
  * a plain SHA-256 over the concatenation, in hex, not an HMAC.
  *
  * Usage:
- *   zalo-agent oa listen --port 3000 --secret <oa-secret-key>
+ *   ZALO_OA_SECRET=<oa-secret-key> zalo-agent oa listen --port 3000   (or --secret <oa-secret-key>)
  *   zalo-agent oa listen --events follow,user_send_text
  *
  * Then set the webhook URL in the app's settings on developers.zalo.me to https://your-domain/webhook.
@@ -295,7 +295,11 @@ export function registerOAListenCommand(oaCommand, program) {
         .command("listen")
         .description("Start a webhook listener for OA and ZBS events (follow, messages, group chat, calls, ZBS, …)")
         .option("-p, --port <port>", "Listen port", "3000")
-        .option("-s, --secret <key>", "OA Secret Key for the X-ZEvent-Signature check (app's Webhook settings)")
+        .option(
+            "-s, --secret <key>",
+            "OA Secret Key for the X-ZEvent-Signature check (app's Webhook settings). Prefer the ZALO_OA_SECRET " +
+                "environment variable: a flag is visible in the process list",
+        )
         .option("--no-verify", "Skip the signature check (not recommended)")
         .option(
             "-e, --events <list>",
@@ -319,10 +323,14 @@ export function registerOAListenCommand(oaCommand, program) {
             const json = () => program.opts().json;
             const port = Number(opts.port);
             const eventFilter = opts.events === "all" ? null : opts.events.split(",").map((e) => e.trim());
+            // The secret from the flag, else the environment (a long-running listener's flags are in `ps`).
+            opts.secret = opts.secret || process.env.ZALO_OA_SECRET?.trim() || undefined;
             const checking = Boolean(opts.verify && opts.secret);
 
             if (!opts.secret && opts.verify) {
-                warning("No --secret provided: signatures are not checked. Use --secret for security.");
+                warning(
+                    "No OA secret key (--secret or ZALO_OA_SECRET): signatures are not checked. Set one for security.",
+                );
             }
             const appId = opts.appId ?? loadOACreds("default")?.appId;
             let verification;

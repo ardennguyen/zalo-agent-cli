@@ -94,7 +94,7 @@ export const OA_ERRORS = Object.freeze({
     "-241": ["the package's free asset_id is already used", "pick another asset_id"],
     "-242": [
         "invalid appsecret_proof",
-        "it is computed from the saved app secret key: run `oa setup` with the app's current secret key (a reset key invalidates it)",
+        "it is computed from the saved app secret key: log in again with the app's current secret key, `oa login --secret <key>` or `oa init` (a reset key invalidates it)",
     ],
     "-244": ["the user restricted this message type from the OA", ""],
     "-248": ["violates Zalo's platform standards", "see go.zalo.me/oa-policy"],
@@ -147,7 +147,7 @@ export const ZBS_ERRORS = Object.freeze({
     "-124": ["the access token is invalid", "run `zalo-agent oa refresh`, or log in again"],
     "-1241": [
         "invalid appsecret_proof",
-        "it is computed from the saved app secret key: run `oa setup` with the app's current secret key (a reset key invalidates it)",
+        "it is computed from the saved app secret key: log in again with the app's current secret key, `oa login --secret <key>` or `oa init` (a reset key invalidates it)",
     ],
     "-125": ["invalid Official Account id", ""],
     "-126": ["the development-mode wallet is out of balance", ""],

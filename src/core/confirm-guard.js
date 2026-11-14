@@ -326,30 +326,30 @@ export const GUARDS = Object.freeze({
             `send the "${t.name}" write to Zalo (${t.risk ?? "unknown risk"}` +
             `${t.verified === false ? ", not yet seen working" : ""})`,
     },
-    // Official Account (official API, CLI only).
+    // Official Account (official API): zalo_official runs the same command.
     "oa.tag.remove": {
         cli: "oa tag remove",
-        mcp: null,
+        mcp: "zalo_official oa tag remove",
         irreversible: true,
         what: (t) =>
             `delete tag "${t.tagName ?? t.name}" from Official Account ${t.oaId ?? "default"}, untagging every user`,
     },
     "oa.follower.deleteInfo": {
         cli: "oa follower delete-info",
-        mcp: null,
+        mcp: "zalo_official oa follower delete-info",
         irreversible: true,
         what: (t) => `delete the information Official Account ${t.oaId ?? "default"} holds about user ${t.userId}`,
     },
     "oa.userfield.delete": {
         cli: "oa userfield delete",
-        mcp: null,
+        mcp: "zalo_official oa userfield delete",
         irreversible: true,
         what: (t) =>
             `delete user field ${t.fieldId ?? t.name} of Official Account ${t.oaId ?? "default"}, with every user's value in it`,
     },
     "oa.purchase": {
         cli: "oa purchase confirm-order",
-        mcp: null,
+        mcp: "zalo_official oa purchase confirm-order",
         irreversible: true,
         what: (t) =>
             `pay order ${t.orderId ?? "(order)"} of Official Account ${t.oaId ?? "default"}: the product is bought ` +
@@ -357,7 +357,7 @@ export const GUARDS = Object.freeze({
     },
     "oa.call.consentRequest": {
         cli: "oa call consent-request",
-        mcp: null,
+        mcp: "zalo_official oa call consent-request",
         irreversible: false,
         what: (t) =>
             `ask ${t.phone ?? "a user"} for permission to call them from Official Account ${t.oaId ?? "default"}: ` +
@@ -365,20 +365,20 @@ export const GUARDS = Object.freeze({
     },
     "oa.article.remove": {
         cli: "oa article remove",
-        mcp: null,
+        mcp: "zalo_official oa article remove",
         irreversible: true,
         what: (t) => `delete article ${t.articleId ?? t.name} of Official Account ${t.oaId ?? "default"}`,
     },
     "oa.group.removeMembers": {
         cli: "oa group remove-members",
-        mcp: null,
+        mcp: "zalo_official oa group remove-members",
         irreversible: true,
         what: (t) =>
             `remove ${count(t.userIds, "member")} (${ids(t.userIds)}) from Official Account group chat ${t.groupId}`,
     },
     "oa.group.delete": {
         cli: "oa group delete",
-        mcp: null,
+        mcp: "zalo_official oa group delete",
         irreversible: true,
         what: (t) => `delete Official Account group chat ${t.groupId} for every member`,
     },

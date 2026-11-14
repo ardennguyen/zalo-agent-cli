@@ -72,6 +72,7 @@ const EXPECTED_TOOLS = [
     "zalo_cloud",
     "zalo_sticker",
     "zalo_link",
+    "zalo_official",
 ];
 
 /** Records what registerTools() registers, standing in for McpServer. */

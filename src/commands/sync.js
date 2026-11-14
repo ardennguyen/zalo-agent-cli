@@ -129,7 +129,7 @@ export function registerSyncCommands(program) {
             "Restore message history from your phone into the local cache (zalo.db). " +
                 "This IS the real phone-backed restore (transfer-sync-v2) by default: it sends one " +
                 "sync request your phone confirms, then decrypts and stores your history. " +
-                "--socket asks for the old server backfill instead (measured empty).",
+                "--socket asks for the older server backfill instead.",
         )
         .option(
             "-t, --transfer",
@@ -137,7 +137,7 @@ export function registerSyncCommands(program) {
         )
         .option(
             "--socket",
-            "Ask for the old best-effort server socket backfill (cmd 510/511) instead of the phone-backed restore. Measured to answer empty, so this is a cheap probe, not a data path",
+            "Ask for the old best-effort server socket backfill (cmd 510/511) instead of the phone-backed restore. Zalo answers it empty, so it is a cheap probe, not a data path",
         )
         .option(
             "-F, --force",

@@ -62,7 +62,7 @@ export function registerQuickMsgCommands(program) {
         qm.command(name)
             .description(
                 `Turn quick messages ${enabled ? "on" : "off"} for this account, as Zalo's switch does ` +
-                    "(unverified live; `profile settings` shows the current state)",
+                    "(`profile settings` shows the current state)",
             )
             .action(async () => {
                 try {

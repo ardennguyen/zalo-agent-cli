@@ -107,7 +107,7 @@ export function registerCatalogCommands(program) {
 
     catalog
         .command("product <productId>")
-        .description("Show one product by its id (unverified: no live answer seen yet)")
+        .description("Show one product by its id")
         .action(async (productId) => {
             try {
                 const result = await getApi().getProductInfo(productId);

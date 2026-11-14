@@ -1,14 +1,15 @@
 /**
- * Every personal CLI command has an MCP action, or is on the CLI-only list below with its reason.
+ * Every CLI command has an MCP action, or is on the CLI-only list below with its reason.
  *
- * The owner's rule for 3.0: an agent on the MCP server can do whatever the personal CLI can. This walks the commander
+ * The owner's rule for 3.0: an agent on the MCP server can do whatever the CLI can. This walks the commander
  * tree the way tests/unit/docs-contract.test.js does (every `register*` that src/index.js calls, plus the inline
  * commands) and the tools `registerTools` registers, and fails when:
- * - a personal command is neither mapped to an MCP tool (and action) nor listed as CLI-only;
+ * - a command is neither mapped to an MCP tool (and action) nor listed as CLI-only;
  * - a mapping names a tool that does not exist, or an action (an `action`, a zalo_read/zalo_write `name`, a zalo_sync
  *   `stage`) that tool does not take;
  * - a mapped or CLI-only command no longer exists, so the lists cannot rot.
- * Official Account and ZBS commands (`oa …`, `zbs …`) are out of scope: they are a separate, official API.
+ * The official-API commands (`oa …`, `zbs …`, `social …`) all run through zalo_official, whose `command` is the CLI
+ * path itself; the ones it leaves out are its OFFICIAL_CLI_ONLY list, with their reasons.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
@@ -20,6 +21,7 @@ import { Command } from "commander";
 import { z } from "zod";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { tool } from "./support/mcp-send-harness.js";
+import { OFFICIAL_CLI_ONLY } from "../../src/mcp/official-tool.js";
 
 const ROOT = resolve(import.meta.dirname, "..", "..");
 
@@ -145,6 +147,7 @@ const BY_NAME = {
 
 /** Personal commands that stay CLI-only, and why. Mirrored in skill/references/mcp-guide.md. */
 const CLI_ONLY = {
+    ...OFFICIAL_CLI_ONLY,
     login: "logging in is a QR scan by the owner; the MCP server serves an account already logged in",
     logout: "ends the session the MCP server itself runs on",
     status: "local login state; zalo_lookup_user `self` reads the account",
@@ -216,7 +219,6 @@ before(async () => {
         }
     };
     walk(program, []);
-    leaves = leaves.filter((l) => !["oa", "zbs", "social"].includes(l.split(" ")[0]));
 });
 
 const { tools } = tool();
@@ -224,25 +226,30 @@ const { tools } = tool();
 /** The input that picks a tool's action: `action`, zalo_read/zalo_write's `name`, or zalo_sync's `stage`. */
 function selector(name) {
     const props = z.toJSONSchema(tools.get(name).meta.inputSchema, { io: "input", unrepresentable: "any" }).properties;
-    for (const key of ["action", "name", "stage"]) if (props?.[key]?.enum) return { key, values: props[key].enum };
+    for (const key of ["action", "name", "stage", "command"])
+        if (props?.[key]?.enum) return { key, values: props[key].enum };
     return null;
 }
 
-/** The MCP target of a personal command, from the explicit map or its group's one-to-one tool. */
+/** Zalo's official APIs: every command is zalo_official's `command` of the same name. */
+const OFFICIAL = new Set(["oa", "zbs", "social"]);
+
+/** The MCP target of a command, from the explicit map, its group's one-to-one tool, or zalo_official. */
 function targetOf(leaf) {
     if (CLI_ONLY[leaf]) return null;
     if (MCP_FOR[leaf]) return MCP_FOR[leaf];
     const [group, sub] = leaf.split(" ");
+    if (OFFICIAL.has(group)) return ["zalo_official", leaf];
     if (sub && BY_NAME[group]) return [BY_NAME[group], sub.replace(/-/g, "_")];
     return null;
 }
 
-describe("every personal CLI command has an MCP action, or a reason it has none", () => {
+describe("every CLI command has an MCP action, or a reason it has none", () => {
     it("walks a plausible tree", () => {
-        assert.ok(leaves.length > 180, `only ${leaves.length} personal commands`);
+        assert.ok(leaves.length > 280, `only ${leaves.length} commands`);
     });
 
-    it("maps or excludes every personal command", () => {
+    it("maps or excludes every command", () => {
         const unmapped = leaves.filter((l) => !targetOf(l) && !CLI_ONLY[l]);
         assert.deepEqual(unmapped, [], "add an MCP action for it, or a CLI_ONLY entry with the reason");
     });

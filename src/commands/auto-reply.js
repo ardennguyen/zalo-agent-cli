@@ -28,8 +28,8 @@ export function registerAutoReplyCommands(program) {
         .option("--no-enable", "Create disabled")
         .option("--start <ms>", "Start time (epoch ms; default: now)", parseIntOption)
         .option("--end <ms>", "End time (epoch ms; default: one year out)", parseIntOption)
-        .option("--scope <n>", "Scope: 0=all, 1=friends, 2=strangers", parseIntOption, 0)
-        .option("--uids <ids...>", "Specific user IDs to auto-reply to")
+        .option("--scope <n>", "Scope: 0=all, 1=friends, 2=strangers, 3 (carries --uids)", parseIntOption, 0)
+        .option("--uids <ids...>", "The people a rule answers: sent with --scope 2 or 3 only")
         .action(async (content, opts) => {
             try {
                 const payload = {
@@ -52,8 +52,8 @@ export function registerAutoReplyCommands(program) {
         .option("--no-enable", "Disable the rule")
         .option("--start <ms>", "Start time (epoch ms; default: now)", parseIntOption)
         .option("--end <ms>", "End time (epoch ms; default: one year out)", parseIntOption)
-        .option("--scope <n>", "Scope: 0=all, 1=friends, 2=strangers", parseIntOption, 0)
-        .option("--uids <ids...>", "Specific user IDs")
+        .option("--scope <n>", "Scope: 0=all, 1=friends, 2=strangers, 3 (carries --uids)", parseIntOption, 0)
+        .option("--uids <ids...>", "The people a rule answers: sent with --scope 2 or 3 only")
         .action(async (id, content, opts) => {
             try {
                 const payload = {

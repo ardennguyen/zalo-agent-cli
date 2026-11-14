@@ -77,8 +77,8 @@ export function registerFriendCommands(program) {
     friend
         .command("online")
         .description(
-            "List currently online friends (unverified, dead in practice: Zalo answers 404, and Zalo's own apps " +
-                "discard this answer too). Use `friend last-online <userId>` or `listen --events online` instead",
+            "List currently online friends. Zalo answers this request with 404, so the list is empty; " +
+                "use `friend last-online <userId>` or `listen --events online` instead",
         )
         .action(async () => {
             try {
@@ -243,7 +243,7 @@ export function registerFriendCommands(program) {
         .description(
             "When a user was last online, as Zalo reads it: when your own online status is hidden " +
                 '(profile set online-status 0) nothing is asked and hiddenBy is "you"; hiddenBy "them" means ' +
-                "they hide theirs (unverified live)",
+                "they hide theirs",
         )
         .option("--ask-anyway", "Ask Zalo even when your own online status is hidden (diagnostics)")
         .option(

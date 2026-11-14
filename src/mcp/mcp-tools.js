@@ -6,8 +6,9 @@
  * zalo_lookup_user, zalo_forward_message, zalo_delete_message, zalo_reminder, zalo_note, zalo_poll,
  * zalo_wait_for_message, zalo_label, zalo_friend, zalo_group, zalo_read, zalo_write, and the action tools
  * zalo_conversation, zalo_profile, zalo_auto_reply, zalo_quick_message, zalo_catalog, zalo_bank, zalo_cloud,
- * zalo_sticker and zalo_link (their action tables are src/mcp/actions-*.js, run by src/mcp/action-tool.js).
- * Every personal CLI command has an action here; tests/unit/mcp-cli-parity.test.js holds the map.
+ * zalo_sticker and zalo_link (their action tables are src/mcp/actions-*.js, run by src/mcp/action-tool.js), and
+ * zalo_official, which runs the official-API commands (src/mcp/official-tool.js).
+ * Every CLI command has an action here, or a reason it has none; tests/unit/mcp-cli-parity.test.js holds the map.
  *
  * A tool that mirrors a CLI command calls the same code the command does (src/core/cached-message.js,
  * forward.js, pin.js, group-members.js, recent-conversations.js, src/utils/my-documents.js, urgency.js),
@@ -17,6 +18,7 @@
 import { existsSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { z } from "zod";
+import { officialMeta, officialTool } from "./official-tool.js";
 import { openFile } from "../utils/open-file.js";
 import {
     getMessages,
@@ -4155,6 +4157,9 @@ export function registerTools(
     server.registerTool("zalo_cloud", CLOUD_META, actionTool("zalo_cloud", CLOUD_ACTIONS, toolCtx));
     server.registerTool("zalo_sticker", STICKER_META, actionTool("zalo_sticker", STICKER_ACTIONS, toolCtx));
     server.registerTool("zalo_link", LINK_META, actionTool("zalo_link", LINK_ACTIONS, toolCtx));
+
+    // --- zalo_official: the oa / zbs / social commands, run as the CLI runs them (./official-tool.js) ---
+    server.registerTool("zalo_official", officialMeta(), officialTool(toolCtx));
 
     // --- zalo_read ---
     server.registerTool(

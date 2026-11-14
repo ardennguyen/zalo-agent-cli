@@ -24,13 +24,26 @@ import { registerReminderCommands } from "./commands/reminder.js";
 import { registerAutoReplyCommands } from "./commands/auto-reply.js";
 import { registerQuickMsgCommands } from "./commands/quick-msg.js";
 import { registerLabelCommands } from "./commands/label.js";
+import { registerReadCommands } from "./commands/read.js";
+import { registerWriteCommands } from "./commands/write.js";
 import { registerCatalogCommands } from "./commands/catalog.js";
 import { registerBankCommands } from "./commands/bank.js";
 import { registerListenCommand } from "./commands/listen.js";
 import { registerOACommands } from "./commands/oa.js";
+import { registerZbsCommands } from "./commands/zbs.js";
+import { registerSocialCommands } from "./commands/social.js";
+
+/** Zalo's official APIs: their own OAuth logins, no personal session, no unofficial-API disclaimer. */
+const OFFICIAL_API_GROUPS = ["oa", "zbs", "social"];
 import { registerMCPCommands } from "./commands/mcp.js";
 import { registerFleetCommands } from "./commands/fleet.js";
 import { registerSyncCommands } from "./commands/sync.js";
+import { registerCloudCommands } from "./commands/cloud.js";
+import { registerDbCommands } from "./commands/db.js";
+import { registerPolicyCommands } from "./commands/policy.js";
+import { registerPresenceCommands } from "./commands/presence.js";
+// The runtime policy's store registers itself as the resolvers' top layer (src/core/policy-layer.js).
+import "./core/policy-store.js";
 import { autoLogin } from "./core/zalo-client.js";
 import { getActive, setPinnedAccount } from "./core/accounts.js";
 import { parseAccountId, selectDaemonAccount } from "./core/daemon-account.js";
@@ -39,12 +52,14 @@ import { logoutNeedsSession } from "./core/logout.js";
 import { checkForUpdates, selfUpdate } from "./utils/update-check.js";
 import { applyCachedThreadType } from "./utils/thread-type.js";
 import { attachDaemonLogIfChild } from "./core/daemon-channel.js";
-import { success, error, warning } from "./utils/output.js";
+import { success, error, warning, setReplyContext } from "./utils/output.js";
+import { enforceCliGuard } from "./core/confirm-guard.js";
+import { TEST_FAKE_API_REFUSED } from "./core/test-fake-session.js";
 
 attachDaemonLogIfChild();
 
 const DISCLAIMER =
-    "This tool uses unofficial Zalo APIs (zca-js) — your account may be banned. Use at your own risk. | Tool này dùng API Zalo không chính thức (zca-js) — account có thể bị ban. Tự chịu trách nhiệm.";
+    "This tool uses unofficial Zalo APIs — your account may be banned. Use at your own risk. | Tool này dùng API Zalo không chính thức — account có thể bị ban. Tự chịu trách nhiệm.";
 
 const program = new Command();
 
@@ -81,12 +96,14 @@ program
             oaDir: globalOpts.oaDir,
         });
         const cmdName = thisCommand.args?.[0] || thisCommand.name();
-        // Suppress zca-js internal logs in JSON mode to keep stdout clean for piping
+        // What a --json reply names when Zalo's answer is empty (src/utils/output.js jsonReply).
+        setReplyContext(actionCommand);
+        // JSON mode keeps stdout clean for piping, and MCP uses stdout as its transport
         if (globalOpts.json || cmdName === "mcp") {
-            // Suppress zca-js stdout logs: JSON mode needs clean output, MCP uses stdout as transport
+            // Every human-facing line goes elsewhere (src/utils/output.js reads this)
             process.env.ZALO_JSON_MODE = "1";
-        } else if (cmdName !== "oa") {
-            // OA commands use official Zalo API — no disclaimer needed
+        } else if (!OFFICIAL_API_GROUPS.includes(cmdName)) {
+            // OA, ZBS and Social commands use official Zalo APIs — no disclaimer needed
             warning(DISCLAIMER);
             console.log();
         }
@@ -97,7 +114,7 @@ program
         const requestedAccount = actionCommand.opts()?.account ?? globalOpts.account ?? envAccount;
         if (
             requestedAccount !== undefined &&
-            !["mcp", "listen", "oa", "update", "help", "version", "login", "fleet"].includes(cmdName)
+            !["mcp", "listen", ...OFFICIAL_API_GROUPS, "update", "help", "version", "login", "fleet"].includes(cmdName)
         ) {
             try {
                 const pinned = selectDaemonAccount(requestedAccount);
@@ -107,11 +124,29 @@ program
                 process.exit(1);
             }
         }
+        // A destructive command without --yes stops here (exit 2), and --dry-run reports it (exit 0): both
+        // before the login below, so neither can send anything (src/core/confirm-guard.js).
+        enforceCliGuard(actionCommand, { json: Boolean(globalOpts.json) });
+        // A command's own check of its arguments that must refuse before any login (`conv hidden-pin <pin>`, whose
+        // PIN argument was removed: it would sit in the shell history).
+        actionCommand.zaloPreflight?.(actionCommand, { json: Boolean(globalOpts.json) });
         // Auto-login before any command that needs it (skip for login/account/oa
         // commands, and for a logout that will not call Zalo at all).
         // Daemons authenticate their pinned identity after acquiring its lock.
         const skipAutoLogin =
-            ["login", "account", "help", "version", "update", "oa", "mcp", "listen", "fleet"].includes(cmdName) ||
+            [
+                "login",
+                "account",
+                "help",
+                "version",
+                "update",
+                ...OFFICIAL_API_GROUPS,
+                "mcp",
+                "listen",
+                "fleet",
+            ].includes(cmdName) ||
+            // A command that only reads the local cache (`msg search`) needs no session.
+            actionCommand.zaloLocalOnly === true ||
             (cmdName === "logout" && !logoutNeedsSession(actionCommand.opts(), getActive()));
         if (!skipAutoLogin) {
             await autoLogin(program.opts().json);
@@ -148,18 +183,33 @@ registerReminderCommands(program);
 registerAutoReplyCommands(program);
 registerQuickMsgCommands(program);
 registerLabelCommands(program);
+registerReadCommands(program);
+registerWriteCommands(program);
 registerCatalogCommands(program);
 registerBankCommands(program);
 registerListenCommand(program);
 registerOACommands(program);
+registerZbsCommands(program);
+registerSocialCommands(program);
 registerMCPCommands(program);
 registerFleetCommands(program);
 registerSyncCommands(program);
+registerCloudCommands(program);
+registerDbCommands(program);
+registerPolicyCommands(program);
+registerPresenceCommands(program);
 
 // parseAsync, so a registry that exists but cannot be read (src/core/accounts.js) reaches the user as a
-// message, not as a stack trace from inside a command. Anything else is rethrown exactly as before.
+// message, not as a stack trace from inside a command; so does a refused test-only fake session
+// (src/core/test-fake-session.js), and so does a saved file the key layer cannot open (src/core/keystore/: no
+// provider, wrong key, the dkey layer locked). Anything else is rethrown exactly as before.
 program.parseAsync().catch((e) => {
-    if (e?.name === "RegistryError") {
+    if (
+        e?.name === "RegistryError" ||
+        e?.code === TEST_FAKE_API_REFUSED ||
+        e?.name === "KeystoreError" ||
+        e?.name === "SealError"
+    ) {
         error(e.message);
         process.exit(1);
     }

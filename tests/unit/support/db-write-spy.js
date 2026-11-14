@@ -19,7 +19,7 @@
  * `ZALO_DB_WRITE_SPY=1` prints every write statement the process ran, and its
  * row count, to stderr when it exits.
  */
-import Database from "better-sqlite3";
+import { Database } from "../../../src/core/sqlite.js";
 
 /** The prototype every better-sqlite3 statement shares. */
 const STATEMENT = Object.getPrototypeOf(new Database(":memory:").prepare("SELECT 1"));

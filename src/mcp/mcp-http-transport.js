@@ -13,6 +13,12 @@ import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { newMcpServer } from "./new-server.js";
+import { maskSecurePath, SECURE_PATH_PREFIX } from "../core/secure-page.js";
+import { maskQrPath, QR_PATH_PREFIX } from "../utils/qr-http-server.js";
+import { maskMediaPath, MEDIA_PATH_PREFIX } from "../core/media-deliver.js";
+import { clientIpOf, handleMediaRequest, isLoopbackIp } from "../core/media-route.js";
+import { ADMIN_PATH_PREFIX } from "../core/admin-api.js";
+import { PRESENCE_PATH_PREFIX } from "../core/presence-leases.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -126,7 +132,9 @@ function verifyPkce(verifier, challenge, method = "S256") {
 }
 
 /**
- * Resolve the external origin (`https://host:port`) for OAuth metadata & `WWW-Authenticate` headers.
+ * Resolve the external origin (`https://host:port`) for OAuth metadata & `WWW-Authenticate` headers: `publicUrl`
+ * (with its deprecated names, resolvePublicUrl in src/core/deploy-policy.js) when set, else inferred from the request
+ * as 2.x always did. Only the OAuth metadata infers: the links to the one-time pages never use the Host header.
  * @param {import("express").Request} req
  * @param {string|null} configuredIssuer
  * @param {boolean} isTls
@@ -146,8 +154,14 @@ function resolveIssuerOrigin(req, configuredIssuer, isTls) {
 /**
  * Create HTTP or HTTPS MCP server with optional bearer token and OAuth 2.0 auth.
  * @param {Function} registerToolsFn - Registers tools on a McpServer instance
- * @param {object} deps - { api, buffer, filter, config, nameCache, accountDir, stageLock, syncJobs, health }
- *   (`health` is the daemon's ./core/daemon-health.js object: behind /health, /ready, /status and /metrics)
+ * @param {object} deps - { api, buffer, filter, config, nameCache, accountDir, stageLock, syncJobs, health,
+ *   securePage, qrPage, hiddenEvents }
+ *   (`health` is the daemon's ./core/daemon-health.js object: behind /health, /ready, /status and /metrics;
+ *   `securePage` serves the one-time input page at /zalo/secure/<token>, src/core/secure-page.js; `qrPage` the
+ *   one-time QR login page at /zalo/qr/<token>, src/utils/qr-http-server.js; `hiddenEvents`
+ *   applies the hiddenChats policy to /events/wait's messages; `presence` is the daemon's on-demand presence,
+ *   src/core/daemon-presence.js: every tool call and every /events/wait goes through it; `leases` its CRM lease
+ *   routes under /zalo/presence)
  * @param {number} port
  * @param {string|null} authToken - Bearer token (null = no auth unless oauth.clientSecret or oauth.clients is set)
  * @param {string} [host="127.0.0.1"] - Bind address
@@ -185,6 +199,26 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
     // Bounded dynamic client registrations (RFC 7591)
     const dynamicClients = new Map();
 
+    /**
+     * Whether a request carries this server's own credential: the --auth token, a configured client secret, or an
+     * OAuth access token it signed. Used by the auth middleware and by a bearer media link.
+     * @param {import("express").Request} req
+     * @returns {boolean}
+     */
+    const isAgentToken = (token) => {
+        if (!signingSecret || !token) return false;
+        if ((authToken && safeEqual(token, authToken)) || safeEqual(token, signingSecret)) return true;
+        for (const sec of configuredClients.values()) {
+            if (safeEqual(token, sec)) return true;
+        }
+        return Boolean(verifyOAuthToken(token, "zmcp_at_", signingSecret));
+    };
+    const isAuthorized = (req) => {
+        const authHeader = req.headers.authorization || "";
+        const token = /^bearer\s+/i.test(authHeader) ? authHeader.slice(7).trim() : "";
+        return isAgentToken(token);
+    };
+
     // CORS headers for browser-based MCP clients and OAuth discovery
     app.use((req, res, next) => {
         const remoteIp = req.socket?.remoteAddress || "";
@@ -196,7 +230,7 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
                 const ua = String(req.headers["user-agent"] || "-").slice(0, 80);
                 const h = String(req.headers.host || "-");
                 console.error(
-                    `${DEBUG_MARK}[mcp-http] ${req.method} ${req.originalUrl} -> ${res.statusCode} (host=${h} ip=${remoteIp} ua="${ua}")`,
+                    `${DEBUG_MARK}[mcp-http] ${req.method} ${maskMediaPath(maskQrPath(maskSecurePath(req.originalUrl)))} -> ${res.statusCode} (host=${h} ip=${remoteIp} ua="${ua}")`,
                 );
             });
         }
@@ -212,6 +246,77 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
         }
         next();
     });
+
+    // The one-time secure input page (src/core/secure-page.js), before the body parsers and the bearer check: a
+    // person opens it in a browser with no token, and its own token in the path is what admits them. It reads its
+    // small form body itself.
+    if (deps.securePage) {
+        app.use(SECURE_PATH_PREFIX, (req, res, next) => {
+            req.url = `${SECURE_PATH_PREFIX}${req.url.replace(/^\//, "")}`;
+            deps.securePage
+                .handle(req, res)
+                .then((handled) => {
+                    if (!handled) next();
+                })
+                .catch(() => {
+                    if (!res.headersSent) res.status(500).set("Cache-Control", "no-store").end();
+                });
+        });
+    }
+
+    // The one-time QR login page, the same way: before the bearer check, admitted by its own token.
+    if (deps.qrPage) {
+        app.use(QR_PATH_PREFIX, (req, res, next) => {
+            req.url = `${QR_PATH_PREFIX}${req.url.replace(/^\//, "")}`;
+            deps.qrPage
+                .handle(req, res)
+                .then((handled) => {
+                    if (!handled) next();
+                })
+                .catch(() => {
+                    if (!res.headersSent) res.status(500).set("Cache-Control", "no-store").end();
+                });
+        });
+    }
+
+    // Media links (/zalo/media/<token>, src/core/media-route.js), before the bearer check as well: a capability link
+    // is admitted by its token, and a bearer link checks this server's own Authorization itself (isAuthorized).
+    if (deps.mediaLinks) {
+        app.use(MEDIA_PATH_PREFIX, (req, res, next) => {
+            req.url = `${MEDIA_PATH_PREFIX}${req.url.replace(/^\//, "")}`;
+            handleMediaRequest(req, res, {
+                links: deps.mediaLinks,
+                authorize: signingSecret ? isAuthorized : null,
+            })
+                .then((handled) => {
+                    if (!handled) next();
+                })
+                .catch(() => {
+                    if (!res.headersSent) res.status(500).set("Cache-Control", "no-store").end();
+                });
+        });
+    }
+
+    // The admin API (src/core/admin-api.js), before the bearer check too: it takes its own credential (an admin token
+    // or a client certificate) and refuses the agent's, so an agent can never change its own policy.
+    if (deps.admin) {
+        app.use(
+            ADMIN_PATH_PREFIX,
+            express.json({ limit: "64kb" }),
+            (req, res) => deps.admin.handle(req, res),
+            (err, req, res, _next) => {
+                res.status(err?.status || 400)
+                    .set("Cache-Control", "no-store")
+                    .json({
+                        error:
+                            err?.type === "entity.parse.failed"
+                                ? "the body is not valid JSON"
+                                : String(err?.message || err),
+                    });
+            },
+        );
+        deps.admin.isAgentToken = isAgentToken;
+    }
 
     app.use(express.json());
     app.use(express.urlencoded({ extended: false }));
@@ -511,20 +616,7 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
             const authHeader = req.headers.authorization || "";
             const token = /^bearer\s+/i.test(authHeader) ? authHeader.slice(7).trim() : "";
 
-            let matchesStaticToken =
-                Boolean(token) && ((authToken && safeEqual(token, authToken)) || safeEqual(token, signingSecret));
-            if (!matchesStaticToken && token) {
-                for (const sec of configuredClients.values()) {
-                    if (safeEqual(token, sec)) {
-                        matchesStaticToken = true;
-                        break;
-                    }
-                }
-            }
-            const oauthClaims =
-                !matchesStaticToken && token ? verifyOAuthToken(token, "zmcp_at_", signingSecret) : null;
-
-            if (!matchesStaticToken && !oauthClaims) {
+            if (!isAuthorized(req)) {
                 const origin = resolveIssuerOrigin(req, configuredIssuer, isTls);
                 const wwwAuth = token
                     ? `Bearer error="invalid_token", error_description="Unauthorized", resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`
@@ -540,6 +632,12 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
     app.all("/mcp", async (req, res) => {
         try {
             const server = newMcpServer(pkg.version);
+            // This server lives for one request, so it cannot ask the person anything and hear back: the guard
+            // reads this and refuses confirmMode "human" at once instead of waiting (src/core/confirm-guard.js).
+            server.statelessHttp = true;
+            // Whether this request's client runs on this machine: only then can a tempfile path mean anything to it
+            // (src/core/media-deliver.js chooseDelivery). X-Forwarded-For counts only from a trusted proxy.
+            server.clientLoopback = isLoopbackIp(clientIpOf(req, deps.trustedProxies || []));
             registerToolsFn(
                 server,
                 deps.api,
@@ -550,6 +648,7 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
                 deps.accountDir,
                 deps.stageLock,
                 deps.syncJobs,
+                { presence: deps.presence ?? null },
             );
 
             const transport = new StreamableHTTPServerTransport({
@@ -575,6 +674,12 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
         }
     });
 
+    // CRM leases on the socket (src/core/presence-leases.js), behind the agent's bearer check above: a lease holds the
+    // socket, it cannot change the presence mode. `mcp start --http` passes `deps.leases` (its presence's routes).
+    if (deps.leases) {
+        app.use(PRESENCE_PATH_PREFIX, (req, res) => deps.leases.handle(req, res));
+    }
+
     // Long-poll endpoint for zero-CPU event-driven wakeup (protected by auth middleware above)
     app.get("/events/wait", async (req, res) => {
         const rawTimeout = Number(req.query.timeout);
@@ -589,6 +694,21 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
 
         const { limit, settleMs } = batchParams({ limit: req.query.limit, settleMs: req.query.settle });
 
+        // On-demand presence: a wait holds the socket while it waits (refused while yielded or signed out).
+        let ticket = null;
+        if (deps.presence) {
+            try {
+                ticket = await deps.presence.admit({ cls: "wait" });
+            } catch (e) {
+                if (!e?.code) throw e;
+                return res.status(409).json({
+                    error: e.message,
+                    code: e.code,
+                    ...(e.state ? { state: e.state } : {}),
+                });
+            }
+        }
+
         try {
             const { messages, hasMore } = await deps.buffer.waitForMessages({
                 threadId,
@@ -599,11 +719,22 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
                 settleMs,
             });
             if (res.writableEnded) return;
-            res.json(waitResult({ messages, hasMore, cursorWhenEmpty: deps.buffer.readCursor() }));
+            // Hidden chats by the deployment's policy; the cursor still moves past one left out.
+            const shown = deps.hiddenEvents ? deps.hiddenEvents(messages) : messages;
+            const skipped = Number(messages.at(-1)?._cursor) || 0;
+            res.json(
+                waitResult({
+                    messages: shown,
+                    hasMore,
+                    cursorWhenEmpty: Math.max(skipped, Number(deps.buffer.readCursor()) || 0),
+                }),
+            );
         } catch (err) {
             if (!res.headersSent) {
                 res.status(500).json({ error: err.message });
             }
+        } finally {
+            ticket?.release();
         }
     });
 
@@ -618,8 +749,9 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
         });
     });
 
-    // Readiness — no auth required: 200 only while the Zalo socket is connected, so a load balancer or a
-    // supervisor can stop sending work to a daemon whose account is offline.
+    // Readiness — no auth required: 200 while the Zalo socket is connected or parked idle (on-demand presence: the
+    // process serves, and wakes on demand), so a load balancer or a supervisor can stop sending work to a daemon whose
+    // account is offline.
     app.get("/ready", (req, res) => {
         const r = deps.health ? deps.health.ready() : { ready: true, socket: "unknown" };
         res.status(r.ready ? 200 : 503).json(r);
@@ -640,11 +772,16 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
     });
 
     if (isTls) {
-        const primary = https.createServer({ cert: tls.cert, key: tls.key }, app).listen(port, host, () => {
-            console.error(`MCP HTTPS server listening on ${host}:${port}`);
-        });
+        // A client CA (admin.clientCa) asks every client for a certificate without requiring one: only the admin API
+        // looks at it (req.socket.authorized), and every other route goes on as before.
+        const clientCa = tls.ca ? { ca: tls.ca, requestCert: true, rejectUnauthorized: false } : {};
+        const primary = https
+            .createServer({ cert: tls.cert, key: tls.key, ...clientCa }, app)
+            .listen(port, host, () => {
+                console.error(`MCP HTTPS server listening on ${host}:${port}`);
+            });
         if (port !== 0 && port !== 443) {
-            const tls443 = https.createServer({ cert: tls.cert, key: tls.key }, app);
+            const tls443 = https.createServer({ cert: tls.cert, key: tls.key, ...clientCa }, app);
             tls443.on("error", () => {
                 /* port 443 already in use or restricted — ignore */
             });

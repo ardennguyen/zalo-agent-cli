@@ -16,7 +16,7 @@ const pkg = JSON.parse(readFileSync(join(__dirname, "../../package.json"), "utf8
 /**
  * Create and start MCP server with stdio transport.
  * All logs MUST use console.error() — stdout is reserved for MCP protocol.
- * @param {object} api - zca-js API instance
+ * @param {object} api - session object
  * @param {import("./message-buffer.js").MessageBuffer} buffer
  * @param {import("./thread-filter.js").ThreadFilter} filter
  * @param {object} config - MCP config
@@ -24,12 +24,23 @@ const pkg = JSON.parse(readFileSync(join(__dirname, "../../package.json"), "utf8
  * @param {string} [accountDir] - account data dir, for cache reads and media paths
  * @param {object} [stageLock] - the daemon's one-stage-at-a-time lock (daemon-channel.js)
  * @param {object} [syncJobs] - account-local sync tracker shared by all MCP requests
+ * @param {{presence?: object|null}} [extras] - the daemon's presence (src/core/daemon-presence.js)
  * @returns {Promise<import("@modelcontextprotocol/sdk/server/mcp.js").McpServer>}
  */
-export async function createMCPServer(api, buffer, filter, config, nameCache, accountDir, stageLock, syncJobs) {
+export async function createMCPServer(
+    api,
+    buffer,
+    filter,
+    config,
+    nameCache,
+    accountDir,
+    stageLock,
+    syncJobs,
+    extras = {},
+) {
     const server = newMcpServer(pkg.version);
 
-    registerTools(server, api, buffer, filter, config, nameCache, accountDir, stageLock, syncJobs);
+    registerTools(server, api, buffer, filter, config, nameCache, accountDir, stageLock, syncJobs, extras);
 
     const transport = new StdioServerTransport();
     await server.connect(transport);

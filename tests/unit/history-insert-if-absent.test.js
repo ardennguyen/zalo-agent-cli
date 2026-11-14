@@ -1,15 +1,17 @@
 /**
  * storeHistoryMessage -- the one writer msg history's fetches go through.
  *
- * Insert-if-absent, as Zalo Web writes the history it fetches (findMsgsAddDb,
- * then ZStorage.setMessage with replace:false): a msgId already in zalo.db is
+ * Insert-if-absent, as Zalo's own apps store the history they fetch
+ * (never replacing a stored row): a msgId already in zalo.db is
  * left exactly as it is, every column; a new one is written with the
  * listener's normalization, so the two are indistinguishable but for the
- * provenance tag. Zalo Web's two other guards are mirrored where our schema
+ * provenance tag. Two other guards are mirrored where our schema
  * has the data: removal and empty rows are never written, and nothing older
  * than a conversation's delete marker (threads.leftAt, which conv delete sets)
  * comes back.
  */
+// The cache is encrypted under a keyring the key layer makes: the sandbox gives it its offline test provider.
+import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -28,7 +30,9 @@ import {
     getThreadType,
 } from "../../src/core/db.js";
 import { storeLiveMessage, storeHistoryMessage } from "../../src/core/live-store.js";
+import { CONFIG_DIR } from "../../src/core/credentials.js";
 
+assertSandboxed(CONFIG_DIR);
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-history-write-"));
 const opened = [];
 let n = 0;

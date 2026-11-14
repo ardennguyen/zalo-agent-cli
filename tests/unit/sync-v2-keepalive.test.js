@@ -2,10 +2,10 @@
  * The socket heartbeat that holds the restore's idle windows open.
  *
  * Background, so nobody "simplifies" this back to `api.keepAlive()`: that
- * method exists in zca-js and is an HTTP GET to `<chat host>/keepalive`. It
+ * method exists on the session and is an HTTP GET to `<chat host>/keepalive`. It
  * never touches the WebSocket, so it cannot keep this socket warm. The frame
  * that does is Zalo's own `cmd 2 / subCmd 1` ping, which the server echoes
- * back -- measured at a 180000 ms interval both in a captured Zalo Web session
+ * back -- measured at a 180000 ms interval both in a captured session
  * and in the settings this account is handed at login.
  *
  * These tests drive an injected scheduler, so nothing here waits on a real
@@ -23,7 +23,7 @@ import {
     pingPayload,
     resolveKeepAliveInterval,
     startKeepAlive,
-} from "../../src/core/sync-v2/keepalive.js";
+} from "../../src/zalo/listener/keepalive.js";
 
 /** A scheduler whose pending timer only fires when the test says so. */
 function fakeTimers() {
@@ -50,7 +50,7 @@ function fakeTimers() {
     };
 }
 
-/** Minimal zca-js Listener stand-in: records frames, fakes a socket. */
+/** Minimal listener stand-in: records frames, fakes a socket. */
 function fakeListener({ readyState = 1 } = {}) {
     const handlers = new Map();
     const ws = {
@@ -72,13 +72,13 @@ function fakeListener({ readyState = 1 } = {}) {
     return {
         ws,
         sent,
-        sendWs(payload, requireId) {
-            sent.push({ payload, requireId });
+        sendWs(payload) {
+            sent.push({ payload });
         },
     };
 }
 
-/** A real `cmd N / subCmd M` frame, header-compatible with zca-js's parser. */
+/** A real `cmd N / subCmd M` frame, header-compatible with the listener's parser. */
 function frame(cmd, subCmd, body = "{}") {
     const b = Buffer.alloc(4 + Buffer.byteLength(body));
     b.writeUInt8(1, 0);
@@ -107,18 +107,34 @@ describe("keepalive frame shape", () => {
 });
 
 describe("resolveKeepAliveInterval", () => {
-    it("defaults to a third of the interval the server advises", () => {
-        assert.equal(DEFAULT_KEEPALIVE_MS * 3, SERVER_PING_INTERVAL_MS);
-        assert.equal(resolveKeepAliveInterval(undefined), DEFAULT_KEEPALIVE_MS);
-        assert.equal(resolveKeepAliveInterval(0), DEFAULT_KEEPALIVE_MS);
-        assert.equal(resolveKeepAliveInterval(NaN), DEFAULT_KEEPALIVE_MS);
-        assert.equal(resolveKeepAliveInterval(-5), DEFAULT_KEEPALIVE_MS);
+    it("defaults to the interval the server advises (Y11)", () => {
+        assert.equal(DEFAULT_KEEPALIVE_MS, SERVER_PING_INTERVAL_MS);
+        assert.equal(resolveKeepAliveInterval(undefined), SERVER_PING_INTERVAL_MS);
+        assert.equal(resolveKeepAliveInterval(0), SERVER_PING_INTERVAL_MS);
+        assert.equal(resolveKeepAliveInterval(NaN), SERVER_PING_INTERVAL_MS);
+        assert.equal(resolveKeepAliveInterval(-5), SERVER_PING_INTERVAL_MS);
     });
 
     it("never pings faster than the floor, nor slower than the server's own interval", () => {
         assert.equal(resolveKeepAliveInterval(10), MIN_KEEPALIVE_MS);
         assert.equal(resolveKeepAliveInterval(600000), SERVER_PING_INTERVAL_MS);
         assert.equal(resolveKeepAliveInterval(30000), 30000);
+    });
+
+    it("takes the interval this session was advised, as the default and as the ceiling", () => {
+        assert.equal(resolveKeepAliveInterval(undefined, 120000), 120000);
+        assert.equal(resolveKeepAliveInterval(600000, 120000), 120000);
+        assert.equal(resolveKeepAliveInterval(30000, 120000), 30000);
+    });
+
+    it("ignores an advised interval that is not usable", () => {
+        assert.equal(resolveKeepAliveInterval(undefined, NaN), SERVER_PING_INTERVAL_MS);
+        assert.equal(resolveKeepAliveInterval(undefined, 0), SERVER_PING_INTERVAL_MS);
+        assert.equal(
+            resolveKeepAliveInterval(undefined, 100),
+            SERVER_PING_INTERVAL_MS,
+            "below the floor is not advice",
+        );
     });
 });
 
@@ -136,7 +152,6 @@ describe("startKeepAlive scheduling", () => {
         clock.fire();
         assert.equal(L.sent.length, 3);
         assert.deepEqual(L.sent[0].payload, pingPayload(1000));
-        assert.equal(L.sent[0].requireId, false, "the heartbeat carries no req_id, as Zalo Web's does not");
         k.stop();
     });
 
@@ -157,7 +172,7 @@ describe("startKeepAlive scheduling", () => {
         const L = fakeListener();
         const clock = fakeTimers();
         startKeepAlive(L, { intervalMs: 30000, timers: clock.timers });
-        L.ws = null; // zca-js nulls the socket on close
+        L.ws = null; // the listener nulls the socket on close
         clock.fire();
         assert.equal(L.sent.length, 0, "no ping on a dead wire");
         assert.equal(clock.pending(), null, "and no further ticks armed");

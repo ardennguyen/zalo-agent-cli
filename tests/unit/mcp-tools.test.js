@@ -12,15 +12,27 @@
  * module is reachable offline with fakes — no session, no socket, no server.
  */
 
+import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { registerTools } from "../../src/mcp/mcp-tools.js";
+import { openSession, sealSession } from "../../src/zalo/kernel/cipher.js";
+import { CONFIG_DIR } from "../../src/core/credentials.js";
+import { registerTools, stickerPicture } from "../../src/mcp/mcp-tools.js";
+import { scopeOfDir } from "../../src/core/keystore/keyring.js";
+import { writeSealedMedia } from "../../src/core/keystore/media-seal.js";
+import { mediaTempRoot } from "../../src/core/media-deliver.js";
 import { createStageLock } from "../../src/core/daemon-channel.js";
+import { hiddenChatsFor } from "../../src/core/hidden-chats.js";
 import { MessageBuffer } from "../../src/mcp/message-buffer.js";
 import { initDb, insertMessage, upsertThread, upsertContact } from "../../src/core/db.js";
+
+describe("mcp tools — sandbox", () => {
+    // The local read `voice-transcript` reaches credentials.js, so this file must not touch the real home.
+    it("runs inside the test sandbox", () => assertSandboxed(CONFIG_DIR));
+});
 
 /** The exact tool surface. Changing this list is a deliberate act — see AGENTS.md §10. */
 const EXPECTED_TOOLS = [
@@ -49,6 +61,18 @@ const EXPECTED_TOOLS = [
     "zalo_label",
     "zalo_friend",
     "zalo_group",
+    "zalo_read",
+    "zalo_write",
+    "zalo_conversation",
+    "zalo_profile",
+    "zalo_auto_reply",
+    "zalo_quick_message",
+    "zalo_catalog",
+    "zalo_bank",
+    "zalo_cloud",
+    "zalo_sticker",
+    "zalo_link",
+    "zalo_official",
 ];
 
 /** Records what registerTools() registers, standing in for McpServer. */
@@ -79,7 +103,7 @@ function deps(overrides = {}) {
             readCursor: () => 0,
         },
         filter: { isWatched: () => true },
-        config: { limits: { maxMessagesPerPoll: 20 } },
+        config: {},
         nameCache: { ready: true, get: () => null, search: () => [] },
         accountDir: undefined,
         ...overrides,
@@ -146,21 +170,48 @@ describe("MCP input schemas", () => {
         );
     });
 
-    it("zalo_send_message rejects a threadType outside 0..1", () => {
+    it("zalo_send_message takes threadType as the word dm or group, and nothing else", () => {
         const s = schemaOf("zalo_send_message");
-        assert.throws(() => s.parse({ threadId: "t1", text: "hi", threadType: 2 }));
-        assert.equal(s.parse({ threadId: "t1", text: "hi", threadType: 1 }).threadType, 1);
+        // Strict on purpose: no number, no other spelling. The words are what messages and replies show.
+        for (const bad of [0, 1, 2, "0", "1", "Group", "user"]) {
+            assert.throws(() => s.parse({ threadId: "t1", text: "hi", threadType: bad }), `${JSON.stringify(bad)}`);
+        }
+        assert.equal(s.parse({ threadId: "t1", text: "hi", threadType: "group" }).threadType, "group");
+        assert.equal(s.parse({ threadId: "t1", text: "hi", threadType: "dm" }).threadType, "dm");
     });
 
-    it("zalo_get_messages applies the configured poll limit as its default", () => {
-        const { server: s7 } = register({ config: { limits: { maxMessagesPerPoll: 7 } } });
-        const parsed = s7.tools.get("zalo_get_messages").meta.inputSchema.parse({});
-        assert.equal(parsed.limit, 7);
+    it("zalo_get_messages has no default limit: a call that asks for none reads every buffered message", async () => {
+        const parsed = schemaOf("zalo_get_messages").parse({});
+        assert.equal(parsed.limit, undefined);
         assert.equal(parsed.since, 0);
-    });
-
-    it("zalo_get_messages caps limit at 100 so an agent cannot drain the buffer", () => {
-        assert.throws(() => schemaOf("zalo_get_messages").parse({ limit: 101 }));
+        // An explicit limit is a bound, with no cap of its own.
+        assert.equal(schemaOf("zalo_get_messages").parse({ limit: 300 }).limit, 300);
+        assert.throws(() => schemaOf("zalo_get_messages").parse({ limit: 0 }));
+        const buffered = Array.from({ length: 30 }, (_, i) => ({
+            msgId: `m${i}`,
+            threadId: "t1",
+            text: `hi ${i}`,
+            _cursor: i + 1,
+        }));
+        const calls = [];
+        const { server: s } = register({
+            buffer: {
+                read: (threadId, from, limit) => {
+                    calls.push(limit);
+                    const all = buffered.filter((m) => m._cursor > from);
+                    const page = limit ? all.slice(0, limit) : all;
+                    return { messages: page, cursor: page.at(-1)?._cursor ?? from, hasMore: page.length < all.length };
+                },
+                getStats: () => [],
+                getThreadType: () => "dm",
+                markRead: () => 0,
+                readCursor: () => 0,
+            },
+        });
+        const r = JSON.parse((await s.tools.get("zalo_get_messages").handler({ since: 0 })).content[0].text);
+        assert.equal(calls[0], undefined, "no limit is passed to the buffer");
+        assert.equal(r.messages.length, 30, "more than the old default of 20");
+        assert.equal(r.hasMore, false);
     });
 
     it("zalo_list_threads and zalo_search_threads share the same type enum", () => {
@@ -206,11 +257,11 @@ describe("MCP input schemas", () => {
         assert.throws(() => schemaOf("zalo_react").parse({ msgId: "m1", threadId: "t1", reaction: "" }));
     });
 
-    it("zalo_list_conversations defaults to 20 of each type, and caps the limit", () => {
+    it("zalo_list_conversations has no default limit, and an explicit one has no cap", () => {
         const s = schemaOf("zalo_list_conversations");
-        assert.deepEqual(s.parse({}), { type: "all", limit: 20 });
+        assert.deepEqual(s.parse({}), { type: "all" });
         assert.throws(() => s.parse({ limit: 0 }));
-        assert.throws(() => s.parse({ limit: 201 }));
+        assert.equal(s.parse({ limit: 500 }).limit, 500);
         assert.throws(() => s.parse({ type: "channel" }));
     });
 
@@ -222,17 +273,17 @@ describe("MCP input schemas", () => {
 });
 
 describe("MCP handlers", () => {
-    it("zalo_send_message returns {success, msgId, messageId, threadType} on the happy path", async () => {
+    it("zalo_send_message returns {success, msgId, threadType} on the happy path", async () => {
         const { server } = register();
-        const r = await server.call("zalo_send_message", { threadId: "t1", text: "hi", threadType: 0 });
+        const r = await server.call("zalo_send_message", { threadId: "t1", text: "hi", threadType: "dm" });
         assert.equal(r.isError, undefined);
-        assert.deepEqual(payloadOf(r), { success: true, messageId: "m1", msgId: "m1", threadType: 0 });
+        assert.deepEqual(payloadOf(r), { success: true, msgId: "m1", threadType: "dm" });
     });
 
     it("an explicit threadType is obeyed, not second-guessed by the cache", async () => {
         const { server } = register();
-        const r = await server.call("zalo_send_message", { threadId: "t1", text: "hi", threadType: 1 });
-        assert.equal(payloadOf(r).threadType, 1);
+        const r = await server.call("zalo_send_message", { threadId: "t1", text: "hi", threadType: "group" });
+        assert.equal(payloadOf(r).threadType, "group");
     });
 
     it("omitting threadType no longer silently means DM", async () => {
@@ -247,7 +298,7 @@ describe("MCP handlers", () => {
         assert.ok("threadType" in payloadOf(r), "the resolved type must be visible to the caller");
     });
 
-    it("zalo_send_message coerces threadType to a number before calling the API", async () => {
+    it("zalo_send_message calls the API with the number for the word: group is 1, dm is 0", async () => {
         let seen;
         const { server } = register({
             api: {
@@ -257,8 +308,10 @@ describe("MCP handlers", () => {
                 },
             },
         });
-        await server.call("zalo_send_message", { threadId: "t1", text: "hi", threadType: "1" });
-        assert.strictEqual(seen, 1, "a string threadType would silently address the wrong thread kind");
+        await server.call("zalo_send_message", { threadId: "t1", text: "hi", threadType: "group" });
+        assert.strictEqual(seen, 1, "the word group must address a group");
+        await server.call("zalo_send_message", { threadId: "t1", text: "hi", threadType: "dm" });
+        assert.strictEqual(seen, 0, "the word dm must address a user");
     });
 
     it("zalo_send_message reports an API failure as an MCP error, not a throw", async () => {
@@ -269,7 +322,7 @@ describe("MCP handlers", () => {
                 },
             },
         });
-        const r = await server.call("zalo_send_message", { threadId: "t1", text: "hi", threadType: 0 });
+        const r = await server.call("zalo_send_message", { threadId: "t1", text: "hi", threadType: "dm" });
         assert.equal(r.isError, true);
         assert.match(r.content[0].text, /Đăng nhập thất bại/);
     });
@@ -377,8 +430,8 @@ describe("MCP handlers", () => {
 describe("several bots share one listener's buffer", () => {
     const withTwoMessages = () => {
         const buffer = new MessageBuffer();
-        buffer.push("t1", { id: "a", threadId: "t1", text: "a", timestamp: Date.now() });
-        buffer.push("t1", { id: "b", threadId: "t1", text: "b", timestamp: Date.now() });
+        buffer.push("t1", { msgId: "a", threadId: "t1", text: "a", timestamp: Date.now() });
+        buffer.push("t1", { msgId: "b", threadId: "t1", text: "b", timestamp: Date.now() });
         return register({ buffer }).server;
     };
     const get = async (server, consumer) =>
@@ -410,7 +463,7 @@ describe("several bots share one listener's buffer", () => {
         await server.call("zalo_mark_read", { cursor: first.cursor, consumer: "bot-1" });
         const again = payloadOf(await server.call("zalo_get_messages", { since: 1, limit: 20, consumer: "bot-1" }));
         assert.deepEqual(
-            again.messages.map((m) => m.id),
+            again.messages.map((m) => m.msgId),
             ["b"],
         );
     });
@@ -502,6 +555,19 @@ describe("MCP tools read the local cache", () => {
         assert.equal(out.cursor, 100, "the oldest timestamp, to page further back");
     });
 
+    it("zalo_get_history says what a cached reply quotes (bug-reports #8)", async () => {
+        const quote = { ownerId: "1000000000000000002", globalMsgId: 7300000000001, cliMsgId: 5, msg: "original" };
+        cache([
+            { msgId: "m1", ts: 100, text: "original" },
+            { msgId: "m2", ts: 200, text: "look at this", raw: JSON.stringify({ content: "look at this", quote }) },
+        ]);
+        const { server } = register({ api: emptyServerApi() });
+        const out = payloadOf(await server.call("zalo_get_history", { threadId: "t1", limit: 50 }));
+        assert.equal(out.messages[0].replyTo, null);
+        assert.equal(out.messages[1].replyTo?.msgId, "7300000000001");
+        assert.equal(out.messages[1].replyTo?.text, "original");
+    });
+
     it("zalo_get_history pages backwards with `before`", async () => {
         cache([
             { msgId: "m1", ts: 100 },
@@ -516,18 +582,93 @@ describe("MCP tools read the local cache", () => {
         );
     });
 
-    it("zalo_get_history surfaces cached delivery state and media paths", async () => {
+    it("zalo_get_history returns one period oldest first, and pages through it with nextSince (bug-reports #5)", async () => {
+        cache([
+            { msgId: "m1", ts: 100 },
+            { msgId: "m2", ts: 200 },
+            { msgId: "m3", ts: 300 },
+            { msgId: "m4", ts: 400 },
+        ]);
+        const { server } = register({ api: emptyServerApi() });
+        const first = payloadOf(
+            await server.call("zalo_get_history", { threadId: "t1", since: 150, until: 400, limit: 2 }),
+        );
+        assert.deepEqual(
+            first.messages.map((m) => m.msgId),
+            ["m2", "m3"],
+        );
+        assert.deepEqual([first.hasMore, first.nextSince, first.since, first.until], [true, 301, 150, 400]);
+        const rest = payloadOf(
+            await server.call("zalo_get_history", { threadId: "t1", since: first.nextSince, until: 400, limit: 2 }),
+        );
+        assert.deepEqual(
+            rest.messages.map((m) => m.msgId),
+            ["m4"],
+        );
+        assert.equal(rest.hasMore, false);
+    });
+
+    it("zalo_get_history takes `last` as the start of the period, and up to 1000 per page with one", async () => {
+        const now = Date.now();
+        cache([
+            { msgId: "old", ts: now - 10 * 86_400_000 },
+            { msgId: "new", ts: now - 86_400_000 },
+        ]);
+        const { server } = register({ api: emptyServerApi() });
+        const out = payloadOf(await server.call("zalo_get_history", { threadId: "t1", last: "7d", limit: 1000 }));
+        assert.deepEqual(
+            out.messages.map((m) => m.msgId),
+            ["new"],
+        );
+    });
+
+    it("zalo_get_history says plainly when a period has nothing cached, and never asks the server for it", async () => {
+        cache([{ msgId: "m1", ts: 100 }]);
+        let asked = false;
+        const api = emptyServerApi();
+        api.listener.requestOldMessages = () => (asked = true);
+        const { server } = register({ api });
+        const out = payloadOf(await server.call("zalo_get_history", { threadId: "t1", since: 5_000 }));
+        assert.equal(out.count, 0);
+        assert.match(out.note, /Nothing cached for this conversation in this period/);
+        assert.equal(asked, false);
+    });
+
+    it("zalo_get_history refuses a period mixed with `before`, a start after the end, or a bad `last`", async () => {
+        const { server } = register({ api: emptyServerApi() });
+        const call = async (args) =>
+            (await server.call("zalo_get_history", { threadId: "t1", ...args })).content[0].text;
+        assert.match(await call({ since: 100, before: 200 }), /either a period/);
+        assert.match(await call({ since: 300, until: 200 }), /`since` is after `until`/);
+        assert.match(await call({ last: "soon" }), /Expected a period/);
+    });
+
+    it("zalo_get_history returns every cached message without a limit, and a limit is a page with no cap", async () => {
+        cache(Array.from({ length: 250 }, (_, i) => ({ msgId: `m${i}`, ts: 1_000 + i })));
+        const { server } = register({ api: emptyServerApi() });
+        const all = payloadOf(await server.call("zalo_get_history", { threadId: "t1" }));
+        assert.equal(all.count, 250);
+        assert.equal(all.hasMore, false);
+        const big = payloadOf(await server.call("zalo_get_history", { threadId: "t1", limit: 1000 }));
+        assert.equal(big.count, 250);
+        const page = payloadOf(await server.call("zalo_get_history", { threadId: "t1", limit: 100 }));
+        assert.equal(page.count, 100);
+        assert.equal(page.hasMore, true);
+    });
+
+    it("zalo_get_history says media is cached, never where", async () => {
         cache([{ msgId: "m1", ts: 100, type: "photo", attach: true, localPath: "/tmp/a.jpg" }]);
         const { server } = register({ api: emptyServerApi() });
         const [msg] = payloadOf(await server.call("zalo_get_history", { threadId: "t1", limit: 50 })).messages;
         assert.equal(msg.type, "photo");
-        assert.equal(msg.localPath, "/tmp/a.jpg");
+        assert.equal(msg.mediaCached, true);
+        assert.equal("localPath" in msg, false, "the encrypted file's path is not handed out");
         assert.equal(msg.hasAttachment, true);
     });
 
     it("zalo_get_history falls back to the server when the cache is empty", async () => {
         const { server } = register({ api: emptyServerApi() });
-        const out = payloadOf(await server.call("zalo_get_history", { threadId: "nope", limit: 50 }));
+        const out = payloadOf(await server.call("zalo_get_history", { threadId: "nope", limit: 50, scan: 100 }));
         assert.equal(out.source, "server");
         assert.equal(out.count, 0);
         // An empty answer says why, so an agent does not read it as "no history".
@@ -567,7 +708,7 @@ describe("MCP tools read the local cache", () => {
             return ask(...a);
         };
         const { server } = register({ api, stageLock });
-        await server.call("zalo_get_history", { threadId: "nope", limit: 50 });
+        await server.call("zalo_get_history", { threadId: "nope", limit: 50, scan: 100 });
         assert.equal(heldDuringFetch, "history");
         assert.equal(stageLock.current(), null, "released afterwards");
     });
@@ -579,13 +720,104 @@ describe("MCP tools read the local cache", () => {
         assert.equal(s.parse({ threadId: "t1", before: 1_750_000_000_000 }).before, 1_750_000_000_000);
     });
 
-    it("zalo_view_media returns the path the cache recorded, without refetching", async () => {
-        cache([{ msgId: "m1", ts: 100, type: "photo", attach: true, localPath: "/tmp/a.jpg" }]);
-        const { server } = register({ api: emptyServerApi() });
+    /** A sealed photo in the cache, as the downloader leaves it. */
+    const sealedPhoto = (name = "a.jpg", plain = Buffer.from("JPEG-PLAINTEXT-BYTES"), extra = {}) => {
+        const accountDir = join(CONFIG_DIR, "accounts", "100000000000000977");
+        const sealed = join(accountDir, "media", "t1", name);
+        mkdirSync(dirname(sealed), { recursive: true });
+        writeSealedMedia(sealed, scopeOfDir(accountDir), { msgId: "m1", mime: extra.mime ?? null }, plain);
+        cache([{ msgId: "m1", ts: 100, type: extra.type ?? "photo", attach: true, localPath: sealed }]);
+        return { accountDir, sealed, plain };
+    };
+
+    it("zalo_view_media sends a photo inline as image content, without refetching or writing a copy", async () => {
+        const { accountDir, sealed, plain } = sealedPhoto();
+        const { server } = register({ api: emptyServerApi(), accountDir });
+        const res = await server.call("zalo_view_media", { msgId: "m1", open: false });
+        const out = payloadOf(res);
+        assert.deepEqual(
+            [out.success, out.mediaType, out.delivery, out.mimeType, out.size],
+            [true, "photo", "inline", "image/jpeg", plain.length],
+        );
+        assert.equal(out.path, undefined);
+        assert.deepEqual(res.content[1], { type: "image", data: plain.toString("base64"), mimeType: "image/jpeg" });
+        assert.equal(readFileSync(sealed).includes(plain), false, "the cached file stays sealed");
+    });
+
+    it("zalo_view_media hands out a link the stdio listener serves, decrypted on the way out", async () => {
+        const { accountDir, plain } = sealedPhoto("v.mp4", Buffer.from("MP4-PLAINTEXT"), { type: "video" });
+        const { server } = register({ api: emptyServerApi(), accountDir });
         const out = payloadOf(await server.call("zalo_view_media", { msgId: "m1", open: false }));
-        assert.equal(out.success, true);
-        assert.equal(out.path, "/tmp/a.jpg");
-        assert.equal(out.mediaType, "photo");
+        assert.equal(out.delivery, "link", "a video goes as a link by default");
+        assert.match(out.url, /^http:\/\/127\.0\.0\.1:\d+\/zalo\/media\/[A-Za-z0-9_-]{22}$/);
+        assert.equal(out.auth, "capability");
+        assert.ok(Date.parse(out.expiresAt) > Date.now());
+        const res = await fetch(out.url);
+        assert.equal(res.status, 200);
+        assert.deepEqual(Buffer.from(await res.arrayBuffer()), plain);
+    });
+
+    it("zalo_view_media gives a private tempfile when asked, and opens nothing unless told", async () => {
+        const { accountDir, plain } = sealedPhoto();
+        const { server } = register({ api: emptyServerApi(), accountDir });
+        const out = payloadOf(await server.call("zalo_view_media", { msgId: "m1", deliver: "tempfile" }));
+        assert.equal(out.delivery, "tempfile");
+        assert.equal(out.opened, false, "a chosen mode is not overridden by autoOpen");
+        assert.ok(out.path.startsWith(mediaTempRoot()), out.path);
+        assert.deepEqual(readFileSync(out.path), plain);
+    });
+
+    it("zalo_view_media over HTTP turns a tempfile for a remote client into a link, and refuses a forbidden mode", async () => {
+        const { accountDir } = sealedPhoto();
+        const { server } = register({
+            api: emptyServerApi(),
+            accountDir,
+            config: { media: { allowDeliver: ["link", "tempfile"] } },
+        });
+        server.statelessHttp = true;
+        server.clientLoopback = false;
+        const out = payloadOf(await server.call("zalo_view_media", { msgId: "m1", deliver: "tempfile" }));
+        assert.equal(out.delivery, "link");
+        assert.match(out.notes.join(" "), /another machine/);
+        const inline = await server.call("zalo_view_media", { msgId: "m1", deliver: "inline" });
+        assert.equal(inline.isError, true);
+        assert.match(inline.content[0].text, /not allowed/);
+    });
+
+    it("stickerPicture fetches a sticker's picture by the id the message names, and keeps nothing", async () => {
+        const png = Buffer.from("PNG-STICKER");
+        let asked = null;
+        const api = {
+            getStickersDetail: async (ids) => ((asked = ids), [{ stickerWebpUrl: "https://cdn.example/s.webp" }]),
+        };
+        const fetchImpl = async (url) => ({
+            ok: url === "https://cdn.example/s.webp",
+            status: 200,
+            headers: new Headers({ "content-type": "image/webp" }),
+            arrayBuffer: async () => png,
+        });
+        const row = { raw_data: JSON.stringify({ content: { id: 4321, catId: 7, type: 7 } }) };
+        const got = await stickerPicture(api, row, null, fetchImpl);
+        assert.deepEqual(asked, [4321]);
+        assert.deepEqual(got, { bytes: png, mime: "image/webp" });
+        assert.match((await stickerPicture(api, { raw_data: "{}" }, null, fetchImpl)).error, /which sticker/);
+    });
+
+    it("zalo_view_media leaves a hidden chat's media out", async () => {
+        const { accountDir } = sealedPhoto();
+        const hidden = hiddenChatsFor("100000000000000977", { stateDir: accountDir });
+        hidden.setFromServer({ threads: [{ thread_id: "t1", is_group: 0 }] });
+        try {
+            const { server } = register({
+                api: { ...emptyServerApi(), getOwnId: () => "100000000000000977" },
+                accountDir,
+            });
+            const res = await server.call("zalo_view_media", { msgId: "m1", deliver: "link" });
+            assert.equal(res.isError, true);
+            assert.match(res.content[0].text, /hidden chats/);
+        } finally {
+            hidden.clear();
+        }
     });
 
     it("zalo_view_media says so when the message carries no media", async () => {
@@ -610,15 +842,12 @@ describe("MCP tools read the local cache", () => {
  * The CLI's `msg send` gained both while the MCP tool could still only put a
  * bare string on the wire, so an agent — which is the primary way this tool
  * is driven — could not tag anyone or reply to a specific message. Both are
- * built from `src/utils/mentions.js` and `src/utils/quote.js`, the same pure
+ * built from `src/zalo/format/mentions.js` and `src/utils/quote.js`, the same pure
  * helpers the CLI uses and which have their own unit tests; what is covered
  * here is the *wiring*: what reaches `api.sendMessage`, and what a failure
  * reports back instead of throwing.
  */
 describe("zalo_send_message composes mentions and quotes", () => {
-    const THREAD_USER = 0;
-    const THREAD_GROUP = 1;
-
     const ROOT = mkdtempSync(join(tmpdir(), "zalo-mcp-send-"));
     const handles = [];
     let n = 0;
@@ -675,7 +904,7 @@ describe("zalo_send_message composes mentions and quotes", () => {
 
     const send = async (args, api) => {
         const { server } = register({ api });
-        return server.call("zalo_send_message", { threadType: THREAD_GROUP, ...args });
+        return server.call("zalo_send_message", { threadType: "group", ...args });
     };
 
     it("leaves a plain send as a bare string, not an object", async () => {
@@ -685,7 +914,7 @@ describe("zalo_send_message composes mentions and quotes", () => {
         // threadType is echoed back because it is now INFERRED from the cache
         // when the caller omits it; without it in the reply there is no way to
         // see what the server decided.
-        assert.deepEqual(payloadOf(r), { success: true, messageId: "sent1", msgId: "sent1", threadType: THREAD_GROUP });
+        assert.deepEqual(payloadOf(r), { success: true, msgId: "sent1", threadType: "group" });
     });
 
     it("expands `@[uid]` from a contact and puts the mention on the wire", async () => {
@@ -750,7 +979,7 @@ describe("zalo_send_message composes mentions and quotes", () => {
     it("warns when mentions are used in a DM, where Zalo drops them", async () => {
         upsertContact({ userId: "789", name: "Bích Ngọc", phone: null });
         const api = recordingApi();
-        const r = await send({ threadId: "u1", text: "@[789] hi", threadType: THREAD_USER }, api);
+        const r = await send({ threadId: "u1", text: "@[789] hi", threadType: "dm" }, api);
 
         const out = payloadOf(r);
         assert.equal(out.success, true, "a DM mention is a warning, not a failure");
@@ -871,8 +1100,8 @@ describe("zalo_send_message composes mentions and quotes", () => {
             type: 1,
         });
         assert.equal(payloadOf(r).kind, "link");
-        assert.equal(payloadOf(r).messageId, "link1");
-        assert.equal(payloadOf(r).msgId, "link1", "msgId is the name every other tool takes");
+        assert.equal(payloadOf(r).msgId, "link1");
+        assert.equal(payloadOf(r).messageId, undefined, "the old messageId is gone");
     });
 
     it("sends a contact card when `cardUserId` is provided", async () => {
@@ -935,8 +1164,8 @@ describe("zalo_send_message composes mentions and quotes", () => {
             { msgId: "att1", cliMsgId: "c_att1" },
             { msgId: "att2", cliMsgId: "c_att2" },
         ]);
-        assert.equal(out.messageId, "att1");
         assert.equal(out.msgId, "att1");
+        assert.equal(out.messageId, undefined, "the old messageId is gone");
         assert.equal(out.cliMsgId, "c_att1");
     });
 
@@ -1027,6 +1256,93 @@ describe("Tier 1 & Tier 2 MCP tools", () => {
         assert.equal(filtered.messages[0].cliMsgId, "c1");
     });
 
+    it("zalo_search_messages ignores accents by default, takes them on request, and pages with a cursor", async () => {
+        const base = { threadId: "g1", senderId: "u2", senderName: "Anh Minh", type: "text" };
+        insertMessage({ ...base, msgId: "s1", text: "Được rồi, hẹn gặp lại", timestamp: 5000 });
+        insertMessage({ ...base, msgId: "s2", text: "duoc nhe", timestamp: 6000 });
+        insertMessage({ ...base, msgId: "s3", text: "Không được đâu", timestamp: 7000 });
+        insertMessage({ ...base, msgId: "s4", text: "báo cáo được duyệt.xlsx", timestamp: 8000, type: "file" });
+
+        const { server } = register();
+        const fold = payloadOf(await server.call("zalo_search_messages", { query: "duoc", limit: 2 }));
+        assert.equal(fold.accents, "fold");
+        assert.deepEqual(
+            fold.messages.map((m) => m.msgId),
+            ["s4", "s3"],
+        );
+        assert.equal(fold.hasMore, true);
+        assert.ok(fold.nextCursor, "a cursor for the next page");
+        assert.deepEqual(fold.counts, { text: 3, file: 1 });
+        assert.match(fold.coverage.note, /local cache only/);
+        assert.equal(
+            fold.messages[0].snippet.text.slice(fold.messages[0].snippet.matchStart, fold.messages[0].snippet.matchEnd),
+            "được",
+        );
+
+        const next = payloadOf(
+            await server.call("zalo_search_messages", { query: "duoc", limit: 2, cursor: fold.nextCursor }),
+        );
+        assert.deepEqual(
+            next.messages.map((m) => m.msgId),
+            ["s2", "s1"],
+        );
+        assert.equal(next.hasMore, false);
+        assert.equal(next.nextCursor, null);
+        assert.equal(next.counts, undefined, "the tabs' numbers come with the first page only");
+
+        const exact = payloadOf(await server.call("zalo_search_messages", { query: "duoc", accents: "exact" }));
+        assert.deepEqual(
+            exact.messages.map((m) => m.msgId),
+            ["s2"],
+            "accents typed, accents matched",
+        );
+        const accented = payloadOf(await server.call("zalo_search_messages", { query: "được", accents: "exact" }));
+        assert.deepEqual(accented.messages.map((m) => m.msgId).sort(), ["s1", "s3", "s4"]);
+    });
+
+    it("zalo_search_messages filters by type and period, shows context, and refuses a bad cursor", async () => {
+        const now = Date.now();
+        const base = { threadId: "g1", senderId: "u2", senderName: "Anh Minh", type: "text" };
+        insertMessage({ ...base, msgId: "k1", text: "trước đó", timestamp: now - 1000 });
+        insertMessage({ ...base, msgId: "k2", text: "họp lúc ba giờ", timestamp: now - 900 });
+        insertMessage({ ...base, msgId: "k3", text: "sau đó", timestamp: now - 800 });
+        insertMessage({ ...base, msgId: "k4", text: "họp.pdf", timestamp: now - 700, type: "file" });
+        insertMessage({ ...base, msgId: "old", text: "họp cũ", timestamp: now - 40 * 86_400_000 });
+
+        const { server } = register();
+        const files = payloadOf(await server.call("zalo_search_messages", { query: "hop", types: ["file"] }));
+        assert.deepEqual(
+            files.messages.map((m) => m.msgId),
+            ["k4"],
+        );
+
+        const recent = payloadOf(await server.call("zalo_search_messages", { query: "hop", last: "7d" }));
+        assert.deepEqual(
+            recent.messages.map((m) => m.msgId),
+            ["k4", "k2"],
+            "the message from 40 days ago is outside the last week",
+        );
+
+        const around = payloadOf(await server.call("zalo_search_messages", { query: "ba gio", context: 1 }));
+        assert.deepEqual(
+            around.messages[0].context.before.map((m) => m.msgId),
+            ["k1"],
+        );
+        assert.deepEqual(
+            around.messages[0].context.after.map((m) => m.msgId),
+            ["k3"],
+        );
+        const plain = payloadOf(await server.call("zalo_search_messages", { query: "ba gio" }));
+        assert.equal(plain.messages[0].context, undefined);
+
+        const bad = await server.call("zalo_search_messages", { query: "hop", cursor: "garbage" });
+        assert.equal(bad.isError, true);
+        const schema = server.tools.get("zalo_search_messages").meta.inputSchema;
+        assert.throws(() => schema.parse({ query: "x", last: "soon" }), "a period is a number and a unit");
+        assert.throws(() => schema.parse({ query: "x", context: 11 }));
+        assert.throws(() => schema.parse({ query: "x", accents: "loose" }));
+    });
+
     it("zalo_lookup_user supports self, phone, username, and userId modes", async () => {
         const { server } = register({
             api: {
@@ -1051,7 +1367,7 @@ describe("Tier 1 & Tier 2 MCP tools", () => {
         assert.equal(phoneOut.mode, "phone");
         assert.equal(phoneOut.userId, "u_phone");
 
-        const userOut = payloadOf(await server.call("zalo_lookup_user", { username: "arden" }));
+        const userOut = payloadOf(await server.call("zalo_lookup_user", { username: "minh.sales" }));
         assert.equal(userOut.mode, "username");
         assert.equal(userOut.userId, "u_name");
 
@@ -1083,7 +1399,7 @@ describe("Tier 1 & Tier 2 MCP tools", () => {
         });
 
         const out = payloadOf(
-            await server.call("zalo_delete_message", { msgId: "m_del", threadId: "g1", everyone: true }),
+            await server.call("zalo_delete_message", { msgId: "m_del", threadId: "g1", everyone: true, confirm: true }),
         );
         assert.equal(out.success, true);
         assert.equal(out.cliMsgId, "cli_del");
@@ -1188,7 +1504,7 @@ describe("Tier 1 & Tier 2 MCP tools", () => {
         assert.equal(edited.success, true);
 
         const removed = payloadOf(
-            await server.call("zalo_reminder", { action: "remove", reminderId: "r1", threadId: "g1" }),
+            await server.call("zalo_reminder", { action: "remove", reminderId: "r1", threadId: "g1", confirm: true }),
         );
         assert.equal(removed.success, true);
     });
@@ -1232,6 +1548,85 @@ describe("Tier 1 & Tier 2 MCP tools", () => {
 
         const listed = payloadOf(await server.call("zalo_note", { action: "list", groupId: "g1", page: 1, count: 20 }));
         assert.equal(listed.count, 1);
+    });
+
+    it("zalo_note list page 2 carries the cursor of page 1's last item, as the board is paged", async () => {
+        const calls = [];
+        const { server } = register({
+            api: {
+                getListBoard: async (opts, gid) => {
+                    calls.push([opts, gid]);
+                    return opts.page === 1
+                        ? {
+                              items: [
+                                  { boardType: 1, data: { id: 41 } },
+                                  { boardType: 3, data: { poll_id: 7 } },
+                              ],
+                          }
+                        : { items: [{ boardType: 1, data: { id: 40 } }] };
+                },
+            },
+        });
+        const listed = payloadOf(await server.call("zalo_note", { action: "list", groupId: "g1", page: 2, count: 2 }));
+        // Red if page 2 goes out with the 0/0 cursor (page number only), which can skip or repeat items.
+        assert.deepEqual(calls, [
+            [{ page: 1, count: 2, lastId: 0, lastType: 0 }, "g1"],
+            [{ page: 2, count: 2, lastId: 7, lastType: 3 }, "g1"],
+        ]);
+        assert.equal(listed.count, 1);
+        assert.equal(listed.items[0].data.id, 40);
+    });
+
+    it("zalo_note list past the end stops at the first empty page, not at a short one", async () => {
+        const calls = [];
+        const { server } = register({
+            api: {
+                getListBoard: async (opts) => {
+                    calls.push(opts.page);
+                    // A short page 1 (Zalo answers short pages mid-list with the cursor), then the end.
+                    return { items: opts.page === 1 ? [{ boardType: 1, data: { id: 41 } }] : [] };
+                },
+            },
+        });
+        const listed = payloadOf(await server.call("zalo_note", { action: "list", groupId: "g1", page: 3, count: 2 }));
+        assert.deepEqual(calls, [1, 2], "page 2 was empty: nothing after it");
+        assert.equal(listed.count, 0);
+    });
+
+    it("zalo_reminder list page 2 of a group carries last_id; a DM's goes by page number", async () => {
+        const calls = [];
+        const page1 = [{ id: "r1", startTime: 1 }];
+        // The page's cursor as the reply reader leaves it: the last topic (a note, filtered out) and the page size.
+        Object.defineProperty(page1, "page", { value: { lastId: "n9", size: 2 } });
+        const { server } = register({
+            api: {
+                getListReminder: async (opts, tid, type) => {
+                    calls.push([opts, tid, type]);
+                    return opts.page === 1 ? page1 : [{ id: "r0", startTime: 1 }];
+                },
+            },
+        });
+        const listed = payloadOf(
+            await server.call("zalo_reminder", {
+                action: "list",
+                threadId: "g1",
+                threadType: "group",
+                page: 2,
+                count: 2,
+            }),
+        );
+        assert.deepEqual(calls, [
+            [{ page: 1, count: 2, lastId: 0 }, "g1", 1],
+            [{ page: 2, count: 2, lastId: "n9" }, "g1", 1],
+        ]);
+        assert.deepEqual(
+            listed.reminders.map((r) => r.id),
+            ["r0"],
+        );
+
+        calls.length = 0;
+        await server.call("zalo_reminder", { action: "list", threadId: "u1", threadType: "dm", page: 2, count: 2 });
+        assert.deepEqual(calls, [[{ page: 2, count: 2 }, "u1", 0]]);
     });
 
     it("zalo_poll dispatches create, info, vote, unvote, add_options, lock, and share", async () => {
@@ -1302,7 +1697,7 @@ describe("Tier 1 & Tier 2 MCP tools", () => {
             { pollId: 42, options: [{ content: "Cơm tấm", voted: true }], votedOptionIds: [] },
         ]);
 
-        const locked = payloadOf(await server.call("zalo_poll", { action: "lock", pollId: 42 }));
+        const locked = payloadOf(await server.call("zalo_poll", { action: "lock", pollId: 42, confirm: true }));
         assert.equal(locked.success, true);
 
         const shared = payloadOf(await server.call("zalo_poll", { action: "share", pollId: 42 }));
@@ -1311,7 +1706,7 @@ describe("Tier 1 & Tier 2 MCP tools", () => {
 
     it("zalo_wait_for_message returns buffered message with threadName or times out cleanly", async () => {
         const buf = new MessageBuffer();
-        buf.push("g1", { id: "m100", threadId: "g1", text: "Ping assistant", timestamp: Date.now() });
+        buf.push("g1", { msgId: "m100", threadId: "g1", text: "Ping assistant", timestamp: Date.now() });
         const { server } = register({
             buffer: buf,
             nameCache: {
@@ -1324,7 +1719,7 @@ describe("Tier 1 & Tier 2 MCP tools", () => {
         const hit = payloadOf(await server.call("zalo_wait_for_message", { since: 0, timeoutSec: 2 }));
         assert.equal(hit.status, "message");
         assert.equal(hit.cursor, 1);
-        assert.equal(hit.message.id, "m100");
+        assert.equal(hit.message.msgId, "m100");
         assert.equal(hit.message.threadName, "ACME Team");
 
         const miss = payloadOf(await server.call("zalo_wait_for_message", { since: 1, timeoutSec: 1 }));
@@ -1425,12 +1820,16 @@ describe("zalo_friend", () => {
                 rejectFriendRequest: rec("rejectFriendRequest", ""),
                 undoFriendRequest: rec("undoFriendRequest", ""),
                 getAllFriends: rec("getAllFriends", []),
+                changeFriendAlias: rec("changeFriendAlias", ""),
+                removeFriendAlias: rec("removeFriendAlias", ""),
+                getAliasList: rec("getAliasList", { items: [] }),
+                getUserInfo: rec("getUserInfo", { changed_profiles: {} }),
             },
         };
     }
     const call = (fa, args) => register({ api: fa.api }).server.call("zalo_friend", args);
 
-    it("takes exactly the eight actions, and a bounded limit", () => {
+    it("takes its first ten actions, and a positive limit with no cap of its own", () => {
         const { server } = register();
         const schema = server.tools.get("zalo_friend").meta.inputSchema;
         for (const action of [
@@ -1442,12 +1841,15 @@ describe("zalo_friend", () => {
             "reject",
             "undo",
             "list",
+            "alias",
+            "alias_list",
         ]) {
             assert.doesNotThrow(() => schema.parse({ action }), action);
         }
-        assert.throws(() => schema.parse({ action: "block" }), "an action outside the list is refused");
+        assert.throws(() => schema.parse({ action: "explode" }), "an action outside the list is refused");
         assert.throws(() => schema.parse({ action: "list", limit: 0 }));
-        assert.throws(() => schema.parse({ action: "list", limit: 1001 }));
+        assert.equal(schema.parse({ action: "list", limit: 5000 }).limit, 5000);
+        assert.equal(schema.parse({ action: "list" }).limit, undefined, "no limit: every friend");
     });
 
     it("status asks Zalo about that user and returns the three flags as booleans", async () => {
@@ -1472,14 +1874,28 @@ describe("zalo_friend", () => {
         assert.deepEqual(out.requests[0], {
             userId: U,
             displayName: "A",
+            alias: null,
+            zaloName: "A",
             message: "hi",
             requestedAt: new Date(1790000000 * 1000).toISOString(),
         });
-        // Red if Zalo's "no requests" error is surfaced as a failure instead of an empty list.
-        const none = await call(friendApi({ getSentFriendRequest: new Error("Zalo error (112)") }), {
+        // The engine answers Zalo's "no requests" (112) with {}; an error that still carries code 112 reads the same.
+        const empty = await call(friendApi({ getSentFriendRequest: {} }), { action: "sent_requests" });
+        assert.deepEqual(payloadOf(empty), { action: "sent_requests", count: 0, requests: [] });
+        // Red if Zalo's "no requests" error is surfaced as a failure instead of an empty list. The code is on `.code`:
+        // our errors never write it into the message, so a message test could not see it.
+        const none = await call(
+            friendApi({ getSentFriendRequest: Object.assign(new Error("Zalo error"), { code: 112 }) }),
+            {
+                action: "sent_requests",
+            },
+        );
+        assert.deepEqual(payloadOf(none), { action: "sent_requests", count: 0, requests: [] });
+        // Red if the code is still parsed out of the text: "112" in a message is not Zalo's code.
+        const text = await call(friendApi({ getSentFriendRequest: new Error("boom (112)") }), {
             action: "sent_requests",
         });
-        assert.deepEqual(payloadOf(none), { action: "sent_requests", count: 0, requests: [] });
+        assert.equal(text.isError, true);
         const broken = await call(friendApi({ getSentFriendRequest: new Error("boom (500)") }), {
             action: "sent_requests",
         });
@@ -1511,7 +1927,7 @@ describe("zalo_friend", () => {
         assert.equal(out.count, 2);
     });
 
-    it("send passes (message, userId) in zca-js's order, defaults the message to empty, and reports success", async () => {
+    it("send passes (message, userId) in the session's order, defaults the message to empty, and reports success", async () => {
         const fa = friendApi();
         assert.deepEqual(payloadOf(await call(fa, { action: "send", userId: U, message: "Chào bạn" })), {
             action: "send",
@@ -1526,10 +1942,10 @@ describe("zalo_friend", () => {
     });
 
     it("send explains Zalo's refusals in the CLI's words, and passes an unknown failure through", async () => {
-        const refused = await call(friendApi({ sendFriendRequest: new Error("Zalo error (225)") }), {
-            action: "send",
-            userId: U,
-        });
+        const refused = await call(
+            friendApi({ sendFriendRequest: Object.assign(new Error("Zalo error"), { code: 225 }) }),
+            { action: "send", userId: U },
+        );
         assert.equal(refused.isError, true);
         assert.match(refused.content[0].text, /Already friends with 9100000000000000001/);
         const unknown = await call(friendApi({ sendFriendRequest: new Error("weird (999)") }), {
@@ -1539,10 +1955,26 @@ describe("zalo_friend", () => {
         assert.match(unknown.content[0].text, /weird \(999\)/);
     });
 
+    it("undo explains Zalo's 301 (too many requests taken back) and passes another failure through", async () => {
+        const limit = await call(
+            friendApi({ undoFriendRequest: Object.assign(new Error("Zalo error"), { code: 301 }) }),
+            { action: "undo", userId: U, confirm: true },
+        );
+        assert.equal(limit.isError, true);
+        // Red without the 301 wording: Zalo's own text says nothing about waiting.
+        assert.match(limit.content[0].text, /Try again in 24 hours \(code 301\)/);
+        assert.match(limit.content[0].text, new RegExp(U));
+        const other = await call(
+            friendApi({ undoFriendRequest: Object.assign(new Error("not found"), { code: 999 }) }),
+            { action: "undo", userId: U, confirm: true },
+        );
+        assert.match(other.content[0].text, /not found/);
+    });
+
     it("accept, reject and undo each call their own Zalo method with the user id", async () => {
         const fa = friendApi();
         for (const action of ["accept", "reject", "undo"]) {
-            const out = payloadOf(await call(fa, { action, userId: U }));
+            const out = payloadOf(await call(fa, { action, userId: U, confirm: true }));
             assert.deepEqual(out, { action, success: true, userId: U });
         }
         // Red if an action is wired to the wrong method (undo must not reject, accept must not send).
@@ -1570,6 +2002,12 @@ describe("zalo_friend", () => {
         assert.deepEqual([all.count, all.truncated], [3, false]);
     });
 
+    it("list with no limit returns every friend, past the old default of 200", async () => {
+        const many = Array.from({ length: 250 }, (_, i) => ({ userId: String(i + 1), lastActionTime: i }));
+        const all = payloadOf(await call(friendApi({ getAllFriends: many }), { action: "list" }));
+        assert.deepEqual([all.total, all.count, all.truncated], [250, 250, false]);
+    });
+
     it("refuses a missing or non-numeric userId without touching Zalo, and needs none for the lists", async () => {
         const fa = friendApi();
         for (const action of ["status", "send", "accept", "reject", "undo"]) {
@@ -1583,6 +2021,92 @@ describe("zalo_friend", () => {
         for (const action of ["list", "sent_requests", "received_requests"]) {
             assert.notEqual((await call(fa, { action })).isError, true, action);
         }
+    });
+});
+
+describe("zalo_friend alias (bug-reports #7)", () => {
+    const U = "9100000000000000001";
+    function aliasApi(answers = {}) {
+        const calls = [];
+        const rec =
+            (name, fallback) =>
+            async (...args) => {
+                calls.push([name, ...args]);
+                const a = answers[name];
+                if (a instanceof Error) throw a;
+                return typeof a === "function" ? a(...args) : (a ?? fallback);
+            };
+        return {
+            calls,
+            api: {
+                changeFriendAlias: rec("changeFriendAlias", ""),
+                removeFriendAlias: rec("removeFriendAlias", ""),
+                getAliasList: rec("getAliasList", { items: [] }),
+                getUserInfo: rec("getUserInfo", { changed_profiles: {} }),
+            },
+        };
+    }
+    const call = (fa, args) => register({ api: fa.api }).server.call("zalo_friend", args);
+
+    it("alias needs a numeric userId", async () => {
+        const fa = aliasApi();
+        const missing = await call(fa, { action: "alias", alias: "Bob" });
+        assert.equal(missing.isError, true);
+        assert.match(missing.content[0].text, /userId is required/);
+        assert.match(
+            (await call(fa, { action: "alias", userId: "bob", alias: "Bob" })).content[0].text,
+            /numeric Zalo id/,
+        );
+        assert.deepEqual(fa.calls, [], "nothing reached Zalo");
+    });
+
+    it("sets the nickname with (alias, userId), the order the session takes", async () => {
+        const fa = aliasApi();
+        const out = payloadOf(await call(fa, { action: "alias", userId: U, alias: "  Ms. Bob  " }));
+        assert.deepEqual(out, { action: "alias", success: true, userId: U, alias: "Ms. Bob" });
+        // Red if the two arguments are swapped, which Zalo would accept silently as a nickname of digits.
+        assert.deepEqual(fa.calls, [["changeFriendAlias", "Ms. Bob", U]]);
+    });
+
+    it("an empty alias removes the nickname and asks for the profile name to show instead", async () => {
+        const fa = aliasApi({ getUserInfo: { changed_profiles: { [U]: { displayName: "Bob Profile" } } } });
+        const out = payloadOf(await call(fa, { action: "alias", userId: U, alias: "" }));
+        assert.deepEqual(out, { action: "alias", success: true, userId: U, alias: null });
+        assert.deepEqual(
+            fa.calls.map((c) => c[0]),
+            ["removeFriendAlias", "getUserInfo"],
+        );
+        assert.deepEqual(fa.calls[0], ["removeFriendAlias", U]);
+    });
+
+    it("a removal still succeeds when the profile lookup fails afterwards", async () => {
+        const fa = aliasApi({ getUserInfo: new Error("profile unavailable") });
+        const out = payloadOf(await call(fa, { action: "alias", userId: U }));
+        assert.equal(out.success, true);
+        assert.equal(out.alias, null);
+    });
+
+    it("alias_list returns userId and alias per entry, capped by limit", async () => {
+        const fa = aliasApi({
+            getAliasList: { items: [{ userId: 9100000000000000001n.toString(), alias: "Bob" }, { userId: 42 }] },
+        });
+        const out = payloadOf(await call(fa, { action: "alias_list", limit: 5 }));
+        assert.deepEqual(fa.calls, [["getAliasList", 5, 1]]);
+        assert.deepEqual(out, {
+            action: "alias_list",
+            count: 2,
+            aliases: [
+                { userId: U, alias: "Bob" },
+                { userId: "42", alias: null },
+            ],
+        });
+    });
+
+    it("reports Zalo's refusal instead of claiming success", async () => {
+        const fa = aliasApi({ changeFriendAlias: new Error("Zalo API error: 999") });
+        const r = await call(fa, { action: "alias", userId: U, alias: "Bob" });
+        assert.equal(r.isError, true);
+        assert.match(r.content[0].text, /999/);
     });
 });
 
@@ -1609,24 +2133,61 @@ describe("zalo_group", () => {
                 addUserToGroup: rec("addUserToGroup", { errorMembers: [], error_data: {} }),
                 removeUserFromGroup: rec("removeUserFromGroup", { errorMembers: [] }),
                 leaveGroup: rec("leaveGroup", { memberError: [] }),
+                changeGroupName: rec("changeGroupName", ""),
             },
         };
     }
     const call = (ga, args, config) =>
         register({ api: ga.api, ...(config && { config }) }).server.call("zalo_group", args);
+    /** Group G as getmg-v2 answers it: created by U1, this account an ordinary member. */
+    const AS_MEMBER = {
+        gridInfoMap: { [G]: { groupId: G, name: "Team", creatorId: U1, totalMember: 3, memVerList: [`${U1}_0`] } },
+    };
+    /** The calls that change something (leave reads the group first). */
+    const writes = (ga) => ga.calls.filter(([name]) => name !== "getGroupInfo");
 
-    it("takes exactly the five actions", () => {
+    it("rename needs a groupId and a non-blank name, and passes (name, groupId), the order the session takes", async () => {
+        const ga = groupApi();
+        const text = async (args) => (await call(ga, args)).content[0].text;
+        assert.match(await text({ action: "rename", name: "Team" }), /groupId is required/);
+        assert.match(await text({ action: "rename", groupId: G }), /name is required/);
+        assert.match(await text({ action: "rename", groupId: G, name: "   " }), /name is required/);
+        assert.deepEqual(ga.calls, [], "nothing reached Zalo");
+        const out = payloadOf(await call(ga, { action: "rename", groupId: G, name: " Sales Team " }));
+        assert.deepEqual(out, { action: "rename", success: true, groupId: G, name: "Sales Team" });
+        // Red if the arguments are swapped: Zalo would then be asked to rename group "Sales Team".
+        assert.deepEqual(ga.calls, [["changeGroupName", "Sales Team", G]]);
+    });
+
+    it("rename needs no confirm: it is reversible from here", async () => {
+        const ga = groupApi();
+        const out = payloadOf(await call(ga, { action: "rename", groupId: G, name: "X" }, { groupConfirm: true }));
+        assert.equal(out.success, true);
+    });
+
+    it("rename reports Zalo's refusal instead of claiming success", async () => {
+        const ga = groupApi({ changeGroupName: new Error("Zalo API error: 166") });
+        const r = await call(ga, { action: "rename", groupId: G, name: "X" });
+        assert.equal(r.isError, true);
+        assert.match(r.content[0].text, /166/);
+    });
+
+    it("takes its first six actions", () => {
         const schema = register().server.tools.get("zalo_group").meta.inputSchema;
-        for (const action of ["leave", "info", "create", "add_members", "remove_member"]) {
+        for (const action of ["leave", "info", "create", "add_members", "remove_member", "rename"]) {
             assert.doesNotThrow(() => schema.parse({ action }), action);
         }
-        assert.throws(() => schema.parse({ action: "rename" }), "an action outside the list is refused");
+        assert.throws(() => schema.parse({ action: "dissolve" }), "an action outside the list is refused");
         assert.throws(() => schema.parse({ action: "create", userIds: [] }), "an empty member list is refused");
     });
 
     it("leave passes (groupId, silent) to Zalo: loud by default, quiet only when asked", async () => {
-        const ga = groupApi();
-        assert.deepEqual(payloadOf(await call(ga, { action: "leave", groupId: G, confirm: true })), {
+        const ga = groupApi({ getGroupInfo: AS_MEMBER });
+        const loud = payloadOf(await call(ga, { action: "leave", groupId: G, confirm: true }));
+        // localHistory: what became of the group's local copy (src/core/group-exit.js); no cache is open here.
+        assert.match(loud.localHistory?.error ?? "", /did not record it/);
+        delete loud.localHistory;
+        assert.deepEqual(loud, {
             action: "leave",
             success: true,
             groupId: G,
@@ -1634,15 +2195,15 @@ describe("zalo_group", () => {
         });
         const quiet = payloadOf(await call(ga, { action: "leave", groupId: G, silent: true, confirm: true }));
         assert.equal(quiet.silent, true);
-        // Red if the flag is dropped on the way to zca-js, or defaults to silent.
-        assert.deepEqual(ga.calls, [
+        // Red if the flag is dropped on the way to the session, or defaults to silent.
+        assert.deepEqual(writes(ga), [
             ["leaveGroup", G, false],
             ["leaveGroup", G, true],
         ]);
     });
 
     it("leave explains Zalo's 'not in the group' codes (167 seen live, 166 documented) and passes other failures through", async () => {
-        const gone = await call(groupApi({ leaveGroup: new Error("Zalo error (166)") }), {
+        const gone = await call(groupApi({ leaveGroup: new Error("Zalo error (166)"), getGroupInfo: AS_MEMBER }), {
             action: "leave",
             confirm: true,
             groupId: G,
@@ -1651,15 +2212,112 @@ describe("zalo_group", () => {
         assert.match(gone.content[0].text, /not in group 7000000000000000001/);
         for (const code of [167, 166]) {
             const e = Object.assign(new Error("Không thể rời nhóm"), { code });
-            const r = await call(groupApi({ leaveGroup: e }), { action: "leave", groupId: G, confirm: true });
+            const r = await call(groupApi({ leaveGroup: e, getGroupInfo: AS_MEMBER }), {
+                action: "leave",
+                groupId: G,
+                confirm: true,
+            });
             assert.match(r.content[0].text, /not in group/, `code ${code} read from error.code`);
         }
-        const other = await call(groupApi({ leaveGroup: new Error("boom (500)") }), {
+        const other = await call(groupApi({ leaveGroup: new Error("boom (500)"), getGroupInfo: AS_MEMBER }), {
             action: "leave",
             groupId: G,
             confirm: true,
         });
         assert.match(other.content[0].text, /boom \(500\)/);
+    });
+
+    describe("leave and disperse as Zalo expects (src/core/group-departure.js)", () => {
+        const OWN = "9100000000000000009";
+        /** Group G with this account (OWN) as its owner, U1 and U2 the other members. */
+        const AS_OWNER = {
+            gridInfoMap: {
+                [G]: {
+                    groupId: G,
+                    name: "Team",
+                    creatorId: OWN,
+                    totalMember: 3,
+                    memVerList: [`${OWN}_0`, `${U1}_0`, `${U2}_0`],
+                },
+            },
+        };
+        const owned = (answers = {}) => {
+            const ga = groupApi({ getGroupInfo: AS_OWNER, ...answers });
+            ga.api.getOwnId = () => OWN;
+            ga.api.changeGroupOwner = async (...a) => (ga.calls.push(["changeGroupOwner", ...a]), {});
+            ga.api.disperseGroup = async (...a) => (ga.calls.push(["disperseGroup", ...a]), {});
+            return ga;
+        };
+
+        it("the owner's leave without newOwner or randomOwner is refused before the guard, naming both", async () => {
+            const ga = owned();
+            const r = await call(ga, { action: "leave", groupId: G, confirm: true });
+            assert.equal(r.isError, true);
+            assert.match(r.content[0].text, /owns group \\?"Team\\?".*2 other member/);
+            assert.match(r.content[0].text, /newOwner .* or randomOwner: true/);
+            assert.deepEqual(writes(ga), []);
+        });
+
+        it("newOwner hands the group over first, then leaves", async () => {
+            const ga = owned();
+            const out = payloadOf(await call(ga, { action: "leave", groupId: G, newOwner: U1, confirm: true }));
+            assert.equal(out.success, true);
+            assert.equal(out.ownership, "chosen");
+            assert.equal(out.newOwner, U1);
+            // Red if it leaves first (Zalo would pick a random owner) or skips the hand-over.
+            assert.deepEqual(writes(ga), [
+                ["changeGroupOwner", U1, G],
+                ["leaveGroup", G, false],
+            ]);
+        });
+
+        it("the guard names the hand-over; nothing is sent unconfirmed", async () => {
+            const ga = owned();
+            const out = payloadOf(await call(ga, { action: "leave", groupId: G, newOwner: U1, dryRun: true }));
+            assert.match(out.wouldDo, new RegExp(`handing ownership to ${U1} first`));
+            assert.deepEqual(writes(ga), []);
+        });
+
+        it("randomOwner leaves and lets Zalo pick", async () => {
+            const ga = owned();
+            const out = payloadOf(await call(ga, { action: "leave", groupId: G, randomOwner: true, confirm: true }));
+            assert.equal(out.ownership, "random");
+            assert.deepEqual(writes(ga), [["leaveGroup", G, false]]);
+        });
+
+        it("a newOwner who is not a member is refused before anything is sent", async () => {
+            const ga = owned();
+            const r = await call(ga, { action: "leave", groupId: G, newOwner: "9100000000000000077", confirm: true });
+            assert.equal(r.isError, true);
+            assert.match(r.content[0].text, /not a member/);
+            assert.deepEqual(writes(ga), []);
+        });
+
+        it("newOwner/randomOwner belong to leave only", async () => {
+            const r = await call(owned(), { action: "rename", groupId: G, name: "X", randomOwner: true });
+            assert.equal(r.isError, true);
+            assert.match(r.content[0].text, /only for action='leave'/);
+        });
+
+        it("disperse is the owner's: a member is refused before the guard and the call", async () => {
+            const ga = groupApi({ getGroupInfo: AS_MEMBER });
+            ga.api.getOwnId = () => OWN;
+            ga.api.disperseGroup = async (...a) => (ga.calls.push(["disperseGroup", ...a]), {});
+            const r = await call(ga, { action: "disperse", groupId: G, confirm: true });
+            assert.equal(r.isError, true);
+            assert.match(r.content[0].text, /Only the owner/);
+            assert.deepEqual(writes(ga), []);
+        });
+
+        it("the owner's disperse is asked first, then deletes the group for everyone", async () => {
+            const ga = owned();
+            const asked = payloadOf(await call(ga, { action: "disperse", groupId: G }));
+            assert.equal(asked.confirmationRequired, true);
+            assert.match(asked.wouldDo, /for every member \(2 other member\(s\) lose it too\)/);
+            assert.deepEqual(writes(ga), []);
+            assert.equal(payloadOf(await call(ga, { action: "disperse", groupId: G, confirm: true })).success, true);
+            assert.deepEqual(writes(ga), [["disperseGroup", G]]);
+        });
     });
 
     it("info asks for the group as an array and returns its details, not its members", async () => {
@@ -1698,7 +2356,7 @@ describe("zalo_group", () => {
         assert.equal(none.isError, true, "no group id back is a failure, not a success");
     });
 
-    it("add_members passes (userIds, groupId) in zca-js's order and splits the outcome", async () => {
+    it("add_members passes (userIds, groupId) in the session's order and splits the outcome", async () => {
         const ga = groupApi({ addUserToGroup: { errorMembers: [U2], error_data: { 270: [U2] } } });
         const out = payloadOf(await call(ga, { action: "add_members", groupId: G, userIds: [U1, U2] }));
         assert.deepEqual(ga.calls, [["addUserToGroup", [U1, U2], G]]);
@@ -1784,7 +2442,9 @@ describe("zalo_group confirm guard", () => {
         removeUserFromGroup: async (...a) => (calls.push(["removeUserFromGroup", ...a]), { errorMembers: [] }),
         createGroup: async (...a) => (calls.push(["createGroup", ...a]), { groupId: G, errorMembers: [] }),
         addUserToGroup: async (...a) => (calls.push(["addUserToGroup", ...a]), { errorMembers: [] }),
-        getGroupInfo: async (...a) => (calls.push(["getGroupInfo", ...a]), { gridInfoMap: { [G]: { name: "T" } } }),
+        // A read, not a change: leave reads the group before it asks (src/core/group-departure.js), so only the
+        // writes are recorded here.
+        getGroupInfo: async () => ({ gridInfoMap: { [G]: { name: "T" } } }),
     };
     const run = (args, config) => register({ api, ...(config && { config }) }).server.call("zalo_group", args);
     const LEAVE = { action: "leave", groupId: G };
@@ -1811,12 +2471,15 @@ describe("zalo_group confirm guard", () => {
             for (const args of [LEAVE, REMOVE, { ...LEAVE, confirm: false }, { ...REMOVE, confirm: false }]) {
                 const r = await run(args);
                 assert.equal(r.isError, true, JSON.stringify(args));
-                assert.match(r.content[0].text, /Repeat the call with confirm: true/);
+                assert.equal(payloadOf(r).confirmationRequired, true);
+                assert.deepEqual(payloadOf(r).retryWith, { confirm: true });
+                assert.match(r.content[1].text, /Repeat the call with confirm: true/);
             }
-            assert.match((await run(LEAVE)).content[0].text, /leave group 7000000000000000001/);
+            assert.equal(payloadOf(await run(LEAVE)).action, "zalo_group leave");
+            assert.match(payloadOf(await run(LEAVE)).wouldDo, /leave group 7000000000000000001/);
             assert.match(
-                (await run(REMOVE)).content[0].text,
-                /remove 9100000000000000001 from group 7000000000000000001/,
+                payloadOf(await run(REMOVE)).wouldDo,
+                /remove 1 member \(9100000000000000001\) from group 7000000000000000001/,
             );
             // Red if the guard runs after the Zalo call, or is skipped.
             assert.deepEqual(calls, []);
@@ -1831,6 +2494,22 @@ describe("zalo_group confirm guard", () => {
                 ["leaveGroup", G, false],
                 ["removeUserFromGroup", [U1], G],
             ]);
+        });
+    });
+
+    it("dryRun says what leave would do and sends nothing", async () => {
+        await withEnv(undefined, async () => {
+            const out = payloadOf(await run({ ...LEAVE, dryRun: true }));
+            assert.equal(out.dryRun, true);
+            assert.match(out.wouldDo, /leave group 7000000000000000001/);
+            assert.deepEqual(calls, []);
+        });
+    });
+
+    it("confirmMode off (or the deprecated groupConfirm: false) goes ahead without confirm", async () => {
+        await withEnv(undefined, async () => {
+            assert.equal(payloadOf(await run(LEAVE, { confirmMode: "off" })).success, true);
+            assert.equal((await run(LEAVE, { confirmMode: "off", groupConfirm: true })).isError, undefined);
         });
     });
 
@@ -1880,8 +2559,211 @@ describe("zalo_group confirm guard", () => {
         });
     });
 
-    it("the default config ships the check on", async () => {
+    it("the default config ships the check on: no confirmMode, which means agent", async () => {
         const { getDefaultConfig } = await import("../../src/mcp/mcp-config.js");
-        assert.equal(getDefaultConfig().groupConfirm, true);
+        assert.equal(getDefaultConfig().confirmMode, null);
+        assert.equal(getDefaultConfig().groupConfirm, undefined);
+        assert.equal((await run(LEAVE, getDefaultConfig())).isError, true);
+    });
+});
+
+describe("zalo_read", () => {
+    const encodeAES = sealSession;
+    const KEY = Buffer.alloc(16, 0x22).toString("base64");
+
+    /** An api whose requests land in `calls`; the reply is a session envelope around `data`. */
+    function readApi(data = { rank: "gold" }) {
+        const calls = [];
+        const ctx = {
+            secretKey: KEY,
+            imei: "test-imei-0000",
+            userAgent: "offline-test",
+            language: "vi",
+            API_VERSION: 694,
+            API_TYPE: 30,
+            options: {
+                logging: false,
+                async polyfill(url, init = {}) {
+                    calls.push({ url, method: init.method || "GET" });
+                    return {
+                        ok: true,
+                        status: 200,
+                        headers: { get: () => null },
+                        json: async () => ({
+                            error_code: 0,
+                            data: encodeAES(KEY, JSON.stringify({ error_code: 0, data })),
+                        }),
+                    };
+                },
+            },
+        };
+        return { calls, api: { zpwServiceMap: { profile: ["https://profile.test.invalid"] }, getContext: () => ctx } };
+    }
+    const run = (ra, args) => register({ api: ra.api }).server.call("zalo_read", args);
+
+    it("takes a name from the table, or none", () => {
+        const schema = register().server.tools.get("zalo_read").meta.inputSchema;
+        assert.doesNotThrow(() => schema.parse({}));
+        assert.doesNotThrow(() => schema.parse({ name: "profile-rank", args: { id: "u1" } }));
+        assert.throws(() => schema.parse({ name: "send-everything" }), "a name outside the table is refused");
+    });
+
+    it("is declared read-only", () => {
+        const { annotations } = register().server.tools.get("zalo_read").meta;
+        assert.equal(annotations.readOnlyHint, true);
+        assert.equal(annotations.destructiveHint, false);
+    });
+
+    it("lists every read with its arguments when given no name", async () => {
+        const ra = readApi();
+        const out = payloadOf(await run(ra, {}));
+        assert.ok(out.reads.length > 30);
+        const rank = out.reads.find((r) => r.name === "profile-rank");
+        assert.deepEqual(rank.args, [{ name: "id", type: "string", required: true, desc: "user id" }]);
+        assert.equal(ra.calls.length, 0, "listing asks Zalo nothing");
+    });
+
+    it("runs one read and returns Zalo's answer", async () => {
+        const ra = readApi({ userRank: "gold" });
+        const out = payloadOf(await run(ra, { name: "profile-rank", args: { id: "u1" } }));
+        assert.deepEqual(out, { name: "profile-rank", data: { userRank: "gold" } });
+        assert.equal(ra.calls.length, 1);
+        assert.match(ra.calls[0].url, /^https:\/\/profile\.test\.invalid\/api\/social\/profile\/getrank\?/);
+    });
+
+    it("refuses a missing argument as an error result, before asking Zalo", async () => {
+        const ra = readApi();
+        const res = await run(ra, { name: "profile-rank", args: {} });
+        assert.equal(res.isError, true);
+        assert.match(res.content[0].text, /needs "id"/);
+        assert.equal(ra.calls.length, 0);
+    });
+});
+
+describe("zalo_write", () => {
+    const encodeAES = sealSession;
+    const decodeAES = openSession;
+    const KEY = Buffer.alloc(16, 0x22).toString("base64");
+
+    /** An api whose requests land in `calls`. */
+    function writeApi() {
+        const calls = [];
+        const ctx = {
+            secretKey: KEY,
+            imei: "test-imei-0000",
+            userAgent: "offline-test",
+            language: "vi",
+            API_VERSION: 694,
+            API_TYPE: 30,
+            options: {
+                logging: false,
+                async polyfill(url, init = {}) {
+                    calls.push({ url, method: init.method || "GET", form: init.body });
+                    return {
+                        ok: true,
+                        status: 200,
+                        headers: { get: () => null },
+                        json: async () => ({
+                            error_code: 0,
+                            data: encodeAES(KEY, JSON.stringify({ error_code: 0, data: { done: true } })),
+                        }),
+                    };
+                },
+            },
+        };
+        return {
+            calls,
+            api: { zpwServiceMap: { group_board: ["https://board.test.invalid"] }, getContext: () => ctx },
+        };
+    }
+    const run = (wa, args) => register({ api: wa.api }).server.call("zalo_write", args);
+
+    it("takes a name from the table, or none, and is declared as a change, not a read", () => {
+        const { meta } = register().server.tools.get("zalo_write");
+        assert.doesNotThrow(() => meta.inputSchema.parse({}));
+        assert.doesNotThrow(() =>
+            meta.inputSchema.parse({ name: "topic-remove", args: { groupId: "1" }, confirm: true }),
+        );
+        assert.throws(
+            () => meta.inputSchema.parse({ name: "delete-everything" }),
+            "a name outside the table is refused",
+        );
+        assert.equal(meta.annotations.readOnlyHint, false);
+        assert.equal(meta.annotations.destructiveHint, true);
+    });
+
+    it("lists every write with its risk when given no name, and asks Zalo nothing", async () => {
+        const wa = writeApi();
+        const out = payloadOf(await run(wa, {}));
+        assert.ok(out.writes.length > 20);
+        assert.equal(out.writes.find((w) => w.name === "topic-remove").risk, "destructive");
+        assert.equal(wa.calls.length, 0);
+    });
+
+    it("refuses a real call without confirm: true, and says how to see the request", async () => {
+        const wa = writeApi();
+        const res = await run(wa, { name: "topic-remove", args: { groupId: "555", topicId: "t9" } });
+        assert.equal(res.isError, true);
+        assert.equal(payloadOf(res).confirmationRequired, true);
+        assert.equal(payloadOf(res).action, "zalo_write");
+        assert.match(res.content[1].text, /confirm: true/);
+        assert.match(res.content[1].text, /dryRun: true/);
+        assert.equal(wa.calls.length, 0, "nothing is sent without the confirmation");
+        const no = await run(wa, { name: "topic-remove", args: { groupId: "555", topicId: "t9" }, confirm: false });
+        assert.equal(no.isError, true);
+        assert.equal(wa.calls.length, 0);
+    });
+
+    it("stays guarded when the deployment's confirmMode is off: it runs raw endpoints", async () => {
+        const wa = writeApi();
+        const res = await register({ api: wa.api, config: { confirmMode: "off" } }).server.call("zalo_write", {
+            name: "topic-remove",
+            args: { groupId: "555", topicId: "t9" },
+        });
+        assert.equal(res.isError, true);
+        assert.equal(wa.calls.length, 0);
+    });
+
+    it("a dry run needs no confirmation, sends nothing and returns the request", async () => {
+        const wa = writeApi();
+        const out = payloadOf(
+            await run(wa, { name: "topic-remove", args: { groupId: "g555", topicId: "t9" }, dryRun: true }),
+        );
+        assert.equal(out.dryRun, true);
+        assert.deepEqual(out.request.body, { grid: "555", topicId: "t9", imei: "test-imei-0000" });
+        assert.equal(wa.calls.length, 0);
+    });
+
+    it("sends the call when confirmed, and returns Zalo's answer", async () => {
+        const wa = writeApi();
+        const out = payloadOf(
+            await run(wa, { name: "topic-remove", args: { groupId: "g555", topicId: "t9" }, confirm: true }),
+        );
+        assert.deepEqual(out, { name: "topic-remove", data: { done: true } });
+        assert.equal(wa.calls.length, 1);
+        assert.match(wa.calls[0].url, /^https:\/\/board\.test\.invalid\/api\/board\/topic\/remove\?/);
+        assert.equal(wa.calls[0].method, "POST");
+        assert.deepEqual(JSON.parse(decodeAES(KEY, wa.calls[0].form.get("params"))), {
+            grid: "555",
+            topicId: "t9",
+            imei: "test-imei-0000",
+        });
+    });
+
+    it("checks the arguments before asking for confirmation, so a typo is reported as one", async () => {
+        const wa = writeApi();
+        const res = await run(wa, { name: "topic-remove", args: { groupId: "555" } });
+        assert.equal(res.isError, true);
+        assert.match(res.content[0].text, /^Error: .*needs "topicId"/, "the usage error, not the confirm refusal");
+        assert.equal(res.content.length, 1, "no confirmation-refusal payload");
+        assert.equal(wa.calls.length, 0);
+    });
+
+    it("refuses a missing argument as an error result, even when confirmed", async () => {
+        const wa = writeApi();
+        const res = await run(wa, { name: "topic-remove", args: { groupId: "555" }, confirm: true });
+        assert.equal(res.isError, true);
+        assert.match(res.content[0].text, /needs "topicId"/);
+        assert.equal(wa.calls.length, 0);
     });
 });

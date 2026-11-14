@@ -1,5 +1,5 @@
 /**
- * Markdown through the senders: what `zalo_send_message` hands to zca-js, and the format setting.
+ * Markdown through the senders: what `zalo_send_message` hands to the session, and the format setting.
  *
  * Zalo showed `**bold**` and `- item` exactly as typed, because a message is plain text plus style ranges and
  * the MCP tool sent plain text. An agent writes Markdown, so the tool now converts it by default.
@@ -11,10 +11,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import Database from "better-sqlite3";
+import { openDatabase } from "../../src/core/sqlite.js";
 import { initDb } from "../../src/core/db.js";
 import { registerTools } from "../../src/mcp/mcp-tools.js";
-import { resolveSendFormat } from "../../src/utils/markdown.js";
+import { resolveSendFormat } from "../../src/zalo/format/markdown.js";
 import { runCli, stripAnsi } from "../helpers/cli.js";
 
 before(() => {
@@ -22,7 +22,7 @@ before(() => {
     // A cache with one contact, so an @[uid] token expands to a name LONGER than the token.
     const dbPath = join(SANDBOX_CONFIG_DIR, "markdown-send.db");
     initDb(dbPath);
-    const direct = new Database(dbPath);
+    const direct = openDatabase(dbPath);
     direct.prepare("INSERT INTO contacts (userId, name, phone) VALUES ('123', 'Trần Bích Ngọc', '')").run();
     direct.close();
 });
@@ -59,7 +59,7 @@ function tool(names = {}) {
             readCursor: () => 0,
         },
         { isWatched: () => true },
-        { limits: { maxMessagesPerPoll: 20 } },
+        {},
         { ready: true, get: (id) => (names[id] ? { name: names[id], type: "user" } : null), search: () => [] },
         undefined,
     );

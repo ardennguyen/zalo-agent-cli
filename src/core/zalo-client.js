@@ -1,82 +1,20 @@
 /**
- * Zalo client wrapper — direct zca-js API calls with proxy support.
- * Manages a single Zalo instance per process. Swap on account switch.
+ * The CLI's session holder: one logged-in session per process, swapped on account switch, made from the active
+ * account's saved login (src/zalo/client.js makes it; this module supplies the account's paths and keeps it).
  */
 
-import fs from "fs";
-import { basename } from "node:path";
-import { imageSizeFromFile } from "image-size/fromFile";
-import { Zalo } from "zca-js";
-import { HttpsProxyAgent } from "https-proxy-agent";
-import { ProxyAgent, fetch as undiciFetch } from "undici";
+import { join } from "node:path";
 import { getActive } from "./accounts.js";
-import { loadCredentials } from "./credentials.js";
+import { CONFIG_DIR, getAccountDir, loadCredentials, saveCredentials } from "./credentials.js";
+import { loadTestFakeSession, resolveTestFakeApi } from "./test-fake-session.js";
+import { attachLoginSession } from "./keystore/index.js";
 import { info } from "../utils/output.js";
-import { generateDeviceFingerprint } from "../utils/device-fingerprint.js";
-
-/**
- * Read image dimensions for zca-js's `imageMetadataGetter`.
- *
- * zca-js 2.0.0 dropped its `sharp` dependency and now requires callers to
- * supply this. It is consumed for the inline-image upload paths —
- * jpg/jpeg/png/webp via getImageMetaData(), gif via getGifMetaData() — and
- * the width/height go straight into the upload params the recipient's
- * client uses to lay the message out.
- *
- * Two deliberate choices here:
- *
- * 1. **Dimensions come from `image-size`, not hand-rolled header parsing.**
- *    Zalo restricts only executables (`restricted_ext_file` is exe, cmd,
- *    bat, …), so a user can hand `send-image` a bmp, tiff, heic or avif.
- *    Parsing four formats by hand and returning null for the rest turned an
- *    unusual input into an opaque "Failed to get image metadata". image-size
- *    is pure JS with zero dependencies and covers ~20 formats.
- *
- * 2. **EXIF orientation is applied.** image-size *reports* `orientation` but
- *    does not act on it. Orientations 5–8 are the 90° rotations, where the
- *    stored dimensions are transposed relative to how the image displays —
- *    the common case being a phone photo. Sending stored dimensions there
- *    makes the recipient's layout box the wrong way round, so they are
- *    swapped.
- *
- * Throws rather than returning null: zca-js turns a falsy return into a
- * generic ZaloApiError, which tells the user nothing about which file was
- * the problem or why.
- *
- * Exported for testing; not part of the CLI's public surface.
- *
- * @param {string} filePath
- * @returns {Promise<{width: number, height: number, size: number}>}
- * @throws {Error} when the file is unreadable or is not a recognized image
- */
-export async function readImageMetadata(filePath) {
-    const stat = await fs.promises.stat(filePath);
-
-    let dims;
-    try {
-        // Reads incrementally rather than slurping the file, which matters
-        // because Zalo permits attachments up to 1 GB.
-        dims = await imageSizeFromFile(filePath);
-    } catch (e) {
-        throw new Error(
-            `Could not read image dimensions from "${basename(filePath)}": ${e.message}. ` +
-                `Zalo renders jpg/jpeg/png/webp/gif inline; other formats are sent as file attachments.`,
-        );
-    }
-
-    if (!dims || !dims.width || !dims.height) {
-        throw new Error(`Could not read image dimensions from "${basename(filePath)}": no usable size in the header.`);
-    }
-
-    // EXIF orientations 5-8 rotate by 90°, transposing width and height.
-    const transposed = dims.orientation >= 5 && dims.orientation <= 8;
-
-    return {
-        width: transposed ? dims.height : dims.width,
-        height: transposed ? dims.width : dims.height,
-        size: stat.size,
-    };
-}
+import { generateDeviceFingerprint } from "../zalo/device-fingerprint.js";
+import { secChUaFor } from "../zalo/headers.js";
+import { API_VERSION_INVALID, resolveQrFlow } from "../zalo/profile.js";
+import { createTrustStore } from "../zalo/trust-store.js";
+import { createDrStore, stopUpkeep } from "../zalo/login.js";
+import { buildSessionOptions, openQrSession, openSession } from "../zalo/client.js";
 
 let _api = null;
 let _ownId = null;
@@ -98,85 +36,60 @@ export function isLoggedIn() {
 }
 
 /**
- * Create a proxy-aware fetch that uses undici ProxyAgent dispatcher.
- * Native Node.js fetch ignores the `agent` option — must use `dispatcher`.
+ * The session options every session of this process is built with ({@link buildSessionOptions}). Suppresses the
+ * session's logs in JSON mode.
  *
- * The fetch is undici's own, not the global one: Node bundles its own undici and the package here is another, and a
- * dispatcher from one handed to the fetch of the other fails every request with "invalid onRequestStart method". A
- * proxied account could not log in at all.
- */
-export function createProxyFetch(proxyUrl) {
-    const dispatcher = new ProxyAgent(proxyUrl);
-    return (url, init = {}) => undiciFetch(url, { ...init, dispatcher });
-}
-
-/**
- * The Zalo Web protocol this client announces: `zpw_type` / `zpw_ver` on every
- * HTTP and WebSocket URL, and `type` / `client_version` in the login calls.
- * zca-js defaults to 30 / 685; the live Zalo Web client sends 30 / 691
- * (agent/work/zalo-web-capture-2026-09-29, FINDINGS §7).
- */
-const API_TYPE = 30;
-const DEFAULT_API_VERSION = 691;
-
-/** Marks a bad ZALO_API_VERSION, so autoLogin() does not mistake it for a revoked session. */
-const API_VERSION_INVALID = "ZALO_API_VERSION_INVALID";
-
-/**
- * The protocol version to announce: ZALO_API_VERSION when set -- a rollback
- * switch, e.g. 685 for zca-js's own default -- otherwise 691. An empty value
- * counts as unset.
- *
- * @returns {number}
- * @throws {Error} when ZALO_API_VERSION is set to anything but a positive whole number
- */
-function apiVersion() {
-    const raw = process.env.ZALO_API_VERSION;
-    const value = raw === undefined ? "" : String(raw).trim();
-    if (value === "") return DEFAULT_API_VERSION;
-    const n = Number(value);
-    if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(n)) {
-        const err = new Error(
-            `ZALO_API_VERSION must be a positive whole number -- the protocol version to announce, ` +
-                `e.g. 685 to roll back from ${DEFAULT_API_VERSION} -- but it is "${raw}". Fix or unset it.`,
-        );
-        err.code = API_VERSION_INVALID;
-        throw err;
-    }
-    return n;
-}
-
-/**
- * Create a Zalo instance with optional proxy. Suppress logs in JSON mode.
- *
+ * @param {string|null} proxyUrl
+ * @returns {object}
  * @throws {Error} when ZALO_API_VERSION is invalid -- before any request is made
  */
-function createZalo(proxyUrl) {
-    const opts = {
-        // What Zalo Web announces. zca-js builds every URL's zpw_ver and the
-        // login calls' client_version from these (createContext in its
-        // dist/context.js); left unset, it announces 685.
-        apiType: API_TYPE,
-        apiVersion: apiVersion(),
-        // Suppress zca-js internal INFO logs when --json to keep stdout clean
-        logging: !process.env.ZALO_JSON_MODE,
-        imageMetadataGetter: readImageMetadata,
-        // Deliver our own traffic too. zca-js defaults this off, which is
-        // right for a bot that would otherwise answer itself, and wrong for a
-        // local cache: without it, everything the owner sends -- from their
-        // phone, from Zalo Web, from this CLI -- is dropped before any handler
-        // sees it, so every conversation in zalo.db holds one side of itself.
-        // It also made the new delivery receipts inert, since a receipt updates
-        // the row of a message WE sent and that row was never written.
-        // `listen --no-self` still hides self messages from stdout/webhook/JSONL.
-        selfListen: true,
-    };
-    if (proxyUrl) {
-        // HttpsProxyAgent for WebSocket (ws lib), ProxyAgent dispatcher for HTTP fetch
-        opts.agent = new HttpsProxyAgent(proxyUrl);
-        opts.polyfill = createProxyFetch(proxyUrl);
+function buildOptions(proxyUrl) {
+    return buildSessionOptions(proxyUrl, { logging: !process.env.ZALO_JSON_MODE });
+}
+
+/** Where an account's server settings are kept: `accounts/<ownId>/dr-config.json`. */
+const drStoreFor = (id) => (id ? createDrStore(join(getAccountDir(id), "dr-config.json")) : null);
+
+/**
+ * Whether two serialized cookie jars hold the same cookies: name, value, domain, path and expiry. Access
+ * times are ignored, they change on every use.
+ */
+function sameCookies(a, b) {
+    const flat = (jar) =>
+        JSON.stringify(
+            (jar?.cookies ?? (Array.isArray(jar) ? jar : []))
+                .map((c) => [
+                    c.key ?? c.name,
+                    c.value,
+                    String(c.domain ?? "").replace(/^./, ""),
+                    c.path,
+                    c.expires ?? null,
+                ])
+                .sort(),
+        );
+    return flat(a) === flat(b);
+}
+
+/**
+ * Write the session's cookie jar back to the saved credentials when the login changed it (plan item L8).
+ * Zalo may rotate cookies; a login that kept the rotated ones would otherwise be repeated with stale ones.
+ * Never fatal, and never writes when nothing changed.
+ *
+ * @param {string|null} ownId
+ * @param {object} creds - the credentials the login started from
+ * @param {object} api - the session
+ * @returns {boolean} whether credentials were rewritten
+ */
+function persistCookies(ownId, creds, api) {
+    if (!ownId || !creds?.cookie) return false;
+    try {
+        const jar = JSON.parse(JSON.stringify(api.getContext().cookie));
+        if (sameCookies(jar, creds.cookie)) return false;
+        saveCredentials(ownId, { ...creds, cookie: jar });
+        return true;
+    } catch {
+        return false;
     }
-    return new Zalo(opts);
 }
 
 /** Set the active API + ownId (used after login). */
@@ -187,6 +100,7 @@ function setSession(api, ownId) {
 
 /** Clear current session. */
 export function clearSession() {
+    stopUpkeep(_api);
     _api = null;
     _ownId = null;
 }
@@ -195,62 +109,97 @@ export function clearSession() {
  * Login with saved credentials + proxy.
  * @param {object} creds - {imei, cookie, userAgent, language?}
  * @param {string|null} proxyUrl
+ * @param {{ownId?: string|null}} [opts] - the account the credentials belong to, when the caller knows it: it
+ *   locates the stored server settings the first server-info call carries, and the credentials that are
+ *   rewritten when the login changed the cookies
  * @returns {object} - {api, ownId}
  */
-export async function loginWithCredentials(creds, proxyUrl = null) {
-    const zalo = createZalo(proxyUrl);
-    const api = await zalo.login(creds);
+export async function loginWithCredentials(creds, proxyUrl = null, { ownId: knownId = null } = {}) {
+    const zaloOptions = buildOptions(proxyUrl);
+    const api = await openSession(creds, { zaloOptions, ownId: knownId, drStoreFor });
     const ownId = api.getOwnId?.() || null;
     setSession(api, ownId);
+    // The key layer gets the live login: the data key opens (dkey layer), and what is still plaintext is sealed.
+    attachLoginSession(ownId, api);
+    persistCookies(knownId, creds, api);
     return { api, ownId };
 }
 
 /**
- * Login via QR code with optional proxy.
+ * Try a saved login once and keep nothing of it: no session is set, no timers run, no credentials are
+ * rewritten. `logout` uses it to find out whether Zalo still accepts the login it has just signed out.
+ *
+ * @param {object} creds - {imei, cookie, userAgent, language?}
+ * @param {string|null} [proxyUrl]
+ * @param {{ownId?: string|null}} [opts]
+ * @returns {Promise<{ownId: string|null}>} when Zalo accepted the login
+ * @throws {Error} when Zalo (or the network) did not
+ */
+export async function probeSavedLogin(creds, proxyUrl = null, { ownId = null } = {}) {
+    const zaloOptions = buildOptions(proxyUrl);
+    const api = await openSession(creds, { zaloOptions, ownId, drStoreFor, upkeep: false });
+    return { ownId: api.getOwnId?.() || null };
+}
+
+/**
+ * The device id and user agent an account's saved login uses, or null (none saved, unreadable, or incomplete).
+ *
+ * @param {string} ownId
+ * @returns {{imei: string, userAgent: string}|null}
+ */
+function savedDeviceOf(ownId) {
+    try {
+        const creds = loadCredentials(ownId);
+        if (typeof creds?.imei !== "string" || !creds.imei || typeof creds?.userAgent !== "string") return null;
+        return { imei: creds.imei, userAgent: creds.userAgent };
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Login via QR code with optional proxy: the official QR sequence (src/zalo/qr-login.js), then our own login with
+ * the session it produced. `ZALO_QR_FLOW=legacy` (the previous engine's flow) was removed in 3.0.0 and is refused here,
+ * before any request.
+ *
  * @param {string|null} proxyUrl
- * @param {function} onQrGenerated - callback(qrData) when QR is ready
- * @returns {object} - {api, ownId}
+ * @param {function} [onQrEvent] - called with every QR event (generated, scanned, declined, expired)
+ * @returns {Promise<{api: object, ownId: string|null}>}
+ * @throws {Error} with `.code === QR_FLOW_INVALID` when ZALO_QR_FLOW is set to anything but `official`
  */
 export async function loginWithQR(proxyUrl = null, onQrEvent = null) {
-    const zalo = createZalo(proxyUrl);
+    resolveQrFlow();
+    // Throws on a bad ZALO_API_VERSION, also before any request.
+    const zaloOptions = buildOptions(proxyUrl);
 
-    // Zalo's server reads the sec-ch-ua Client Hints headers (not the
-    // User-Agent header) to fill in the "Thiết bị" device label on the
-    // phone's QR-confirm screen. zca-js's own default is internally
-    // inconsistent — a Firefox User-Agent alongside hardcoded Chrome
-    // Client Hints, a combination no real browser produces, and identical
-    // across every zca-js install. Generating a coherent, varied
-    // fingerprint here (once, at initial QR login) fixes both: the device
-    // label becomes accurate, and it's no longer a fixed, correlatable
-    // signal shared by every user of this tool. It persists automatically
-    // for this account afterward via the saved credentials' userAgent
-    // field — see extractCredentials()/loginWithCredentials() below.
-    const fingerprint = generateDeviceFingerprint();
-    info(`Using device fingerprint: Chrome (${fingerprint.secChUaPlatform.replace(/"/g, "")})`);
-
-    const api = await zalo.loginQR(
-        {
-            userAgent: fingerprint.userAgent,
-            secChUa: fingerprint.secChUa,
-            secChUaPlatform: fingerprint.secChUaPlatform,
-            secChUaMobile: fingerprint.secChUaMobile,
-        },
-        (event) => {
-            // Forward every event type (QRCodeGenerated, QRCodeScanned,
-            // QRCodeDeclined, QRCodeExpired) — not just QRCodeGenerated,
-            // which is all this used to pass through (hence the old
-            // "onQrGenerated" name). Callers that only care about the QR
-            // image (account.js's `account login`) are unaffected: they
-            // already call displayQR(event) unconditionally, which no-ops
-            // on event types without an image.
-            if (onQrEvent) {
-                onQrEvent(event);
-            }
-        },
+    // Zalo's server reads the sec-ch-ua Client Hints headers (not the User-Agent header) to fill in the
+    // "Thiết bị" device label on the phone's QR-confirm screen. A varied, coherent User-Agent is picked once, at
+    // the initial QR login; the hints are derived from it (src/zalo/headers.js), and it persists for this account
+    // afterward via the saved credentials' userAgent field (extractCredentials()/loginWithCredentials()).
+    //
+    // A browser keeps one device id (imei) across logout and login, and Zalo keeps the offline queue per
+    // device. So a re-login of the active account presents the same browser again (its saved user agent), and an
+    // account that confirms the QR with a device id saved for that browser logs in with it again: its queue survives
+    // the re-login. Any other account gets a new device id (src/zalo/qr-login.js `deviceImeiFor`).
+    const active = getActive();
+    const candidate = active ? savedDeviceOf(active.ownId) : null;
+    const userAgent = candidate?.userAgent ?? generateDeviceFingerprint().userAgent;
+    const platform = secChUaFor(userAgent)?.secChUaPlatform ?? "unknown";
+    info(
+        `Using device fingerprint: Chrome (${platform.replace(/"/g, "")})${candidate ? ", as at this account's last login" : ""}`,
     );
 
+    const api = await openQrSession({
+        zaloOptions,
+        userAgent,
+        onEvent: onQrEvent,
+        trustStore: createTrustStore(getAccountDir),
+        drStoreFor,
+        deviceFor: savedDeviceOf,
+    });
     const ownId = api.getOwnId?.() || null;
     setSession(api, ownId);
+    attachLoginSession(ownId, api);
     return { api, ownId };
 }
 
@@ -277,6 +226,15 @@ export function extractCredentials() {
 export async function autoLogin(jsonMode = false) {
     if (_api) return; // Already logged in
 
+    // Offline tests only: a fake session instead of a login. Refused (throws) outside the test sandbox --
+    // the guard and why it cannot be reached in normal use are in src/core/test-fake-session.js.
+    const fakeModule = resolveTestFakeApi({ configDir: CONFIG_DIR });
+    if (fakeModule) {
+        const fake = await loadTestFakeSession(fakeModule);
+        setSession(fake.api, fake.ownId ?? null);
+        return;
+    }
+
     const active = getActive();
     if (!active) return;
 
@@ -284,7 +242,7 @@ export async function autoLogin(jsonMode = false) {
     if (!creds) return;
 
     try {
-        await loginWithCredentials(creds, active.proxy || null);
+        await loginWithCredentials(creds, active.proxy || null, { ownId: active.ownId });
         if (!jsonMode) {
             info(`Auto-login: ${active.name || active.ownId}`);
         }
@@ -293,12 +251,12 @@ export async function autoLogin(jsonMode = false) {
         // upstream message ("Đăng nhập thất bại") sends people looking for a
         // bug that isn't there.
         //
-        // Measured 2026-09-20: this CLI authenticates as a WEB client — the
-        // same device class as Zalo Web. Zalo permits one such session per
-        // account, so logging into Zalo Web revokes this one *server-side*,
+        // Measured 2026-09-20: this CLI authenticates as a browser-class client --
+        // the same device class as Zalo in a browser. Zalo permits one such session
+        // per account, so logging into Zalo in a browser revokes this one *server-side*,
         // instantly and silently. The credential file on disk is left
         // byte-identical; only the server rejects it. The reverse is also
-        // true: `zalo-agent login` logs Zalo Web out. The phone app is a
+        // true: `zalo-agent login` logs the browser session out. The phone app is a
         // different device class and is unaffected.
         //
         // Saying only "Not logged in. Run: zalo-agent login" is actively
@@ -312,10 +270,11 @@ export async function autoLogin(jsonMode = false) {
         console.error(`AutoLogin failed: ${e.message}`);
         if (revoked) {
             console.error(
-                "  This session was revoked. Usually Zalo Web or another PC client signed in\n" +
-                    "  on this account (only one such session is allowed at a time), or the\n" +
-                    "  session was signed out from the phone's list of logged-in devices.\n" +
-                    "  Running `zalo-agent login` will restore the CLI; if another web session\n" +
+                "  This session was revoked. Usually another Zalo session (a browser or the\n" +
+                    "  desktop app) signed in on this account (only one such session is allowed\n" +
+                    "  at a time), or the session was signed out from the phone's list of\n" +
+                    "  logged-in devices.\n" +
+                    "  Running `zalo-agent login` will restore the CLI; if another browser session\n" +
                     "  is active, it will sign that one out. The phone app is unaffected.",
             );
         }

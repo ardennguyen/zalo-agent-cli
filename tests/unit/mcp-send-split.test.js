@@ -1,5 +1,5 @@
 /**
- * `zalo_send_message` of a text Zalo would refuse as one message: it goes out as several, the way Zalo Web sends it.
+ * `zalo_send_message` of a text Zalo would refuse as one message: it goes out as several, the way Zalo splits it.
  *
  * Measured live (2026-10-29): plain text past 3000 UTF-16 units is refused with 114 ("Tham số không hợp lệ"), and a
  * styled message past roughly 3.1 KB of text plus style JSON with 112 ("Lỗi không xác định"). An agent's Markdown
@@ -31,10 +31,10 @@ describe("zalo_send_message of a long text", () => {
         assert.equal(body.success, true);
         assert.equal(body.splitInto, sent.length);
         assert.deepEqual(
-            body.parts.map((p) => p.messageId),
+            body.parts.map((p) => p.msgId),
             sent.map((_, i) => `m${i + 1}`),
         );
-        assert.equal(body.messageId, "m1", "messageId and cliMsgId are the first part's");
+        assert.equal(body.msgId, "m1", "msgId and cliMsgId are the first part's");
         assert.equal(body.cliMsgId, "c1");
         // Bold stays on the first part only, where the word is.
         assert.equal(stylesOf(sent[0].content)[0].st, "b");

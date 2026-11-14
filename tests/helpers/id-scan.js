@@ -25,7 +25,7 @@ const DIGIT_RUN = new RegExp(String.raw`\d{${MIN_DIGITS},}`, "g");
 /**
  * A noised id: the 32-character base32hex form (0-9, A-V) in which
  * transfer-sync-v2 restores sender and conversation ids. /api/gid/decrypt
- * turns one back into a uid and a display name (src/core/sync-v2/gid.js), so a
+ * turns one back into a uid and a display name (src/zalo/custom/gid.js), so a
  * real one identifies a person as surely as the digits do. A token only counts
  * with both a digit and a letter from G to V: an uppercase hex string, or a
  * plain digit run, is something else.

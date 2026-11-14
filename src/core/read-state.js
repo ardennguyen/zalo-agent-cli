@@ -1,35 +1,37 @@
 /**
- * Read state that other devices report, which zca-js drops: how far the
+ * Read state that other devices report, which the listener's events leave out: how far the
  * account has read each conversation, and which conversations the human
  * marked unread by hand.
  *
  * Without it, a conversation the human already read on the phone still looks
  * unread to the cache, to `conv` and to the MCP, and a bot answers or
- * escalates a thread the human has handled. Two server messages carry it,
- * both read from Zalo Web's bundle (1.e0ef5e98…) and the first captured live
- * (agent/work/zalo-web-capture-2026-09-29/live/socket.L2_group_reaction.json):
+ * escalates a thread the human has handled. Two server messages carry it:
  *
  * 1. `clearUnreads` rows, `{idTo, isGroup, lastMsgId, lastCliMsgId, type, sct, ts}`.
  *    They arrive on their own cmds -- 504 CLEAR_UNREADS_1_1 and 524
- *    CLEAR_UNREADS_GROUP (@~6435615) -- and as a field of every chat envelope
+ *    CLEAR_UNREADS_GROUP -- and as a field of every chat envelope
  *    (501/502/521/522) and offline-queue page (510/511). A row says the
  *    account has read conversation `idTo` through message `lastMsgId`, on some
- *    device: the web keys it `isGroup ? "g" + idTo : idTo` and treats every
- *    message at or before `lastMsgId` as read (@~10578566). A row with `type`
+ *    device: it is keyed `isGroup ? "g" + idTo : idTo`, and every
+ *    message at or before `lastMsgId` is read. A row with `type`
  *    2 and `sct` 1, 2 or 3 reports a folder or the message-request box as
- *    seen, not a conversation, and a `lastMsgId` of 0 reads nothing; the web
- *    skips both, and so does this.
+ *    seen, not a conversation, and a `lastMsgId` of 0 reads nothing; both
+ *    are skipped.
  *
  * 2. The 601 control push with `act_type: "mark_unread"`: the manual unread
  *    flag, set on another device (`act: "add"`, content
  *    `{convsGroup: [{id, cliMsgId, fromUid, ts}], convsUser: [...]}`) or
  *    cleared (`act: "remove"`, content `{convsGroup: [id], convsUser: [id]}`).
- *    The content is a JSON string on the control's `content` (the web's
- *    MarkUnreadManager, @~6215256). zca-js's 601 handler knows only
- *    `file_done`, `group` and `fr`.
+ *    The content is a JSON string on the control's `content`. The listener's 601 events cover only
+ *    the upload, `group` and `fr` controls.
  *
  * Cmd 613 carries `clearUnreads` too, on the reaction path: reactions seen,
- * not messages read. It is not read here.
+ * not messages read. It is read separately, as the reaction marks below.
+ *
+ * 3. Unread reactions, for `conv read`'s react_seen (src/core/receipts.js). A reaction someone else makes
+ *    (612 live, 610/611 the offline queues; `uidFrom` not "0") moves the conversation's `reactUnreadId` to the
+ *    reaction's own msgId; a 613 `clearUnreads` row moves `reactSeenId`. Unverified: no live 613 after a react_seen has
+ *    been captured.
  *
  * What is stored: `conv_state.lastReadMsgId`/`lastReadTs`, which only move
  * forward (db.js `recordReadWatermark`), and `unreadMarked`/`unreadMarkedAt`,
@@ -39,11 +41,43 @@
  * Not yet measured live: which of these cmds a read on the phone arrives on,
  * and whether our own `conv read` is echoed back to the listener.
  */
-import { getConvState, getRecentThreads, recordReadWatermark, upsertConvState } from "./db.js";
+import { getConvState, getRecentThreads, recordReactionMark, recordReadWatermark, upsertConvState } from "./db.js";
 import { resolveLossyThreadId } from "./sync-v2/conv-state.js";
 
 /** Every envelope that can carry `clearUnreads` rows. */
 export const CLEAR_UNREADS_CMDS = Object.freeze([501, 502, 504, 510, 511, 521, 522, 524]);
+
+/** The reaction pushes (612 live, 610 and 611 the offline queues) and the reaction-seen push (613). */
+export const REACTION_CMDS = Object.freeze([610, 611, 612]);
+export const CMD_REACTIONS_SEEN = 613;
+
+/**
+ * The newest reaction someone else made in each conversation of one reaction frame.
+ *
+ * @param {object|null} data - a decoded 610/611/612 frame's `data`
+ * @param {string} [ownId]
+ * @returns {Array<{threadId: string, isGroup: boolean, reactionId: string}>}
+ */
+export function unreadReactionsFrom(data, ownId = "") {
+    const newest = new Map();
+    for (const [key, isGroup] of [
+        ["reacts", false],
+        ["reactGroups", true],
+    ]) {
+        for (const r of Array.isArray(data?.[key]) ? data[key] : []) {
+            const from = String(r?.uidFrom ?? "");
+            if (!from || from === "0" || (ownId && from === String(ownId))) continue;
+            const id = String(r?.msgId ?? "");
+            if (!/^\d+$/.test(id)) continue;
+            const threadId = isGroup ? String(r?.idTo ?? "") : from;
+            if (!/^\d+$/.test(threadId)) continue;
+            const k = `${isGroup ? "g" : "u"}${threadId}`;
+            const cur = newest.get(k);
+            if (!cur || BigInt(id) > BigInt(cur.reactionId)) newest.set(k, { threadId, isGroup, reactionId: id });
+        }
+    }
+    return [...newest.values()];
+}
 
 /** The control push; `mark_unread` is one of its `act_type`s. */
 export const CMD_PUSH_CTRL = 601;
@@ -107,7 +141,7 @@ export function readMarksFrom(data, threads = lazyThreads()) {
     const out = [];
     for (const row of rows) {
         if (!row || typeof row !== "object") continue;
-        // A folder or the request box being seen, not a conversation (the web's @~10578566).
+        // A folder or the request box being seen, not a conversation.
         if (Number(row.type) === 2 && [1, 2, 3].includes(Number(row.sct))) continue;
         const lastMsgId = String(row.lastMsgId ?? "");
         if (!/^\d+$/.test(lastMsgId) || BigInt(lastMsgId) === 0n) continue;
@@ -167,9 +201,52 @@ export function unreadMarksFrom(data, threads = lazyThreads()) {
 }
 
 /**
+ * The pins and unpins of a `pinned_convers` control (act `update`, data `{tab, action, pinIds, ts}`).
+ *
+ * `pinIds` are conversation ids: `g` + the group id, or one letter + the user id.
+ * `action` 1 pins the conversation, anything else unpins it. When one frame names a conversation twice the last one
+ * stands (the controls are walked newest first, keeping the first one met).
+ *
+ * @param {object|null|undefined} data - a decoded 601 frame's `data`
+ * @returns {Array<{threadId: string, isGroup: boolean, pinned: boolean, ts: number|null}>}
+ */
+export function pinMarksFrom(data) {
+    const controls = Array.isArray(data?.controls) ? data.controls : [];
+    const latest = new Map();
+    for (const control of controls) {
+        const c = control?.content;
+        if (!c || c.act_type !== "pinned_convers" || c.act !== "update") continue;
+        let payload = c.data ?? c.content;
+        if (typeof payload === "string") {
+            try {
+                payload = parseKeepingIds(payload);
+            } catch {
+                continue;
+            }
+        }
+        if (!payload || typeof payload !== "object" || !Array.isArray(payload.pinIds)) continue;
+        const ts = Number(payload.ts);
+        for (const id of payload.pinIds) {
+            const raw = String(id ?? "");
+            if (raw.length < 2) continue;
+            const isGroup = raw.startsWith("g");
+            const threadId = raw.slice(1);
+            if (!/^\d+$/.test(threadId)) continue;
+            latest.set(threadId, {
+                threadId,
+                isGroup,
+                pinned: Number(payload.action) === 1,
+                ts: Number.isFinite(ts) && ts > 0 ? ts : null,
+            });
+        }
+    }
+    return [...latest.values()];
+}
+
+/**
  * A conversation's read state as `conv recent` and the MCP report it: the
- * account's own reading on Zalo -- what the human read on the phone or Zalo
- * Web -- not any bot's cursor.
+ * account's own reading on Zalo -- what the human read on the phone or in
+ * another Zalo session -- not any bot's cursor.
  *
  * @param {{lastReadMsgId: string|null, lastReadTs: number|null, unreadMarked: boolean,
  *   unreadAfter: number|null}|undefined} st - one entry of db.js `getReadStates`
@@ -216,8 +293,8 @@ export function readOnZalo(msgId, lastReadMsgId) {
  * A stored change as a listener event: the JSON a consumer gets, and the line
  * a human reads.
  *
- * @param {{kind: "read"|"unread_mark", threadId: string, isGroup: boolean,
- *   lastReadMsgId?: string, ts?: number|null, marked?: boolean}} change
+ * @param {{kind: "read"|"unread_mark"|"pin", threadId: string, isGroup: boolean,
+ *   lastReadMsgId?: string, ts?: number|null, marked?: boolean, pinned?: boolean}} change
  * @returns {{data: object, human: string}}
  */
 export function readStateEvent(change) {
@@ -235,6 +312,12 @@ export function readStateEvent(change) {
             human: `Read up to message ${change.lastReadMsgId} in ${threadId}`,
         };
     }
+    if (change.kind === "pin") {
+        return {
+            data: { event: "pin", threadId, isGroup, pinned: change.pinned, cmd: change.cmd ?? null },
+            human: change.pinned ? `Pinned: ${threadId}` : `Unpinned: ${threadId}`,
+        };
+    }
     return {
         data: { event: "unread_mark", threadId, isGroup, marked: change.marked, cmd: change.cmd ?? null },
         human: change.marked ? `Marked unread: ${threadId}` : `Unread mark cleared: ${threadId}`,
@@ -248,7 +331,7 @@ export function readStateEvent(change) {
  * and every re-login, so nothing needs re-attaching.
  *
  * @param {object} args
- * @param {ReturnType<import("./socket-tap.js").createSocketTap>} args.tap
+ * @param {ReturnType<import("../zalo/listener/socket-tap.js").createSocketTap>} args.tap
  * @param {(change: {kind: "read", threadId: string, isGroup: boolean, lastReadMsgId: string, ts: number|null,
  *   cmd: number} | {kind: "unread_mark", threadId: string, isGroup: boolean, marked: boolean, cmd: number}) => void}
  *   [args.onChange] - each change that altered what is stored, for a listener to print; `cmd` is the socket
@@ -256,7 +339,7 @@ export function readStateEvent(change) {
  * @param {(line: string) => void} [args.log]
  * @returns {{stop: () => void}}
  */
-export function createReadStateSync({ tap, onChange = () => {}, log = (line) => console.error(line) }) {
+export function createReadStateSync({ tap, ownId = "", onChange = () => {}, log = (line) => console.error(line) }) {
     const say = (line) => {
         try {
             log(`read state: ${line}`);
@@ -309,7 +392,47 @@ export function createReadStateSync({ tap, onChange = () => {}, log = (line) => 
         }
     }
 
-    const offs = [...CLEAR_UNREADS_CMDS.map((cmd) => tap.on(cmd, onEnvelope)), tap.on(CMD_PUSH_CTRL, onControl)];
+    function onPinControl(frame) {
+        for (const m of pinMarksFrom(frame.data)) {
+            try {
+                const before = getConvState(m.threadId);
+                if (Boolean(before?.pinned) === m.pinned) continue;
+                upsertConvState({ threadId: m.threadId, pinned: m.pinned, pinnedAt: m.ts ?? Date.now() });
+            } catch (e) {
+                say(`could not store the pin of ${m.threadId}: ${e?.message || e}`);
+                continue;
+            }
+            tell({ kind: "pin", threadId: m.threadId, isGroup: m.isGroup, pinned: m.pinned, cmd: frame.cmd });
+        }
+    }
+
+    function onReactions(frame) {
+        for (const r of unreadReactionsFrom(frame.data, ownId)) {
+            try {
+                recordReactionMark({ threadId: r.threadId, column: "reactUnreadId", msgId: r.reactionId });
+            } catch (e) {
+                say(`could not store an unread reaction of ${r.threadId}: ${e?.message || e}`);
+            }
+        }
+    }
+
+    function onReactionsSeen(frame) {
+        for (const r of readMarksFrom(frame.data)) {
+            try {
+                recordReactionMark({ threadId: r.threadId, column: "reactSeenId", msgId: r.lastMsgId });
+            } catch (e) {
+                say(`could not store the reactions seen in ${r.threadId}: ${e?.message || e}`);
+            }
+        }
+    }
+
+    const offs = [
+        ...CLEAR_UNREADS_CMDS.map((cmd) => tap.on(cmd, onEnvelope)),
+        ...REACTION_CMDS.map((cmd) => tap.on(cmd, onReactions)),
+        tap.on(CMD_REACTIONS_SEEN, onReactionsSeen),
+        tap.on(CMD_PUSH_CTRL, onControl),
+        tap.on(CMD_PUSH_CTRL, onPinControl),
+    ];
     return {
         stop() {
             for (const off of offs.splice(0)) off();

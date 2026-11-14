@@ -2,7 +2,7 @@
  * The account's read state on Zalo, as the MCP tools report it (M4).
  *
  * A bot has its own read cursor (`consumer`, zalo_mark_read); this is the
- * other kind of read: what the human already read on the phone or Zalo Web,
+ * other kind of read: what the human already read on the phone or another Zalo session,
  * which the listener stores from the server's `clearUnreads` reports
  * (src/core/read-state.js). It is the signal for handing a thread back to a
  * person, so each listing tool carries it: `readOnZalo` on every message of
@@ -66,9 +66,9 @@ const payloadOf = (res) => {
 describe("zalo_get_messages -- readOnZalo on each message", () => {
     it("is true through the watermark, false after it, and null where nothing is known", async () => {
         const buffered = [
-            { id: "7000000000002", threadId: GROUP, content: "a" },
-            { id: "7000000000003", threadId: GROUP, content: "b" },
-            { id: "7000000000009", threadId: DM, content: "c" },
+            { msgId: "7000000000002", threadId: GROUP, content: "a" },
+            { msgId: "7000000000003", threadId: GROUP, content: "b" },
+            { msgId: "7000000000009", threadId: DM, content: "c" },
         ];
         const buffer = { read: () => ({ messages: buffered, cursor: 3 }), readCursor: () => 0 };
         const out = payloadOf(await call("zalo_get_messages", { since: 0, limit: 10 }, buffer));

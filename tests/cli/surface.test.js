@@ -14,10 +14,11 @@
 import { SANDBOX_HOME } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
-import { runCli } from "../helpers/cli.js";
+import { runCli, runCliEach } from "../helpers/cli.js";
 
-// This suite fans out ~40 `node src/index.js … --help` subprocesses through
-// Promise.all, and each one pays full CLI startup. On a machine already busy
+// This suite runs ~60 `node src/index.js … --help` subprocesses, one per core
+// at a time (runCliEach: all at once thrashed a 4 GB VM), and each one pays
+// full CLI startup. On a machine already busy
 // (a parallel lint/format pass, CI running other jobs) the slowest of that
 // batch can exceed a tight budget and fail for reasons that say nothing about
 // the command surface. 90s is generous on purpose — a genuine regression here
@@ -51,6 +52,8 @@ const COMMAND_SURFACE = {
         "pin",
         "unpin",
         "history",
+        "search",
+        "media",
     ],
     friend: [
         "list",
@@ -140,7 +143,7 @@ const COMMAND_SURFACE = {
         "delete",
         "muted",
     ],
-    account: ["list", "login", "switch", "remove", "info", "export", "devices"],
+    account: ["list", "login", "switch", "remove", "info", "export", "devices", "security"],
     profile: [
         "me",
         "avatar",
@@ -162,6 +165,7 @@ const COMMAND_SURFACE = {
     "auto-reply": ["list", "create", "update", "delete"],
     "quick-msg": ["list", "add", "update", "remove"],
     label: ["list", "update"],
+    cloud: ["ls", "plan", "apply", "get"],
     bank: ["list", "accounts", "add", "update", "remove"],
     catalog: [
         "list",
@@ -169,46 +173,87 @@ const COMMAND_SURFACE = {
         "rename",
         "delete",
         "products",
+        "product",
         "add-product",
         "update-product",
         "delete-product",
         "upload-photo",
         "register",
     ],
-    mcp: ["start", "wait", "mark-read", "webhook"],
-    fleet: ["ports", "status", "start", "stop", "restart", "generate"],
+    mcp: ["start", "wait", "mark-read", "webhook", "approver"],
+    fleet: ["ports", "status", "start", "stop", "restart", "generate", "serve"],
+    presence: ["status", "wake", "park"],
     oa: [
         "login",
         "refresh",
         "setup",
         "whoami",
         "msg",
-        "follower",
-        "tag",
         "upload",
         "conv",
-        "menu",
+        "quota",
+        "follower",
+        "userfield",
+        "tag",
+        "form",
+        "purchase",
         "article",
-        "store",
+        "group",
+        "call",
         "listen",
         "init",
     ],
+    // ZBS Template Message (official API).
+    zbs: ["template", "upload-image", "send", "rsa-key", "journey", "uid", "status", "quota", "quality"],
+    social: ["setup", "login", "refresh", "me", "status", "logout"],
 };
 
-/** Nested OA subgroups: "oa msg" → its subcommands. */
+/** Nested OA and ZBS subgroups: "oa msg" → its subcommands. */
 const OA_SUBGROUPS = {
-    "oa msg": ["text", "image", "file", "list", "status"],
-    "oa follower": ["info", "list", "update"],
-    "oa tag": ["list", "assign", "remove", "untag"],
-    "oa upload": ["image", "file"],
+    "oa msg": ["text", "image", "gif", "file", "sticker", "request-info", "react", "anonymous", "user-quota"],
+    "oa upload": ["image", "file", "gif"],
     "oa conv": ["recent", "history"],
-    "oa article": ["create", "list", "detail"],
-    "oa store": ["product-create", "product-list", "product-info", "category-create", "category-list", "order-create"],
+    "oa follower": ["info", "list", "update", "delete-info", "custom-info", "custom-update"],
+    "oa userfield": ["list", "create", "update", "delete"],
+    "oa tag": ["list", "assign", "untag", "remove"],
+    "oa form": ["get"],
+    "oa purchase": ["create-order", "confirm-order"],
+    "oa article": ["create", "verify", "update", "remove", "list", "detail", "video-upload", "video-status"],
+    "oa group": [
+        "create",
+        "info",
+        "update",
+        "avatar",
+        "update-asset",
+        "invite",
+        "pending",
+        "accept",
+        "reject",
+        "members",
+        "add-admins",
+        "remove-admins",
+        "remove-members",
+        "delete",
+        "list",
+        "recent",
+        "history",
+        "send",
+        "quota",
+    ],
+    "oa call": ["consent-request", "consent-check", "outbound", "inbound", "mcc-info"],
+    "zbs template": ["list", "detail", "sample", "create", "update", "rating", "quick-reply"],
+    "zbs rsa-key": ["create", "get"],
+    "zbs journey": ["token", "check", "send"],
 };
 
 /** Nested subgroups of `mcp`: "mcp webhook" → its subcommands. */
 const MCP_SUBGROUPS = {
     "mcp webhook": ["status", "list", "retry", "purge"],
+};
+
+/** Nested subgroups of `account`: the at-rest protection of the account's files (docs/security.md). */
+const ACCOUNT_SUBGROUPS = {
+    "account security": ["status", "migrate", "rekey", "provider"],
 };
 
 /** Commands registered directly on the program, not inside a group. */
@@ -230,7 +275,18 @@ const TOP_LEVEL = [
 
 /** Flags whose absence would silently change behavior. */
 const FLAG_CONTRACT = {
-    login: ["--proxy", "--name", "--qr-url", "--qr-port", "--credentials"],
+    login: [
+        "--proxy",
+        "--name",
+        "--qr-url",
+        "--qr-port",
+        "--public-url",
+        "--credentials",
+        "--sync",
+        "--no-sync",
+        "--sync-days",
+        "--verbose",
+    ],
     logout: ["--purge", "--delete-history", "--no-remote"],
     "sync-mobile": [
         "--transfer",
@@ -299,6 +355,18 @@ const FLAG_CONTRACT = {
     // deleteMessage/undo both key on it.
     "msg delete": ["--cli-msg-id", "--uid-from", "--everyone", "--type"],
     "msg history": ["--limit", "--scan", "--from-msg-id", "--timeout", "--no-cache", "--type"],
+    "msg search": [
+        "--thread",
+        "--from",
+        "--since",
+        "--until",
+        "--last",
+        "--type",
+        "--limit",
+        "--cursor",
+        "--context",
+        "--exact",
+    ],
     "conv mute": ["--duration", "--type"],
     "msg typing": ["--type"],
     "msg report": ["--reason", "--content", "--type"],
@@ -335,10 +403,14 @@ const FLAG_CONTRACT = {
     ],
     "group note-create": ["--pin"],
     "group delete-invite": ["--block"],
-    "account login": ["--proxy", "--name", "--qr-url"],
+    "account login": ["--proxy", "--name", "--qr-url", "--public-url"],
     "account export": ["--output"],
+    "account security status": ["--all"],
+    "account security migrate": ["--all"],
+    "account security provider": ["--scope", "--backend", "--key", "--with-key", "--passphrase-file"],
     "poll create": ["--multi", "--add-options", "--anonymous", "--hide-preview", "--expire"],
     "reminder create": ["--type", "--time", "--emoji", "--repeat"],
+    "reminder list": ["--type", "--count", "--page"],
     "auto-reply create": ["--enable", "--no-enable", "--start", "--end", "--scope", "--uids"],
     // --no-delivered-receipts is the opt-out for the automatic deliveredv2
     // acks both listeners send, and --no-self-heal the opt-out for the
@@ -370,6 +442,7 @@ const FLAG_CONTRACT = {
         "--key",
         "--client-id",
         "--client-secret",
+        "--public-url",
         "--issuer-url",
         "--webhook",
         "--webhook-secret",
@@ -381,7 +454,11 @@ const FLAG_CONTRACT = {
     ],
     "mcp wait": ["--account", "--since", "--thread", "--timeout", "--consumer"],
     "mcp mark-read": ["--account", "--consumer"],
+    "mcp approver": ["--account", "--stdin"],
     "catalog add-product": ["--photos"],
+    "cloud apply": ["--yes", "--dry-run", "--conv", "--type", "--older-than", "--larger-than", "--limit"],
+    "cloud get": ["--out", "--key-stdin", "--key-prompt", "--raw"],
+    "msg send-video": ["--thumb", "--width", "--height", "--duration", "--upload-timeout"],
     "friend add": ["--msg"],
     "profile update": ["--name", "--dob", "--gender"],
 };
@@ -435,7 +512,10 @@ describe("command groups", () => {
 
     before(async () => {
         const groups = Object.keys(COMMAND_SURFACE);
-        const results = await Promise.all(groups.map((g) => runCli([g, "--help"], opts)));
+        const results = await runCliEach(
+            groups.map((g) => [g, "--help"]),
+            opts,
+        );
         groups.forEach((g, i) => (helps[g] = results[i].stdout));
     });
 
@@ -457,11 +537,14 @@ describe("command groups", () => {
 
 describe("nested subgroups", () => {
     const helps = {};
-    const NESTED = { ...OA_SUBGROUPS, ...MCP_SUBGROUPS };
+    const NESTED = { ...OA_SUBGROUPS, ...MCP_SUBGROUPS, ...ACCOUNT_SUBGROUPS };
 
     before(async () => {
         const keys = Object.keys(NESTED);
-        const results = await Promise.all(keys.map((k) => runCli([...k.split(" "), "--help"], opts)));
+        const results = await runCliEach(
+            keys.map((k) => [...k.split(" "), "--help"]),
+            opts,
+        );
         keys.forEach((k, i) => (helps[k] = results[i].stdout));
     });
 
@@ -479,7 +562,10 @@ describe("flag contract", () => {
 
     before(async () => {
         const keys = Object.keys(FLAG_CONTRACT);
-        const results = await Promise.all(keys.map((k) => runCli([...k.split(" "), "--help"], opts)));
+        const results = await runCliEach(
+            keys.map((k) => [...k.split(" "), "--help"]),
+            opts,
+        );
         keys.forEach((k, i) => (helps[k] = results[i].stdout));
     });
 
@@ -524,6 +610,13 @@ describe("disclaimer behavior", () => {
     it("suppresses the disclaimer for oa commands (official API)", async () => {
         const { all } = await runCli(["oa", "--help"], opts);
         assert.doesNotMatch(all, /unofficial Zalo APIs/);
+    });
+
+    it("social, an official API: no disclaimer and no personal-account login (it runs with no session)", async () => {
+        // Red if `social` is treated as a personal command: the disclaimer prints and the auto-login fails first.
+        const { all } = await runCli(["social", "status", "--profile", "surface-test"], opts);
+        assert.doesNotMatch(all, /unofficial Zalo APIs/);
+        assert.match(all, /No user login for profile "surface-test"/);
     });
 
     it("suppresses the disclaimer in --json mode so stdout stays parseable", async () => {

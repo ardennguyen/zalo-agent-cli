@@ -8,7 +8,7 @@
  *     asks the owner to confirm twice. This holds whichever socket the stage
  *     runs on: handing it to a daemon removes the second WebSocket, not the
  *     confirmation;
- *   - the socket opens at most once. zca-js's stop() resets the listener, and
+ *   - the socket opens at most once. The listener's stop() resets it, and
  *     the socket's own onclose resets it AGAIN, asynchronously, after stop()
  *     has returned -- so a stage that stops the listener and a later stage that
  *     restarts it race, and the late reset nulls the new socket. Every socket
@@ -37,7 +37,10 @@ export const STAGES = [
  *   socket stage runs ON that daemon instead of being skipped — the daemon
  *   already has the account's one web session open and keeps capturing live
  *   traffic while the stage runs. See src/core/daemon-channel.js.
- * @returns {{openSocket: boolean, viaDaemon: boolean, stages: Array<{name: string,
+ * @param {{via: "local"|"daemon"|"skip", reason?: string}|null} [args.cloudRoute=null] - where the cloud walk runs
+ *   (`cloudWalkRoute` in src/commands/sync.js): in the running daemon when it serves the `cloud` stage, nowhere when
+ *   another process holds the account and cannot run it. Null: here.
+ * @returns {{openSocket: boolean, viaDaemon: boolean, cloudViaDaemon: boolean, stages: Array<{name: string,
  *   transport: string, label: string, phone: boolean, run: boolean, via: string, why: string}>}}
  *   `openSocket` is true only when THIS process must open one; a run that goes
  *   through the daemon opens nothing and sets `viaDaemon` instead.
@@ -47,6 +50,7 @@ export function planSyncRun({
     freshness = { skip: false, reason: "" },
     lockOk = true,
     daemonChannel = false,
+    cloudRoute = null,
 } = {}) {
     const stages = STAGES.map((s) => {
         const wanted = want[s.name] !== false;
@@ -71,6 +75,15 @@ export function planSyncRun({
                 why = "a listen/mcp daemon holds the account's socket";
             }
         }
+        // The cloud walk is a REST stage, but two walkers of one queue write its saved place out of order, so with a
+        // daemon up it runs in the daemon (D31, ZP-09), or not at all when that daemon cannot run it.
+        if (run && s.name === "cloud" && cloudRoute) {
+            if (cloudRoute.via === "daemon") via = "daemon";
+            else if (cloudRoute.via === "skip") {
+                run = false;
+                why = cloudRoute.reason || "another process holds this account and may walk the cloud queue itself";
+            }
+        }
         if (run && s.name === "messages" && freshness.skip) {
             run = false;
             via = "local";
@@ -85,6 +98,7 @@ export function planSyncRun({
     return {
         openSocket: socketStages.some((s) => s.via === "local"),
         viaDaemon: socketStages.some((s) => s.via === "daemon"),
+        cloudViaDaemon: stages.some((s) => s.name === "cloud" && s.run && s.via === "daemon"),
         stages,
     };
 }

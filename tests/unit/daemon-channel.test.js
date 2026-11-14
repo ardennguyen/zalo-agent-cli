@@ -2,7 +2,7 @@
  * `src/core/daemon-channel.js` — handing an upload to the running daemon.
  *
  * Zalo permits one web session per account. A non-inline attachment can only
- * be sent over a socket (zca-js parks the upload until the upload-complete
+ * be sent over a socket (the upload is parked until the upload-complete
  * frame arrives), so `msg send-file` opened its own — and Zalo answered by
  * evicting whatever daemon was already connected.
  *
@@ -26,6 +26,7 @@ import {
     startDaemonChannel,
     sendViaDaemon,
     syncViaDaemon,
+    cancelViaDaemon,
     getDaemonStatus,
     stopViaDaemon,
     stopDaemon,
@@ -68,6 +69,10 @@ function fakeDaemon(dirPath, impl) {
             sent.push({ payload, threadId, type });
             if (impl) return impl(payload, threadId, type);
             return { message: { msgId: "m1" } };
+        },
+        sendVideoFile: async (options, threadId, type) => {
+            sent.push({ video: options, threadId, type });
+            return { msgId: "v1", cliMsgId: "c1" };
         },
     };
     return { api, sent, getApi: () => api, dirPath };
@@ -201,6 +206,22 @@ describe("sendViaDaemon", () => {
         assert.equal(d.sent[0].type, 1, "a group send must not arrive as a 1-1");
     });
 
+    it("hands a local video to the daemon as a video, and the daemon says it sent it as one", async () => {
+        const d = fakeDaemon(dir);
+        const chan = await startDaemonChannel({ getApi: d.getApi, accountDir: dir });
+        started.push(chan);
+
+        const video = { thumbnailFile: "/t.png", width: 640, height: 360, duration: 1000 };
+        const r = await sendViaDaemon(dir, { paths: ["/clip.mp4"], threadId: "t9", type: 1, caption: "c", video });
+        // Red if the daemon sent the clip as a file attachment, or the sender could not tell a daemon that did.
+        assert.equal(r.ok, true);
+        assert.equal(r.video, true);
+        assert.deepEqual(d.sent, [{ video: { ...video, file: "/clip.mp4", msg: "c" }, threadId: "t9", type: 1 }]);
+        // A plain attachment send is not marked as a video.
+        const plain = await sendViaDaemon(dir, { paths: ["/a.pdf"], threadId: "t9", type: 0 });
+        assert.equal(plain.video, undefined);
+    });
+
     it("surfaces a failed upload as an error, leaving the daemon up", async () => {
         const d = fakeDaemon(dir, () => {
             throw new Error("upload rejected");
@@ -294,9 +315,9 @@ function fakeRunners(impl = {}) {
     const calls = [];
     const runners = {};
     for (const stage of ["messages", "reactions"]) {
-        runners[stage] = async (params, onEvent) => {
+        runners[stage] = async (params, onEvent, signal) => {
             calls.push({ stage, params });
-            return impl[stage] ? impl[stage](params, onEvent) : { stage, ok: true };
+            return impl[stage] ? impl[stage](params, onEvent, signal) : { stage, ok: true };
         };
     }
     return { runners, calls };
@@ -409,6 +430,62 @@ describe("the sync routes", () => {
         assert.equal((await first).ok, true);
         // Released on the way out: the next sync is accepted.
         assert.equal((await syncViaDaemon(dir, { stage: "reactions" })).ok, true);
+    });
+
+    it("cancels the running stage on request: its runner is aborted and the stream ends with the runner's result", async () => {
+        // The CLI's Ctrl+C while a restore runs on a daemon's socket. Walking away does not stop a stage
+        // (the restore is writing real messages); asking does, and the runner puts its own house in order.
+        let aborted = null;
+        await syncDaemon(dir, {
+            messages: (_p, _e, signal) =>
+                new Promise((resolve) => {
+                    signal.addEventListener("abort", () => {
+                        aborted = true;
+                        resolve({ reason: "cancelled", messagesSaved: 5 });
+                    });
+                }),
+        });
+        const running = syncViaDaemon(dir, { stage: "messages" });
+        await new Promise((r) => setTimeout(r, 50));
+        assert.equal(aborted, null, "nothing aborts it before it is asked");
+        assert.deepEqual(await cancelViaDaemon(dir), { ok: true, stage: "messages" });
+        const r = await running;
+        assert.equal(r.ok, true);
+        assert.deepEqual(r.result, { reason: "cancelled", messagesSaved: 5 });
+        assert.equal(aborted, true);
+        // The guard is released on the way out, as after any other end.
+        assert.equal((await syncViaDaemon(dir, { stage: "reactions" })).ok, true);
+    });
+
+    it("a cancel with nothing running says so, and a cancel does not touch the next stage", async () => {
+        let signalState;
+        await syncDaemon(dir, {
+            reactions: (_p, _e, signal) => {
+                signalState = signal;
+                return { ok: true };
+            },
+        });
+        assert.deepEqual(await cancelViaDaemon(dir), { ok: true, stage: null });
+        assert.equal((await syncViaDaemon(dir, { stage: "reactions" })).ok, true);
+        assert.equal(signalState.aborted, false, "an earlier cancel leaves a later stage running");
+    });
+
+    it("a cancel after a stage has finished finds nothing running (the finished stage is not kept)", async () => {
+        await syncDaemon(dir, { messages: () => ({ messagesSaved: 1 }) });
+        assert.equal((await syncViaDaemon(dir, { stage: "messages" })).ok, true);
+        assert.deepEqual(await cancelViaDaemon(dir), { ok: true, stage: null });
+    });
+
+    it("refuses a cancel without the daemon's token, and reports no daemon as null", async () => {
+        const { chan } = await syncDaemon(dir, {});
+        const res = await fetch(`http://127.0.0.1:${chan.port}/sync/cancel`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ token: "nope" }),
+        });
+        assert.equal(res.status, 403);
+        started.pop().stop();
+        assert.equal(await cancelViaDaemon(dir), null);
     });
 
     it("keeps serving attachment uploads while a sync runs", async () => {

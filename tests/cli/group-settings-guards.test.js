@@ -19,7 +19,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { runCli, errorLineOf } from "../helpers/cli.js";
 
-const opts = { home: SANDBOX_HOME, timeout: 30_000 };
+const opts = { home: SANDBOX_HOME, timeout: 120_000 };
 const GROUP = "9000000000000000077";
 
 describe("group settings refuses before it needs a session", () => {

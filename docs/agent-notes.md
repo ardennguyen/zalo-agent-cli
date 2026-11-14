@@ -21,18 +21,26 @@ src/
 │   ├── poll.js   reminder.js  auto-reply.js  quick-msg.js  label.js  catalog.js
 │   ├── listen.js sync.js  mcp.js
 │   └── oa.js     oa-init.js   oa-listen.js
+├── zalo/                 # The protocol layer, a library the app uses: imports nothing from core/utils/commands/mcp
+│   ├── index.js          # Its public entry (src/zalo/README.md says what the caller must inject)
+│   ├── kernel/ api/ listener/  login, client (session making), socket (see below)
+│   ├── custom/           # Hand-built calls: pin, forward, group history/invite/settings/visibility, gid, renewlink
+│   ├── transfer-sync/    # cmd 590/591 transfer sync: transfer rules, channel, downloads, assets, message types
+│   ├── queues/           # Offline queue, 601 control queue, 532 queue acks
+│   └── format/           # Message text: markdown, mentions, urgency, long-text split, text extraction
 ├── core/                 # Session, storage, and sync primitives
-│   ├── zalo-client.js    # zca-js API singleton + autoLogin/clearSession
+│   ├── zalo-client.js    # API singleton + autoLogin/clearSession (sessions are made by src/zalo/client.js)
 │   ├── credentials.js    # CONFIG_DIR (~/.zalo-agent-cli), 0600 credential files
 │   ├── accounts.js       # Multi-account registry + per-account data dir wipe
 │   ├── oa-client.js      # Official OA REST client
-│   ├── db.js             # SQLite (better-sqlite3, WAL) message/thread cache
+│   ├── db.js             # SQLite (better-sqlite3-multiple-ciphers, WAL) message/thread cache
+│   ├── sqlite.js         # the one SQLite driver import (better-sqlite3-multiple-ciphers) and the keyed opener
 │   ├── sync.js           # SyncManager — socket backfill, gap tracking, freshness debounce
-│   ├── sync-v2/          # transfer-sync-v2 — the REAL phone-backed history restore
+│   ├── sync-v2/          # transfer-sync-v2 — the REAL phone-backed history restore, over src/zalo/transfer-sync
 │   │   ├── index.js      # SyncV2.restore() — socket cmd 590/591 conversation + message rounds
-│   │   ├── assets.js     # libzproto WASM fetch + cache from Zalo's CDN
 │   │   ├── media.js      # the ONLY media downloader
-│   │   └── gid.js        # opaque convId → real threadId mapping for non-friend DMs
+│   │   ├── zcloud.js     # the local zCloud index (the REST client is src/zalo/zcloud.js)
+│   │   └── reactions.js  # the reaction backlog stored (the request is src/zalo/listener/reactions.js)
 │   ├── daemon-channel.js # loopback HTTP transport to a running daemon (transport only)
 │   ├── daemon-sync.js    # the sync stage bodies daemon-channel injects as runners
 │   ├── lock.js           # daemon.lock — one listen/db writer per account
@@ -47,7 +55,6 @@ src/
 skill/                    # Agent-facing skill (SKILL.md + references/ + evals/)
 docs/official-account.md  # Full OA reference (Vietnamese)
 docs/agent-notes.md       # This file
-patches/                  # patch-package patches against zca-js
 tests/                    # Test suite — see tests/README.md
 ├── helpers/              # sandbox (temp HOME), CLI harness, target guard, live gates
 ├── unit/                 # Offline: accounts, credentials, lock, db, mcp-config, oa-client, helpers
@@ -66,9 +73,14 @@ tests/                    # Test suite — see tests/README.md
 ├── credentials/cred_<ownId>.json # Session credentials (0600)
 ├── mcp-config.json               # Optional MCP config
 ├── accounts/<ownId>/
-│   ├── zalo.db                   # SQLite cache (messages, threads, contacts, sync_state, sync_gaps)
+│   ├── zalo.db                   # SQLite cache (messages, threads, contacts, sync_state, sync_gaps); SQLCipher since 3.0
+│   ├── trusted-device.json       # The device identity of the official QR login: private key + linking secret (0600)
+│   ├── dr-config.json            # Disaster-recovery numbers the last login learned (0600)
+│   ├── sock-anomaly.json         # The week's socket error history for the retry table (0600)
+│   ├── unknown-acts.json         # Socket control acts this client does not know, counted
+│   ├── voice-text.json           # Voice-message transcripts a running daemon heard
 │   ├── media/                    # Auto-downloaded attachments
-│   ├── sync/                     # transfer-sync-v2 assets (zproto-cache/)
+│   ├── sync/                     # transfer-sync-v2 assets (zproto-cache/) and open-sessions.json, the sessions on the phone
 │   ├── daemon.lock               # Held by a running `listen` daemon or `mcp start`
 │   └── daemon-channel.json       # Loopback port + token of that daemon's upload channel (0600)
 └── qr.png
@@ -76,20 +88,40 @@ tests/                    # Test suite — see tests/README.md
 
 ---
 
+## Windows traps that fail silently (§5)
+
+Each of these reports success, or names the wrong cause. They were all learned the expensive way.
+
+- **Git Bash `kill` does not work on native Windows PIDs** — both `kill -TERM` and `kill -0` report
+  success while the process runs on. Use `Stop-Process -Id <pid> -Force` and verify with
+  `Get-Process`. A `daemon.lock` PID is a number in a file, not proof of life.
+- **MSYS rewrites any argument starting with `/`.** Every Zalo reaction code starts with `/`, so set
+  `MSYS2_ARG_CONV_EXCL="*"` for `msg react` and `msg send --react`.
+- **Backslashes do not survive being written through the shell.** Use forward slashes; write scripts
+  to a file rather than `node -e` when they contain escapes.
+- **PowerShell `Start-Process` does not inherit `$env:X` set earlier**, and its child may die with
+  the session. For a daemon, use `nohup … &` from Bash.
+- **git reads `.gitattributes` from the working tree, not your checked-out commit** (§13).
+- **The Cowork/Claude mounted shell is slow on this tree.** A recursive `find`/`grep` over a repo
+  with `node_modules` takes minutes through the mount; use the native shell (PowerShell, or
+  `git grep` / `rg`) for anything recursive.
+
+---
+
 ## Numbers repeated across docs — sources and check commands (§10)
 
 | Invariant | Current | Source of truth | How to check |
 |---|---|---|---|
-| CLI commands | **222** invokable leaves (190 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
-| Command groups | **24** containers — 16 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **18** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
-| MCP tools | **25** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
-| OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **2627** as of 2026-10-29 (2622 pass, 5 skipped, 0 fail) | `npm test` | the run's own summary line |
+| CLI commands | **321** invokable leaves (227 personal + 94 OA/ZBS/Social) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
+| Command groups | **40** containers — 24 top-level + 11 OA subgroups + 3 ZBS subgroups + `mcp webhook` + `account security` | the live commander tree | walk it. The number of `register*` calls in `src/index.js` is neither number: `oa` registers 11 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
+| MCP tools | **37** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
+| OA/ZBS/Social commands | **94** (70 `oa` + 18 `zbs` + 6 `social`) | `src/commands/oa.js` + `src/commands/oa/*.js`, `src/commands/zbs.js`, `src/commands/social.js` | `node scripts/count-surface.mjs`. `zbs` counts with `oa`: both are the official API on the OA's OAuth token, so "personal" stays the unofficial surface |
+| Offline tests | **6384** as of 2026-11-14 (6379 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
-still live next to their module (`src/utils/bank-helpers.test.js`, `src/mcp/*.test.js`). `npm test`
-globs both locations.
+then lived next to their module in `src/`. Since 2026-11-06 every test is under `tests/` (the seven from `src/` moved
+to `tests/unit/` and `tests/cli/`; they had also been shipping in the npm package, which publishes `src/`).
 
 The MCP tool list has drifted before — docs claimed 4 tools while the code registered 7.
 
@@ -106,20 +138,20 @@ answers looked reasonable:
   `register*Commands` function, so a walk of those functions cannot see it.
 
 The number to quote is **invokable leaf commands**: what a user can actually
-type. It excludes the 21 group containers (`msg`, `oa`, `oa follower`, ...),
+type. It excludes the 39 group containers (`msg`, `oa`, `oa follower`, `zbs`, ...),
 which is the convention `command-reference.md` already uses.
 
 To measure it, parse the import/call pairs out of `src/index.js` rather than
 hardcoding them — three exports do not follow the plural pattern
 (`registerListenCommand`, `registerOACommands`, `registerMCPCommands`), and
-guessing those names silently drops OA's 32 commands and MCP's 3. Load each into
+guessing those names silently drops OA's 70 commands and MCP's 3. Load each into
 a fresh `Command`, walk it, count nodes with no children, and add the inline
 top-level commands found by scanning `src/index.js` for `.command("...")`.
 
-Measured (2026-10-21): **222 leaves, 24 containers, 246 nodes**.
-By group: group 35, oa 32, friend 26, msg 24, conv 21, top-level 12, profile 14,
-catalog 10, account 7, poll 7, mcp 7 (`start`, `wait`, `mark-read`, and the four `webhook`
-leaves), reminder 6, fleet 6, bank 5, auto-reply 4, quick-msg 4, label 2, listen 1. (Was 190 at `99d5a97` before `mcp` gained `wait` and `mark-read`, and
+Measured (2026-10-21): **222 leaves, 24 containers, 246 nodes**. Measured again 2026-10-26, after `msg search`: **223 leaves, 24 containers, 247 nodes**; after `read`: **225 leaves, 25 containers, 250 nodes**; after `write`: **227 leaves, 26 containers, 253 nodes**; after `account status` (2026-10-28): **228 leaves**.
+By group: group 35, oa 32, friend 26, msg 25, conv 21, top-level 12, profile 14,
+catalog 10, account 8, poll 7, mcp 7 (`start`, `wait`, `mark-read`, and the four `webhook`
+leaves), reminder 6, fleet 6, bank 5, auto-reply 4, quick-msg 4, label 2, read 2, write 2, listen 1. (Was 190 at `99d5a97` before `mcp` gained `wait` and `mark-read`, and
 184 at `a719c99` before `conv` gained pin/unpin/archive/unarchive
 and `msg` gained pin/unpin.) A separate audit confirmed zero drift between that live tree and the
 manifest in `tests/cli/surface.test.js`, in both directions, so the manifest is
@@ -190,25 +222,36 @@ written because the byte budget on AGENTS.md could not afford the exact wording.
 
 The crash-only-assertion rule in AGENTS.md section 12 comes from this: four
 commands were found in a single day to have never worked at all, each hidden
-the same way. This CLI reports an API failure as a printed `✗` and exits 0, so
-an assertion that only checks the process did not crash cannot tell a working
-command from one that fails on every invocation. Assert the success the command
+the same way. Until 3.0 this CLI reported an API failure as a printed `✗` and
+exited 0 (it exits 1 since), and an assertion that only checks the process did
+not crash still cannot tell a working command from one answering wrongly. Assert the success the command
 claims, not the absence of a stack trace.
 
 ---
 
-## Release: the reset-and-retag sequence (§8)
+## Release: how a version reaches npm (§8)
 
-Release branches (`v1.x.x`) and tags are always reset to `main`'s HEAD; tag, branch and `main` must
-point at the same commit. Never cherry-pick from `main` to a release branch.
+Since 2.5.x a release is a pull request, not a reset. Work lands on the version branch
+(`v2.5-dev`, `v3.0-dev`), the version bump is a commit there, the branch is merged into `main` by
+PR, and the tag goes on the merge commit (`v2.5.7` → PR #17, `v2.5.8` → #18, `v2.5.9` → #19). The
+step-by-step checklist, including what follows in the wrapper and the wiki, is `docs/RELEASE.md`.
 
-```bash
-git checkout v1.x.x && git reset --hard origin/main
-git push origin refs/heads/v1.x.x --force
-git tag -d v1.x.x && git push origin :refs/tags/v1.x.x
-git tag v1.x.x && git push origin refs/tags/v1.x.x
-git checkout main
-```
+The earlier scheme — one branch per release reset to `main` and force-pushed, then re-tagged — is
+retired. It left a branch and a tag with the same name (`v1.0.5`, `v1.1.0-beta1`, `v2.0.0`), which
+made every `git` reference to that name print `refname is ambiguous`. Those branches were deleted
+on 2026-11-03; the tags are the only name a release has.
+
+### Why `v3.0-dev` must not merge `main` with `-s ours` (§7)
+
+Between 2.5.7 and 2.5.9 every merge of `main` into `v3.0-dev` was a "keep this branch's tree"
+merge (`363f139`, `e7bfadc`, `c30ba3d`). That was safe only because each 2.5.x fix was written on
+v3 first and re-applied to 2.5 by hand (the duplicate pairs `04ba225`/`2c0b3a1`,
+`4138a48`/`c4e558b`, `5f938d0`/`5736fb9`). An `ours` merge tells git that `main` is fully
+incorporated while taking nothing, so the first time a change is made on 2.5 *first* and the next
+merge is again `ours`, that change is gone from v3 and `git log --merges` will insist it arrived.
+`src/zalo/format/split-message.js` was checked identical on both branches on 2026-11-03, so nothing had
+been lost by then. The rule now: write a shared fix where it is found, `git cherry-pick -x` it to
+the other branch, and merge `main` into v3 only as a real merge.
 
 A GitHub Release created from the tag triggers `.github/workflows/publish.yml`, which publishes
 `@ardennguyen/zalo-agent-cli` with `--provenance`. Never run `npm publish` manually.
@@ -224,102 +267,70 @@ npmjs.com (repository, workflow filename, environment left empty) before suspect
 
 ---
 
-## Why the patched zca-js is bundled, not patched on install (§13)
+## The protocol layer is ours (§13)
 
-We patch zca-js to add `logoutV2`, and to modify `loginQR` and `sendMessage`. Without them `logout` and `account remove` die on
-"is not a function". Getting that patched copy into a consumer's tree took two goes, both found on
-2026-09-29 against npm 11.17.0 / Node 24.19.0.
+From 3.0.0 the engine speaks Zalo's protocol with its own code. No third-party Zalo client is installed,
+patched or bundled, and nothing runs at install time (the SQLite driver, `better-sqlite3-multiple-ciphers`, ships prebuilt binaries). Every request is
+written to the wire format Zalo expects: reference material is read, never copied or run (D11; private notes
+in `agent/docs/`), and a deliberate difference is recorded with its reason.
 
-**First defect — the tarball would not install at all.** `postinstall: patch-package` with
-patch-package in `devDependencies` and `patches/` missing from `files`: the install ran a binary
-that was not there, against patches that were not shipped, and aborted with
-`'patch-package' is not recognized`, exit 1, before `node_modules/zca-js` existed. Fixed in
-1b182da by moving patch-package to `dependencies` and adding `patches/` to `files`.
+### Where each piece lives
 
-**Second defect — the fix only worked for `npm i -g`.** patch-package resolves `node_modules/zca-js`
-relative to its own cwd, which is the installed package directory.
+- `src/zalo/kernel/` — what every call shares: the session context a login fills in (`session.js`), the session
+  cipher for `params` and replies (`cipher.js`), the login cipher used before a session key exists
+  (`login-cipher.js`), the cookie jar (`cookies.js`), the transport with Zalo's header sets, redirects,
+  timeouts and reply envelope (`http.js`), the table runner every endpoint definition goes through
+  (`endpoint.js`), the bound helpers for hand-built calls (`bound.js`), and lossless ids in JSON text
+  (`json-ids.js`).
+- `src/zalo/api/*.js` — the endpoints, one module per area: `messages`, `upload`, `actions`, `conversations`,
+  `groups`, `people`, `profile`, `business`, `boards`, `session`. Each module's docblock lists the wire facts it
+  follows and the behavior that is ours rather than Zalo's.
+- `src/zalo/api.js` — composes the areas into the one api object that commands, MCP tools and the daemon read
+  (the MCP tools and the daemon through `src/core/live-api.js`, so a re-login is followed).
+- `src/zalo/listener/` — the chat socket: frame header and payload decoding (`frames.js`), routing to typed
+  events (`dispatch.js`), the event objects (`models.js`, `group-events.js`, `friend-events.js`), and the socket
+  itself (`listener.js`).
+- `src/zalo/{login,qr-login,client,logout,official-logout,kickout,socket,retry,maintenance}.js` — logins, making a
+  session (`client.js`: options, proxy fetch, saved and QR login), logout, the kick reason, the socket supervisor
+  and its retry table. The identity this client announces (API version, type 30, device label, headers) lives
+  only in `src/zalo/profile.js` (D3, D4).
+- `src/zalo/{reads,writes,web-call}.js` — the `read` / `write` tables of Zalo's other endpoints. The
+  answers of the two local reads are registered by the app (`src/core/local-reads.js`).
+- `src/zalo/custom/`, `receipts.js`, `zcloud.js` — calls the session object does not make or makes wrong (pin,
+  forward, group history, settings, invite, visibility, gid decrypt, media renewal, paced profile lookups), the
+  seen/delivered receipts, and the zCloud REST client.
+- `src/zalo/transfer-sync/`, `queues/`, `listener/{keepalive,socket-tap,reactions}.js` — the protocol half of
+  transfer sync, the offline/control queues and their acks, and the raw socket readers. What they store is the
+  app's: `src/core/sync-v2/`, `live-store.js`, `self-heal.js`.
+- `src/zalo/format/` — message text (markdown, mentions, urgency, the long-text split).
+- **The boundary.** Nothing under `src/zalo/` imports `src/core`, `src/utils`, `src/commands`, `src/mcp` or
+  `src/index.js`; the caller injects paths, the proxy, loggers and the local reads. ESLint
+  (`no-restricted-imports` on `src/zalo/**`) and `tests/unit/zalo-boundary.test.js` enforce it. Public entry:
+  `src/zalo/index.js`; `src/zalo/README.md`.
 
-- Global install: npm nests dependencies under the package, so `zca-js` is right where
-  patch-package looks. It printed `zca-js@2.2.0 ✔` and the patch applied.
-- Installed as a *dependency*: npm **hoists** `zca-js` to the consumer's root. patch-package cannot
-  see it and fails with `Patch file found for package zca-js which is not present at
-  node_modules/zca-js` — but the install still exits 0, so the patch silently did nothing and
-  `logoutV2` was simply absent at runtime.
+### The wire-diff golden files
 
-That second case is not hypothetical: `zalo-mcp` takes this package as a plain dependency and its
-`zalo-mcp.ps1` / `.sh` update path runs `npm install @ardennguyen/zalo-agent-cli@latest`.
+`tests/unit/wire-<area>.test.js` drives each area through the fake Zalo and records what went on the wire:
+method, host, path, the decrypted `params` with their key order, and the reply the caller gets. Each case is
+checked against `tests/helpers/wire-diff/golden/<area>.js`, a reviewed `.js` module with fake ids only (not a file
+under `tests/fixtures/`, so the CRLF trap does not apply). `tests/helpers/wire-diff/allow/<area>.js` lists every
+intended difference from the expected wire format with a `why`.
 
-**The arrangement now.** Stop patching in the consumer's tree at all:
+To change a request on purpose: change the code, run `node tests/helpers/wire-diff/record.mjs <area>`, read
+`git diff tests/helpers/wire-diff/golden/<area>.js` line by line, and commit the golden file with the code. A
+golden entry is a claim about the wire; a rewrite nobody read is how a wrong value would hide.
 
-- `prepare: patch-package` — runs on a dev `npm install`, on a `github:` install, and before
-  `npm pack`/`publish`, so `node_modules/zca-js` is always patched before the tarball is built.
-  It does **not** run for a consumer installing the published tarball.
-- `bundleDependencies: ["zca-js"]` — `npm pack` copies that patched tree into the tarball, and npm
-  unpacks it nested under our package where hoisting cannot reach it. npm still resolves and
-  installs zca-js's own 8 dependencies, placing them beside it.
-- patch-package is back in `devDependencies`: consumers never run it, and the `github:` path gets
-  devDependencies anyway (verified — npm installs them so `prepare` can run).
+### Watching for a protocol change
 
-This is why `bundleDependencies` must never be dropped and `zca-js` must stay pinned to the exact
-version its patch filename names. `tests/unit/packaging.test.js` fails the build on either.
+Zalo changes its protocol without notice, and a change shows up first as a refused request, a new error code or an
+unknown frame, not as a crash. When it changes:
 
-Verified on all three install paths — local dependency, global, and `git+file://` standing in for
-`github:` — with the resolved zca-js carrying `dist/apis/logoutV2.js` in each. Re-run that check by
-packing and installing into an empty directory; the tarball is ~2 MB because it carries zca-js.
-
-### Both of zca-js's builds are patched, deliberately
-
-zca-js ships two trees — ESM at `dist/` and CJS at `dist/cjs/` — and its exports map wires
-`"require": "./dist/cjs/index.cjs"`. Until 2026-09-29 only the ESM half was patched, on the
-reasoning that this package is `"type": "module"` and so can never load the CJS bundle. That
-reasoning was correct and is still asserted, but it was the wrong conclusion: a library that
-ships two entry points should not have one that works and one that silently lacks `logoutV2`,
-every client-id stamp, and the
-device-fingerprint client hints. "Correct today because nothing takes that path" is not the same
-as correct.
-
-The patch now covers both, which is why it is ~1,700 lines across 31 files rather than ~900
-across 16. Mirroring is mechanical but not free:
-
-- The CJS twins are rollup output — `var X = require('./p.cjs')` with namespaced access
-  (`Enum.ThreadType`, `ZaloApiError.ZaloApiError`) and a trailing `exports.X = X`. The function
-  bodies are otherwise byte-identical to the ESM ones, so the edits transfer directly.
-- Five of the files are **created**, not edited, so the CJS side needed five new `.cjs` files
-  plus require + constructor wiring in `dist/cjs/apis.cjs`. A patched file that is never wired
-  onto the API class is invisible to a per-file check — that is what the call-shape assertion in
-  `tests/unit/send-apis-return-client-id.test.js` exists to catch.
-- `loginQR` is functional, not cosmetic. `src/core/zalo-client.js` puts `secChUa` /
-  `secChUaMobile` / `secChUaPlatform` on ctx; without the mirror the CJS build would ignore the
-  fingerprint and always claim Chrome 130 on Windows.
-
-Three assertions pin it: the patch touches both trees, it creates the four methods in both, and
-this package stays ESM. All are mutation-tested. **Mutation-test any assertion you add here** —
-the first version of the parity check matched `response.cliMsgId =`, which also matches the
-helper's own body, so deleting a call site still looked patched. It was decorative and reading it
-did not reveal that; breaking the code and watching the test stay green did.
-
-### Why a stale zca-js cannot reach the tarball
-
-`bundleDependencies` packs the **working tree's** `node_modules/zca-js`, which raises the obvious
-worry: pack from a checkout whose patch was never applied and you ship unpatched bytes silently.
-
-That is not reachable through the normal path, for a reason worth writing down rather than
-rediscovering:
-
-- `npm pack` and `npm publish` both run `prepare` themselves, so `patch-package` re-applies
-  immediately before anything is packed.
-- `.github/workflows/publish.yml` is `npm ci`, lint, test, then `npm publish --access public --provenance` —
-  no `--ignore-scripts` anywhere — and `npm config get ignore-scripts` is false on this machine.
-
-So only an explicit scripts-disabled pack could ship a stale copy. If you ever add
-`--ignore-scripts` to the release workflow, or npm changes when `prepare` runs, that guarantee is
-gone and the patch has to be verified in the tarball instead of assumed.
-
-Re-verified at `eea5680`, after the patch gained three hunks for attachment `cliMsgId`: all three
-install paths resolve zca-js at `node_modules/@ardennguyen/zalo-agent-cli/node_modules/zca-js` —
-nested under the package where hoisting cannot reach it — each carrying the patched bytes.
-Verifying the bytes arrive is not the same as verifying runtime behaviour; that was proved
-separately over a live socket.
+1. Work out what changed (endpoint paths, the `params` each call seals and their order, command ids, the announced
+   version). Reference material stays local (D11; the private notes in `agent/docs/`).
+2. For each difference, change the area module, re-record its golden file and review it, and add or update the
+   `allow` row if we deliberately differ.
+3. If the announced version moved, update `DEFAULT_API_VERSION` in `src/zalo/profile.js` and the docs that quote it.
+4. Run the gate, then the live tiers that cover the changed flows before releasing.
 
 ---
 
@@ -408,8 +419,8 @@ on-disk byte count equals its blob byte count, which is what makes the 24,000-by
 
 ### One WebSocket per account
 
-Zalo permits one web session per account. `listen`, `mcp start`, `sync-mobile` and a browser Zalo
-Web session cannot coexist; a duplicate closes the connection with code 3000, and that is fatal by
+Zalo permits one web session per account. `listen`, `mcp start`, `sync-mobile` and a Zalo session
+in a browser cannot coexist; a duplicate closes the connection with code 3000, and that is fatal by
 design.
 
 A non-inline attachment can only be sent over a socket, so `msg send-file` / `send-image` used to
@@ -454,7 +465,7 @@ The same change made the daemon log say what a stage is doing. `src/core/daemon-
 each stage's parameters, phases (with elapsed time), a once-a-minute "still running" line, and its
 result or failure; an event-loop stall monitor (the restore decodes and stores on the thread that
 answers the socket's pings); and the socket's age plus the running stage on every drop. Profile
-lookups (`src/core/user-info.js`) are paced, retried on a rate limit, stopped when it persists, and
+lookups (`src/zalo/custom/user-info.js`) are paced, retried on a rate limit, stopped when it persists, and
 log Zalo's own code and message, which had never been captured: the pattern that recognizes a rate
 limit (`isRateLimitError`) is a guess until a log shows the real text.
 
@@ -480,6 +491,10 @@ so default media is purged along with the account. Attachments written outside t
 configured `media.downloadDir` survive `logout --purge`, `logout --delete-history` and
 `account remove`. That gap is documented as a warning in `Security.md` / `Bảo-Mật.md` and
 `INSTALLATION.md`, and is **not** fixed in code.
+
+**A custom `media.downloadDir` survives a purge.** `wipeAccountDir()` removes only `CONFIG_DIR/accounts/<ownId>`, so
+media written to a directory named in `mcp-config.json` stays behind after `logout --purge` or `account remove`.
+Documented in `INSTALLATION.md`; not fixed (moved here from AGENTS.md §13 on 2026-11-06 for the byte budget).
 
 ### Every text attachment was downloaded and thrown away (2026-09-29)
 
@@ -583,9 +598,9 @@ Found in a single day, all by the same mechanism, none by reading code:
 
 | Command | Defect |
 |---|---|
-| `msg forward` | zca-js is `forwardMessage(payload, threadIds, type)` with `payload = {message}` and `threadIds` an **array**. The CLI passed the msgId string as the payload and a bare string as the thread list, so the API threw "Missing message content" on its first line — every type, both `-t 0` and `-t 1`. |
+| `msg forward` | The API is `forwardMessage(payload, threadIds, type)` with `payload = {message}` and `threadIds` an **array**. The CLI passed the msgId string as the payload and a bare string as the thread list, so the API threw "Missing message content" on its first line — every type, both `-t 0` and `-t 1`. |
 | `msg delete` | The same shape. |
-| `conv mute` | zca-js is `setMute(params, threadID, type)` with the **options object first**. The CLI passed `(threadId, type, duration)` positionally, so `params` got the thread id string and the request went out with `toid: 0`. |
+| `conv mute` | The API is `setMute(params, threadID, type)` with the **options object first**. The CLI passed `(threadId, type, duration)` positionally, so `params` got the thread id string and the request went out with `toid: 0`. |
 | `conv unmute` | The same call. |
 
 A fifth, different defect sat alongside them: **attachment sends always delivered**, but the
@@ -595,7 +610,7 @@ broken command — worth keeping distinct when describing it.
 
 ### Why the suite could not see any of them
 
-This CLI catches API failures and prints a clean `✗ <message>` line, then exits 0. An assertion
+Until 3.0 this CLI caught API failures, printed a clean `✗ <message>` line and exited 0. An assertion
 shaped like
 
 ```js
@@ -619,7 +634,7 @@ All five were invisible in normal operation, which is why none had a test. Fixed
 
 **A1 — the reconnect that actually happens recorded nothing, then claimed it had.** Gap filing sat
 behind `if (reconnectCount > 0)`, and `reconnectCount` is incremented only in the `closed` handler.
-Measured against a local `ws` server: **`closed` never fires for any code on zca-js's
+Measured against a local `ws` server: **`closed` never fires for any code on the old listener's
 `close_and_retry_codes` list** — it emits `disconnected`, retries internally, then emits
 `connected`. Those codes are precisely the *recoverable* ones, so on the ordinary drop path no
 `sync_gaps` row was written, nothing was printed, and `markConnected()` then asserted coverage over
@@ -655,6 +670,25 @@ while down, and a deliberate stop is not a drop.
 
 ---
 
+## The quota/retention purge: a fourth, delete-only writer (2026-11-08)
+
+The owner approved (at-rest phase 2, WP9) a fourth writer next to the listener, sync and `msg history`'s fetch: the
+quota/retention purge in `src/core/storage-quota.js`. It only deletes (plus the `mediaPrunedAt` marker that keeps a
+purged media file from being fetched again), and only the process holding `daemon.lock` runs it: the daemon's timer
+(`retention.purgeEvery`, 6h), or `db purge`, which goes through the daemon's channel (`POST /purge`) when one runs and
+takes the lock itself otherwise. A purge raises `sync_state.retentionFloor`; `insertMessage` and
+`insertMessageIfAbsent` refuse any row at or before it, so a later sync or history fetch cannot restore what was
+purged. The row MACs and search entries go with each row through their delete triggers, so `db verify` stays clean.
+Over a quota, caching goes on (zCloud's model): the purge runs only after `quota.graceDays` (45), oldest media first,
+then oldest messages, until usage (the database's pages in use, media files, the outbox) is at or under the limit.
+A tenant spread over several hosts is summed per host only: the console reads `/zalo/admin/usage` and pushes
+per-account caps.
+
+Also moved here from AGENTS.md §1 to keep that file under its size budget: the unofficial-API disclaimer is
+deliberately suppressed for `oa` commands.
+
+---
+
 ## The cache has exactly two writers, by decision
 
 Arden ruled on 2026-09-29, in response to a proposal that `msg send` write its own row:
@@ -673,7 +707,7 @@ wrong and was corrected.
 
 The tempting fix had a real cost behind it: Zalo's send response is `{msgId, cliMsgId}` with no
 timestamp, so a self-written row's `ts` would be an approximation (`Number(cliMsgId)`, the clock
-reading zca-js actually posted) that only self-corrects once the listener catches up. And AGENTS.md
+reading the send actually posted) that only self-corrects once the listener catches up. And AGENTS.md
 §13 already says one db writer per account, while an audit found `msg.js` and `conv.js` writing
 without taking the lock — so "just write it" would have been a decision about an existing invariant
 violation, not a fresh one.
@@ -749,7 +783,7 @@ later (webhook outbox, message buffer, pending gaps, stage lock).
 refreshes names concurrently. It was read, edited in memory and written back with a plain
 `writeFileSync`. Measured with six processes: writers lost each other's changes, a reader could catch
 the file truncated and not yet refilled and take it for "no accounts", and a damaged file read as an
-empty list, so the next `login` replaced it with a registry of one. `src/utils/atomic-file.js` now
+empty list, so the next `login` replaced it with a registry of one. `src/zalo/kernel/atomic-file.js` now
 holds the two guarantees, used by the registry (`src/core/accounts.js`), credentials, `mcp-config.json`
 and the OA credentials:
 
@@ -908,46 +942,50 @@ A Gemini-driven bot called `zalo_react` with wrong field names and a wrong `thre
 broken. The tool was right and the names were inconsistent: the live buffer called a message's id `id`, history and
 search called it `msgId`, a send reply `messageId`, `zalo_view_media` took `messageId` while every other tool took
 `msgId`, and `zalo_delete_message` took `uidFrom` for what every message calls `senderId`. A model copies a name from
-one reply into the next call; when the two differ it fails, and a weaker model cannot work out why. `threadType` has
-the same trap in its values: an input is the number 0 or 1, while a message reply shows the text "dm" or "group".
+one reply into the next call; when the two differ it fails, and a weaker model cannot work out why. `threadType` had
+the same trap in its values: an input was the number 0 or 1, while a message reply showed the text "dm" or "group".
 
-| Concept | Canonical name | Kept beside it in replies (never removed in a patch) | Notes |
-|---|---|---|---|
-| a conversation | `threadId` | | a user id for a DM, the group id for a group; group-only tools call it `groupId` (the same value); `me` is My Documents |
-| one message | `msgId` | `id` (live messages, webhook and `/events/wait` payloads), `messageId` (send replies) | every input is `msgId`; `quoteMsgId` and `lastMsgId` are msgIds with a role |
-| the sender's own id for a message | `cliMsgId` | | returned by a send; react and undo need it |
-| a Zalo user | `userId` | `uid` (group members) | a message's author is `senderId` (a userId); `@[userId]` mentions |
-| a message's author, as an input | `senderId` | | `zalo_search_messages` and `zalo_delete_message`; never `uidFrom` |
-| reading position | `cursor` | | from a read or wait reply, back into `since` or `zalo_mark_read` |
+2.5.8 fixed the names (replies carried the canonical name beside the old one; two inputs were renamed). **3.0 removed
+the old names and made `threadType` the words `"dm"` / `"group"` in every MCP input and reply** (the CLI keeps `-t 0|1`).
+
+| Concept | Name | Notes |
+|---|---|---|
+| a conversation | `threadId` | a user id for a DM, the group id for a group; group-only tools call it `groupId` (the same value); `me` is My Documents |
+| conversation type | `threadType` | `"dm"` or `"group"`, in inputs and in replies |
+| one message | `msgId` | every input and every reply; `quoteMsgId` and `lastMsgId` are msgIds with a role, `msgIds` several (zalo_conversation `seen`). Dropped in 3.0: `id` (live messages), `messageId` (send replies) |
+| the sender's own id for a message | `cliMsgId` | returned by a send; react and undo need it |
+| a Zalo user | `userId` | a message's author is `senderId` (a userId); `@[userId]` mentions. Dropped in 3.0: `uid` (group members) |
+| a message's author, as an input | `senderId` | `zalo_search_messages` and `zalo_delete_message`; never `uidFrom` |
+| reading position | `cursor` | from a read or wait reply, back into `since` or `zalo_mark_read` |
+| the action tools' objects (3.0) | `groupIds`, `photoId(s)`, `autoReplyId`, `quickMessageId(s)`, `catalogId`, `productId(s)`, `bankAccountId`, `stickerIds` | one name per kind of object, each from the listing action that returns it; never a bare `id` (a guard's `target` uses the same names) |
 
 Rules for whoever adds or changes an MCP tool:
 
 1. **Look the concept up here before naming a parameter or a reply field.** Reuse the canonical name. A new id name is
    a decision: add a row here and to `ALLOWED` in `tests/unit/mcp-naming.test.js` in the same change.
-2. **One name per concept in inputs, always.** A reply carries the canonical name; an older name may stay beside it as
-   an alias, because a client may already read it. Remove or rename a reply field only in a major version.
+2. **One name per concept, in inputs and in replies.** In a patch or minor release an old name may stay beside the
+   canonical one in replies, because a client may already read it; remove it only in a major version, and say so in
+   the release notes.
 3. **Rename an input only in a major version**, or when the old name cannot have been used, and say so in the release
    notes. Never accept two spellings of one input to be kind to a model: a strict schema with a clear description is
    what keeps the tools maintainable (the owner's ruling, 2026-10-29).
-4. **The same field name must mean the same kind of value in an input and in a reply.** `threadType` is the one known
-   exception (number in, text out), stated in the server instructions and in the `threadType` descriptions; a future
-   major should remove it.
+4. **The same field name must mean the same kind of value in an input and in a reply.** `tests/unit/mcp-naming.test.js`
+   checks `threadType` as the one value that was ever different.
 5. **Every id parameter says where its value comes from** (which tool returns it, under which name). The
    description test fails a parameter with no description, and a description that names a tool that does not exist.
 6. **When a model reports wrong field names or types, compare our names across tools first.** Blame the model only
    after the names agree.
 
 `tests/unit/mcp-naming.test.js` enforces the table (banned synonyms, the allowed id names, `msgId` and `userId` in the
-replies); `tests/unit/mcp-descriptions.test.js` enforces the descriptions and the server `instructions`
-(`src/mcp/instructions.js`, sent to every client on connect). The rules an agent that *uses* the tools needs are in
-those instructions and in the "Using the MCP tools" section of `skill/SKILL.md`.
+replies, no old names, `threadType` as the same two words everywhere); `tests/unit/mcp-descriptions.test.js` enforces the
+descriptions and the server `instructions` (`src/mcp/instructions.js`, sent to every client on connect). The rules an
+agent that *uses* the tools needs are in those instructions and in the "Using the MCP tools" section of `skill/SKILL.md`.
 
-## Long messages: what Zalo refuses, and how Web splits (2026-10-29)
+## Long messages: what Zalo refuses, and how a long text is split (2026-10-29)
 
 A companion bot on the MCP server reported sends refused with three different Vietnamese errors: "Tham số
 không hợp lệ" (114), "Lỗi không xác định" (112) and, in older log lines, "Nội dung quá dài". None of them
-said what was wrong. They are the server's size limits, and the Web client never trips them because it
-splits.
+said what was wrong. They are the server's size limits, and a sender that splits never trips them.
 
 **Measured live, 2026-10-29, on a disposable group (plain `sendMessage`, no Markdown):**
 
@@ -966,21 +1004,10 @@ JSON, somewhere between about 3.1 and 3.5 KB. A Chinese answer or a long bullete
 at a fraction of 3000 characters. The server echoes what it accepts byte for byte (newlines after an emoji
 included), so nothing is lost or rewritten in transit.
 
-**What Web does** (`default-embed-render` and `1.eddd…js`, read 2026-10-29; the config keys are
-`limitMsgByte` 3000 and `limitMsgCheckThreshold` 1500, overridable by `settings.features.limit_msg_byte`,
-which this build's server does not send): a text longer than the threshold is cut by `getTextToSend`: when its
-UTF-8 byte length is over 3000 it estimates the cut at `3000/bytes × length`, looks back up to two thirds of
-that for a newline, else the strongest of `" ,;)!?."` (a full stop strongest, and only before a space or the
-end), and sends the rest as the next message, trimmed, repeating. A styled message is cut by paragraph: each
-block costs `bytes(text) + bytes(JSON.stringify(its styles))` and a new message starts when the total passes
-3000. The parts are sent in order, `setTimeout(…, 300)` apart. Web's own fallback when no break is found is the
-threshold (1500 characters), which for Chinese would exceed the byte budget; it only works there because the
-plain limit is in units.
-
-**What `src/utils/split-message.js` does:** the same budget (3000 UTF-8 bytes of text plus styles JSON, counted
-for both plain and styled, so a long text in any script is cut where Web cuts it), the same preference
-order with the sentence marks of CJK, Indic, Arabic, Armenian, Ethiopic, Burmese and Khmer added (`MARKS`), a hard cut inside the budget when there is no break, never inside
-a surrogate pair or an `@[uid]` mention, ranges clipped and re-based per part, whitespace at a cut dropped. A
+**What `src/zalo/format/split-message.js` does:** a budget of 3000 UTF-8 bytes of text plus styles JSON, counted
+for both plain and styled; cut at a newline, else the strongest of `" ,;)!?."` (a full stop strongest, and only
+before a space or the end), with the sentence marks of CJK, Indic, Arabic, Armenian, Ethiopic, Burmese and Khmer added (`MARKS`), a hard cut inside the budget when there is no break, never inside
+a surrogate pair or an `@[uid]` mention, ranges clipped and re-based per part, whitespace at a cut dropped, parts sent in order 300 ms apart. A
 message that fits is returned untouched. `msg send` and `zalo_send_message` both use it; `urgency` and the quote
 go on the first part only; a part Zalo refuses stops the rest and the error says how many went out (nothing
 can take those back). Captions of files and link cards are not split (a different endpoint and limit:
@@ -1001,10 +1028,10 @@ bullets or headings, and the tool had no pass at all.
   its newline), a heading as a bold line, and bold inside an item as a second overlapping range. The cached
   `raw_data` of such a message is `action: "rtf"` with `params.styles`; a message we send with `styles`
   comes back from Zalo in exactly that shape (checked live, both senders).
-- **`src/utils/markdown.js` is conservative where Markdown is ambiguous**, because most text is not
+- **`src/zalo/format/markdown.js` is conservative where Markdown is ambiguous**, because most text is not
   Markdown: `snake_case` (an underscore inside a word never opens emphasis), `2 * 3 * 4`, a lone `*`, an
   unclosed `**` and `5 > 3` stay as written; an emphasis marker must hug its text. Ordered lists keep their
-  numbers as typed, as Zalo's clients do, instead of relying on `lst_2` numbering; links become
+  numbers as typed, as Zalo does, instead of relying on `lst_2` numbering; links become
   `text (url)` because Zalo links a bare URL itself. An `@[uid]` mention token passes through whole, so
   `@[123](x)` is not read as a link.
 - **Order: Markdown, then mentions, then `shiftStyles`.** The ranges are counted before `@[uid]` expands
@@ -1019,6 +1046,368 @@ bullets or headings, and the tool had no pass at all.
   size render as intended is for a person to confirm on a phone.
 
 ---
+
+## v3.0 development: rules that differ from v2.5 (2026-10-24)
+
+`v3.0-dev` is a long-lived branch in its own worktree; `v2.5-dev` stays shippable and is
+never edited by v3.0 work. What differs while v3.0 is in progress:
+
+- **Nothing observed from Zalo's own clients is committed.** Captures, reference material,
+  reports, redacted samples and the scripts that make them live under `agent/`
+  (gitignored). Git receives product code, tests and rules. A test that needs to know what
+  Zalo expects uses a shape written by hand (`tests/helpers/replay/shapes.js`), with
+  names and fixed values only.
+- **No npm release, and no release candidate, until the v3.0 work is finished and approved.**
+  The branch is pushed after green commits as a backup; that is not a release.
+- **Compare with the expected wire format through the harness, not by eye.** The fake Zalo
+  (`tests/helpers/fake-zalo/`) and the replay harness (`tests/helpers/replay/`) exist for that;
+  see the "Checking requests against the expected wire format" section of `tests/README.md`.
+- **Identity values live in `src/zalo/profile.js`**: the announced version and type, the computer
+  name, the device label and the browser presets. Change one there, never at a call site.
+
+## The socket supervisor, and what a phone's "no" looks like (v3.0, 2026-10-24)
+
+**Where it lives.** `src/zalo/socket.js` keeps one socket alive (it drives the engine's `Listener`, started
+with no retry of its own); `src/zalo/retry.js` is the arithmetic of "when do I try again";
+`src/core/socket-host.js` is what `listen` and `mcp start` do around it, written once so the two cannot differ.
+
+**A duplicate session ends the daemon.** The old recovery ladder (the listener's own retries, then a login after 5 s, again after
+30 s, then exit) reconnected on a duplicate-session close until its retries ran out. Each reconnect evicted the
+other session, which reconnected and evicted this one: the flapping §13 describes, produced by the daemon itself.
+Now the duplicate frame (`cmd 3000`), a frame with `error_code 600` or an HTTP 600 puts the supervisor in a terminal
+`kicked` state; the daemon releases its lock and exits with code **3**, and only a person taking the account back
+(`takeover()`) leaves that state. A saved login that Zalo refuses three times in a row exits with code **4**. (3.0
+on-demand presence: an on-demand daemon **yields** on a kick instead of exiting and refuses every request with
+`YIELDED` until the user confirms `presence resume` (owner decision 2026-11-08: no automatic take-back); a refused
+login leaves either kind of daemon up as `signed_out`, refusing with `SIGNED_OUT`, because Zalo keeps one web login
+per account and a QR login into Zalo in a browser elsewhere is what revokes ours; `ZALO_EXIT_ON_SIGNED_OUT=1` keeps exit 4.) A
+login that fails for lack of a network is asked again, slowly, for as long as it takes. The shipped systemd unit
+has `RestartPreventExitStatus=3 4`, so neither is restarted into the same state.
+
+**Retries follow the server's table.** `settings.features.socket` carries a per-key `{times, max}`; every close is
+mapped to a key by Zalo's rules (1006 asks the network first, 1001-1015 is `internal`, Zalo's own
+codes keep their number), the delay is spread by `retry_noise_factor` and a week of persisted error history, a
+spent key rotates to the next endpoint, and after that the delay is Fibonacci and never ends. A key the server did
+not describe waits the last default delay; the old listener threw a TypeError there.
+Differences, all on the slow side: the counters start over only after a connection has stayed authenticated for a
+minute, and a close that nobody asked for is brought back by the 10 s interval check.
+
+**A phone's "no" is not an empty window.** The restore decided that the phone had confirmed with `status >= 4`.
+Statuses 6 to 10 (rejected, cancelled, busy, low storage, signed out) are all above 4, so a rejection read as
+"confirmed, and this window has nothing", and the run recorded success and closed the coverage gap it was meant to
+repair. Only 4 and 5 confirm now; 6 to 10 end the run with the phone's reason, release the session with reason 2
+(0 for a cancel) and record nothing. Batches that fail are failed per partition, not per shard, a batch the phone
+sends twice is one batch, a session with an `isLast` batch is finished only when every earlier index has arrived,
+and a run stops after ten failed batches or when more than half of ten or more have failed. The wait for a
+confirmation is ten minutes. The rules are in `src/zalo/transfer-sync/transfer.js` as pure functions, so they are tested
+without a phone or the decryption assets.
+
+**Why a kick happened (L12b).** After a kick, Zalo answers why on `POST {aext}/api/session/kickout-info` (form
+`token=<viewer_key>`). The `{viewer_key, enk}` pair is the getLoginInfo answer's `auth_ext_info` (not `zcloud`, which
+Zalo answers with error 112); `login.js` keeps it in the context and `src/zalo/kickout.js` reads it, so the socket host
+can hand every supervisor a `kickoutInfo` that needs no key from the caller. The reply is sealed with `enk`, not the
+session key a kick has just ended, in the session cipher's shape. The host logs the server's own words for the source
+(`kick_out_config`) and the time. The lookup returns null for any failure and never raises: the kick is already handled.
+
+**The reason used to be lost (fixed 2026-11-06).** The supervisor emitted `kicked` and only then asked for the reason,
+and the daemons' `onKicked` calls `process.exit(3)`, so the process was gone before the answer came and the "Zalo says
+why" line never printed (the tests emitted `kickout-info` on a stub and could not see it). `kicked` now carries the
+lookup as `reason` (a promise that resolves to the answer or null, never rejecting); the host waits for it at most
+`KICK_REASON_WAIT_MS` (5 s), then writes `kicked.json` (`via`, `at`, `reason`) in the account folder and exits. The
+next `connected` removes the file, and so does a successful `login` or `account login`. Without it a kicked daemon was simply gone: `fleet status` said `stopped`, the
+`kicked` state of the health snapshot lived only as long as the process, and nothing on disk said a kick ended it.
+There is no `--takeover` flag: the way back is to stop the other session (or accept losing it) and start the daemon,
+which clears the marker when it connects.
+
+## The saved-session login is ours, and what it sends (v3.0, 2026-10-25)
+
+**Where it lives.** `src/zalo/login.js` logs in with a saved session and hands the result to the engine's api
+object (`createApi` in `src/zalo/api.js`), which every area module and the listener read. `Zalo.login()` is no longer used for
+this (the QR login still is). `src/zalo/headers.js` adds the browser headers, `src/zalo/upkeep.js` the two timers.
+
+**What the login sends:** `getServerInfo`, then `getLoginInfo`, then `getServerInfo`
+again. Both server-info calls carry `sp_mtn` and `bkt`: the `settings.features.dr_config` values the last answer
+held (`supportMaintenance`, `bucketId`), kept in `accounts/<ownId>/dr-config.json`, or -1 and -1 when none are
+stored. The first adds `viewerKey` when one is stored, the second `floatMenuPos` (sent as the text `null`), and the
+`signkey` covers every field of its own call. `getLoginInfo` announces the version as `client_version` only: no
+`zpw_ver`, no `zpw_type`. Parameters are encrypted unless the server's `authen.encryption.enable` says otherwise,
+and an answer of error 19000 means "not encrypted, please": we ask once more without encryption. HTTP 500-504 on
+`getLoginInfo` is asked again every 10 s for up to 120 s; every login call has a 10 s timeout; the npm registry
+is never asked anything. The server's key is `setttings` (three t's) in some answers; both spellings
+are read.
+
+**Cookies are written back.** When a login changed the cookie jar (name, value, domain, path or expiry; access times
+are ignored) the saved credentials are rewritten atomically at 0600. Whether Zalo rotates cookies is unverified (it
+needs days of use, see the P7a notes); the write is harmless when it does not. A login that does not know its account (a first QR login) saves nothing.
+
+**Browser headers.** `sec-ch-ua`, `sec-ch-ua-mobile`, `sec-ch-ua-platform`, `priority: u=1, i` and
+`sec-fetch-dest/mode/site` are derived from the saved User-Agent, so a session shows one coherent browser. A
+User-Agent that is not Chromium (an old login made with a Firefox one) gets the `sec-fetch-*` headers only.
+`cache-control`, `pragma` and `dnt` are not sent.
+
+**Upkeep.** Settings are asked again every hour. A keepalive runs only when the server's `settings.keepalive` asks
+for one (`alway_keepalive`, or a `keepalive_duration`; 120 s when 0), is reset by other requests and stops after
+`time_deactive` seconds (300) without one. The settings seen so far asked for neither, so by default we add no
+keepalive traffic.
+
+**The offline CLI preload stubs the login calls, not a login method.** `tests/unit/support/offline-session.js`
+used to replace `Zalo.prototype.login`; our login never calls it, so the preload now answers `getServerInfo` and
+`getLoginInfo` at the fetch level and the real login code runs in every offline CLI test.
+
+## `logout` signs the device out, and says so only after looking (v3.0, 2026-10-25)
+
+**Why it changed.** The old logout (the production `GET api/login/logOut`, then `logoutV2`) ended only the session
+*key*. The saved cookie kept logging in and the phone kept listing the device (measured 2026-09-30). Zalo's own
+sign-out is six calls, and on a test account the saved cookie was refused after them. `src/zalo/official-logout.js`
+makes those calls in the official order: a token from `id.zalo.me/jr/logout-token`, `profile/deactive`, the `v2`
+logout on `stg-wpa` (time in unix seconds), `id.zalo.me/account/logout` with the token, each `setsid` URL the answer
+lists, and the login page. The same six run whether local data is kept or deleted; that choice is local.
+
+**What the code does not trust.** The `setsid` URLs come out of a page Zalo served, so only `https` URLs on
+`jr.zaloapp.com` and `jr.chat.zalo.me`, path `/jr/setsid`, are followed. A failing step does not stop the others (the
+key can be ended without the token); steps that need the token are skipped without one.
+
+**"Signed out" is claimed after a look.** `serverLogout` probes the session key (as before) and, when the caller gives
+it the saved login, tries that login once in a login of its own (`probeSavedLogin` in `src/core/zalo-client.js`:
+no session is set, no timers run, nothing is rewritten). Zalo refusing it (error 600, or a login that fails) is the
+only success line; a login that works is a warning; anything else (no network, a timeout, nothing saved to try) is
+"unverified". `--keep-session` is the pre-v3.0 key-only logout, unchanged, and still deletes the credentials locally.
+`account remove` uses the official sequence too.
+
+**Seen live, 2026-10-25.** On the test account: a QR login with the official flow, `whoami`, a 274 s `listen` with no
+drop, then `logout --delete-history`. All six steps answered; the same saved cookie, tried again afterwards, was refused
+with error **102** ("the session key was improperly submitted or has reached its timeout"), where the old logout left it
+valid. Zalo wraps that refusal in a *sealed envelope* (`{error_code, error_message, data: null}` inside the encrypted
+`data`), and the first version read the envelope as login data, which printed "context init failed" and an
+"unverified" verdict. `unseal` in `src/zalo/login.js` now tells the two apart; 102 and 600 both count as a refusal.
+
+**Left for the release:** the public wiki still describes the old logout. It is updated with the v3.0 release,
+not before: a wiki push is public immediately.
+
+## The official QR login (v3.0, 2026-10-25; the second QR added 2026-10-27)
+
+`src/zalo/qr-login.js` is the official QR login sequence. The legacy flow (removed in 3.0.0) differed: it announces
+`continue=https://zalo.me/pc` to three calls, calls `verify-client` (which the official sequence never does), leaves out
+`cliGenQR`, and ends with a `jr/userinfo` request. The official sequence is the login page, `logininfo`, `generate` with `cliGenQR=1`, the `waiting-scan` long poll (asked again while the answer is 8),
+**the second QR when the scan asks for it**, the `waiting-confirm` long poll with the proof as `bundle`, then `checksession`
+and the redirects it starts: `syncsession`, `pushsession` (which sets `zpw_sek`) and the chat page.
+
+**The second QR (the "swapped" QR), and why the first official version failed.** On 2026-10-25 a login with the first
+version (`cliGenQR=0`, no `bundle`) worked. On 2026-10-27 the phone said "QR is not valid" to it twice, and the scan answer
+carried no display name. The login page does what
+this client did not: it asks for the QR with `cliGenQR=1`, shows the server's image, and when the phone scans it the server
+answers `status 4` with `new_qr_supported: true`, a `master_id`, the account's `chatUid`, and a **new `code` and `token`**.
+The page then makes a second QR itself, from that token, with its trusted-device WebAssembly module, shows it in place of
+the first (that is the swap), and polls `waiting-scan` again on the new code. That answer carries the name and
+`link_data {enc_link_hmac, enc_link_data}`; the module turns it into signatures, and `waiting-confirm` sends them as
+`bundle` (base64 of `{encLinkMetaData, encAccSign, encDeviceSign, encCompPubKey}`). The confirm answer carries the device
+list (`devices`). The first version took the status-4 answer for the scan, confirmed on the first code, and the phone
+refused it. What is not known is why the same login worked on 2026-10-25 with `cliGenQR=0`: whether the server began to
+ask every chat-domain login for a second QR, or the account's state changed. Both working logins used `cliGenQR=1`,
+so that is what the code sends now.
+
+**How this client makes the second QR.** `src/zalo/trust-wasm.js` runs the page's own module in Node: the login script
+names it (`https://stc-zlogin.zdn.vn/wasm/libzproto_wasm_bg.<hash>.wasm`), so it is fetched from the page at login time
+(`loadTrustFromPage`, cached by URL) and never shipped in this repository. The loader around it is ours: the
+`wasm-bindgen` calling convention (a table of JS values behind small integers, strings and bytes copied through the
+module's allocator, a four-word result slot on its stack), for six calls: `zprotoEd25519GenerateKeyPair` (33-byte public
+key, 32-byte private key), `zprotoTrustGenerateLinkingSecretKey` (32 bytes), `zprotoTrustGenerateLinkingQr(publicKey,
+secret|undefined, qrToken, timestamp, platform, relinkId|undefined)` (a 129-character text), `zprotoTrustGetRelinkId`,
+and `zprotoTrustCreateCompanionLinkingProof(publicKey, privateKey, secret, primaryLinkingData, linkingHmac, platform)`.
+Facts checked offline: the platform is 1, the timestamp is milliseconds (the app's
+clock), the QR's error correction is H for a text under 150 characters and M above (`src/zalo/qr-image.js` draws it as a
+PNG), and `link_data` is plain base64 (the module parsed a real answer to the MAC check, where
+hex or UTF-8 failed at the encoding). The module throws plain `{code, message}` objects, not Errors; the loader converts
+them, keeping `code` (`TrustInvalidKeyType`, `TrustInvalidDataEncoding`, `TrustInvalidLinkingMAC`, ...).
+
+**This client becomes a companion device.** A confirmed login with a proof adds it to the account's trusted-device list,
+which the phone signs. The identity (key pair, linking secret, link id, primary key, the device list the server
+answered) is kept in `accounts/<ownId>/trusted-device.json` at 0600 (`src/zalo/trust-store.js`; a secret, never logged,
+gone with the account's data), written only after the login went through. The next login on the same account finds it
+and links again as the same device (a relink id, no secret in the QR) instead of adding a companion each time; a refusal
+(`-21`) clears it and the login is run again.
+The device list is stored as the server sent it; its signature is not verified here (the phone and the server do).
+
+**What each way out does with the identity (decision D19, 2026-10-28, owner ratified the companion device).** `logout` and `logout --delete-history` keep `trusted-device.json` (a history delete removes `zalo.db` and `media/` only), so the next QR login keeps the same device id (and with it Zalo's offline queue for this device); `logout --purge` and `account remove` remove the account's folder with it, and say that Zalo still lists the entry on the phone until it is removed there (`describeTrustedDevice`, `src/core/logout.js`). `account devices` marks which entry is this CLI by matching the saved `companionId`. Seen live 2026-10-28: after two QR logins on one account the list holds one CLI entry, not two. Measured again 2026-11-09: each QR login adds a new entry to the phone's device list and logs the older entry out; the device id is kept, so the offline queue carries over. `describeTrustedDevice` says so.
+
+**Status.** Offline, everything above is covered: the fake `id.zalo.me` follows the expected sequence whole (the replay
+harness reports no difference), the module's calls run in tests on the real wasm when `ZALO_TRUST_WASM` points at a copy,
+and a stand-in for the module is asserted on in the unit tests. **Live, 2026-10-28:** two QR logins on the same account
+went through with `cliGenQR=1`: the first scan was answered with status 4, the second QR (layer 2) was scanned, the phone's
+Confirm ended the login, and the saved session answered `whoami` and `status` from a separate process. The second login
+found the saved identity and went through the same two scans. So the official flow is the default again
+(`resolveQrFlow`, the docs that name it); `ZALO_QR_FLOW=legacy`, which selected the old flow, was removed in 3.0.0. Checked afterwards (`account devices`): the list shows one CLI entry after the two logins, so the relink works. The live run also showed that the browser tab's
+keep-alive connection held the process open after the login; the QR server now unrefs its connections.
+
+**The QR page.** `src/utils/qr-http-server.js` serves a plain login page (white card, the QR in a frame with blue corners,
+one line of instruction, no script or style from elsewhere), in English and Vietnamese: the `lang` query, then a saved
+choice, then the browser's language, with a switch under the card. It follows the login: it says when the code was
+replaced by the second one, who scanned it, and when it is done. Text that comes from the phone is set as text, never
+markup. The command-line login prints the same hint for the second QR and `--json` gives each QR a `layer`.
+
+**A header trap that cost a real bug.** The old request helper merged headers by key, case-sensitively, and spells its
+own defaults `Accept`, `Origin` and `Referer`. A caller that passes `origin` besides it sends both, and a real fetch
+joins them into one value (`https://chat.zalo.me, https://id.zalo.me`). The fake records headers through `Headers`, which
+joins the same way, so the tests assert the exact value. The fake also follows a redirect itself unless the caller said
+`redirect: "manual"`, as fetch does, so a flow that forgets it loses the cookie each hop sets and a test fails.
+
+## The sync request channel, and what a restore now waits for (v3.0, 2026-10-25)
+
+**Where it lives.** `src/zalo/transfer-sync/channel.js` sends the `590` request and the `591` release and reads their
+acknowledgements; `download.js` fetches the batches. `SyncV2.restore()` no longer builds frames itself.
+
+**Every request is acknowledged, and the restore waits for it.** The ack is `{reqId, err, ts}` on the same command.
+It is awaited for 10 s; a refused request (`err` not 0) is sent again after 1 s and 2 s, three attempts in all; a
+timeout is not retried (the answer may only be late, and the phone may already be preparing), nor is error 211 ("this
+client is not supported", reported as such). A timeout on a socket that has closed meanwhile is reported as a closed
+socket, which the restore then answers with a reconnect (one then; three since 2026-10-28). Requests are ack-paced: each goes out after the one
+before it was acknowledged, instead of on a 600 ms timer. The cap of four sessions in flight stays: it is ours, and a full-history run on the test account (421,000 messages)
+completed with it. *(Superseded 2026-10-28: every session is now asked up front, in waves of up to 30 sessions; see
+"A restore in waves".)*
+
+**Counters.** `reqId` is `req_<n>` from one counter; `ussidx` counts the sessions of a run from 0 (it was 0 for every
+session, and `reqId` carried the session id). `deviceName` stays the honest label (decision D4).
+
+**A release names why.** 0 cancelled, 1 finished, 2 failed, 3 outdated, acknowledged within 3 s and three attempts. The
+phone's own "no" releases with its reason; a run that did not settle its window releases with 2 (it always sent 1
+before, and twice for a session already released). A session released before its request was acknowledged is released
+the moment the ack lands. Sessions are written to `accounts/<ownId>/sync/open-sessions.json` when requested and
+forgotten when their release is acknowledged; a run that died leaves them there, and the next run releases them with
+reason 3 before it starts. On a dead wire releasing fails at once rather than waiting out each ack.
+
+**Downloads.** A batch starts downloading when the phone announces it, two at a time, 60 s each, three retries one
+second apart; 404 and other refusals are not retried. One that cannot be downloaded fails its scopes (they count among
+the failed batches and can stop the run) instead of being skipped without a word; a conversation list with a missing
+batch ends the run, because a list with a hole in it is not a list.
+
+**Smaller parts.** A sender that does not resolve, and a `gid/decrypt` batch that fails (a rate limit excepted), are
+asked for twice more after 0.5 s and 1.5 s. The restore's own heartbeat now defaults to the interval the server advised
+at login (180 s), where it was a third of it: a live socket held 274 s on the server's interval alone. A daemon's
+restore still runs it besides the supervisor's pings (same cadence); that is redundant, and left alone because two guard
+tests pin it.
+
+## Queue items are acknowledged after the write, and the connect-time pulls (v3.0, 2026-10-25)
+
+**The acks (Y10, D7).** Zalo wants to be told which queue items a client holds, and repairs what it was not told
+about. `src/zalo/queues/queue-verify.js` sends the `532` frame `{queueName, ids: [{actionId}], nretry, reqId}` once
+`max_msg_verify + 2` ids are pending or `interval_verify` (30 s as seen) has passed, and reads the answer
+(`error` 0 done, 1 some items never reached us and follow as `534` pushes, -1 stop verifying on this connection). The
+rule is the order: **an id is acknowledged only after the row it names is committed to zalo.db.** A live push is
+acknowledged when every message in it is stored (`noteDelivered`, after the storing handler), a `534` re-push after
+it is stored and handed on. (An offline page was acknowledged too until 2026-11-10; see below.) A write that failed
+(`storeHistoryMessage` now says `failed: true`, as against a row it deliberately skips) holds the acknowledgement
+back, so the server delivers the item again. A new connection forgets what was waiting on the old one. Offline batches are
+not verified: since 2026-11-10 this client acknowledges none (next section). **Seen live (2026-10-25):** an ack is `{queueName, ids: [{actionId}], nretry, reqId}` and Zalo
+answers `{error: 0, reqId}`. **Still not seen:** the server's own settings for our identity, and the `534` payload.
+
+**The catch-up drains every queue at once, under one deadline, and acknowledges nothing while it runs (2026-11-10;
+superseded on 2026-11-12: queues are drained one at a time again, see below).**
+Seen live four times out of four at a daemon start after a long offline window: `510_1` drained (267 rows), then
+`511_1` got no page within the 10 s per-page wait, the server answered our acks with "stop verifying", and `603_1`
+timed out too; a wake minutes later drained everything. We drained the queues one after another, sent a `532` for
+every drained `510_1` row before even asking `511_1` (an ack flood the size of the backlog), and gave up on one
+10 s silence.
+
+The change (`src/core/self-heal.js`, `src/zalo/queues/offline-queue.js`, `src/core/control-replay.js`): every
+message queue and control queue is asked before any answer can arrive and drained side by side, each from its own
+cursor; `timeoutMs` is the whole catch-up's deadline (480 s by default), and a socket that closes ends the drain at
+once (`closed`) instead of waiting it out. Offline rows are stored and move the cursor, but are never acknowledged.
+A handshake puts the verifier on hold (`hold()`); live and `534` acks confirmed meanwhile wait and go out when the run
+ends, finished or not (`release()`). A run past its deadline does not reconnect: the socket supervisor owns every
+reconnect (AGENTS.md section 13), so it is reported "not finished", its gaps stay pending, and
+the next connect or wake asks again.
+
+**A silent queue is not waited out (2026-11-12).** The first daemon start on that build asked `510_1`, `511_1` and
+`603_1` and got no accepted answer on any of them for the full 480 s: nothing recovered, the gaps left pending, the
+catch-up (and the stage lock) held for 8 minutes. On the wire every queue answers in ~100 ms, an empty one included
+(`more: 0`, empty arrays), so silence never means "empty"; and a reconnect is exactly what answered here before (a wake minutes later: every queue in under 300 ms). Changes:
+one page is waited for at most `DEFAULT_PAGE_TIMEOUT_MS` (30 s; a
+cold control answer was once seen past 10 s) inside the 480 s budget, then the queue ends `timeout` on that socket;
+an answer with no `reqId` is taken (every other reader of the stream, `buildPull`, sends and
+gets back its own reqId), one naming another request is logged and skipped; and the socket tap logs a frame on a
+subscribed cmd it cannot read (`unreadableReason`: not JSON, or an `encrypt` body that did not decode and whether a key
+was set) instead of dropping it silently. The next start's log says which of "never sent", "sent but not ours" or
+"sent but undecodable" it was. Acks confirmed during a timed-out run still go out at `release()`: they are ids this
+client stored, so sending them on the same socket loses nothing.
+
+**Asked at once, Zalo answers only the first queue: drain one at a time (2026-11-12).** With those logs in, every start
+and every wake on the at-once build showed `510_1` answered and `511_1` and `603_1` silent, no stray answer and no
+undecodable frame: Zalo sent nothing for them. So group messages and group events (a disband included) that happened
+while an on-demand daemon was parked never came back; before 5c99017 (one queue after another) every wake answered all
+three in 0.1-0.3 s. Reproduced on the test daemon, restarting on the same cursors: asked one after another, `510_1` and
+`511_1` drained in 21-30 ms each and `603_1` answered (twice); asked at once, `511_1` and `603_1` stayed silent until the
+30 s page wait. Why the at-once ask is not answered here is not known; do not go back to it without a live run that shows every queue answering. The catch-up
+now drains the message queues in `qCmds` order and then the control queues, one at a time, sharing the one 480 s
+deadline (`src/core/self-heal.js`, `src/core/control-replay.js`); the rest of 5c99017 stays (no `532` for offline rows,
+the verifier held until the run ends).
+
+**Disband, removal and own leave are told apart by `extraData`'s keys (2026-11-12, corrected 2026-11-13).** All
+three reach the member as one `leave` control naming it in `updateMembers`, with no `leaveType`. No event named disband or disperse exists (disperse is only the outgoing `/api/group/disperse`). Six live
+samples on the test account, live and recovered from the offline queue after a park:
+
+| What happened | `extraData` keys | `sourceId` |
+|---|---|---|
+| owner disbands, live | `prjName` | the owner |
+| owner disbands, replayed after a park | `prjName` | **us** (the 603 replay rewrites it) |
+| we leave, live and replayed | `featureId` | us |
+| owner removes us, live and replayed | none (`{}`) | the owner |
+
+The first rule (2026-11-12, "a `leave` someone else did is a disband") labeled both removals `disbanded` and the replayed
+disband `left`. `exitReasonOf` now goes: explicit `leaveType`; `prjName` without `featureId` is `disbanded`, our own
+disband included (the group is gone for everyone, which a leave is not); `featureId` is `leave`; no marker and `sourceId` someone
+else is `removed`; otherwise `leave`. `remove_member`/`block_member` keep their act's meaning. The
+`[groups] our leave of …` line records the key names and who did it relative to us and `creatorId` (never ids).
+
+**Leave and disperse (2026-11-13).** The group is read before either. An owner (`creatorId` is us) leaving a group
+with other members must choose the next owner ("Chọn trưởng nhóm mới trước khi rời"): a choice runs
+`changeGroupOwner(group, newOwner)` and then `leaveGroup(group)`. The server also accepts an owner's plain leave and
+picks a random owner; that is `--random-owner`. An owner alone just leaves.
+Disperse ("Giải tán nhóm") deletes the group for every member and is the owner's menu item. `src/core/group-departure.js`
+plans (reads, refuses before anything is sent) and runs each, so the CLI and `zalo_group` ask their confirmation in
+between. Mutual groups: a profile's "Nhóm chung (N)" is `/api/social/profile/extra` `groupIds` (cmd 11864), minus groups
+in hidden chats; `/api/friend/group/related` (11439) serves friend suggestions. Both answered "Tham số không
+hợp lệ" for one valid-looking account id from the test account; the cause is unknown.
+
+**One request counter, and `reqId` on every pull (X5, Y7).** `src/zalo/req-id.js` is the process-wide `req_<n>` counter
+the sync channel, the offline-queue drain and the pulls share. `installOfficialPulls` makes the listener's old-message
+and old-reaction pulls (510, 511, 610, 611) send `{first, reqId, lastId, preIds}`: the old listener sent `req_id`, a key Zalo does not
+expect. `src/zalo/pulls.js` also has builders for the connect-time requests we do not send (the pulls of 515, 517, 518
+and 603, the key-id request 564, the conversation-state request 577, the paged action list 537). They are not wired
+to anything: what the server answers to them has not been decoded in a session of ours, and a pull may consume what it
+returns, so sending them blind could lose items. A controlled live session is the next step.
+
+**The control queues (X4).** Every `601` names the cursors of `603_1`, `603_0` and `604_0`. They are kept (forward
+only, in `sync_state` like the message queues') and a control this client has no handler for is named once in the log.
+Nothing acknowledges a control: they are acted on in memory, not stored. (Since the closing sweep the cursors are also used:
+see "Connect-time pulls" at the end of this file.)
+
+## A restore remembers what it settled, and a partial run is not a success (v3.0, 2026-10-25)
+
+**The table.** `sync_ranges` (in `zalo.db`, `src/core/db.js`) holds, per conversation partition (the phone's opaque
+`oneone/<id>` or `group/<id>`), the window a restore settled for it and whether that is `done`, `failed` (with why) or
+`pending`. `src/core/sync-v2/ranges.js` is the arithmetic: a partition settled for a window that covers this one, up to
+its last message, is skipped; one settled only up to an earlier last message is asked for from there (incremental); the
+rest in full; an unfinished range for a conversation that is gone is dropped (an orphan). `--full-resync` ignores it all.
+
+**What changed in a run.** Each shard's partitions are settled after the shard is stored: done when the phone served
+them (or the session finished), failed when it reported them failed or a batch could not be downloaded, pending when
+the session ended early (a resume asks for those). A failed partition is asked for once more in the same run, in
+sessions of its own; if it fails again it stays failed for the next run. **Only a run that settled its whole window
+records success** (`lastSyncOkAt`); a partial one used to, so the "synced recently" shortcut could hide the rest of
+the work. `checkSyncFreshness` also refuses to skip while a range is pending or failed (`unfinished-ranges`).
+
+**A conversation the phone no longer has** (error **502**, `PartitionNotFound`; seen
+on the wire 2026-10-28, see Y8 above) has its range dropped and is not asked for again, and it is no failure. **Not done.** The client-side
+`MSG_IMPORT_FAILED` (keep the range for the next run) has no equivalent here: a row that cannot be written is skipped
+without a word, as it always was. Y5d is implemented as dropping orphans: what "promoting" them would mean is
+not clear. The shortcut's one-hour age rule stays (readiness from ranges alone would
+let `sync` never ping the phone again, a change of behavior nobody asked for); only unfinished work overrides it.
+The resume asks the phone to confirm again: the conversation round is always sent first.
+
+**The test harness.** `tests/helpers/fake-zalo/phone.js` plays a phone (acks, statuses, batches, failures, a decline)
+and serves the batches from a fake download host; `SyncV2.restore` takes `opts.codecs` (the decryption and decoding),
+so `tests/unit/sync-v2-restore-flow.test.js` runs the whole restore, request to released session, against it. It is
+the only test that runs the real restore; the unit tests of the parts cannot see how they are put together.
 
 ## `npm run format` covers `src/` and `tests/` only
 
@@ -1103,3 +1492,714 @@ The fix is never to push or merge such a branch. Take its diff, apply it onto th
 (where the leaked files are already fake), let `tests/unit/no-real-ids.test.js` prove the result
 is clean, and delete the old branch. Merging it instead would put every scrubbed value straight
 back on GitHub — exactly what the rewrite undid.
+
+## Finishing P0 to P3: what was closed, and what was decided against (v3.0, 2026-10-25)
+
+**Ctrl+C in a restore (Y6b).** `SyncV2.restore()` takes `opts.signal`. An abort is looked at between waits: while a
+session waits for the phone, before each wave, and before the one retry round. A stopped run keeps every shard it
+already stored, asks for nothing more, releases the sessions still waiting with reason 0 (cancelled) and the ones that
+had finished with reason 1, records no success, and resolves `reason: "cancelled"` (not an error, so `sync` can say
+what was kept). `src/utils/interrupt.js` wires SIGINT to it for `sync` and `sync-mobile`; a second Ctrl+C exits 130.
+A restore routed through a daemon is not stopped by the CLI's Ctrl+C: the daemon's stage runs on, and stopping it from
+the channel is a separate change.
+
+**The maintenance question carries the stored numbers (L3).** `GET {maintenance}/api/chk?bkt=..&spt_mtn=..` takes the
+`bucketId` and `supportMaintenance` of the `dr_config` the session's login learned (`maintenanceKeysOf`), for the
+supervisor and for the wait after a login that failed with 70.
+What 71 means is still an inference (an announced window; it does not block).
+
+**The official QR is the only QR login** (`ZALO_QR_FLOW=legacy` was removed in 3.0.0); see the section above.
+
+**Decided against, with the reason.**
+- *Copy-then-delete when a Windows rename keeps failing (X7).* Not added. A copy over the target is not atomic: a
+  reader or a crash can see half a file, and these files hold credentials and the account registry. After the
+  2 s retry window the write fails loudly and the old file is intact, which is the better failure. The retry never ran
+  out in any measurement.
+- *Re-reading `archivedchat` and `recentsearch` on recovery (X2).* Not applicable: this client keeps no copy of
+  either list (`conv archive` reads the list from Zalo each time it needs the version), so there is nothing to refresh.
+- *Domain rotation and the `config_vesion` refresh (L2d, L2e).* The login has one host, and the refresh needs the
+  keepalive answer, which has not been seen. Left until a live capture shows it.
+- *A red-first reproduction of the old listener's TypeError on a missing `retries` entry (L11a).* The supervisor
+  never lets the listener retry (`retryOnClose: false`), and the retry engine's tests pin the replacement (an
+  undescribed key waits the last default delay, key 3003 included). The old listener is gone, so there is nothing
+  left to reproduce.
+- *Encrypt 2 and 3 on the fake socket (P0).* The fake plays plain frames. The cipher path our own code reads
+  (`decodeFrame`, used by the restore and the socket tap) has unit tests for both, and the listener's frame decoder (`src/zalo/listener/frames.js`) has its own.
+
+**Still needs a live session (a QR login).** `agent/work/probe-pulls.mjs` (local, not committed) sends the pulls 564, 537,
+577, 515, 517, 518 and 603 one at a time to the test account and prints only the shape of each answer; it refuses to
+run outside the test home and refuses the consuming pulls without `--i-accept-consuming`. Also open: a full-history
+restore past the four-session cap (Y4b), a `532` ack with a real message (Y10), and the keepalive
+question (L9).
+
+## What the first live full-history restore found (v3.0, 2026-10-25)
+
+Measured on an account with 2,367 conversations and about 750,000 messages; two defects, both old, neither seen by an
+offline test because the fake phone's conversations are tiny.
+
+**The restore stalled its own event loop (`findMessageByClientId`).** A synced message without a server id is stored
+under the id of an already-stored live row with the same client id, found by `json_extract(raw_data, '$.cliMsgId')`.
+That read and parsed the JSON of every row of the thread, once per message: 190 ms per lookup on a 42,000-row thread.
+A CPU profile of the daemon (46 of 113 s in that one function, 9.6 s more re-preparing its statement) showed the
+event loop blocked for 5 to 77 s at a time; pings went unanswered and Zalo closed the socket (1006). The same cause is
+the likeliest reading of the September "1006 at batch 0" runs. There is now an index on the client id (`idx_messages_cli`,
+with the same `json_valid` guard, so a lookup must use `CLIENT_ID_EXPR` to use it), the lookup sorts its few matches
+itself because an `ORDER BY` made SQLite walk the timestamp index instead, and the statements are prepared once per
+connection. 20,000 lookups take 150 ms. The index builds in 0.3 s per 57,000 rows, once, at the first open.
+
+**The phone serves about 32 open sessions and then stops.** Message sessions were released only at the end of the run
+(only the conversation session was released at once). The first full run stored 29 shards, had 3 in flight, and went
+silent; the phone then showed no sync status, and the next start found 32 sessions open to release as outdated. The restore now lets go of a session when it has what it
+asked for: each shard's session is released
+as soon as it is stored (finished, or failed when it had an error), in the retry round too. The channel sends one
+release per session however many callers ask. *(Superseded 2026-10-28: a run's sessions are released together, not
+one by one as each is stored. The restore releases a wave together, in bursts of four.
+What stays true is the cap: about 32 sessions open together.)*
+
+**A live kick (L12b), 2026-10-26.** Opening Zalo in a browser on the account while the daemon ran: the socket closed with code
+**3003 and the reason `KICKOUT_BY_WORKER`**; the supervisor, treating 3003 as retryable, reconnected 2 s later and the
+new socket was refused at once with error 600, which ended the daemon (exit 3, "Another Zalo session took this account").
+The newcomer is the one the server refuses, so the extra reconnect evicts nobody. The saved login was then refused (102):
+a kick by a browser login ends the saved session, and the next start needs a QR. The `kickout-info` lookup first answered HTTP 200
+`{error_code: 112, data: null}`: it had been given the zCloud viewer key, which is not the right one. The right pair is
+`auth_ext_info: {viewer_key (334 characters), enk (24)}` in the **getLoginInfo** answer. With it the lookup answers error 0 and a sealed
+`data` that opens, in the session cipher's shape with `enk` as a base64 key, to `{kickoutSrc: 2, kickoutTs}`;
+`kickoutTs` is the second the session was replaced. What the source means is the server's own table,
+`settings.features.kick_out_config[src]`: source 2 is titled "Device changed" ("You previously logged into Zalo on a
+different browser"). The listener now logs that text and the time. Treating 3003 `KICKOUT_BY_WORKER` as terminal at once was considered and not done: 3003 is also in
+Zalo's retry list, and a wrong guess would end a healthy daemon.
+
+**The 3.0.0 live check, 2026-11-06.** On the new code, one browser login (a fresh QR login on the same account)
+logged the kick (error 600), then `Zalo says why: Device changed …` 80 ms later, wrote `kicked.json` and `fleet status`
+said `kicked`; the next connect removed the marker. A browser tab already logged in to another account kicks nothing. An
+unread mark set on the phone while the daemon was stopped came back with the 603 replay (`replayed 1 control(s)`).
+`friend alias` and `alias-list` are not routed through the daemon: each makes its own HTTP login, opens no socket and
+does not disturb the daemon (the daemon logs the resulting `alias update` control as unhandled). **A reply sent from the
+phone quotes with `globalMsgId: "0"`** and only the quoted message's `cliMsgId` (equal to that message's own
+`cliMsgId` in the cache); `replyTo.msgId` is therefore resolved from the cache by thread and `cliMsgId`
+(`resolveReplyTo` in `src/core/cached-message.js`), and every message carries its own `cliMsgId`.
+
+**Auto sync at login (Y8), 2026-10-26.** With "auto sync" ticked on the phone's QR confirmation, the phone puts two
+`transfer_sync2 / transfer_after_login` controls in the control queues (603_1 and 603_0), stamped at the login:
+`{temp_key (64 characters), imei: null, pc: 0}`. The one to use is the latest that has a key and `pc` 0 (`pc` 1 is an offer for the
+desktop app), and the key goes as `tempKey` in the conversation request. Live: the request went out
+15 s after the login with that key and the phone showed no prompt (no status 3 at all); the same request with a key 765 s old
+got the prompt. `login --sync` does this (`src/core/sync-v2/auto-sync.js`): it reads the control the moment the
+socket is up, accepts a key up to two minutes old (our request goes out after about 15 s,
+and the limit is only a guard), and puts the key in the conversation request only. It is an explicit command: the daemon
+never starts a phone-backed stage by itself.
+
+**`login --sync` seen end to end, 2026-10-28.** Official QR login with both scans, "auto sync" ticked, Confirm: the key was
+in the queue 3 s after the login ("the phone offered auto sync 3 s ago"), the conversation request carried it, and the
+restore ran to its summary with no prompt on the phone: 862 messages from 48 conversations (2,318 others were already
+settled by earlier runs and not asked for again; the key works with the resume). One partition answered **502**
+(`PartitionNotFound`): it was dropped as designed, and its session was released as failed while the other batch finished
+and its 121 messages were stored. So the 502 is now seen on the wire, and the batch that holds such a partition ends
+`(failed)` in the release line without anything else going wrong.
+
+**What the phone does while Zalo is in use.** Zalo open and in use on the phone seems to pause the transfer; leave it
+idle for a long restore. This is not proven (the run that went silent also had 32 sessions open).
+
+**Other live results.** A window of 30 days (13,910 messages) restores in under a minute; a full restore stores 90,000
+messages in its first shard. Every 590 and 591 is acknowledged with `err 0`; a `532` for a live push is answered
+`{error: 0}`; the pulls 515, 517 and 518 answer in the shape of the old-message queues; 603/0 and 603/1 answer pages
+of 50 `transfer_sync2` controls with `more`; the keepalive answers `{config_vesion}`, and a change in it now refreshes
+the settings at once.
+
+## Search: what Zalo does, what we do, and what it cost (v3.0, 2026-10-26)
+
+**What Zalo does:**
+search is local, in the client's own store. The keyword and the text are folded alike by `simpleStripVietnamese`
+(lowercase, every Vietnamese vowel with its marks to the bare letter, `d` for `đ`), then matched as a substring; the
+keyword is at most 100 characters; a hit is shown as 70 characters before the match and 30 after; results come in
+pages and the footer says how far back the local data reaches. No ranking exists in the code (F10): results are in time
+order. The media tab filters by sender, by a substring of the title (folded), by extension group and by a date range
+that is whole days. We follow all of that except the extension groups. The server switch `enable_matching_enhance` is
+off for everyone and is not followed either.
+
+**What we do.** `src/utils/vn-text.js` is the fold: it strips exactly the eight Vietnamese marks (grave, acute, tilde,
+hook above, dot below, breve, circumflex, horn) from a, e, i, o, u, y, and leaves every other letter alone (`ñ`, `ç`
+and `ü` keep theirs). It is built on decomposition, so the composed and the decomposed
+spelling fold alike. `messages.text_norm` holds the fold of `text`; the three message writers keep it (every one of
+them goes through `insertMessage`, `insertMessageIfAbsent` or `markMessageRecalled` in `db.js`, so nothing else had to
+change). Rows written before the column existed are filled in once from `text` and never from `raw_data`, only where
+the fold is empty. That backfill and the index below are **derived data, not message writes**: no `text`, `type` or other
+column changes, and running them beside a live daemon changes nothing it should not.
+
+`src/core/search.js` is the search: a keyword cut to 100 characters, `accents: "fold"` (default) or `"exact"` (the fold
+finds the candidates and the accents are checked on each, case-insensitively and in either Unicode form), filters (thread,
+sender, dates, types), pages keyed on `(timestamp, msgId)` so a message arriving meanwhile shifts nothing, the tabs'
+numbers (matches by type), context around a hit, previews, and the coverage note (how far back the cache reaches, whether
+a phone restore has finished, the pending gaps and the `sync --from` command). `msg search` and `zalo_search_messages` are
+thin around it. `msg search` is marked local-only, so the program's pre-action login is skipped: it reads `zalo.db` and
+nothing else.
+
+**The index, and why it is built the way it is.** Measured on a copy of the 421,000-message test account while the machine
+was at 100% CPU for other reasons: a scan of `text_norm` costs 0.8 to 2 s, and 6 s for a keyword nobody wrote. An FTS5
+trigram index of `text_norm` (+53 MB on 384 MB, 17 s to build) answers a rare keyword in 3 ms and the tab counts of a
+common one in 0.14 s; a global `(timestamp DESC, msgId DESC)` index (5.5 s to build) lets a short or very common keyword
+stop after its first twenty hits. They cannot be built in one go beside a live daemon (a long write lock would make its
+writes fail), so `ensureSearchIndex` builds a slice per search, up to 2 s: the fold first, then the triggers that keep the
+index current **before** the existing rows are indexed (so no row falls between), then the rows in slices of 20,000 with
+`INSERT OR REPLACE` (indexing a row twice is harmless, and an interrupted run carries on from its saved place). Until it is
+done a search scans and folds on the fly the rows that have no fold, so it is correct from the first call; the FTS only ever
+narrows candidates, and the LIKE on `text_norm` still decides, so the index can change how fast a search is, never what it
+finds. The first search after upgrading starts the build; `initDb` only adds the column (instant), so no other command pays. Measured on the copy: the first search folds 386,000 rows in about 22 s (one time, with a progress line in `msg search`), the next three take 3 to 5 s while the index is built in slices, and from the fifth a common keyword takes 0.25 s, two words 33 ms, a keyword nobody wrote 6 ms, an exact-accents search 0.8 s. Finishing the fold in the foreground is deliberate: when most rows have no fold, scanning them with the fold done on the fly costs as much (27 s), so a slice-sized budget would only add waiting. An MCP client sees the same 22 s once, on its first search of a cache that big.
+A tombstone's text is `[deleted]`, which stays in the index and is never returned (deleted rows are filtered out).
+
+**Not done, on purpose.** An extension filter for files (not worth a table here).
+`ensureSearchIndex` is not run by a daemon at start, because a slice per search needs no coordination; a daemon that
+searches little would finish the build on its first dozen searches. The wiki pages (EN and VN) are updated with the
+release, like the logout pages.
+
+## zCloud: what the queue means, and what we do (v3.0, 2026-10-26)
+
+**How the queue works:** on each cmd 621 `mycloudMedia` push it walks the verify queue from its saved last noise id and applies
+every page, newest reset first. An `add` entry is stored. A `remove` entry carries the messages it removes in
+`msgInfo.extInfo.orgMsgs[{type, uidFrom, uidTo, clientDelMsgId}]`, and each becomes the key `cliMsgId_conversation_sender`
+(a 0 standing for the account, a DM's conversation being the other side, a group's id carrying a `g` prefix in Zalo's
+key). A `del_thread` entry clears a conversation's items older than its client timestamp (the first `orgMsgs` entry's
+`uidTo`, or the group for a `group.leave`). A `reset_cloud` entry empties the store except the self chat (`send2me_id`),
+and drops the page's entries that are older than it. `temp` and `duplicate` do nothing. The id of the last page is
+saved, and the push is acted on at most once in 30 minutes. The old `sync-cloud` recorded `add` entries and only counted
+the rest, so a recall, a cleared chat or a reset left items in the index for good.
+
+**What we do.** `applyQueuePage` in `src/core/sync-v2/zcloud.js` is that page logic; `syncCloudIndex` applies each page
+as it arrives and calls `onPage` with the place to resume from, which `sync-cloud` saves after every page and keeps when
+the walk is complete (the old code threw it away then, so every run started from the top). The keys are computed the same
+way (`cloudKeyOf`, `removalKeysOf`, `threadClearOf`), in this database's own conversation spelling (a group's id without
+the `g`). `cloud_items` gained `zKey`, `seenAt`, `keyVersion` and `algoVersion`; rows written before get their key
+from `raw_data` at the start of a walk. `--full` walks from the top and, only when the server has said it is done and
+nothing failed, deletes every row no page of that walk stamped: the mark-and-sweep for an index the incremental walks left
+stale. It never deletes before the end, so an interrupted full walk loses nothing. The store is not wiped first, because a
+failed walk would then leave nothing.
+
+**cmd 621 in the daemon** (`src/core/cloud-verify.js`, built identically in `listen` and `mcp start`). The live payload is
+`{"mycloudMedia": {pageSize, lastNoiseId, forceVerify, onboardingCompleted, auditLocalCloudQueue, correctCloudKey}}`
+as plain JSON in the frame's `data.data`. Rules: only after a person has run `sync-cloud` once (the first walk reads
+the whole queue, megabytes for an old account); nothing when the push's `lastNoiseId` equals the saved place; at most
+once in 30 minutes; never while another stage holds the lock (it takes the lock with `tryAcquire`, never waits); at most
+20 pages, the next push continues; the four forcing fields are read and ignored (`sync-cloud --full` is the explicit
+form); and **never an acknowledgment**: the onboarding ack after a first verify, `submitMediaExtInfo`,
+`reset`, the QoS and migration calls all change what Zalo does with the account's cloud, and none of them is ours to send.
+
+**Transport rules** (`zcloudGet`). A refused viewer key (-1, -205) is dropped, and we
+fetch a new key once and repeat the GET, which is one extra request, so a stale key from the login does not fail the first
+call of a run. After a refusal the login's key is never used again (it is known stale), which a first version got wrong:
+the dropped key fell back to the login's. Server code 112, a dropped connection, an unreadable reply and an HTTP 4xx/5xx
+are retried after 0, 5, 5 and 10 s; a 4xx/5xx moves to the next zCloud domain of the service map; every other code,
+-201 included, fails at once. An error reply's own payload is decrypted and kept on the error (`error.payload`). Download
+URLs are asked for through a 500 ms window (ended early by 50 waiting callers or 100 waiting ids), 100 to a request, and
+reused for 60 s, no longer, because a signed URL is not something to write down.
+`usage-mycloud`, `family-usage` and the family viewer key are read-only reads (`getMyCloudUsage`, `getFamilyUsage`,
+`getFamilyViewerKey`); nothing calls them yet, and which key the family reads want is not measured.
+
+**Item shape.** The blob's key and versions are the item's top-level `encryptInfo {encryptKey, keyVersion, algoVersion,
+cloudUrl}`. `mediaInfo.mediaExtInfo {data, encryptInfo {encryptKey, encryptVer}}` is the file-name and thumbnail
+metadata under a different key; it stays in `raw_data` and is never taken for the blob's key. Nothing is decrypted.
+
+**The key is out of scope (decision D8), and this is why it is a decision.** Reading names, thumbnails or blobs needs the
+account's RSA private key, which Zalo's own apps get from the phone: `GET req_cloud_key` opens a pending transfer, the phone
+user approves, and the key arrives on the chat socket as a `personal_cloud` control, wrapped in a Signal-style message
+addressed to the account's own E2EE session. Taking part needs a registered E2EE device identity, a state-changing step on
+the account whose effect on other devices is unknown, plus secure storage, key-version and `correct_cloud_key` handling and
+free-plan removal. None of it is built, and no live request for it was made.
+
+## Reads: Zalo's read-only endpoints (v3.0, 2026-10-26)
+
+**What it is.** `src/zalo/reads.js` is a table of 41 reads (42 until the todo reads were removed on 2026-10-28; 40 at first; the closing sweep added `blocksharing-list` and the local `voice-transcript`): for each, the service-map host, the path, the
+command id and the body it encrypts into `params`. They all use the session cipher (a GET with `params` in the query, or a POST with `params` in the form
+body); the two login-host reads (`check-update`, `server-settings`) have plain replies, with `data` unencrypted.
+`callRead` sends one; `buildRead` shows the request without sending it. Surfaces: `read list` and `read run`
+(`src/commands/read.js`) and the MCP tool `zalo_read` (`src/mcp/mcp-tools.js`). A test keeps the table to reads: no path
+of it names an update, removal, send, seen mark or the like.
+
+**Live check.** They were run on the test account, with shapes printed and values not. 35 answered at first; `pin-list` (added
+by P7a) and `offline-check` (answered `{}`, `0`, `0` with a list of ids and `evict`) made 37. The other three, the `todo-*`
+reads, answer `-69` ("stop retry"), which the zCloud report reads as a server refusal, so the account probably has no todos
+feature (their request shape is untested). Nine more were in the first table and are **not offered** because Zalo
+answers them with 404 or an error: `cm/getpath`, `cm/mget`, `cm/rgetv2`, `group/analyse`,
+`message/get_backupmsginfo`, the sticker `category/list` and `recommended`, and the GIF by-category and by-dictionary
+reads. A known method is not evidence that an endpoint is alive. The group-history reads we use (`getrecentv2`,
+`getoldv2`) are the ones seen answering live.
+
+**What the live check corrected.** `check-update` answers 1001 ("Item not found") to this client's version, which is an
+answer (no update information), not a failure. `server-settings` replies with plain JSON, not the session envelope, which
+`resolve` cannot read, hence the `reply: "plain"` flag. `friend-verify` takes an array of `userId_version` strings, not a
+map. A group's `message-status` needs `{tId, ids}`, with the message ids. `important-messages` pages back from a `lastId`;
+a `newestId` of 0 is refused, so the newest page is a `lastId` past every id. `last-messages` accepted both shapes of its
+argument; its answer is queue-shaped, with message arrays, so it is a read of what Zalo holds, never printed in tests.
+
+**Not done, on purpose.** The state-changing endpoints (plan 6.2) are not in the table and are added one at a time with the
+owner's approval. AI translate (`translate/v1/setting` and the rest) is dropped for now (D5): its GET goes through a transport
+not yet studied. The emoji-status pair carries `{imei}` as its body, which the live account accepted.
+
+## Writes: Zalo's state-changing endpoints (v3.0, 2026-10-26)
+
+**What it is.** `src/zalo/writes.js` is a table of 27 writes (33 until the todo writes were removed on 2026-10-28; 24 after P7a; the closing sweep added nine) on the same request path as the reads (`src/zalo/web-call.js`, which `reads.js` and `writes.js` share), each with its host, path, command id and body. Surfaces: `write list` and `write run` (`src/commands/write.js`) and the MCP tool `zalo_write`. The owner approved building all four groups of plan 6.2; the first version was written and tested offline, and P7a (2026-10-27) then ran them on a disposable group ("Việc riêng - AI test", whose members are the owner's accounts) and on the owner's companion account. **14 of the 24 were seen to work; 10 were not, for reasons recorded in each entry's `note`.** Two more (`profile/mode`, `closefr/update`) answered 404 and were removed. Guards: each entry has a `risk` (`private`, `visible`, `destructive`); `callWrite` takes `dryRun` and then sends nothing and returns the request with its body decrypted; `write run` refuses without `--yes` (or `--dry-run`) and `zalo_write` without `confirm: true` (or `dryRun: true`); tests keep the `verified` set exact and keep the table's endpoints and names disjoint from the reads, which a test holds to reads only.
+
+**Built, with what the body is.** The multi-recall (`multi_undo`, `multi_undomsg`) sends, per message, a fresh client id,
+the original's client id (`cliMsgIdUndo`) and its global id. The group note and reminder writes (`topic/createv2`,
+`updatev2`) are the revamp builder's v2 branch: `pinAct` instead of `needPin`, `repeatRule` and `onlyMe` when given, `params`
+as a JSON string, or `{}` (not an empty string) when absent. Pins use `pinv2` and `unpinv2` (GET), `pin/update` (POST) and
+`multi_unpin` (GET). The todos are `board/personal/todo/*` and `board/personal/delete`; several of them are GETs that change
+state, which is why the table carries the method per entry and `risk` does not follow it. `group/kickout/multi` removes ONE
+account from several groups (`grids`, `member`), not several members from one.
+
+**Left out, and what would be needed.** (1) The sending flows that upload or re-send content: `photo_url` is a re-send path
+whose request goes through a helper (`transformParams`, then `_postSendMsg`) that adds fields; `sendpt`, `sharefile`,
+`sendmp3`/`voicemp3`, the GIF and video chunk uploads and `upthumb` are multi-step uploads; the engine already sends images,
+files and videos. A local mp3 as a voice message can be had by uploading the file the way `msg send-file` does and sending
+the URL with `msg send-voice`. (2) `convlabel/manage/*` and
+`blocksharing/*`: only their paths and command ids were known then,
+and block sharing is a zBusiness feature (error 829 when not allowed). `label update` still takes a raw label payload.
+(3) `voice2text`: no request shape was known. (4) The receipts: the legacy `seen`/`delivered` forms and `subtab/seen`
+change what other people see, and the v2 forms are already sent.
+
+**The numbers, traced (P7a, 2026-10-27).** They are Zalo's enums: a board item's type is
+`text 0, link 1, message 2, poll 3, reminder 4` (a reminder is a `text` topic with a start time and
+an emoji; `reminder 4` is the board's own label for it), an RSVP answer is `none 0, accept 1, reject 2`, a todo's status is
+`waiting -1, inProcess 0, done 1`, the account's presence mode (the `user_mode` of its profile, 0 on the test account) is
+`available 0, away 1, busy 2, invisible 3`, and the source of a multi-group removal is `unknown -1, profile 0,
+mediaStore 1, contextMenu 2, operate 3, reviewRetry 4, suggestion 5`. A repeat rule is the RFC 5545 string Zalo
+expects, `RRULE:FREQ=<DAILY|WEEKLY|MONTHLY|YEARLY>;INTERVAL=1;[BYDAY=MO,TU,..;]`, sent as a JSON array of one string in
+`repeatRule`, with the legacy `repeat` code beside it (daily 1, weekly 2, monthly 3, yearly 4) and `onlyMe` as 0 or 1 (also
+inside the topic's `params`); both fields go together or not at all. **Not traceable:** the close-friend action
+(`closefr/update` answers 404), a suggestion's `src` and `type`.
+
+**What the live runs corrected.** `unpinv2`, `pin/update` and `multi_unpin` name a pinned item as `{topicId, topicType}`,
+not as a bare id (a bare id answers 114), and need the pin board's version from `board/pin/list` (the new `pin-list` read).
+`recentsearch/update` takes `{id, type[, last_update_time]}`, not the shape `recentsearch/list` returns. A reminder is not in
+`board/list` (it is in `board/listReminder`), so a cleanup that lists the board misses it. The `multi_undo` family
+returns `{data: {<new client id>: <value>}, status: 0}`. `kickout/multi` really removes the member from each listed group
+(checked on the disposable group; the member was added back). `topic-create` with `onlyMe` is honored (`onlyMe: 1` comes
+back). `sync_action/media` accepts an empty list. The todos answer `-69` (feature off for the account). `profile/mode` and
+`closefr/update` answer 404. What a send returns: `message.msgId` and `message.cliMsgId`; the recall needs both.
+
+## P7: the live verification sweep and the hardening (v3.0, 2026-10-27)
+
+**P7a, what was run live** (test account, a disposable group "Việc riêng - AI test" whose other members are the owner's own
+accounts, and the owner's companion account as the target of anything that touches a friend; ids are never written
+down). Reads and writes are in the sections above; the rest:
+
+- **Board and message writes** all worked as recorded in the Writes section, after three corrections the live run forced
+  (the pin refs, the search-history items, the repeat-rule serialization). Everything created was removed again, and the
+  Companion account was removed from the group and added back.
+- **`sync-cloud`**: a first walk to completion (two runs, resumed from the saved place), then `--full` over all 102 pages
+  (35,994 items kept after 466 `remove` entries were applied; nothing to sweep). The queue's removals are real and numerous,
+  which is what Z1 was for. Resuming from a page-100 cursor gave exactly the last two pages.
+- **cmd 621**, in a real `mcp start` and a real `listen`: with the saved place behind the server's, the daemon walked two pages
+  and recorded 560 items; with it level, it did nothing and said so (that line, `notice (cmd 621)`, was added by this pass:
+  before it, "nothing to do" was silent and indistinguishable from "never arrived").
+- **A real MCP session** (the SDK client over stdio): 27 tools, `zalo_read` listing and running, a missing argument refused,
+  `zalo_write` refused without `confirm`, a dry run, and a real write.
+- **Soak**: `listen` stayed up 30 minutes on the test account with no drop, no kick and no retry; self-heal recovered the
+  messages missed while it was down, and the delivered receipts went out. `unknown-acts.json` was not written, which means no
+  action it does not know arrived in that time.
+
+**Not run, and why.** (1) The consuming pulls `515`, `517`, `518`, `603`: they may remove what they return from the server's
+queue, and the account is the owner's real one. (2) The listener on a real network cut: it needs someone to switch the
+network off and on. (3) A restore without the four-session cap: not needed, see the sync section. (4) A non-empty
+`sync_action/media` list, a real `oa-block`, a real suggestion for `recommend-remove`: nothing disposable to aim them at
+(`recommend-remove` and `recommend-seen` were seen working on 2026-10-28, see "The Companion checks").
+(5) The three todo writes and reads: the account answers `-69`.
+
+**P7b.** X10: `src/core/unknown-acts.js`, attached identically by `listen` and `mcp start` (a test reads both files' syntax
+trees): an action the server pushes (`602`, or an unhandled `601` control) that nobody handles is named once in
+`unknown-acts.json` of the account folder, with its first and last time, its count, the command that carried it and the key
+NAMES of its data (never the values). Bounded (200 names), counts written back at most once a minute, never throws into
+the socket. Since 2026-10-28 it also notes a socket COMMAND that is neither handled nor named in `KNOWN_COMMANDS`, as
+`cmd/<cmd>_<subCmd>` in the same file (the socket tap's `onAny` gives it each frame's header; the body is decoded once, on first
+sight, for its key names): 533, 570 to 578, 592, 604, 614, 620, 623 and 800 had been seen on the wire and left no trace.
+L16: decided against, see below. L17: comments and notes made true (the 532 ack shape, the pulls' answers, the
+four-session cap's reason, the cookie note).
+
+**L16 (optional boot reads), decided against.** The reads exist on demand (`read run server-settings`, `blocklist`, the zCloud
+usage reads); nothing of ours consumes them at boot, and a boot that makes calls nobody needs is traffic that is not free for
+the account. They can be added where a feature needs one.
+
+**Error 71 (corrected in the closing sweep).** The maintenance check (`maint.chat.zalo.me/api/chk`,
+sent with the stored `bkt` and `spt_mtn`) answers `{error_code, data: {startTime, endTime}}`, the times in milliseconds. What
+the answer means: 0 ends the check (the servers are fine); 70 while the app is running
+reloads it into the maintenance screen, and 70 while it is starting keeps re-checking; 71, running or starting, means "continue
+checking": the app stays up and the check goes on. Between checks it waits by one rule, `s(window, now)`: inside the announced
+window an hour, from the window's end (or with none announced) a minute, and before the window a flat 0 ms (which asks in a
+loop; this client waits a minute there instead). That rule applies in the 70 loop too, so during an announced window even a
+live maintenance is asked about hourly, not every minute.
+
+What is built (`src/zalo/maintenance.js`, `socket.js`, `core/socket-host.js`): `checkMaintenance` returns the window;
+`pollDelayMs` is the rule above; `waitOutMaintenance` waits by it; and after a 71 the supervisor (or the host, when the 71 came
+while logging in) starts `watchMaintenance`, which keeps asking by the same rule while the socket carries on: a 0 ends the
+watch, a 70 sends the socket back into the maintenance wait. The question goes out
+through the account's own fetch, so a proxied account's question leaves by its proxy. The earlier text of this note said the
+poller asked hourly after a 71; it did not (a 71 only let the login proceed, and the unused hourly constant was removed).
+
+What 71 means on Zalo's side (a notice before a window, or a degraded service) has never been observed, because Zalo was not
+in maintenance during any observation; what is built is what to do with it, not why. That cannot be closed by a test and is
+recorded here as such.
+
+## The closing sweep before P8 (v3.0, 2026-10-27)
+
+The owner asked for every open item of P0 to P7 to be closed or answered before the docs and release phase. This is what
+was found and done; each item says whether it was closed by code, by a live run, by evidence, or
+by a decision, and the few that need the owner's hands are listed at the end.
+
+**Two defects found by looking, both older than 3.0 (the second is also in 2.5).**
+
+- *Every proxied account failed to log in.* `createProxyFetch` handed an `undici` 8 `ProxyAgent` to Node's global
+  `fetch`, which has its own undici (7.30 in Node 24.22): the pair fails every request with "invalid onRequestStart
+  method", reported as "fetch failed". No offline test had ever sent a request through a proxy. It now uses the
+  package's own `fetch`; `tests/unit/proxy-fetch.test.js` sends through a local proxy and goes red on the old pairing.
+  The maintenance question and the supervisor now go out through the account's own fetch too, so a proxied account's
+  question leaves by its proxy.
+- *A restore wrote a row it could not write into an empty `catch`.* A full disk or a locked file left a hole, the
+  conversation was marked restored and the run said "complete". The failure is now counted (`rowErrors`,
+  `firstRowError`), the partition is settled as `failed` (`write-error`) so the next run asks again, the run is
+  `partial`, and `sync` says how many rows and why. This closes Y2b
+  (`MSG_IMPORT_FAILED`).
+
+**Error 71 and the maintenance gate (L3).** Corrected: nothing "asks hourly after a 71". The rule is
+`s(window, now)`: an hour inside the announced window, a minute from its end or with none, and (before the window) 0 ms,
+which would ask in a loop, so this client waits a minute there. 71 is "continue checking": the app stays up and the
+check goes on, and a later 70 reloads it into the maintenance screen. Built: `pollDelayMs`, the window read from the answer,
+and `watchMaintenance`, which the supervisor (after a 71 in the maintenance wait) or the host (a 71 while logging in)
+starts, and which hands a 70 back to the supervisor as a new maintenance wait. What 71 means on Zalo's side was never
+observed; that cannot be closed by a test.
+
+**The saved login never renews (cookie rotation, L8).** In every session observed (a few minutes to a long session)
+the chat session cookie `zpw_sek` (90 days) is set exactly once, by `jr.chat.zalo.me/jr/pushsession`
+at login, and cleared at logout; `zpsid` (a year) likewise; no API answer re-issues either. A renewal call
+(`exta/rnw`) exists, but nothing calls it. So nothing extends a login, and the useful thing
+to build was the date: `src/core/session-expiry.js` reads `creation + max-age` from the saved jar, `whoami` prints it
+(`sessionExpiry` in `--json`), the daemons log it at start, and the health snapshot warns from 14 days before
+(`session`, `zalo_session_days_left`). Never a cookie value.
+
+**Login host rotation (L2d).** There is one `authDomain` for `getServerInfo` and `getLoginInfo`; there is no
+rotation to follow. Closed by evidence.
+
+**Ctrl+C on a restore routed through a daemon (Y6b).** The channel now has `POST /sync/cancel`: it aborts the running
+stage's signal, which `traceRunners` forwards (that wrapper dropped a third argument; a test caught it) to `restore()`;
+`restoreViaDaemon` in the CLI sends it on the first Ctrl+C, and a second quits at once. Walking away without asking still
+does not stop a stage.
+
+**A real network cut (the plan's open live test).** A local CONNECT proxy that can be cut and restored, with
+`ZALO_NET_PROBE` pointed at it, carried a real `listen`: (1) connections reset for 25 s and for 120 s: the socket closed 1006,
+one retry (`interval_check`, 1.1 s) came about 2 s (25 s case) and 6 s (120 s case) after the network returned, self-heal closed each gap, no
+relogin; (2) a black hole for 60 s (sockets open, no bytes): the socket stayed up through it (no ping was due, and a network that is
+down is not a reason to close a socket); the bytes the test proxy had dropped then broke the stream at its release, which
+is an artifact of the test, and the reconnect and the gap recovery worked; (3) a black hole of 215 s across a ping: the echo did not come, the socket closed under 5011, then 5012
+(establish timeout) every ~18 s with the endpoint rotated after the table's five, and the unanswered queue ack was dropped after
+three tries; after the network came back it reconnected and recovered. The hammering the old ladder would have done did not
+happen. Not tested: a cut that leaves some hosts reachable (a captive portal).
+
+**What the live login settings say (L11, the retry table).** The server's own table for this account has the same shape as
+the defaults in `src/zalo/retry.js` (5012 and 5011 `max` 5, 4001 `max` 8 with `[2000, 3000, 5000, 8000]`, `5008` with five longer
+steps, `rotate_error_codes` `[5011, 5012, 4001, 5008]`, `ping_interval` 180000, `reset_endpoint` 600000); the server's values
+win over the defaults whenever the login carries them, which it does. It also carries `chat_label.api.update_label_version: 2`
+and `v2t.transcribe.enabled: true`, and no `task_setting` at all.
+
+**The ping echo (L10).** A real ping is `2/1 {eventId: <number>}` and its echo is `2/1 {eventId: <number>}`, the id at the top of
+the frame body: the supervisor's first reading. Closed.
+
+**zCloud reads (Z6).** `getMyCloudUsage`, `getCloudUsage`, `getFamilyUsage` and both viewer keys were run live: all answer;
+the family key is a separate pair of the same sizes; the family usage list is empty (no family plan). Closed.
+
+**Todos.** The six todo writes and three reads answer `-69` because the todo feature needs
+`settings.features.task_setting.enable`, and this account's login settings carry no `task_setting`. The request shapes
+stay unverified here; another account may have the flag.
+
+**New surface found (D5: build all but AI translate).**
+
+| Endpoint | Result |
+|---|---|
+| `convlabel/manage/{add,update,delete,reorder}` | built (`label-add`, `label-update`, `label-delete`, `label-reorder`) and all four seen working live on a throwaway label; the account's settings select exactly these (`update_label_version` 2) |
+| `message/gif`, `group/gif` | built (`gif-send`, `gif-send-group`), seen working in the disposable group and in the Companion DM; the arguments are what the GIF picker's result carries |
+| `friendboard/reorder` | built (`pin-reorder-1on1`), seen working on the Companion DM (two pins reordered, then removed) |
+| `aifeatures/voice2text` | built (`voice-to-text`): the answer is only a request id; the text arrives as a `601` control `voice2text/convert_finish {req_id, err, text, url, has_more}` (the first real unknown action `unknown-acts.json` ever caught). `src/core/voice-text.js` keeps it in `voice-text.json` (both daemons, identically), and the local read `voice-transcript` returns it. Seen end to end |
+| `conv/blocksharing/{getConvers,updateConvers}` | the list read answers; the write answers 829 "zBusiness accounts only" on this account |
+| `recommendsv2/remove`, `read-requests` | alive, need a real suggestion or request (the `src` and `type` of a suggestion are the server's own `recommSrc` and `recommType` of the list item; `type` 1 is a suggestion, 2 an incoming request) |
+| `oa/block`, `oa/unblock` | answered error 0 for a real Official Account (block, then unblock, on one the owner named); no profile, block-list or mini-profile read showed the flip, polled for three minutes (a friend block shows at once in the same read), so the effect could not be seen from the CLI. Tried on Skyline VMAC and Zalo Video (error 0, no flip) and on the system Zalo OA (error 112); only the account's own user id is accepted as `oaid` (the global id and username answer 114). The account ended as it began. Zalo for Developers was tried again after the owner marked it "Quan tam" (interest) on the phone: the profile still showed `isFr` 0 and the block still changed nothing, so the profile reads do not carry the follow state, or it had not reached them. **Settled the same day in Zalo's own app:** a block made there on Zalo for Developers persists (after a reload the chat bar reads "unblock to send messages to this OA"); the CLI's `oa-block` does the same (the app, logged in afterwards, showed that bar and the line "cannot send, you blocked this OA" for a message sent after it), and the CLI's `oa-unblock` lifted a block made in the app (the next message went through). The request is `{"oaid":"<19-digit user id>"}`, params only. The profile read is blind to it, and the send call still answers success, so only Zalo's own app shows the state. The OA was left unblocked |
+| `sync_action/media` | each list item is `{fromUid, destId, isGroup, cmi}`, sent when a photo or video is opened or a file downloaded; its effect is unobserved |
+| `closefr/update`, `profile/mode` | no replacement exists; the feature flag is off |
+
+Closed as covered, dead code, or not worth a command: `sendpt`, `sharefile`, `sendmp3`, `voicemp3`, `upthumb`, the local GIF
+chunk send (the engine makes the same request), `photo_url` (a forward's shortcut), the video chunk uploads (a local video
+goes as a file), `mediastore/remove`, `sticker/personalized/update`, the v1 variants, `action/query`, and the
+legacy and reaction receipts and `subtab/seen` (the owner did not pick the receipts; the v2 forms are sent). Credential and
+account flows, calls, E2EE, LAN friends, zBusiness and eKYC, and the zCloud calls that cost money or acknowledge onboarding are
+out on purpose (S10, Z3).
+
+**Closed by reasoning.** Promoting orphan ranges (ranges of the conversation list that await a message sync becoming
+message ranges) has no meaning here: this client's ranges exist only once a
+conversation list has named the partition, so there is nothing to promote (Y5d). The two `532` acks that got no answer in
+the first live runs match the black-hole run: an ack sent while the network is gone gets no answer, is dropped after three
+tries, and the server delivers the item again (Y10).
+
+**What the sweep could not close alone.** The wiring of the connect-time pulls (515, 517, 518, 603 and the 564/577/537 requests) is a design choice with a risk to the account's queues, and four checks need the owner's phone or a second account (a login with auto sync, done 2026-10-28, and the kick-reason line that follows it, a full restore past the old session cap, the todo and friend-request writes, and a real Official Account for the block calls). They are named in the sweep's report to the owner.
+
+## Connect-time pulls: what each is, and what this client now does (v3.0, 2026-10-27)
+
+The owner asked for the connect-time pulls (X4 to X6) to be wired. Each was studied (private notes in
+`agent/docs/`), and the answer is not the same for all of them.
+
+**What each one is.**
+
+- **603** (the control queue, `603_0` and `603_1`): the controls the server held while the client was away: group and friend
+  events, unread marks set on another device, a transcribed voice message, sync statuses. A pulled page goes
+  through the same handler as a live `601` push, the cursor is persisted first, and nothing is acknowledged. A read does not consume
+  it: the server repeats from the cursor the client sends.
+- **515, 517, 518**: the end-to-end encryption (Signal) queues. 515 carries 1-1 messages encrypted for this device (the
+  twin of 510), 517 Signal session-control items, 518 delivery records about encrypted messages this device sent. Which
+  queues a client pulls is decided by the server's handshake (`qCmds`, `ctrl_qCmds`, `bk_cmds`), not by constants. 515 and
+  517 cannot be used without libsignal, and a client that pulls them and advances its cursor without decrypting loses the
+  items; 518 is the only cursor-less queue and is deleted by an acknowledgement (`557` for 1-1, `558` for groups), so an
+  unacknowledged page comes back on the next connect, and an acknowledged one is gone.
+- **564**: the Signal key id. **577**: a request for the last-read position of conversations the local store shows as unread
+  and for which the offline pull produced no `clearUnreads`; its reply only clears unread badges. **537**: the list of
+  media already downloaded on another device, used to prefetch the same media.
+
+**What was done.** A daemon pulls `603` on every connect, beside the message queues (asked in the same moment since
+2026-11-10), from the cursors it keeps
+(`src/core/control-replay.js`, called by `src/core/self-heal.js`, so `listen` and `mcp start` do it identically and
+`--no-self-heal` turns it off). Each page is handed to the listener as a `601` push: the frame's command is rewritten and
+the bytes are emitted on the socket as a binary message (`ws` gives its `onmessage` consumers text unless told the frame
+is binary, and the listener ignores a non-Buffer; a test on the real listener caught that). The listener then emits the same
+`group_event` and `friend_event` it emits for a live push, and everything that reads `601` here (unread marks, transcripts,
+the unknown-action collector, the cursor keeper) sees it. It never asks without a saved cursor (a first pull would replay
+everything the server still holds), never acknowledges, and says when the server reports it dropped entries. One cold
+control answer was slower than ten seconds, live; it got three times the per-page wait until the per-page wait gave way
+(and came back on 2026-11-12 as a 30 s wait for one page inside that deadline, see the offline-queue section)
+to the catch-up's single 480 s deadline. Seen live on the test
+account: eight real controls that arrived while the daemon was off (a group join, friend requests and their rejection, a
+contact-tab mark, an emoji status) were replayed from the saved cursor and the cursor moved.
+
+**What was not done, and why.** 515, 517, 518 and 564: they belong to the Signal stack, which is out of scope on purpose
+(plan S10: no E2EE message endpoints), and pulling them without it can only lose data. 577: this client keeps a read
+watermark per conversation, moved by the `clearUnreads` rows of the offline pages and by `sync`, not an unread count, so
+there is no list to send. 537: a prefetch hint; media is fetched by the shared downloader. The builders stay in
+`src/zalo/pulls.js` for a client that has the Signal stack. The builder for 537 now reads the cursor from `id` (it
+read `actionId`) and asks for 50 items.
+
+**The pin control, found by the replay.** The first real replay named an unhandled control, `pinned_convers/update` with data
+`{tab, action, pinIds, ts}`. It is the live signal that a conversation was pinned or unpinned on another device. `pinIds` are
+conversation ids (`g` + group id, or one letter + user id) and `action` 1 as a pin. It is now handled
+with the unread marks (`src/core/read-state.js`, `pinMarksFrom`): `conv_state.pinned` follows it, and `listen` prints a `pin`
+event. Before this a pin changed on the phone reached the cache only through `sync`.
+
+## A restore in waves (v3.0, 2026-10-28)
+
+**What was wrong.** A full restore of the test account (2,366 conversations, 79 sessions) lost its WebSocket again and
+again: **code 1006, no close frame, about 60 ms after we sent a cmd 590, before its ack**, at random (about 2 of 12
+requests, 2 of 21, 1 of 60, whatever the pacing). After a drop the reconnect sometimes served one session and then went
+silent for minutes. A restore of 421,000 messages had completed on 2026-10-25 with the same wave code. Refuted first, so
+nobody repeats them: event-loop stalls (measured with `monitorEventLoopDelay`: nothing over 2.7 s near any drop), a
+request sent before the release ack (now ack-ordered: 591, ack, 590; the drops went on), a burst of four
+requests (four within 87 ms is normal), too many open sessions (one socket served 30 and more).
+
+**What the protocol expects** (the research is local, decision D11; private notes in `agent/docs/`):
+
+- **Nothing is sent before the server's hello (cmd 1/1) has been processed**; the first frame after it is a ping,
+  then one ping every 180 s. Ours: no ping for 180 s, then two in the same millisecond (the listener's timer
+  and ours), and after a reconnect the first 590 went out 1 ms *before* the hello.
+- **Every socket starts by releasing the sessions of the one before** (reason 3, back to back,
+  before any 590). We never released a dead socket's sessions: 39 were open on the phone at the second
+  drop of one run.
+- **A run's sessions are requested up front, ack-paced, consumed, and released together at the end**.
+  Not one by one as each is stored, which is what we did.
+- **After a 1006 the wait is at least 2 s** (2, 3, 5, 8 s) and every pending request is rejected at once; we reconnected
+  after 0.5 s.
+- **Nothing is sent back for a 601 or a batch**, so no acknowledgement is missing from our side.
+- **The phone's "preparing data, n %" belongs to another sync**, an HTTP `pull_mobile_msg` that makes the phone build a
+  snapshot, picked by a remote-config flag. This client has no such path.
+
+**What changed** (`src/core/sync-v2/`, `src/commands/sync.js`):
+
+- `connectListener` resolves on the hello (`cipher_key`), not on open, and pings at once; the keepalive no longer doubles
+  the listener's ping on the default cadence; `reconnectListener` pauses 2 s (`RECONNECT_DELAY_MS`).
+- After a reconnect the channel releases every session it still holds with reason 3 (`releaseAbandoned`, one at a time)
+  and counts `ussidx` again (0 for a repeated conversation round, 1 for a resumed message round).
+- A wave is up to 30 sessions (was 4), requested up front, held until the wave is stored, then released together; a 590
+  also waits for the releases still unanswered. **The release is one session at a time, each after the previous ack**: a
+  burst was answered only in part (two acks for thirty releases, two for each burst of four, the rest unanswered for 3 s
+  and fine when sent singly).
+- A message session the phone left incomplete and idle for a minute (`STALL_IDLE_MS`) fails alone,
+  not the run: what arrived is stored and the conversations it never delivered are asked for once
+  more at the end. Before, the run waited out the 10-minute idle timeout and stopped partial (seen live: 29 of 30
+  conversations of a session covered, its last batch seen, one batch index missing, the phone idle).
+- While any session is waited for, a line every minute says what it has and lacks (`still waiting for the phone: 30
+  batch(es) so far, 29 of 30 conversation(s) covered, ...`).
+- A restore may spend three reconnects (was one): none of the dozen or so reconnects of that day prompted the phone again.
+
+**What the live runs showed.** Before: drops in nearly every run, restores that finished only across four to six runs and
+as many taps. After: three full restores, 79 sessions on one socket for 12 min 41 s with no drop (closed with 1000), 68
+sessions in six minutes, 46 in three; a fourth had one drop in the first wave's requests and resumed in 2 s (a new
+socket, the dead socket's sessions released, the rest of the run), then met the incomplete session described above. **Not proven which change did it**: they went
+in together, and the first drop's cause is still unknown.
+
+**Not done, on purpose.** The fuller boot after the hello (eight queue pulls within 2 ms, the Signal pre-key upload
+540, 541, 543, 563, the 4/1 activity ping, 537): the pulls of 515, 517 and 518 are the Signal queues and 518 is deleted
+by an acknowledgement, so the risk to the account's queues that the connect-time-pulls section names stands. `from: 0`,
+the `deviceName`, the temp key in the first message request, and the handshake's `prgama` header and parameter order
+are values the server accepts (every ack was `err 0`). If a drop returns, the boot is the first thing to try, after the
+pulls that are safe (510, 511, 610, 611, 603).
+
+## The Companion checks (v3.0, 2026-10-28)
+
+The Companion account (the second account of the owner) was logged in with a live listener in the default config
+dir, so nothing here opened a second socket on it: every call was a plain HTTP one through `--account` with
+`--data-dir` pointed at a scratch folder, so nothing was written to the live listener's account folder. The output of
+`friend recommendations` lists names and ids; count with `--json`, do not paste it anywhere.
+
+- **The todos feature is off for the Companion too**: `todo-list` answers `-69` ("Stop retry"), as on the test
+  account. That led to the check that removed the todo calls the same day; see "Personal todos removed".
+- **`recommend-remove` works.** One suggestion removed from a list of 199: the list then held 198, without it, and
+  nothing new. Its `src` and `type` are the list item's `dataInfo.recommSrc` and `dataInfo.recommType` (1 and 1 for
+  every suggestion seen); the body is `{uid, src, type}`.
+- **`recommend-seen` works.** On a real incoming request the item's `isSeenFriendReq` went from false to true. The id
+  it takes is the one the answering account sees for the requester, the request item's `dataInfo.userId`.
+- **A request is told from a suggestion by `dataInfo.recommType`**: 2 for a request (`recommSrc` 4, `recommInfo` with
+  the sender's `source` and `message`), 1 for a suggestion (`recommSrc` 1). `recommItemType` is 1 for both.
+- **A non-friend has a different id for each account that sees them.** The Companion's own id, given to `friend add`
+  from the owner's account, answered 114 ("invalid parameter"), and the friend list of the owner's account did not
+  contain that id although the two were friends (the list holds the ids that account sees). `friend find <phone>`
+  returns the id the requester must use; once the two are friends, `friend add` says "Already friends".
+- **Unfriending and re-adding lost nothing**: the owner's account removed the Companion, sent a request, the Companion
+  accepted it, and afterwards the alias and the label that held the chat were exactly as before.
+
+## Personal todos removed (v3.0, 2026-10-28)
+
+The three todo reads (`todo-get`, `todo-list`, `todo-verify`) and the six todo writes (`todo-create`, `todo-update`,
+`todo-status`, `todo-ding`, `todo-ding-ack`, `todo-delete`) are gone, with the todo status enum, their tests and their
+lines in the docs. There are 41 reads and 27 writes now, and 26 of the 27 writes have been seen working.
+
+**Why.** The owner reported that Zalo's To-Do mini app (`task.chat.zalo.me`) still opens but picking people no longer
+works, and that the page does not load in a plain browser (which proves nothing alone: it is a mini app that loads
+Zalo's app SDK). The checks that did settle it, all read-only:
+
+- `task.chat.zalo.me` serves a small static shell (the HTML is dated 2021-12-02; its script, chunk, style and manifest
+  all answer 200). The chunk calls the same paths this client did (`/api/board/personal/todo/create`, `update`,
+  `status`, `ding`, `dingack`, `comment/add`, and `/api/board/personal/list`, `get`, `delete`, `friendProfiles`, the
+  list of people to pick from) on `task-api.chat.zalo.me`. The other host it names, `task.api.zalo.me`, does not resolve.
+- **`task-api.chat.zalo.me` answers `{"error_code":-69,"error_message":"Stop retry."}` with HTTP 200 to every request**:
+  the real paths, a made-up path under `/api/board/personal/`, `/api/login/getLoginInfo`, `/nonexistent`, with no login
+  at all. That is not an account setting but a service that answers the same stop to everything. The boards host
+  answered only the todo paths that way, while notes, reminders and pins on it worked.
+- Zalo's default settings carry `task_setting.enable_feature: 0` (the todo menu item shows only when it is on), and
+  no string or code ties the feature to zBusiness; the shutdown, not a package, is what the evidence supports.
+
+**What stays.** Everything for reminders and notes: `topic-create`, `topic-update`, `topic-response` (RSVP) and
+`topic-remove`, the pins, and the `topic` and `rsvp` enums (a reminder is a `text` topic with a start time, type 4).
+They are on the group-board host and share nothing with the todo calls; the writes test lists them as verified and
+runs each. Also unchanged: the `chat.todo` message type and msgType 24 in the sync decoder, which describe todo events
+already in chat history, not calls to the service.
+
+**If Zalo brings it back**, the removed entries are in the history of `src/zalo/reads.js` and `src/zalo/writes.js`
+(the commit that removed them), with their request shapes.
+
+## What a sync covers, with and without zCloud (v3.0, 2026-10-28)
+
+The owner's main account has a zCloud subscription; the Companion account has none. What `sync` covers for each, from
+the code and from read-only calls on both:
+
+| Stage | Account with zCloud | Account without zCloud | Where the data comes from |
+|---|---|---|---|
+| messages | all history the phone holds | the same | the phone (transfer-sync-v2, one tap); zCloud plays no part |
+| reactions, pinned and unread, boards | same | same | the socket (610/611) and REST |
+| cloud index | walks the queue; records where each backup lives | free plan with nothing in the cloud: no page asked for, stage reported as skipped | zCloud REST (`zcld.chat.zalo.me`) |
+| media downloads | from the CDN references the messages carry | the same | the CDN, until Zalo's copy expires |
+| media that expired from the CDN | listed in the cloud index; not downloadable (the blob is end-to-end encrypted under the account's cloud key, which this tool never holds, decision D8) | gone: nothing else holds it | none for this client |
+
+Live reads of the two accounts (aggregate numbers only): the usage answer is `{plan, quota, usage, service_usage}` for
+both. Main: plan 0 (`zcloud`), quota 107374182400 B (100 GiB), 39,192,432,681 B used, `service_usage` keys `my_cloud`,
+`cloud_media`, `message_backup`; settings `opt_in` 7, per-file limits 2147483640, `enable_offload` 1, `key_export`
+`{drive, icloud}`. Companion: plan -1 (`free`), quota 0, usage 0, `service_usage` keys `my_cloud` and `message_backup`
+(both 0); `opt_in` 4, per-file limits 100, `enable_offload` 0, `key_export` empty. The helpers for these reads
+(`getCloudUsage`, `getCloudSettings`, `summarizeCloudQuota`) existed and had no caller; the cloud stage now reads the
+plan first (`readCloudPlan`, `describeCloudPlan` in `src/commands/sync.js`).
+
+Not tested live: a message restore on the Companion account (its listener holds the socket and the restore needs a tap
+on the phone that holds that account). The restore code does not read the plan, so nothing in it differs by account.
+
+
+
+### Sync parity audit, 2026-10-28 (decision D31)
+
+The audit checked this code against the expected behavior (private notes in `agent/docs/`). What it found, and what
+was done (items are the audit's ZP numbers):
+
+- **The message sync is the same for both account types.** It does not depend on zCloud, the plan or `opt_in`; a
+  manual sync makes batch downloads and `gid/decrypt` calls, no zcld and no media request. `settings.features.sync_2_web` is identical on the paid and the free account (read live): `enable`
+  true, 300 s awaiting-mobile and paused timeouts, 30 s batch timeout. A `restore()` now stops before asking the phone
+  anything when that flag is false (ZP-04); our own waits stay longer (a person has to tap).
+- **Downloads go in the account's identity (ZP-01).** The batch downloads and the media downloads used the global `fetch`:
+  no session User-Agent, no `Referer`, and, for a proxied account, a direct connection while everything else used the
+  proxy. They now use the account's own fetch (`src/zalo/download-fetch.js`): its proxy, its User-Agent, the expected
+  `Referer`, the browser's `sec-fetch-*` and client hints, and no cookie.
+- **The cloud lookup joins on Zalo's key (ZP-02).** The queue's `glbMsgId` is the literal `"0"` for 74.6 percent of the
+  entries seen, so looking an item up by message id found a quarter of them. The join key is
+  `cliMsgId_conversation_sender`, which is stored as `zKey`: `lookupCloudBackup(msgId, zKey)` tries it first
+  (`messageZKey`), and the `cloudBacked` count of the media summary follows.
+- **The plan is read in Zalo's order (ZP-05).** Settings, then `usage-mycloud` (which carries the plan), then
+  `v2/usage` only when the plan is not free (-1). A free account never asks for `v2/usage` from `sync`. Live: the free
+  account's `usage-mycloud` quota is 524288000 B (500 MB), and the server's default cloud quota is 1 GiB.
+- **`tracking_source` is 2 (ZP-06)**, the value Zalo expects; **the walk reads up to 500 pages
+  (ZP-07)**, so the first sync of a 103-page queue is not cut at 50.
+- **Wording (ZP-12, ZP-14)**: status 8 now says "busy (syncing or backing up)"; the media summary no longer names a PIN.
+- **Not done, and why.** ZP-03 (the media stage is eager rather than lazy: a decision for the owner), ZP-09 (the CLI's
+  cloud stage takes no lock beside a daemon's cmd-621 walk: both write the same index rows, a low risk), ZP-11 (forced
+  verify flags stay ignored: they ask for a key change or an audit, never observed), ZP-13 (reporting downloaded
+  media to the `sync_action` host: never observed), ZP-15, ZP-16.
+- **My Cloud blobs (ZP-10): tried live, not retrievable.** The 11 key-less items of the paid account sum to exactly the
+  `usage-mycloud` bytes. `downloadurls` gives a URL for each, and the GET with the viewer key answers 404 `NOT_FOUND`
+  (without the key, 401). Until the real path is known, they stay unfetched.
+- **Built 2026-11-06, all unverified (owner's "later" items, built inside 3.0.0).**
+  - *Opening a cloud item* (`src/zalo/zcloud-e2ee.js`, `fetchCloudBlob`, `cloud get`): the request is
+    `<downloadUrl>?zcloudurl=true` (with a trailing `&` when the item has a key: the address is cut at
+    `pcloudsession=`, which carries the wrapped key for local decryption and is never sent), header
+    `cloud-viewer-key` only. The 404 above came from the bare URL. A My Cloud item is opened by its chat message first.
+    Live check: `cloud get` on one key-less My Cloud item of the paid account.
+  - *The key*: RSA-OAEP SHA-256 (2048, PKCS#8) unwraps `encryptKey` into key(32) | IV(12) | tag(16); data is AES-256-GCM
+    (the metadata, and `algoversion` 1 blobs); `algoversion` 2 is AES-CTR in 4096-byte blocks and is not built. The RSA
+    key comes only from the phone (`personalcloud_key/req_cloud_key`, then a Signal-wrapped `personal_cloud` control
+    opened with a registered device identity). No PIN path exists, so `cloud get` takes the
+    RSA key at run time (stdin or a hidden prompt) and never stores it. Missing: the Signal identity (D8).
+  - *Cloud delete* (`cloud apply`): Zalo's "Delete data" dialog deletes per conversation, per item,
+    the delete-for-me sync (`msgId` = `glbMsgId` or `<cliMsgId>_001`, the sender `"0"` when it is the account). Live
+    check: one disposable item with the owner watching.
+  - *`friend online`*: asks `friend/onlines` `{imei}` and moves to the next host after an HTTP 4xx/5xx
+    (`swapHosts`). Live check: still open.
+  - *Local GIFs* go in 512000-byte chunks, six in flight; *local videos* as
+    a file upload, a thumbnail upload and a forward-video send. Live check: one GIF over 512 KB and one local video.
+  - *`catalog product`* (`product/view` `{product_id}`) and `blocksharing-update` need a zBusiness account (Max for the
+    latter). *`create_reminder11` / `update_reminder11`* are stored from field names not yet seen live; live check: create and
+    edit one DM reminder on the phone while `listen --events reminder` runs.
+- **The phone's "back up text messages to zCloud" has no client surface.** `opt_in` bit 4 and `service_usage.message_backup`
+  are used by no known client flow, the old `msgbackup` control is unsupported, and no zCloud path
+  lists or restores a message backup. Messages are restored only from the phone (transfer-sync-v2). Restoring it
+  would need an endpoint nobody has seen, the phone app's own traffic, and probably the account's key (D8). On the
+  paid account `account status` shows the backup's size (42.6 MB at the time).
+- **Read-only rechecks (2026-10-28):** `friend-active-pcweb` 404, the media-store lists (`mediastore/list`,
+  `media/oneone/list`) error 114 for every body tried, `group/getlg/e2ee` "Stop retry", `friend online` 404 (unknown:
+  its answer was never seen), `friend close` retired by Zalo.
+
+## Controls with no handler: handled, or known to need nothing (v3.0, 2026-11-10)
+
+Every `601` control and push the account's `unknown-acts.json` had recorded got one of two treatments, decided by what
+each one means:
+
+- **A handler**, where the control changes state this engine caches or exposes. `mute`, `label_convers`, `archived_chat`,
+  `quick_message`, `conv_settings/update_ttl` become `listen` events (`--events conversation`, `quick-message`): this
+  engine keeps no store for them (the commands read live), so an event is all there is to
+  do, as for `prod_catalog`. cmd 620 is one cloud-queue entry: it is applied to `cloud_items` at
+  once (src/core/cloud-verify.js), with the rule that a removal that overtook its add cancels it for an hour, and
+  `reset_cloud` answered by the forced walk rather than by emptying the index from one entry.
+- **Known, nothing to do**, with the reason in the map (`ignored` in src/zalo/queues/control-queue.js,
+  `IGNORED_ACTIONS` and `IGNORED_COMMANDS` in src/core/unknown-acts.js): `media_send2me` (the My Cloud media panel; the
+  zCloud index follows cmd 620/621, not this), `photo`/`file`/`video` `renew_link` (the late answer to a link renewal
+  made while forwarding, matched by `originalUrl` to a waiting callback), `emoji_status`, `contact_tab`,
+  `transfer_msg/transfer_after_login` (read by `login`'s auto sync; a daemon never starts a phone-backed restore, and
+  its `temp_key` is never logged or stored), 602 `recent_search`, cmd 530 (the download marks of
+  shared files).
+
+The map is matched by `act_type/act` first, then `act_type`, then `act`, so a pair entry (`conv_settings/update_ttl`)
+leaves its siblings (`conv_settings/update_block_sharing`) reported as unhandled until someone decides them.

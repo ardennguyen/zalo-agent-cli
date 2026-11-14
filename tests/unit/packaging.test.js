@@ -1,191 +1,125 @@
 /**
- * The published tarball must carry a *patched* zca-js, on every install path.
+ * The published package carries its own protocol layer, and nothing of the endpoint library it replaced.
  *
- * We patch zca-js (patches/zca-js+2.2.0.patch) to add `logoutV2`, and to modify
- * `loginQR` and `sendMessage`. Without those, `logout` and `account remove`
- * die on "is not a function" against a real session.
+ * Until 3.0.0 the package depended on `zca-js`, patched it in `prepare` (patch-package) and shipped the patched copy
+ * inside the tarball through `bundleDependencies`. src/zalo/ now answers every call itself, so that whole
+ * arrangement is gone, and these assertions keep it gone: a dependency, a bundled copy, a patch step, a `patches/`
+ * folder, or a single import of the old library anywhere under src/ or tests/ fails here. A test that still
+ * imported it would pass only while the shared node_modules happens to hold a copy, which a clean install no longer
+ * does.
  *
- * Two separate defects have already shipped from this one file:
- *
- * 1. `postinstall: patch-package` with patch-package in devDependencies and
- *    `patches/` missing from `files` -- a consumer install ran a binary that
- *    was not there, against patches that were not shipped, and aborted before
- *    node_modules/zca-js existed.
- * 2. Even once both were fixed, patch-package resolves `node_modules/zca-js`
- *    relative to its own cwd. On a global install npm nests zca-js under our
- *    package and that works; installed as a *dependency* npm hoists zca-js to
- *    the consumer's root, patch-package cannot see it, and the install still
- *    exits 0 -- so the patch silently did nothing.
- *
- * The fix is to stop patching in the consumer's tree at all: `prepare` applies
- * the patch here, and `bundleDependencies` ships that patched copy inside the
- * tarball. These assertions pin the parts of that arrangement which are easy
- * to undo by accident and which nothing else would catch until someone ran
- * `logout` against a real account.
- *
- * Offline and static -- reads package.json and the patches/ directory only.
+ * Offline and static: reads package.json, package-lock.json and the source tree.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { join, relative } from "node:path";
 
 const ROOT = join(import.meta.dirname, "..", "..");
 const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+const lock = JSON.parse(readFileSync(join(ROOT, "package-lock.json"), "utf8"));
 
-/** Package names under patches/, mapped to the exact version each patch is stamped for. */
-function patchedPackages() {
-    const dir = join(ROOT, "patches");
-    if (!existsSync(dir)) return new Map();
-    const found = new Map();
-    for (const file of readdirSync(dir).filter((f) => f.endsWith(".patch"))) {
-        // patch-package names files "<package>+<version>.patch", scopes as "@scope+name".
-        const m = /^(.+)\+(\d+\.\d+\.\d+.*)\.patch$/.exec(file);
-        if (m) found.set(m[1].replace(/^(@[^+]+)\+/, "$1/"), m[2]);
+/** The library that is gone. Named once, here. */
+const GONE = "zca-js";
+
+/** Every dependency table of a package.json. */
+const TABLES = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"];
+
+/**
+ * Every way a file can load (or name the location of) the library: an import or export `from`, a bare `import`, a
+ * dynamic `import()`, `require()` or `require.resolve()`, `import.meta.resolve()`, a JSDoc `import()` type, and a
+ * path into `node_modules` (written out, or as `join(..., "node_modules", "<name>")`).
+ */
+const LOADS = new RegExp(
+    String.raw`(?:\bfrom\s*|\bimport\s*|\bimport\s*\(\s*|\brequire(?:\.resolve)?\s*\(\s*|\bimport\.meta\.resolve\s*\(\s*)` +
+        String.raw`["'\x60]${GONE}(?:\/[^"'\x60]*)?["'\x60]|node_modules[\\/]+${GONE}\b` +
+        String.raw`|["'\x60]node_modules["'\x60]\s*,\s*["'\x60]${GONE}["'\x60]`,
+);
+
+/**
+ * Every JavaScript file under a folder.
+ *
+ * @param {string} dir
+ * @returns {string[]}
+ */
+function jsFiles(dir) {
+    const out = [];
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, e.name);
+        if (e.isDirectory()) {
+            if (e.name !== "node_modules") out.push(...jsFiles(p));
+        } else if (/\.(?:c|m)?js$/.test(e.name)) {
+            out.push(p);
+        }
     }
-    return found;
+    return out;
 }
 
-/** The first word of each `&&`/`;`-separated segment of a script -- i.e. the binaries it runs. */
-function binariesInvokedBy(script) {
-    return script
-        .split(/&&|\|\||;/)
-        .map((segment) => segment.trim().split(/\s+/)[0])
-        .filter(Boolean);
-}
-
-/** Paths inside zca-js that the patch touches, and which of them it creates. */
-function patchedPaths() {
-    const file = join(ROOT, "patches", "zca-js+2.2.0.patch");
-    if (!existsSync(file)) return { touched: [], created: [] };
-    const touched = [];
-    const created = [];
-    // Split on the per-file headers rather than matching across lines: each
-    // block is one file, and "new file mode" inside it means the patch
-    // creates that file rather than editing it.
-    for (const block of readFileSync(file, "utf8")
-        .split(/^diff --git /m)
-        .slice(1)) {
-        const m = /^a\/node_modules\/zca-js\/(\S+) /.exec(block);
-        if (!m) continue;
-        touched.push(m[1]);
-        if (/^new file mode /m.test(block)) created.push(m[1]);
-    }
-    return { touched, created };
-}
-
-describe("packaging: the patched zca-js must reach consumers", () => {
-    it("pins every patched package to an exact version", () => {
-        for (const [name, version] of patchedPackages()) {
-            const range = pkg.dependencies[name] ?? pkg.devDependencies[name];
-            assert.ok(range, `${name} has a patch but is not a dependency`);
-            assert.equal(
-                range,
-                version,
-                `${name} is declared as "${range}" but patches/ only carries ${version}. ` +
-                    `patch-package matches by FILENAME, so any other resolution is silently unpatched.`,
-            );
+describe("packaging: the protocol layer is ours", () => {
+    it(`declares no ${GONE} anywhere in package.json`, () => {
+        for (const table of TABLES) {
+            assert.equal(Object.hasOwn(pkg[table] ?? {}, GONE), false, `${GONE} is in ${table}`);
         }
+        assert.deepEqual(pkg.bundleDependencies ?? pkg.bundledDependencies ?? [], [], "nothing is bundled");
+        assert.equal((pkg.keywords ?? []).includes(GONE), false, `${GONE} is a keyword`);
     });
 
-    it("ships a patch file for the exact version of zca-js it depends on", () => {
-        const patches = patchedPackages();
-        assert.ok(patches.has("zca-js"), "patches/zca-js+<version>.patch is missing");
-        assert.equal(patches.get("zca-js"), pkg.dependencies["zca-js"]);
-    });
-
-    it("bundles every patched runtime dependency into the tarball", () => {
-        const bundled = new Set(pkg.bundleDependencies ?? pkg.bundledDependencies ?? []);
-        for (const name of patchedPackages().keys()) {
-            if (!pkg.dependencies[name]) continue; // dev-only patches never reach consumers
-            assert.ok(
-                bundled.has(name),
-                `${name} is patched but not in bundleDependencies. Unbundled, npm hoists it into ` +
-                    `the consumer's tree and they get the UNPATCHED published copy.`,
-            );
+    it("has no patch step: no prepare that runs patch-package, no patch-package, no patches/", () => {
+        for (const [name, script] of Object.entries(pkg.scripts ?? {})) {
+            assert.doesNotMatch(String(script), /patch-package/, `scripts.${name} runs patch-package`);
         }
+        for (const table of TABLES) assert.equal(Object.hasOwn(pkg[table] ?? {}, "patch-package"), false, table);
+        assert.equal((pkg.files ?? []).includes("patches/"), false, "files must not list patches/");
+        assert.equal(existsSync(join(ROOT, "patches")), false, "the patches/ folder is gone");
     });
 
-    it("declares everything it bundles as a real dependency", () => {
-        for (const name of pkg.bundleDependencies ?? []) {
-            assert.ok(pkg.dependencies[name], `${name} is bundled but not in dependencies -- npm will not pack it`);
+    it("declares what the protocol layer loads itself: ws and tough-cookie", () => {
+        // The socket (src/zalo/listener/listener.js) and the cookie jar (src/zalo/kernel/cookies.js). Red if one
+        // were left to arrive only as somebody else's dependency.
+        assert.ok(pkg.dependencies.ws, "ws must be a direct dependency");
+        assert.ok(pkg.dependencies["tough-cookie"], "tough-cookie must be a direct dependency");
+    });
+
+    it(`resolves no ${GONE} in the lock file`, () => {
+        const names = Object.keys(lock.packages ?? {}).filter(
+            (p) => p === `node_modules/${GONE}` || p.endsWith(`/node_modules/${GONE}`),
+        );
+        assert.deepEqual(names, [], `package-lock.json still installs ${GONE}`);
+        assert.equal(Object.hasOwn(lock.packages?.[""]?.dependencies ?? {}, GONE), false);
+    });
+
+    it(`no file under src/ or tests/ loads ${GONE}`, () => {
+        const self = join(import.meta.dirname, "packaging.test.js");
+        const files = [...jsFiles(join(ROOT, "src")), ...jsFiles(join(ROOT, "tests"))].filter((f) => f !== self);
+        // Guards the guard: a walk that found nothing would pass vacuously.
+        assert.ok(files.length > 300, `only ${files.length} files found`);
+        const offenders = files
+            .filter((f) => LOADS.test(readFileSync(f, "utf8")))
+            .map((f) => relative(ROOT, f).replace(/\\/g, "/"));
+        assert.deepEqual(offenders, [], `these files load ${GONE}`);
+    });
+
+    it("the scan catches every way of loading it, and nothing else", () => {
+        // Falsifiability: each of these would load the library (or reach into its install), and must be seen.
+        for (const line of [
+            `import { API } from "${GONE}";`,
+            `import "${GONE}";`,
+            `export { Zalo } from '${GONE}';`,
+            `const { API } = await import("${GONE}");`,
+            `const z = require("${GONE}");`,
+            `const p = require.resolve("${GONE}");`,
+            `const u = new URL(".", import.meta.resolve("${GONE}"));`,
+            `/** @param {import("${GONE}").Listener} l */`,
+            `import { encodeAES } from "../../node_modules/${GONE}/dist/utils.js";`,
+            `const f = join(ROOT, "node_modules", "${GONE}", "dist");`,
+            `const d = "node_modules/${GONE}/dist/apis";`,
+            `require(join(dirname(require.resolve("${GONE}/package.json")), "utils.cjs"));`,
+        ]) {
+            assert.match(line, LOADS, line);
         }
-    });
-
-    it("applies patches in prepare, so the bundled copy is patched before packing", () => {
-        assert.equal(
-            pkg.scripts.prepare,
-            "patch-package",
-            "prepare must run patch-package: it is what guarantees node_modules/zca-js is patched " +
-                "before npm pack reads it for bundleDependencies.",
-        );
-    });
-
-    it("runs no install script that a consumer would need a devDependency for", () => {
-        // An install script runs in the CONSUMER's tree, where devDependencies do not exist.
-        for (const phase of ["preinstall", "install", "postinstall"]) {
-            const script = pkg.scripts[phase];
-            if (!script) continue;
-            for (const binary of binariesInvokedBy(script)) {
-                if (binary === "node" || binary === "npm") continue;
-                assert.ok(
-                    pkg.dependencies[binary],
-                    `scripts.${phase} runs "${binary}", which is not in dependencies. ` +
-                        `Consumers do not install devDependencies, so their install would fail.`,
-                );
-            }
+        // A word in prose, or another package whose name merely starts the same, is not a load.
+        for (const line of [`// the ${GONE} wrapper used to do this`, `import x from "${GONE}-extra";`, `"${GONE}"`]) {
+            assert.doesNotMatch(line, LOADS, line);
         }
-    });
-
-    it("ships patches/ in files, so the git install path can still apply them", () => {
-        // `npm i github:ardennguyen/zalo-agent-cli` (zalo-mcp.ps1/.sh) packs from a clone and
-        // runs prepare, which needs the patch files to be present.
-        assert.ok(pkg.files.includes("patches/"), "files must include patches/");
-    });
-    // zca-js ships two builds and its exports map sends `require()` to the CJS
-    // one. We load the ESM tree, so for a long time only that half was
-    // patched -- leaving a library whose two entry points disagreed about
-    // whether `logoutV2` exists. These pin the halves back together.
-
-    it("patches both of zca-js's builds, not just the one we load", () => {
-        const { touched } = patchedPaths();
-        const esm = touched
-            .filter((p) => /^dist\/apis\/[\w$]+\.js$/.test(p))
-            .map((p) => p.replace(/^dist\/apis\/|\.js$/g, ""));
-        const cjs = new Set(
-            touched
-                .filter((p) => /^dist\/cjs\/apis\/[\w$]+\.cjs$/.test(p))
-                .map((p) => p.replace(/^dist\/cjs\/apis\/|\.cjs$/g, "")),
-        );
-        assert.ok(esm.length > 0, "the patch stopped touching dist/apis -- has zca-js restructured?");
-        assert.deepEqual(
-            esm.filter((n) => !cjs.has(n)),
-            [],
-            "these APIs are patched in zca-js's ESM build but not its CJS one, so require() gets the unpatched code",
-        );
-        assert.ok(
-            touched.includes("dist/apis.js") && touched.includes("dist/cjs/apis.cjs"),
-            "both barrels must be patched, or the added methods are never wired onto the API class",
-        );
-    });
-
-    it("adds the extra method to both builds", () => {
-        const { created } = patchedPaths();
-        for (const m of ["logoutV2"]) {
-            assert.ok(created.includes(`dist/apis/${m}.js`), `the patch no longer creates the ESM ${m}`);
-            assert.ok(
-                created.includes(`dist/cjs/apis/${m}.cjs`),
-                `the patch no longer creates the CJS ${m} -- require("zca-js") would lack it`,
-            );
-        }
-    });
-
-    it("stays ESM, so the bundled zca-js resolves through its default condition", () => {
-        assert.equal(
-            pkg.type,
-            "module",
-            'this package stopped being "type": "module" -- zca-js would now resolve through its CJS build, ' +
-                "which must therefore stay patched (see the two assertions above)",
-        );
     });
 });

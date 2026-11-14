@@ -1,7 +1,7 @@
 /**
- * src/core/socket-tap.js -- the raw reader on the listener's WebSocket.
+ * src/zalo/listener/socket-tap.js -- the raw reader on the listener's WebSocket.
  *
- * zca-js decodes each frame and emits typed events, throwing away everything
+ * The listener decodes each frame and emits typed events, throwing away everything
  * else in the envelope: `queueStatus`, `lastActionId`, `more`, `evict`,
  * `resetLastActionId`, `clearUnreads`, `pageMsgs`, and the handshake's
  * `qCmds` (apis/listen.js keeps only the cipher `key` of cmd 1). The tap
@@ -12,7 +12,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createSocketTap, readFrame } from "../../src/core/socket-tap.js";
+import { createSocketTap, readFrame } from "../../src/zalo/listener/socket-tap.js";
 import { fakeListener, serverFrame } from "./support/fake-socket.js";
 
 describe("socket tap", () => {
@@ -33,7 +33,7 @@ describe("socket tap", () => {
         assert.equal(got[521].length, 1);
         assert.equal(got[521][0].cmd, 521);
         assert.equal(got[521][0].subCmd, 0);
-        // Red if the tap hands over only what zca-js keeps.
+        // Red if the tap hands over only what the listener keeps.
         assert.deepEqual(got[521][0].data.queueStatus, { "511_1": { lastId: "7" } });
         assert.equal(got[521][0].data.lastActionId, "11");
     });
@@ -47,7 +47,7 @@ describe("socket tap", () => {
         tap.on(521, (f) => seen.push(f.data.n));
 
         listener.push(521, 0, { data: { n: 1 } });
-        listener.reconnect(); // zca-js builds a new ws on retry
+        listener.reconnect(); // the listener builds a new ws on retry
         listener.push(521, 0, { data: { n: 2 } });
 
         // Red if the tap stayed on the dead socket (no 2) or doubled up.
@@ -83,7 +83,32 @@ describe("socket tap", () => {
         listener.push(521, 0, { data: { n: 3 } });
 
         assert.deepEqual(seen, [3]);
-        assert.equal(errors.length, 1, "the throwing subscriber is reported once");
+        assert.equal(errors.filter((l) => /handler failed/.test(l)).length, 1, "the throwing subscriber, once");
+        // Red on a silent drop: a frame someone waits for and cannot read used to vanish without a word.
+        assert.deepEqual(
+            errors.filter((l) => /could not be read/.test(l)),
+            ["socket tap: a cmd 521/0 frame (13 bytes) could not be read: body is not JSON"],
+        );
+    });
+
+    it("an encrypted frame that does not decode is named, with whether a key was set, never its content", () => {
+        const listener = fakeListener();
+        const lines = [];
+        const tap = createSocketTap({ log: (line) => lines.push(line) });
+        tap.attach(listener);
+        tap.on(511, () => assert.fail("an unreadable frame must not be delivered"));
+        listener.cipherKey = undefined;
+        const body = Buffer.from(JSON.stringify({ encrypt: 2, data: "c2VjcmV0LW5vdC1hLWZyYW1l" }), "utf8");
+        listener.ws.emit("message", Buffer.concat([Buffer.from([1, 0xff, 1, 1]), body]));
+        assert.equal(lines.length, 1);
+        assert.match(
+            lines[0],
+            /^socket tap: a cmd 511\/1 frame \(\d+ bytes\) could not be read: encrypt 2 body did not decode \(no key yet\)/,
+        );
+        assert.doesNotMatch(lines[0], /c2VjcmV0/, "the frame's content is not logged");
+        // A cmd nobody waits for is not reported.
+        listener.ws.emit("message", Buffer.concat([Buffer.from([1, 0x0b, 2, 0]), Buffer.from("{not json")]));
+        assert.equal(lines.length, 1);
     });
 
     it("unsubscribes", () => {
@@ -97,7 +122,52 @@ describe("socket tap", () => {
         assert.deepEqual(seen, []);
     });
 
-    it("readFrame reads the header the way zca-js does", () => {
+    it("onAny hands every frame's header, including a cmd nobody subscribed to, and decodes the body only on demand", () => {
+        const listener = fakeListener();
+        const tap = createSocketTap();
+        tap.attach(listener);
+        const views = [];
+        let decodedBodies = 0;
+        const off = tap.onAny((v) => {
+            views.push({ cmd: v.cmd, subCmd: v.subCmd, size: v.size });
+            if (v.cmd === 533) {
+                decodedBodies++;
+                assert.deepEqual(Object.keys(v.frame().data), ["x"]);
+                assert.equal(v.frame(), v.frame(), "decoded once");
+            }
+        });
+        listener.push(521, 0, { data: { n: 1 } });
+        listener.push(533, 2, { data: { x: "secret" } });
+        assert.deepEqual(
+            views.map((v) => [v.cmd, v.subCmd]),
+            [
+                [521, 0],
+                [533, 2],
+            ],
+        );
+        assert.ok(views.every((v) => v.size > 4));
+        assert.equal(decodedBodies, 1);
+        off();
+        listener.push(533, 2, { data: { x: 1 } });
+        assert.equal(views.length, 2, "unsubscribed");
+    });
+
+    it("a header handler that throws does not break the socket or the other subscribers", () => {
+        const errors = [];
+        const listener = fakeListener();
+        const tap = createSocketTap({ log: (l) => errors.push(l) });
+        tap.attach(listener);
+        const seen = [];
+        tap.onAny(() => {
+            throw new Error("boom");
+        });
+        tap.on(521, (f) => seen.push(f.data.n));
+        listener.push(521, 0, { data: { n: 7 } });
+        assert.deepEqual(seen, [7]);
+        assert.equal(errors.length, 1);
+    });
+
+    it("readFrame reads the header the way the listener does", () => {
         const f = readFrame(serverFrame(511, 1, { error_code: 0, data: { more: 0 } }));
         assert.equal(f.cmd, 511);
         assert.equal(f.subCmd, 1);

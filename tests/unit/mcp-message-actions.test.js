@@ -5,9 +5,9 @@
  * Each mirrors a `msg` subcommand and calls the code that command calls:
  * `reactionCliMsgId` / `recallCliMsgId` / `cachedMessageById`
  * (src/core/cached-message.js), `resolveSelfThread` (src/utils/my-documents.js)
- * and `urgencyLevel` (src/utils/urgency.js). The CLI side of each is pinned on
+ * and `urgencyLevel` (src/zalo/format/urgency.js). The CLI side of each is pinned on
  * the wire by msg-react-cache, msg-my-documents and msg-urgency; what is
- * asserted here is what the tool hands the zca-js api — the call a live
+ * asserted here is what the tool hands the session — the call a live
  * session would encrypt and post — and that a refusal hands it nothing.
  *
  * `registerTools` only needs an object with `registerTool()`, so the handlers
@@ -166,7 +166,7 @@ describe("zalo_react", () => {
         const api = recordingApi();
         await call(
             "zalo_react",
-            { msgId: GROUP_MSG.msgId, threadId: GROUP, reaction: ":>", cliMsgId: "1700000000555", threadType: 0 },
+            { msgId: GROUP_MSG.msgId, threadId: GROUP, reaction: ":>", cliMsgId: "1700000000555", threadType: "dm" },
             api,
         );
         assert.deepEqual(api.calls[0].dest, {
@@ -208,7 +208,7 @@ describe("zalo_react", () => {
 describe("zalo_undo", () => {
     it("refuses a message with no known cliMsgId, and never touches the api", async () => {
         const api = recordingApi();
-        const r = await call("zalo_undo", { msgId: UNCACHED, threadId: PEER }, api);
+        const r = await call("zalo_undo", { msgId: UNCACHED, threadId: PEER, confirm: true }, api);
         assert.equal(r.isError, true);
         assert.deepEqual(api.calls, [], "a recall without its cliMsgId must not be sent");
         assert.match(r.content[0].text, /cliMsgId is required to recall a message/);
@@ -217,7 +217,7 @@ describe("zalo_undo", () => {
 
     it("recalls with {msgId, cliMsgId} from the cache, typed from the cache", async () => {
         const api = recordingApi();
-        const r = await call("zalo_undo", { msgId: DM_MSG.msgId, threadId: PEER }, api);
+        const r = await call("zalo_undo", { msgId: DM_MSG.msgId, threadId: PEER, confirm: true }, api);
         assert.equal(r.isError, undefined, r.content[0].text);
         // Red if the payload loses the cached cliMsgId, or the DM goes out as a group.
         assert.deepEqual(api.calls, [
@@ -228,7 +228,7 @@ describe("zalo_undo", () => {
 
     it("a group message recalls on the group endpoint's type", async () => {
         const api = recordingApi();
-        await call("zalo_undo", { msgId: GROUP_MSG.msgId, threadId: GROUP }, api);
+        await call("zalo_undo", { msgId: GROUP_MSG.msgId, threadId: GROUP, confirm: true }, api);
         assert.equal(api.calls[0].type, THREAD_GROUP);
     });
 
@@ -236,7 +236,11 @@ describe("zalo_undo", () => {
         // The one way to recall something this server did not capture: the
         // id zalo_send_message handed back.
         const api = recordingApi();
-        const r = await call("zalo_undo", { msgId: UNCACHED, threadId: PEER, cliMsgId: "1700000000777" }, api);
+        const r = await call(
+            "zalo_undo",
+            { msgId: UNCACHED, threadId: PEER, cliMsgId: "1700000000777", confirm: true },
+            api,
+        );
         assert.equal(r.isError, undefined);
         assert.deepEqual(api.calls[0].payload, { msgId: UNCACHED, cliMsgId: "1700000000777" });
     });
@@ -247,7 +251,7 @@ describe("zalo_send_message urgency", () => {
         const api = recordingApi();
         await call("zalo_send_message", { threadId: GROUP, text: "offline urgent", urgency: "urgent" }, api);
         await call("zalo_send_message", { threadId: PEER, text: "offline important", urgency: "important" }, api);
-        // zca-js turns `urgency` into the metaData {urgency} Zalo Web sends
+        // the send turns `urgency` into the metaData {urgency} Zalo expects
         // (pinned on the wire for the CLI in msg-urgency.test.js). Red if the
         // mapping drifts, or the field is dropped.
         assert.deepEqual(api.calls[0].content, { msg: "offline urgent", urgency: 2 });
@@ -279,7 +283,7 @@ describe("zalo_send_message to `me`", () => {
         assert.deepEqual(api.calls, [{ fn: "sendMessage", content: "offline note", threadId: SEND2ME, type: 0 }]);
         const out = payloadOf(r);
         assert.equal(out.threadId, SEND2ME, "the reply names the thread it really went to");
-        assert.equal(out.threadType, THREAD_USER);
+        assert.equal(out.threadType, "dm");
         assert.match(out.notice, /My Documents/);
     });
 
@@ -296,9 +300,9 @@ describe("zalo_send_message to `me`", () => {
         assert.match(payloadOf(r).notice, /own uid/);
     });
 
-    it("refuses `me` with threadType 1: My Documents is not a group", async () => {
+    it("refuses `me` with threadType group: My Documents is not a group", async () => {
         const api = recordingApi();
-        const r = await call("zalo_send_message", { threadId: "me", text: "offline", threadType: 1 }, api);
+        const r = await call("zalo_send_message", { threadId: "me", text: "offline", threadType: "group" }, api);
         assert.equal(r.isError, true);
         assert.match(r.content[0].text, /not a group/);
         assert.deepEqual(api.calls, []);
@@ -316,6 +320,6 @@ describe("zalo_send_message to `me`", () => {
         const api = recordingApi();
         const r = await call("zalo_send_message", { threadId: PEER, text: "offline hi" }, api);
         assert.equal(api.calls[0].threadId, PEER);
-        assert.deepEqual(Object.keys(payloadOf(r)).sort(), ["cliMsgId", "messageId", "msgId", "success", "threadType"]);
+        assert.deepEqual(Object.keys(payloadOf(r)).sort(), ["cliMsgId", "msgId", "success", "threadType"]);
     });
 });

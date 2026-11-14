@@ -1,0 +1,43 @@
+# /etc/systemd/system/zalo-backup.service
+# The nightly backup, run by zalo-backup.timer: for each account, `db backup` (an encrypted,
+# verified copy of zalo.db, written beside the daemon without stopping it) and its keyring.json;
+# then the config dir without the databases, media and runtime files (saved logins, keyrings,
+# policies, accounts.json, storage.json and mcp-config.json, all sealed or free of keys but the last
+# two). Copies older than 14 days are deleted. Copy /var/backups/zalo off the machine yourself.
+# None of it opens without the storage passphrase, which is NOT in the backup: keep it in your
+# password manager.
+#   sudo install -d -m 700 -o zalo -g zalo /var/backups/zalo
+#   systemctl enable --now zalo-backup.timer
+#   journalctl -u zalo-backup
+[Unit]
+Description=Zalo MCP nightly backup (db backup per account, and the config dir)
+Documentation=https://github.com/ardennguyen/zalo-agent-cli/blob/main/docs/deployment.md
+
+[Service]
+Type=oneshot
+User=zalo
+Group=zalo
+WorkingDirectory=/home/zalo
+UMask=0077
+EnvironmentFile=/etc/zalo-mcp/common.env
+Environment=NODE_ENV=production
+Environment=ZALO_AGENT_NO_UPDATE_CHECK=1
+Environment=BACKUP_DIR=/var/backups/zalo
+ExecStart=/bin/sh -c 'rc=0; at=$$(date -u +%%Y%%m%%dT%%H%%M); for d in /home/zalo/.zalo-agent-cli/accounts/*/; do a=$$(basename "$$d"); [ -f "$$d/zalo.db" ] || continue; /usr/bin/zalo-agent --account "$$a" db backup --out "$$BACKUP_DIR/$$a-$$at.db" && cp -p "$$d/keyring.json" "$$BACKUP_DIR/$$a-$$at.keyring.json" || rc=1; done; exit $$rc'
+ExecStart=/bin/sh -c 'tar -C /home/zalo -czf "$$BACKUP_DIR/config-$$(date -u +%%Y%%m%%dT%%H%%M).tgz" --exclude="zalo.db*" --exclude=media --exclude=tmp --exclude=login-slots --exclude=qr-flows --exclude=daemon.lock --exclude=daemon-channel.json --exclude="daemon.log*" --exclude=qr.png --exclude="webhook-outbox.db*" .zalo-agent-cli'
+ExecStartPost=/usr/bin/find /var/backups/zalo -maxdepth 1 -type f -mtime +14 -delete
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=zalo-backup
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/zalo/.zalo-agent-cli /var/backups/zalo
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryMax=600M

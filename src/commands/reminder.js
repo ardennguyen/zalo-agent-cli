@@ -3,9 +3,14 @@
  */
 
 import { getApi } from "../core/zalo-client.js";
-import { success, error, info, output } from "../utils/output.js";
+import { success, error, info, output, warning } from "../utils/output.js";
+import { parseIntAtLeast } from "../utils/parse-options.js";
+import { groupReminderPage, PAGE_SIZE } from "../zalo/api/boards.js";
+import { allReminders } from "../core/list-all.js";
+import { THREAD_TYPE } from "../zalo/enums.js";
+import { guardSubcommand } from "../core/confirm-guard.js";
 
-/** Repeat mode labels matching zca-js ReminderRepeatMode enum. */
+/** Repeat mode labels matching Zalo's reminder repeat modes. */
 const REPEAT_MODES = { none: 0, daily: 1, weekly: 2, monthly: 3 };
 const REPEAT_LABELS = { 0: "None", 1: "Daily", 2: "Weekly", 3: "Monthly" };
 
@@ -69,15 +74,36 @@ export function registerReminderCommands(program) {
         .command("list <threadId>")
         .description("List reminders in a thread")
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
-        .option("-n, --count <n>", "Max results", "20")
+        .option(
+            "-n, --count <n>",
+            `Reminders per page (with -n or -p one page is read, ${PAGE_SIZE} a page by default)`,
+            parseIntAtLeast(1),
+        )
+        .option("-p, --page <n>", "Read only this page (default: every page)", parseIntAtLeast(1))
         .action(async (threadId, opts) => {
             try {
                 let result;
+                let note = null;
                 try {
-                    result = await getApi().getListReminder({ count: Number(opts.count) }, threadId, Number(opts.type));
+                    const count = opts.count ?? PAGE_SIZE;
+                    const page = opts.page ?? 1;
+                    if (opts.count === undefined && opts.page === undefined) {
+                        // No page asked: every page, one request at a time (src/core/list-all.js).
+                        const all = await allReminders(getApi(), threadId, Number(opts.type));
+                        result = all.reminders;
+                        note = all.paging.note;
+                    } else {
+                        // A group's page 2 and later carry the last id of the page before, as Zalo pages them (and
+                        // as zalo_reminder does); a DM's have no cursor (Zalo always sends 0 there).
+                        result =
+                            Number(opts.type) === THREAD_TYPE.GROUP
+                                ? await groupReminderPage(getApi(), threadId, page, count)
+                                : await getApi().getListReminder({ page, count }, threadId, Number(opts.type));
+                    }
                 } catch {
                     result = null;
                 }
+                if (note) warning(note);
                 const items = Array.isArray(result) ? result : [];
                 output(items, program.opts().json, () => {
                     if (items.length === 0) {
@@ -192,4 +218,8 @@ export function registerReminderCommands(program) {
                 error(`Remove reminder failed: ${e.message}`);
             }
         });
+    // Asked about first, as Zalo does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    guardSubcommand(reminder, "remove", "reminder.remove", {
+        target: (reminderId, threadId) => ({ reminderId, threadId }),
+    });
 }

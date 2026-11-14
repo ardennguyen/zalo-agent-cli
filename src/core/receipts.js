@@ -1,278 +1,28 @@
 /**
- * Seen and delivered receipts, sent the way Zalo Web sends them.
+ * `conv read`, `msg seen` and `conv unread` over the local cache: which cached messages a seen receipt names, where
+ * an unread mark is anchored, and marking a conversation read as Zalo's "Mark as read" does. The CLI commands and
+ * the zalo_conversation actions call the same functions here and answer the same JSON.
  *
- * Both are plain HTTP calls carrying the same per-message record:
- *
- *   seenv2       {group}/api/group/seenv2?nretry=0   {msgInfos: '{"data":[…],"grid":…}', imei}
- *                {chat}/api/message/seenv2?nretry=0  {msgInfos: '{"data":[…],"senderId":…}', imei}
- *   deliveredv2  {group}/api/group/deliveredv2       {msgInfos: '{"seen":0,"data":[…],"grid":…}', imei}
- *                {chat}/api/message/deliveredv2      {msgInfos: '{"seen":0,"data":[…]}'}   (no imei)
- *
- *   data[i] = {cmi, gmi, si, di, mt, st, at, cmd, ts}
- *
- * That is what a capture of the real client (build 826674fb31d2af1b2b59,
- * zpw_ver 691) shows, and what its own builders (`sendSeen` / `sendDelivered`
- * in the web API bundle) produce: `si`/`di` are the raw frame's uidFrom/idTo --
- * "0" meaning this account -- and `st`, `at`, `cmd`, `ts` are echoed from the
- * socket frame that delivered the message, -1 where a field is missing.
- *
- * zca-js ships a builder for each receipt and neither can produce that:
- *
- *   - `sendSeenEvent.js:43-46` / `sendDeliveredEvent.js:38-41` compute
- *     `st: msg.st || 0 === msg.st ? 0 : -1`, which parses as
- *     `(msg.st || (0 === msg.st)) ? 0 : -1`: always 0 or -1, never the value.
- *     The same holds for at, cmd and ts.
- *   - A DM seen goes out without `imei`, which the web always sends.
- *   - zca-js rewrites an own message's uidFrom "0" (and a DM's idTo "0") to the
- *     account uid before any handler sees it, so passing its message through
- *     sends our uid where the web sends "0".
- *
- * Hence this module: the requests are built here, on zca-js's own apiFactory,
- * the pattern src/core/sync-v2/board.js uses for calls zca-js lacks.
- *
- * Read receipts are kept OFF on purpose, so nothing here sends seenv2 on its
- * own: `conv read` is the only caller. The listener's automatic receipt is
- * deliveredv2 only -- what every Zalo client sends when a message arrives.
+ * The receipts themselves (seenv2, deliveredv2, the listener's automatic delivered queue) are the protocol layer's:
+ * src/zalo/receipts.js.
  */
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
-import { LIVE_MSG_TYPES } from "./sync-v2/message-types.js";
+import { THREAD_TYPE } from "../zalo/enums.js";
+import { LIVE_MSG_TYPES } from "../zalo/transfer-sync/message-types.js";
+import {
+    MAX_RECEIPTS_PER_CALL,
+    RECEIPT_CMD,
+    SEEN_FALLBACK,
+    isId,
+    sendReactionSeen,
+    sendSeenReceipt,
+    threadOf,
+} from "../zalo/receipts.js";
+import { getConvState, getMessageById, getMessages } from "./db.js";
 
-const require = createRequire(import.meta.url);
+const THREAD_USER = THREAD_TYPE.USER;
+const THREAD_GROUP = THREAD_TYPE.GROUP;
 
-/** zca-js ThreadType. */
-const THREAD_USER = 0;
-const THREAD_GROUP = 1;
-
-/** The socket command a message arrives on, which its receipt echoes as `cmd`. */
-export const RECEIPT_CMD = Object.freeze({ [THREAD_USER]: 501, [THREAD_GROUP]: 521 });
-
-/** Zalo's per-call cap, shared by both receipts (zca-js MAX_MESSAGES_PER_SEND, the web's slice(-50)). */
-export const MAX_RECEIPTS_PER_CALL = 50;
-
-/**
- * `st`/`at` for a cached message the listener stored before it kept them.
- *
- * A GUESS, labelled as one wherever it is used. `st` was 3 on every captured
- * ordinary message (5 only on pin/unpin system rows); `at` varies -- 5 for
- * plain text, 0 for a card, 9 elsewhere -- and 5 is the plain-text value. The
- * web's own builder sends -1 for a field it lacks; if Zalo misbehaves with
- * this guess, -1 is the web-faithful alternative. To verify live.
- */
-export const SEEN_FALLBACK = Object.freeze({ st: 3, at: 5 });
-
-/** The web's delivered-queue delay (`ack_seen.queue_delay || 150`). */
-export const DELIVERED_QUEUE_DELAY_MS = 150;
-
-/**
- * Live msgTypes that must never be acknowledged. Zalo Web's message reducer
- * routes these to their own handlers and never into the delivered batch.
- */
-const NO_RECEIPT_TYPES = new Set(["chat.delete", "chat.undo", "chat.e2ee.replace"]);
-
-let _utils = null;
-/** zca-js internals, located the way ./sync-v2/board.js and ./sync-v2/gid.js do it. */
-function zcaUtils() {
-    if (_utils) return _utils;
-    _utils = require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
-    return _utils;
-}
-
-/**
- * POST `params=<session-AES(JSON)>` to a Zalo endpoint and resolve its answer.
- *
- * The shared transport for calls zca-js lacks or builds wrong: the receipts
- * here, and `conv pin` / `conv archive`. It runs on zca-js's own apiFactory, so
- * the session key, headers, cookies, proxy and `zpw_ver`/`zpw_type` are exactly
- * the ones every zca-js call uses, and an `error_code` other than 0 throws.
- *
- * @param {object} api - a logged-in zca-js api (exposes getContext and zpwServiceMap)
- * @param {object} opts
- * @param {string} opts.url - endpoint without query
- * @param {object} [opts.query] - extra query parameters (e.g. `{nretry: 0}`)
- * @param {(ctx: object) => object} opts.params - builds the plaintext params; gets the context for `imei`
- * @param {AbortSignal} [opts.signal] - abort the request
- * @returns {Promise<any>} the decrypted response `data`
- */
-export async function zaloPost(api, { url, query = {}, params, signal }) {
-    const call = zcaUtils().apiFactory()((_api, ctx, utils) => async () => {
-        const enc = utils.encodeAES(JSON.stringify(params(ctx)));
-        if (!enc) throw new Error("Failed to encrypt params");
-        const response = await utils.request(utils.makeURL(url, query), {
-            method: "POST",
-            body: new URLSearchParams({ params: enc }),
-            ...(signal ? { signal } : {}),
-        });
-        return utils.resolve(response);
-    })(api.getContext(), api);
-    return call();
-}
-
-/** A numeric frame field as the web sends it: the value, or -1 when absent. */
-function frameInt(v) {
-    if (v === undefined || v === null || v === "") return -1;
-    const n = Number(v);
-    return Number.isFinite(n) ? n : -1;
-}
-
-/** A usable message id: present, non-empty and not the "0" Zalo uses for "none". */
-function isId(v) {
-    if (v === undefined || v === null) return false;
-    const s = String(v);
-    return s !== "" && s !== "0";
-}
-
-/**
- * One `msgInfos.data` entry, in the web's key order.
- *
- * @param {object} m
- * @param {string|number} m.msgId - global message id (`gmi`)
- * @param {string|number} m.cliMsgId - client message id (`cmi`)
- * @param {string} m.uidFrom - the RAW sender: "0" for this account
- * @param {string} m.idTo - the RAW recipient: the group id, a DM peer, or "0" for this account
- * @param {string} m.msgType - the live msgType string ("webchat", "chat.photo", …)
- * @param {number} [m.st]
- * @param {number} [m.at]
- * @param {number} [m.cmd]
- * @param {string|number} [m.ts] - message timestamp in ms; sent as a string
- * @returns {object}
- */
-export function receiptEntry(m) {
-    return {
-        cmi: String(m.cliMsgId),
-        gmi: String(m.msgId),
-        si: String(m.uidFrom),
-        di: String(m.idTo),
-        mt: m.msgType,
-        st: frameInt(m.st),
-        at: frameInt(m.at),
-        cmd: frameInt(m.cmd),
-        ts: m.ts === undefined || m.ts === null || m.ts === "" ? -1 : String(m.ts),
-    };
-}
-
-/** Validate a receipt batch and build its entries. */
-function entriesOf(messages) {
-    if (!Array.isArray(messages) || messages.length === 0 || messages.length > MAX_RECEIPTS_PER_CALL) {
-        throw new Error(`A receipt names between 1 and ${MAX_RECEIPTS_PER_CALL} messages.`);
-    }
-    for (const m of messages) {
-        if (!isId(m?.msgId) || !isId(m?.cliMsgId))
-            throw new Error("Every message in a receipt needs a msgId and a cliMsgId.");
-    }
-    return messages.map(receiptEntry);
-}
-
-/** Validate a thread id and type, returning `[threadId, isGroup]`. */
-function threadOf(threadId, type) {
-    if (!isId(threadId)) throw new Error("A receipt needs the conversation's thread id.");
-    const t = Number(type);
-    if (t !== THREAD_USER && t !== THREAD_GROUP)
-        throw new Error(`Unknown thread type ${type}: use 0 (user) or 1 (group).`);
-    return [String(threadId), t === THREAD_GROUP];
-}
-
-/**
- * Send seenv2 for up to 50 messages of one conversation.
- *
- * Group: `{"data":[…],"grid":<id>}`; DM: `{"data":[…],"senderId":<peer>}`.
- * Both carry `imei` and go out with `nretry=0`, as captured.
- *
- * @param {object} api - logged-in zca-js api
- * @param {object} opts
- * @param {string} opts.threadId - group id, or the DM peer's uid
- * @param {0|1} opts.type - 0 user, 1 group
- * @param {object[]} opts.messages - see {@link receiptEntry}
- * @param {AbortSignal} [opts.signal]
- * @returns {Promise<any>} Zalo's answer (`{status: 0}` when accepted)
- */
-export async function sendSeenReceipt(api, { threadId, type, messages, signal } = {}) {
-    const [id, isGroup] = threadOf(threadId, type);
-    const data = entriesOf(messages);
-    const msgInfos = isGroup ? { data, grid: id } : { data, senderId: id };
-    return zaloPost(api, {
-        url: isGroup
-            ? `${api.zpwServiceMap.group[0]}/api/group/seenv2`
-            : `${api.zpwServiceMap.chat[0]}/api/message/seenv2`,
-        query: { nretry: 0 },
-        params: (ctx) => ({ msgInfos: JSON.stringify(msgInfos), imei: ctx.imei }),
-        signal,
-    });
-}
-
-/**
- * Send deliveredv2 for up to 50 messages of one conversation.
- *
- * Group: `{"seen":0,"data":[…],"grid":<id>}` plus `imei`; DM: `{"seen":0,"data":[…]}`
- * and no `imei` at all -- the web's DM sender adds none. No `nretry`.
- *
- * @param {object} api - logged-in zca-js api
- * @param {object} opts
- * @param {string} opts.threadId
- * @param {0|1} opts.type
- * @param {object[]} opts.messages - see {@link receiptEntry}
- * @param {boolean} [opts.seen] - the web's `seen` flag; always false from the listener
- * @param {AbortSignal} [opts.signal]
- * @returns {Promise<any>}
- */
-export async function sendDeliveredReceipt(api, { threadId, type, messages, seen = false, signal } = {}) {
-    const [id, isGroup] = threadOf(threadId, type);
-    const data = entriesOf(messages);
-    const head = { seen: seen ? 1 : 0, data };
-    const msgInfos = isGroup ? { ...head, grid: id } : head;
-    return zaloPost(api, {
-        url: isGroup
-            ? `${api.zpwServiceMap.group[0]}/api/group/deliveredv2`
-            : `${api.zpwServiceMap.chat[0]}/api/message/deliveredv2`,
-        params: (ctx) =>
-            isGroup ? { msgInfos: JSON.stringify(msgInfos), imei: ctx.imei } : { msgInfos: JSON.stringify(msgInfos) },
-        signal,
-    });
-}
-
-/**
- * What a receipt for one live zca-js message event names.
- *
- * zca-js has already rewritten the frame's "0" sender (and a DM's "0"
- * recipient) to our uid by the time a handler sees it, so the raw values the
- * web echoes are rebuilt from `isSelf`: our own message is `si:"0"`; in a DM
- * the side that is us is "0" (`di:"0"` for an incoming DM, `di:<peer>` for our
- * own); in a group `di` is always the group.
- *
- * @param {object} msg - zca-js `message` event ({threadId, type, isSelf, data})
- * @returns {{threadId: string, type: 0|1, message: object}|null} null when the
- *   message must not be acknowledged (a removal frame) or cannot be named
- */
-export function liveReceiptTarget(msg) {
-    const d = msg?.data;
-    if (!d || typeof d !== "object") return null;
-    if (NO_RECEIPT_TYPES.has(d.msgType)) return null;
-    if (!isId(d.msgId) || !isId(d.cliMsgId)) return null;
-    if (!isId(msg.threadId)) return null;
-    const threadId = String(msg.threadId);
-    const type = msg.type === THREAD_GROUP ? THREAD_GROUP : THREAD_USER;
-    const self = Boolean(msg.isSelf);
-    if (!self && !isId(d.uidFrom)) return null;
-    return {
-        threadId,
-        type,
-        message: {
-            msgId: d.msgId,
-            cliMsgId: d.cliMsgId,
-            msgType: d.msgType,
-            uidFrom: self ? "0" : String(d.uidFrom),
-            idTo: type === THREAD_GROUP ? threadId : self ? threadId : "0",
-            st: d.st,
-            at: d.at,
-            cmd: d.cmd,
-            ts: d.ts,
-        },
-    };
-}
-
-// ---- conv read ---------------------------------------------------------------
-
-/** Our type vocabulary -> the live msgType the web would name it by (first mapping wins). */
+/** Our type vocabulary -> the live msgType Zalo names it by (first mapping wins). */
 const WEB_MSG_TYPE = Object.freeze(
     Object.entries(LIVE_MSG_TYPES).reduce((acc, [live, ours]) => {
         if (!(ours in acc)) acc[ours] = live;
@@ -311,6 +61,35 @@ export function pickSeenAnchor(rows, { ownId }) {
         const raw = parseRaw(row.raw_data);
         if (!isId(raw.cliMsgId)) continue;
         return { row, raw };
+    }
+    return null;
+}
+
+/**
+ * The message `conv unread` pins the unread mark to: the newest cached message Zalo can identify, sent by anyone.
+ *
+ * Zalo marks a conversation unread at its newest message that has a client id, naming that message's
+ * `cliMsgId` and sender (`fromUid`, `"0"` for this account's own). A tombstone and a system-line placeholder are
+ * passed over, as for the seen anchor. A row restored by sync under a noised sender id names no real sender, so
+ * the search stops there and answers null: an older message would mark the wrong place, and the caller then sends
+ * Zalo's "unknown" (`"-1"`) instead.
+ *
+ * @param {object[]} rows - `messages` rows, newest first (db.getMessages)
+ * @param {{ownId: string}} opts
+ * @returns {{cliMsgId: string, fromUid: string}|null}
+ */
+export function unreadMarkAnchor(rows, { ownId }) {
+    for (const row of rows || []) {
+        if (!row || row.type === "deleted") continue;
+        if (!/^\d+$/.test(String(row.msgId ?? ""))) continue;
+        const raw = parseRaw(row.raw_data);
+        if (!isId(raw.cliMsgId)) continue;
+        const sender = String(row.senderId ?? "");
+        if (sender === String(ownId) || String(raw.uidFrom ?? "") === "0") {
+            return { cliMsgId: String(raw.cliMsgId), fromUid: "0" };
+        }
+        if (!/^\d+$/.test(sender)) return null;
+        return { cliMsgId: String(raw.cliMsgId), fromUid: sender };
     }
     return null;
 }
@@ -355,325 +134,353 @@ export function seenTargetFromCachedRow(row, raw, { threadId, type }) {
     };
 }
 
+/** How many of a thread's newest cached rows `conv read` and `msg seen` look through. */
+export const READ_SCAN_DEPTH = 200;
+
+/** Whether a cached row is an end-to-end encrypted message (those are marked seen the E2EE way, not seenv2). */
+function isE2ee(row, raw) {
+    return /^chat\.e2ee/.test(String(raw.msgType ?? "")) || raw.undecryptable === true;
+}
+
+/** a > b for two numeric message ids, compared as integers. */
+function newer(a, b) {
+    return BigInt(String(a)) > BigInt(String(b));
+}
+
 /**
- * Mark a conversation read both ways Zalo Web does.
+ * The cached incoming messages `conv read` marks seen, as Zalo's "Mark as read" does: every incoming message
+ * newer than the read watermark (all cached ones when no watermark is known), the newest 50, oldest first.
  *
- * The web has two different "read" operations and `conv read` performs both:
+ * Passed over: our own messages, tombstones, rows Zalo cannot identify (no numeric msgId or no cliMsgId), and
+ * counted as skipped: end-to-end encrypted messages (`e2ee`) and sync-restored rows whose sender id is noised
+ * (`noisedSender`: a seenv2 built on one would name the wrong sender, possibly this account).
  *
- *   - `conv/removeUnreadMark` clears the MANUAL unread flag -- the one
- *     `conv unread` (addUnreadMark) sets and the conversation menu's "mark as
- *     read" clears. It needs only the thread id, so it is always sent.
- *   - `seenv2` marks messages seen, which is what clears the unread count on
- *     the account's other devices. It names a message, so it needs one cached
- *     incoming message to anchor on; without one it is refused, and said so.
+ * @param {object[]} rows - `messages` rows, newest first (db.getMessages)
+ * @param {{ownId: string, watermark?: string|null}} opts
+ * @returns {{targets: Array<{row: object, raw: object}>, incoming: number, skipped: {e2ee: number, noisedSender: number}}}
+ *   `incoming` counts every identifiable incoming row seen, watermark or not
+ */
+export function unreadIncoming(rows, { ownId, watermark = null }) {
+    const known = /^\d+$/.test(String(watermark ?? "")) ? String(watermark) : null;
+    const picked = [];
+    const skipped = { e2ee: 0, noisedSender: 0 };
+    let incoming = 0;
+    for (const row of rows || []) {
+        if (!row || String(row.senderId ?? "") === String(ownId)) continue;
+        if (row.type === "deleted") continue;
+        if (!/^\d+$/.test(String(row.msgId ?? ""))) continue;
+        const raw = parseRaw(row.raw_data);
+        if (!isId(raw.cliMsgId)) continue;
+        if (String(raw.uidFrom ?? "") === "0") continue;
+        incoming++;
+        if (known && !newer(row.msgId, known)) continue;
+        if (isE2ee(row, raw)) {
+            skipped.e2ee++;
+            continue;
+        }
+        if (!/^\d+$/.test(String(row.senderId))) {
+            skipped.noisedSender++;
+            continue;
+        }
+        picked.push({ row, raw });
+    }
+    picked.sort((a, b) => (newer(a.row.msgId, b.row.msgId) ? 1 : newer(b.row.msgId, a.row.msgId) ? -1 : 0));
+    return { targets: picked.slice(-MAX_RECEIPTS_PER_CALL), incoming, skipped };
+}
+
+/**
+ * What the sender is shown when this account marks their messages seen: "visible" when this account's
+ * `display_seen_status` is on (they see "Seen"), "hidden" when it is off (Zalo should show them "Received" only;
+ * unverified), null when the setting could not be read. One `getSettings` request.
  *
- * Neither call can hide the other's failure: each gets its own result.
+ * @param {object} api
+ * @returns {Promise<"visible"|"hidden"|null>}
+ */
+export async function senderReceiptOf(api) {
+    try {
+        const v = (await api.getSettings())?.display_seen_status;
+        if (v === true || Number(v) === 1) return "visible";
+        if (v === false || (v !== null && v !== undefined && Number(v) === 0)) return "hidden";
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+/** The plain sentence about what the sender sees. */
+function senderNote(senderReceipt) {
+    if (senderReceipt === "visible") {
+        return (
+            'The sender sees "Seen" on these messages: your seen status is visible. To read without that, turn it ' +
+            "off first (profile set seen-status 0)."
+        );
+    }
+    if (senderReceipt === "hidden") {
+        return (
+            'Your seen status is hidden (seen-status 0), so the sender should see "Received", not "Seen" ' +
+            "(unverified: Zalo decides this on its side)."
+        );
+    }
+    return 'The sender sees "Seen" on these messages unless your seen status is hidden (profile set seen-status 0).';
+}
+
+/** One seenv2 call for the picked rows. */
+async function sendSeenFor(api, { threadId, type, targets }) {
+    const messages = [];
+    const guessed = new Set();
+    for (const { row, raw } of targets) {
+        const t = seenTargetFromCachedRow(row, raw, { threadId, type });
+        messages.push(t.message);
+        for (const g of t.guessed) guessed.add(g);
+    }
+    const msgIds = messages.map((m) => m.msgId);
+    try {
+        await sendSeenReceipt(api, { threadId, type, messages });
+        return { ok: true, msgIds, guessed: [...guessed] };
+    } catch (e) {
+        return { ok: false, msgIds, guessed: [...guessed], error: e.message };
+    }
+}
+
+/**
+ * A conversation's read state as the listener stored it (src/core/read-state.js), or all-unknown without a cache.
  *
- * @param {object} api - logged-in zca-js api
+ * @param {string} threadId
+ * @param {{read?: typeof getConvState}} [deps]
+ * @returns {{lastReadMsgId: string|null, unreadMarked: boolean|null, reactUnreadId: string|null,
+ *   reactSeenId: string|null}}
+ */
+export function conversationReadState(threadId, { read = getConvState } = {}) {
+    let row = null;
+    try {
+        row = read(String(threadId));
+    } catch {
+        // No cache open in this process.
+    }
+    const numericId = (v) => (/^\d+$/.test(String(v ?? "")) ? String(v) : null);
+    return {
+        lastReadMsgId: numericId(row?.lastReadMsgId),
+        unreadMarked: row?.unreadMarked === null || row?.unreadMarked === undefined ? null : Boolean(row.unreadMarked),
+        reactUnreadId: numericId(row?.reactUnreadId),
+        reactSeenId: numericId(row?.reactSeenId),
+    };
+}
+
+/** A thread's newest cached rows, or none without a cache. */
+function cachedRowsOf(threadId, read = getMessages) {
+    try {
+        return read(String(threadId), READ_SCAN_DEPTH);
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * Mark a conversation read the way Zalo's "Mark as read" (and opening the chat) does: `conv read` and
+ * zalo_conversation `read`, one function and one reply.
+ *
+ * 1. seenv2 for every cached incoming message newer than the read watermark, the newest 50, oldest first; end-to-end
+ *    encrypted ones are left out (counted under `seen.skipped.e2ee`).
+ * 2. react_seen when the conversation has an unread reaction (the listener's reaction marks; unverified).
+ * 3. removeUnreadMark only when the manual unread mark is set, or not known to be clear.
+ *
+ * With `markOnly`, only step 3, always sent: the red dot goes, Zalo's real unread count stays, and nothing is marked
+ * seen. There is no "dot only" path that clears the count without the sender seeing "Seen"; hiding the seen status
+ * (`profile set seen-status 0`) is the way to read without it.
+ *
+ * Reply: `{success, threadId, threadType, markOnly, seen, reactions, unreadMark, senderReceipt, note, error?}`.
+ * `seen` is null with `markOnly`, else `{sent, msgIds, watermark, skipped, guessed, refused?, error?}`; `reactions`
+ * is null with `markOnly`, else `{unreadId, sent, error?}`; `unreadMark` is `{wasSet, removed, error?}` (`wasSet`
+ * null: not known). `success` is false, with `error`, when a request failed or nothing could be marked seen.
+ *
+ * @param {object} api - logged-in session
  * @param {object} opts
  * @param {string} opts.threadId
  * @param {0|1} opts.type
  * @param {string} opts.ownId - this account's uid, to tell incoming from ours
- * @param {object[]} opts.rows - the thread's newest cached rows, newest first
- * @returns {Promise<{threadId: string, type: number, unreadMark: object, seen: object}>}
+ * @param {boolean} [opts.markOnly]
+ * @param {object[]} [opts.rows] - the thread's newest cached rows, newest first (read from the cache when absent)
+ * @param {object} [opts.state] - {@link conversationReadState} (read from the cache when absent)
+ * @returns {Promise<object>}
  */
-export async function markConversationRead(api, { threadId, type, ownId, rows }) {
+export async function markConversationRead(api, { threadId, type, ownId, markOnly = false, rows, state }) {
     const [id, isGroup] = threadOf(threadId, type);
     const t = isGroup ? THREAD_GROUP : THREAD_USER;
-    const out = { threadId: id, type: t, unreadMark: null, seen: null };
+    const st = state ?? conversationReadState(id);
+    const out = {
+        success: true,
+        threadId: id,
+        threadType: isGroup ? "group" : "dm",
+        markOnly: Boolean(markOnly),
+        seen: null,
+        reactions: null,
+        unreadMark: { wasSet: st.unreadMarked, removed: false },
+        senderReceipt: null,
+        note: "",
+    };
+    const failures = [];
 
-    try {
-        out.unreadMark = { ok: true, response: await api.removeUnreadMark(id, t) };
-    } catch (e) {
-        out.unreadMark = { ok: false, error: e.message };
+    if (!markOnly) {
+        const { targets, incoming, skipped } = unreadIncoming(rows ?? cachedRowsOf(id), {
+            ownId,
+            watermark: st.lastReadMsgId,
+        });
+        out.seen = { sent: 0, msgIds: [], watermark: st.lastReadMsgId, skipped, guessed: [] };
+        if (targets.length) {
+            const r = await sendSeenFor(api, { threadId: id, type: t, targets });
+            out.seen.msgIds = r.msgIds;
+            out.seen.guessed = r.guessed;
+            if (r.ok) out.seen.sent = r.msgIds.length;
+            else {
+                out.seen.error = r.error;
+                failures.push(`Seen receipt failed: ${r.error}`);
+            }
+        } else if (incoming === 0 && !st.lastReadMsgId) {
+            out.seen.refused = "no-cache";
+            out.seen.error =
+                "No incoming message of this conversation is in the local cache, so nothing was marked seen. The " +
+                "cache is written by `listen`, `mcp start` and `sync`.";
+            failures.push(out.seen.error);
+        } else if (skipped.noisedSender > 0 && skipped.e2ee === 0) {
+            out.seen.refused = "noised-sender";
+            out.seen.error =
+                "The unread cached messages were restored by sync and carry noised sender ids, so a seen receipt " +
+                "built on them would name the wrong sender. Nothing was marked seen; a message the listener " +
+                "receives carries its real sender.";
+            failures.push(out.seen.error);
+        }
+
+        const unreadId = st.reactUnreadId;
+        const reactionUnread = Boolean(unreadId) && (!st.reactSeenId || newer(unreadId, st.reactSeenId));
+        out.reactions = { unreadId: reactionUnread ? unreadId : null, sent: false };
+        if (reactionUnread) {
+            try {
+                await sendReactionSeen(api, { threadId: id, type: t, reactionId: unreadId });
+                out.reactions.sent = true;
+            } catch (e) {
+                out.reactions.error = e.message;
+                failures.push(`Reaction-seen receipt failed: ${e.message}`);
+            }
+        }
     }
 
-    const anchor = pickSeenAnchor(rows, { ownId });
-    if (!anchor) {
-        out.seen = {
-            ok: false,
-            refused: "no-anchor",
-            error: "No incoming message for this conversation is in the local cache, so no seen receipt was sent.",
-        };
-        return out;
-    }
-    const { row, raw } = anchor;
-    // transfer-sync-v2 restores rows under the protobuf's NOISED sender id. It
-    // is not a uid Zalo accepts as `si`, and the row may even be one of ours:
-    // our own noised id does not equal our uid, so it passed the check above.
-    if (!/^\d+$/.test(String(row.senderId))) {
-        out.seen = {
-            ok: false,
-            refused: "noised-sender",
-            msgId: String(row.msgId),
-            error:
-                `The newest cached message not sent from this account (${row.msgId}) was restored by sync and ` +
-                "carries a noised sender id, so a seen receipt built on it would name the wrong sender -- " +
-                "possibly this account. No seen receipt was sent.",
-        };
-        return out;
+    if (markOnly || st.unreadMarked !== false) {
+        try {
+            await api.removeUnreadMark(id, t);
+            out.unreadMark.removed = true;
+        } catch (e) {
+            out.unreadMark.error = e.message;
+            failures.push(`Could not clear the manual unread mark: ${e.message}`);
+        }
     }
 
-    const { message, guessed } = seenTargetFromCachedRow(row, raw, { threadId: id, type: t });
-    const entry = receiptEntry(message);
-    try {
-        const response = await sendSeenReceipt(api, { threadId: id, type: t, messages: [message] });
-        out.seen = { ok: true, msgId: message.msgId, guessed, entry, response };
-    } catch (e) {
-        out.seen = { ok: false, msgId: message.msgId, guessed, entry, error: e.message };
+    if (markOnly) {
+        out.note =
+            "Only the manual unread mark was removed: Zalo's real unread count stays, and nothing was marked seen.";
+    } else {
+        out.senderReceipt = await senderReceiptOf(api);
+        out.note = out.seen.sent ? senderNote(out.senderReceipt) : "No unread incoming message was marked seen.";
+    }
+    if (failures.length) {
+        out.success = false;
+        out.error = failures.join(" ");
     }
     return out;
 }
 
-// ---- the listener's automatic delivered receipts -----------------------------
-
 /**
- * Automatic deliveredv2 receipts for a long-running listener.
+ * Mark chosen messages seen (`msg seen`, zalo_conversation `seen`): one seenv2 for the named cached messages, or,
+ * with none named, the newest cached incoming one. It does not touch the manual unread mark. Zalo takes a seen
+ * message as read up to there, so it also moves this account's own read position; the sender sees "Seen" unless
+ * this account's seen status is hidden.
  *
- * `listen` and `mcp start` both use this, and only this, so the two entry
- * points to the socket cannot drift apart (AGENTS.md §13). Every received 501
- * or 521 message is acknowledged -- our own echoes included, as Zalo Web does
- * -- except the removal frames the web does not acknowledge either.
+ * Reply: `{success, threadId, threadType, sent, msgIds, notSent, guessed, senderReceipt, note, error?}`; `notSent`
+ * names each id not sent and why.
  *
- * Batching mirrors the web's delivered queue: messages wait `delayMs` (the
- * web's 150 ms), then go out one call at a time, one conversation per call, at
- * most 50 messages per call. A message arriving while its conversation's batch
- * is still waiting joins it. So ordinary traffic produces exactly the captured
- * one-message calls, and a burst -- a reconnect replaying a backlog, a busy
- * group -- costs one call per conversation instead of one per message, spaced
- * like the web's own.
- *
- * Best-effort by construction. A receipt must never stop the listener, delay
- * or drop the message write, or reach stdout (the JSON-RPC stream in MCP mode):
- *
- *   - `attach()` subscribes AFTER the caller's storing handler, and its handler
- *     only queues -- synchronously, inside a try/catch -- so the write has
- *     already happened and nothing can throw back into zca-js's socket loop.
- *   - Sending happens later, off the event, and every failure (rejection,
- *     network error, no session during a re-login, a hung request abandoned
- *     after `timeoutMs`) is counted and reported through `log`, rate-limited.
- *   - The queue is bounded (`maxPending`); overflow drops the oldest receipts
- *     and is counted.
- *   - The api is resolved per send through `getApi`, because a re-login
- *     replaces it.
- *
+ * @param {object} api - logged-in session
  * @param {object} opts
- * @param {() => object} opts.getApi - returns the current logged-in api
- * @param {boolean} [opts.enabled] - false: attach() subscribes nothing
- * @param {number} [opts.delayMs] - wait before each call
- * @param {number} [opts.timeoutMs] - abandon a call after this long
- * @param {number} [opts.maxPending] - most receipts held while Zalo is not answering
- * @param {(line: string) => void} [opts.log] - diagnostics; must not be stdout in MCP mode
- * @returns {{attach: Function, queue: Function, flush: Function, stop: Function, stats: Function}}
+ * @param {string} opts.threadId
+ * @param {0|1} opts.type
+ * @param {string} opts.ownId
+ * @param {string[]} [opts.msgIds] - at most 50
+ * @param {{byId?: typeof getMessageById, rows?: typeof getMessages}} [deps] - test seams
+ * @returns {Promise<object>}
  */
-export function createDeliveredReceipts({
-    getApi,
-    enabled = true,
-    delayMs = DELIVERED_QUEUE_DELAY_MS,
-    timeoutMs = 15_000,
-    maxPending = 1000,
-    log = (line) => console.error(line),
-} = {}) {
-    /** @type {{threadId: string, type: number, messages: object[]}[]} */
-    const batches = [];
-    let pending = 0;
-    let pumping = null;
-    let hurry = false;
-    let wake = null;
-    let stopped = false;
-    const counts = { queued: 0, sent: 0, failed: 0, dropped: 0, calls: 0 };
-    let announced = false;
-    let lastFailureLogAt = 0;
-    let quietFailures = 0;
-    let droppedNoted = false;
-
-    const say = (line) => {
-        try {
-            log(line);
-        } catch {
-            /* a broken logger must not break the listener either */
-        }
-    };
-
-    /** Wait `ms` on a timer that never keeps the process alive; flush() cuts it short. */
-    const pause = (ms) =>
-        new Promise((resolve) => {
-            if (ms <= 0) return resolve();
-            const done = () => {
-                wake = null;
-                clearTimeout(timer);
-                resolve();
-            };
-            const timer = setTimeout(done, ms);
-            timer.unref?.();
-            wake = done;
-        });
-
-    function noteFailure(batch, e) {
-        counts.failed += batch.messages.length;
-        const now = Date.now();
-        if (lastFailureLogAt && now - lastFailureLogAt < 60_000) {
-            quietFailures++;
-            return;
-        }
-        const extra = quietFailures ? ` (${quietFailures} more failed quietly since the last report)` : "";
-        quietFailures = 0;
-        lastFailureLogAt = now;
-        say(`delivered receipt failed for ${batch.threadId}: ${e?.message || e}${extra}`);
+export async function seenMessages(api, { threadId, type, ownId, msgIds = [] }, deps = {}) {
+    const [id, isGroup] = threadOf(threadId, type);
+    const t = isGroup ? THREAD_GROUP : THREAD_USER;
+    const ids = [...new Set((msgIds || []).map(String))];
+    if (ids.length > MAX_RECEIPTS_PER_CALL) {
+        throw new Error(`Name at most ${MAX_RECEIPTS_PER_CALL} messages: Zalo takes that many per seen receipt.`);
     }
-
-    async function send(batch) {
-        counts.calls++;
-        let timer = null;
-        try {
-            const signal = AbortSignal.timeout(timeoutMs);
-            const timeout = new Promise((_, reject) => {
-                timer = setTimeout(() => reject(new Error(`no answer within ${timeoutMs} ms`)), timeoutMs);
-                timer.unref?.();
-            });
-            await Promise.race([
-                sendDeliveredReceipt(getApi(), {
-                    threadId: batch.threadId,
-                    type: batch.type,
-                    messages: batch.messages,
-                    signal,
-                }),
-                timeout,
-            ]);
-            counts.sent += batch.messages.length;
-            if (!announced) {
-                announced = true;
-                say(
-                    `delivered receipts on: Zalo accepted the first (${batch.messages.length} message(s) ` +
-                        `in ${batch.threadId}); opt out with --no-delivered-receipts`,
-                );
-            }
-        } catch (e) {
-            noteFailure(batch, e);
-        } finally {
-            if (timer) clearTimeout(timer);
-        }
-    }
-
-    async function pump() {
-        while (batches.length && !stopped) {
-            if (!hurry) await pause(delayMs);
-            if (stopped) break;
-            const batch = batches.shift();
-            if (!batch) break;
-            pending -= batch.messages.length;
-            await send(batch);
-        }
-    }
-
-    function kick() {
-        if (pumping || stopped || !batches.length) return;
-        pumping = pump().finally(() => {
-            pumping = null;
-            kick();
-        });
-    }
-
-    /**
-     * Queue a receipt for one zca-js message event. Never throws.
-     *
-     * @param {object} msg
-     * @returns {boolean} whether a receipt was queued
-     */
-    function queue(msg) {
-        if (!enabled || stopped) return false;
-        try {
-            const target = liveReceiptTarget(msg);
-            if (!target) return false;
-            let batch = null;
-            for (const b of batches) {
-                if (
-                    b.threadId === target.threadId &&
-                    b.type === target.type &&
-                    b.messages.length < MAX_RECEIPTS_PER_CALL
-                ) {
-                    batch = b;
-                    break;
-                }
-            }
-            if (!batch) {
-                batch = { threadId: target.threadId, type: target.type, messages: [] };
-                batches.push(batch);
-            }
-            batch.messages.push(target.message);
-            pending++;
-            counts.queued++;
-            while (pending > maxPending && batches.length > 1) {
-                const old = batches.shift();
-                pending -= old.messages.length;
-                counts.dropped += old.messages.length;
-            }
-            if (counts.dropped && !droppedNoted) {
-                droppedNoted = true;
-                say(`delivered receipts: Zalo is not keeping up; dropping the oldest beyond ${maxPending} queued`);
-            }
-            kick();
-            return true;
-        } catch (e) {
-            say(`delivered receipt skipped: ${e?.message || e}`);
-            return false;
-        }
-    }
-
-    return {
-        /**
-         * Subscribe to a zca-js listener's `message` events. Call it AFTER the
-         * storing handler, and again on every new listener a re-login creates.
-         *
-         * @param {import("node:events").EventEmitter} listener - `api.listener`
-         * @returns {() => void} detach
-         */
-        attach(listener) {
-            if (!enabled || typeof listener?.on !== "function") return () => {};
-            const onMessage = (msg) => {
-                queue(msg);
-            };
-            listener.on("message", onMessage);
-            return () => {
-                try {
-                    listener.removeListener("message", onMessage);
-                } catch {
-                    /* an already torn-down listener is fine */
-                }
-            };
-        },
-
-        queue,
-
-        /**
-         * Send everything queued now, without the delay. Resolves when the
-         * queue is empty (failures are counted, never thrown).
-         *
-         * @returns {Promise<void>}
-         */
-        async flush() {
-            hurry = true;
+    const byId = deps.byId ?? getMessageById;
+    const notSent = [];
+    const targets = [];
+    if (ids.length) {
+        for (const msgId of ids) {
+            let row = null;
             try {
-                wake?.();
-                kick();
-                while (pumping) await pumping;
-            } finally {
-                hurry = false;
+                row = byId(msgId);
+            } catch {
+                // No cache open.
             }
-        },
+            const why = !row
+                ? "not in the local cache"
+                : String(row.threadId) !== id
+                  ? "belongs to another conversation"
+                  : String(row.senderId ?? "") === String(ownId)
+                    ? "is this account's own message"
+                    : null;
+            if (why) {
+                notSent.push({ msgId, reason: why });
+                continue;
+            }
+            const raw = parseRaw(row.raw_data);
+            const reason = !isId(raw.cliMsgId)
+                ? "has no cliMsgId Zalo can name it by"
+                : isE2ee(row, raw)
+                  ? "is end-to-end encrypted"
+                  : !/^\d+$/.test(String(row.senderId))
+                    ? "was restored by sync under a noised sender id"
+                    : null;
+            if (reason) notSent.push({ msgId, reason });
+            else targets.push({ row, raw });
+        }
+    } else {
+        const newest = unreadIncoming(cachedRowsOf(id, deps.rows), { ownId }).targets.at(-1);
+        if (newest) targets.push(newest);
+    }
 
-        /** Stop sending; receipts still queued are dropped. */
-        stop() {
-            stopped = true;
-            wake?.();
-            counts.dropped += pending;
-            batches.length = 0;
-            pending = 0;
-        },
-
-        /** @returns {{queued: number, sent: number, failed: number, dropped: number, calls: number, pending: number}} */
-        stats() {
-            return { ...counts, pending };
-        },
+    const out = {
+        success: false,
+        threadId: id,
+        threadType: isGroup ? "group" : "dm",
+        sent: 0,
+        msgIds: [],
+        notSent,
+        guessed: [],
+        senderReceipt: null,
+        note: "",
     };
+    if (!targets.length) {
+        out.error = ids.length
+            ? "None of the named messages can be marked seen (see notSent)."
+            : "No incoming message of this conversation is in the local cache to mark seen.";
+        return out;
+    }
+    targets.sort((a, b) => (newer(a.row.msgId, b.row.msgId) ? 1 : newer(b.row.msgId, a.row.msgId) ? -1 : 0));
+    const r = await sendSeenFor(api, { threadId: id, type: t, targets });
+    out.msgIds = r.msgIds;
+    out.guessed = r.guessed;
+    if (!r.ok) {
+        out.error = `Seen receipt failed: ${r.error}`;
+        return out;
+    }
+    out.success = true;
+    out.sent = r.msgIds.length;
+    out.senderReceipt = await senderReceiptOf(api);
+    out.note =
+        `${senderNote(out.senderReceipt)} Zalo also takes this as read up to these messages, so it moves your own ` +
+        "read position.";
+    return out;
 }

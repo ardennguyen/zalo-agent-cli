@@ -11,6 +11,7 @@ import { getAccountDir } from "../core/credentials.js";
 import { getDaemonStatus } from "../core/daemon-channel.js";
 import { openOutbox, outboxPath } from "../core/webhook-outbox.js";
 import { error, info, output, success } from "../utils/output.js";
+import { guardSubcommand } from "../core/confirm-guard.js";
 
 const iso = (ms) => (ms ? new Date(ms).toISOString() : null);
 
@@ -112,11 +113,11 @@ export function registerMCPWebhookCommands(mcp, program) {
         .option("--account <id>", "Target a specific registered account ID (default: active account)", parseAccountId)
         .option("--dead", "Only dead-lettered events")
         .option("--pending", "Only events still queued")
-        .option("-n, --limit <n>", "Maximum rows (default: 50)", "50")
+        .option("-n, --limit <n>", "Maximum rows (default: every row)")
         .action((opts) => {
-            const limit = Number(opts.limit);
-            if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
-                error(`Invalid --limit "${opts.limit}": must be an integer between 1 and 1000.`);
+            const limit = opts.limit === undefined ? null : Number(opts.limit);
+            if (limit !== null && (!Number.isInteger(limit) || limit < 1)) {
+                error(`Invalid --limit "${opts.limit}": must be a whole number of at least 1.`);
                 process.exit(1);
             }
             if (opts.dead && opts.pending) {
@@ -142,7 +143,7 @@ export function registerMCPWebhookCommands(mcp, program) {
                     lastAttemptAt: iso(r.last_attempt_at),
                     lastError: r.last_error,
                     event: event.event ?? null,
-                    id: event.id ?? event.msgId ?? null,
+                    id: event.msgId ?? event.id ?? null, // an event queued by an older version has only `id`
                     threadId: event.threadId ?? null,
                 };
             });
@@ -194,4 +195,11 @@ export function registerMCPWebhookCommands(mcp, program) {
                 });
             });
     }
+    // Purging dead letters cannot be taken back: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    guardSubcommand(webhook, "purge", "webhook.purge", {
+        target: (seq, opts) => ({
+            account: opts.account ?? program.opts().account ?? (process.env.ZALO_ACCOUNT?.trim() || null),
+            ...(seq !== undefined && { seq }),
+        }),
+    });
 }

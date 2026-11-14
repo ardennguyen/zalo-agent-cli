@@ -1,7 +1,7 @@
 /**
- * A zca-js Listener stand-in that speaks the real socket framing, offline.
+ * A listener stand-in that speaks the real socket framing, offline.
  *
- * zca-js reads a frame as a 4-byte header (version, cmd as uint16 LE, subCmd)
+ * The listener reads a frame as a 4-byte header (version, cmd as uint16 LE, subCmd)
  * followed by a JSON body `{encrypt, data}`. `encrypt: 0` means `data` is plain
  * JSON text, which src/core/sync-v2/index.js `decodeFrame` accepts without a
  * cipher -- so a test drives the REAL raw tap and the REAL decoder with frames
@@ -30,7 +30,7 @@ export function serverFrame(cmd, subCmd, body, top = {}) {
     return Buffer.concat([head, json]);
 }
 
-/** The raw `ws` object zca-js keeps on `listener.ws`: an EventEmitter of Buffers. */
+/** The raw `ws` object the listener keeps on `listener.ws`: an EventEmitter of Buffers. */
 class FakeWs extends EventEmitter {
     constructor() {
         super();
@@ -61,14 +61,14 @@ export function fakeListener({ respond = () => null } = {}) {
         if (body) queueMicrotask(() => ws.emit("message", serverFrame(payload.cmd, payload.subCmd, body)));
     };
 
-    /** A socket drop and zca-js's retry: a NEW ws object, then `connected`. */
+    /** A socket drop and the listener's retry: a NEW ws object, then `connected`. */
     listener.reconnect = () => {
         listener.ws.emit("close", 1006, "");
         listener.ws = new FakeWs();
         listener.emit("connected");
     };
 
-    /** The AUTHEN handshake zca-js takes its cipher key from (cmd 1, sub 1). */
+    /** The AUTHEN handshake the listener takes its cipher key from (cmd 1, sub 1). */
     listener.auth = (data) =>
         listener.ws.emit("message", serverFrame(1, 1, { error_code: 0, error_message: "", data }, { key: "k" }));
 

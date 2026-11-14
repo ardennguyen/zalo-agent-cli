@@ -14,7 +14,7 @@
  *
  * The daemon here is a real second process (./support/history-daemon.js):
  * startDaemonChannel serving createSyncRunners, as `listen` and `mcp start`
- * wire it, on a real zca-js session over ./fake-zalo-session.js, writing the
+ * wire it, on a real session over ./fake-zalo-session.js, writing the
  * sandbox's zalo.db through its own connection. The CLI is the real command,
  * run in THIS process, with ./support/db-write-spy.js recording every write
  * statement this process makes. Both sides' fake Zalo can serve the same
@@ -278,7 +278,7 @@ describe("msg history beside a running daemon", () => {
                 runners: { history: async () => ({ frames, rawScanned: 1 }) },
             });
             try {
-                const r = await history(PEER, "-t", "0", "-n", "5", "--no-cache", "--timeout", "2000");
+                const r = await history(PEER, "-t", "0", "-n", "5", "--no-cache", "--scan", "--timeout", "2000");
 
                 assert.equal(r.exitCode, 0, r.all);
                 assert.deepEqual(shown(r), [newId], "the daemon's answer was not shown");
@@ -332,7 +332,7 @@ describe("msg history beside a running daemon", () => {
             await daemon.scenario({ pages });
             cliCouldFetch({ pages });
 
-            const r = await history(PEER, "-t", "0", "-n", "10", "--no-cache", "--timeout", "2000");
+            const r = await history(PEER, "-t", "0", "-n", "10", "--no-cache", "--scan", "--timeout", "2000");
 
             assert.equal(r.exitCode, 0, `${r.all}\n${daemon.stderr()}`);
             assert.deepEqual(shown(r), [newId]);
@@ -400,7 +400,7 @@ describe("msg history beside a running daemon", () => {
             await daemon.scenario({ failScan: "the socket dropped mid-scan" });
             cliCouldFetch({ pages: [[frame(PEER, 0, wire(newId, PEER))]] });
 
-            const r = await history(PEER, "-t", "0", "-n", "5", "--no-cache", "--timeout", "2000");
+            const r = await history(PEER, "-t", "0", "-n", "5", "--no-cache", "--scan", "--timeout", "2000");
 
             assert.equal(r.exitCode, 1, r.all);
             assert.match(JSON.parse(r.stdout).error, /daemon/i);
@@ -425,7 +425,7 @@ describe("msg history beside a running daemon", () => {
                 const newId = freshId();
                 cliCouldFetch({ pages: [[frame(PEER, 0, wire(newId, PEER))]] });
 
-                const r = await history(PEER, "-t", "0", "-n", "5", "--no-cache", "--timeout", "2000");
+                const r = await history(PEER, "-t", "0", "-n", "5", "--no-cache", "--scan", "--timeout", "2000");
 
                 assert.equal(r.exitCode, 1, r.all);
                 assert.match(JSON.parse(r.stdout).error, /daemon/i);
@@ -435,7 +435,7 @@ describe("msg history beside a running daemon", () => {
                 assert.equal(await dying.exited, 3, "the daemon was meant to die mid-call");
 
                 // Its descriptor names a dead pid now: that is "confirmed gone".
-                const again = await history(PEER, "-t", "0", "-n", "5", "--no-cache", "--timeout", "2000");
+                const again = await history(PEER, "-t", "0", "-n", "5", "--no-cache", "--scan", "--timeout", "2000");
                 assert.equal(again.exitCode, 0, again.all);
                 assert.deepEqual(shown(again), [newId]);
                 assert.ok(socket.requests.length >= 1, "with no daemon left, the CLI scans itself");

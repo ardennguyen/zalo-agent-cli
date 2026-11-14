@@ -11,10 +11,11 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CONFIG_DIR } from "../../src/core/credentials.js";
+import { CONFIG_DIR, getAccountDir } from "../../src/core/credentials.js";
 import { runCli, stripAnsi } from "../helpers/cli.js";
 
-const options = { home: SANDBOX_HOME, timeout: 60_000 };
+// Per-spawn timeout: ZALO_TEST_CLI_TIMEOUT_MS when set (a loaded box), 60 s otherwise.
+const options = { home: SANDBOX_HOME, timeout: Number(process.env.ZALO_TEST_CLI_TIMEOUT_MS) || 60_000 };
 const IDS = ["501", "502", "503", "504", "505"];
 
 const fleet = (...args) => runCli(["fleet", ...args], options);
@@ -100,8 +101,10 @@ describe("fleet status", () => {
             "health",
             "name",
             "port",
+            "session",
             "state",
         ]);
+        assert.equal(json.accounts[0].session, null, "no saved login, no end date");
         assert.deepEqual(json.accounts[0].daemon, { running: false, pid: null });
     });
 
@@ -116,9 +119,49 @@ describe("fleet status", () => {
         assert.match(stripAnsi(r.all), /Account 999 is not registered/);
     });
 
-    it("--check exits 1 unless every account is serving", async () => {
-        assert.equal((await fleet("status", "--check")).code, 1);
+    it("--check exits 1 unless every account is serving, and says what to do about each", async () => {
+        const r = await fleet("status", "--check");
+        assert.equal(r.code, 1);
+        assert.match(stripAnsi(r.all), /501: stopped - no daemon runs for it; `fleet start` starts it/);
         assert.equal((await fleet("status")).code, 0);
+    });
+
+    it("shows when each saved login ends: --check fails at 7 days left, warns at 10, says how to log in again", async () => {
+        const DAY = 86_400_000;
+        // What a daemon leaves in the account folder (src/core/session-notice.js): status reads it, never the
+        // credentials, so it needs no key.
+        const save = (id, days) => {
+            mkdirSync(getAccountDir(id), { recursive: true });
+            writeFileSync(
+                join(getAccountDir(id), "session-notice.json"),
+                JSON.stringify({
+                    expiresAt: new Date(Date.now() + days * DAY + 3_600_000).toISOString(),
+                    threshold: null,
+                }),
+            );
+        };
+        save("501", 7);
+        save("502", 10);
+        save("503", 60);
+        const { json } = await fleetJson("status", "501", "502", "503");
+        assert.deepEqual(
+            json.accounts.map((a) => [a.accountId, a.session?.daysLeft]),
+            [
+                ["501", 7],
+                ["502", 10],
+                ["503", 60],
+            ],
+        );
+        const table = stripAnsi((await fleet("status", "501", "502", "503")).stdout);
+        assert.match(table, /LOGIN ENDS/);
+        assert.match(table, /^501 .*\s7d!$/m);
+        assert.match(table, /^503 .*\s60d$/m);
+        const r = await fleet("status", "--check", "501", "502", "503");
+        assert.equal(r.code, 1);
+        const all = stripAnsi(r.all);
+        assert.match(all, /501: session ends \S+ \(7 day\(s\) left\) - log in again by \S+: za --account 501 login/);
+        assert.match(all, /502: session ends \S+ \(10 day\(s\) left\) - log in again by/);
+        assert.doesNotMatch(all, /503: session/);
     });
 
     it("refuses a nonsense --down-for", async () => {
@@ -212,6 +255,71 @@ describe("fleet stop", () => {
     });
 });
 
+// G3: an account its zalo-mcp@<id> unit runs is started, stopped and restarted through systemctl, never by a
+// daemon spawned beside the unit or a stop its Restart=always undoes.
+describe("fleet under systemd", () => {
+    const sd = { ...options, env: { ZALO_FLEET_SUPERVISOR: "systemd" } };
+    const sdJson = async (...args) => {
+        const r = await runCli(["--json", "fleet", ...args], sd);
+        const text = stripAnsi(r.stdout);
+        return { code: r.code, json: JSON.parse(text.slice(text.indexOf("{"))), all: r.all };
+    };
+
+    it("start and restart plan the unit, not a spawn", async () => {
+        const start = await sdJson("start", "501", "502", "--dry-run", "--stagger", "0");
+        assert.equal(start.code, 0, start.all);
+        assert.deepEqual(start.json.started.map((s) => [s.accountId, s.supervisor, s.detail]).sort(), [
+            ["501", "systemd", "would start zalo-mcp@501.service"],
+            ["502", "systemd", "would start zalo-mcp@502.service"],
+        ]);
+        const restart = await sdJson("restart", "503", "--dry-run");
+        assert.deepEqual(
+            restart.json.restarted.map((s) => [s.supervisor, s.detail]),
+            [["systemd", "would restart zalo-mcp@503.service"]],
+        );
+    });
+
+    it("stop goes to systemctl, and a refused systemctl is a failure that says how to do it", async () => {
+        // Here systemctl is missing (Windows, macOS) or refuses an unprivileged stop of an unknown unit (Linux CI).
+        const r = await runCli(["fleet", "stop", "501"], sd);
+        assert.equal(r.code, 1, r.all);
+        const text = stripAnsi(r.all);
+        assert.match(text, /systemctl stop zalo-mcp@501\.service failed/);
+        assert.match(text, /sudo systemctl stop zalo-mcp@501/);
+        assert.doesNotMatch(text, /no daemon was running/, "the spawn path was not taken");
+    });
+});
+
+describe("fleet purge", () => {
+    it("asks first: without --yes or --dry-run it does nothing and exits 2", async () => {
+        const r = await fleet("purge");
+        assert.equal(r.code, 2, r.all);
+        assert.match(stripAnsi(r.all), /quota and retention purge for every account on this machine/);
+    });
+
+    it("--dry-run reports each account (no database here: skipped) and exits 0; --yes the same", async () => {
+        const { json, code } = await fleetJson("purge", "--dry-run");
+        assert.equal(code, 0);
+        assert.equal(json.dryRun, true);
+        assert.deepEqual(
+            json.purge.map((r) => [r.accountId, r.action]),
+            IDS.map((id) => [id, "skipped"]),
+        );
+        const yes = await fleetJson("purge", "502", "--yes");
+        assert.equal(yes.code, 0, yes.all);
+        assert.deepEqual(
+            yes.json.purge.map((r) => r.accountId),
+            ["502"],
+        );
+    });
+
+    it("an account that is not registered is refused", async () => {
+        const r = await fleet("purge", "999", "--dry-run");
+        assert.equal(r.code, 1);
+        assert.match(stripAnsi(r.all), /not registered/);
+    });
+});
+
 describe("fleet generate", () => {
     let out;
     beforeEach(() => {
@@ -224,6 +332,8 @@ describe("fleet generate", () => {
         const r = await gen();
         assert.equal(r.code, 0, r.all);
         assert.ok(existsSync(join(out, "zalo-mcp@.service")));
+        assert.ok(existsSync(join(out, "zalo-mcp-purge.service")));
+        assert.ok(existsSync(join(out, "zalo-mcp-purge.timer")));
         const ports = JSON.parse(readFileSync(join(out, "ports.json"), "utf8"));
         assert.deepEqual(ports, Object.fromEntries(IDS.map((id, i) => [id, 3900 + i])));
         for (const id of IDS) {
@@ -268,6 +378,62 @@ describe("fleet generate", () => {
         assert.equal((caddy.match(/handle_path \/a\/50\d\//g) || []).length, 5);
     });
 
+    it("--domain gives each named account its public URL; the steps are printed with the paths used", async () => {
+        const r = await runCli(
+            [
+                "--json",
+                "fleet",
+                "generate",
+                "502",
+                "501",
+                "--out",
+                out,
+                "--domain",
+                "zalo.example.com",
+                "--etc-dir",
+                "/opt/zalo/etc",
+                "--data-dir",
+                "/srv/zalo/accounts",
+            ],
+            options,
+        );
+        assert.equal(r.code, 0, r.all);
+        const json = JSON.parse(stripAnsi(r.stdout).slice(stripAnsi(r.stdout).indexOf("{")));
+        assert.deepEqual(readdirSync(join(out, "accounts")).sort(), ["501.env", "502.env"], "only the named accounts");
+        for (const id of ["501", "502"]) {
+            const env = readFileSync(join(out, "accounts", `${id}.env`), "utf8");
+            assert.match(env, new RegExp(`^ZALO_MCP_PUBLIC_URL=https://zalo\\.example\\.com/a/${id}$`, "m"));
+        }
+        assert.match(readFileSync(join(out, "common.env"), "utf8"), /^ZALO_MCP_TRUSTED_PROXIES=127\.0\.0\.1$/m);
+        assert.match(readFileSync(join(out, "home.env"), "utf8"), /^ZALO_DATA_DIR=\/srv\/zalo\/accounts$/m);
+        assert.match(
+            readFileSync(join(out, "zalo-mcp@.service"), "utf8"),
+            /^ReadWritePaths=\/home\/zalo\/\.zalo-agent-cli \/srv\/zalo\/accounts$/m,
+        );
+        assert.equal(json.provider, "passphrase");
+        const steps = json.install.join("\n");
+        assert.match(steps, /\/opt\/zalo\/etc\/storage-passphrase\.cred/);
+        assert.match(steps, /zalo-mcp@\.service\.d\/credentials\.conf/);
+        assert.match(steps, /enable --now zalo-mcp@502 zalo-mcp@501 /);
+        assert.doesNotMatch(steps, /\/etc\/zalo-mcp\b/, "no hard-coded /etc dir");
+        assert.doesNotMatch(steps, /fleet start --env-dir/, "never a spawn beside the units");
+    });
+
+    it("refuses an unknown provider, a relative path, a bad domain or user, and writes nothing", async () => {
+        for (const args of [
+            ["--provider", "plaintext"],
+            ["--data-dir", "relative/dir"],
+            ["--etc-dir", "/etc/zalo mcp"],
+            ["--domain", "https://zalo.example.com/"],
+            ["--user", "Bad User"],
+        ]) {
+            const r = await gen(...args);
+            assert.equal(r.code, 1, args.join(" "));
+            assert.match(stripAnsi(r.all), /Invalid --(provider|data-dir|etc-dir|domain|user)/, args.join(" "));
+        }
+        assert.deepEqual(readdirSync(out), [], "nothing was written");
+    });
+
     it("needs --out, and a sane --base-port", async () => {
         const noOut = await fleet("generate");
         assert.equal(noOut.code, 1);
@@ -289,11 +455,7 @@ describe("fleet needs no Zalo session", () => {
         for (const args of [["status"], ["ports"], ["start", "--dry-run", "--stagger", "0"], ["stop"]]) {
             const r = await fleet(...args);
             const text = stripAnsi(r.all);
-            assert.doesNotMatch(
-                text,
-                /Auto-login|Logged in as|session|zca-js is up to date/i,
-                `fleet ${args.join(" ")}: ${text}`,
-            );
+            assert.doesNotMatch(text, /Auto-login|Logged in as|session/i, `fleet ${args.join(" ")}: ${text}`);
         }
     });
 

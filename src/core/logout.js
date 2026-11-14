@@ -1,164 +1,58 @@
 /**
- * End a Zalo session at Zalo's servers, the way Zalo Web does.
+ * The local side of `logout` and `account remove`: the saved login tried again, the chat history wiped, the
+ * trusted-device identity described, and the result told to a person.
  *
- * Zalo Web's logout is `GET https://wpa.chat.zalo.me/api/login/logOut` (cmd
- * 11135): the common params plus `{time, client_version, type, imei,
- * computer_name}` as a PLAIN query string. The web builds it with `_get()`, which
- * URL-encodes the object as-is — no AES `params=` — and `time` is unix seconds.
- *
- * The web also calls `logoutV2` — POST /api/v2/login/logOut on whatever
- * `getDevDomainV3()` returns, which live is the staging host `stg-wpa` — but only
- * as an extra step behind a server flag. Our patched zca-js implements that one,
- * and until 2026-09-30 it was the only call `logout` and `account remove` made.
- * The session survived it (tier 5). docs/agent-notes.md has how that went
- * unnoticed; the short version is that "ended" was claimed without looking.
- *
- * So "ended" is claimed here only after Zalo rejects a follow-up call —
- * `fetchAccountInfo`, the same call `whoami` makes — with the session error Zalo
- * answered right after a proven logout on 2026-09-19. Anything else is reported
- * as what it is.
+ * The server side -- the logout calls, the official six-step device sign-out, the session-key probe -- is the
+ * protocol layer's: src/zalo/logout.js (and src/zalo/official-logout.js), whose header has the history.
  */
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { existsSync, rmSync } from "node:fs";
 import { getAccountDir, deleteCredentials } from "./credentials.js";
 import { checkLock } from "./lock.js";
-
-const require = createRequire(import.meta.url);
-
-/** Zalo Web's logout endpoint: the auth domain, not a service-map host. */
-export const PRODUCTION_LOGOUT_URL = "https://wpa.chat.zalo.me/api/login/logOut";
+import { isLoginRefused, serverLogout as zaloServerLogout } from "../zalo/logout.js";
+import { TRUST_FILE } from "../zalo/trust-store.js";
 
 /**
- * Error codes that mean "this session is no longer valid". 600 ("zpw_sek bị
- * thiếu hoặc không đúng") is what Zalo returned on the first authenticated call
- * after a proven logout. Only codes actually observed belong here: guessing more
- * would let an unrelated failure read as proof of logout.
+ * Try the saved login once, in a new login of its own.
+ *
+ * @param {{creds: object, proxy?: string|null, ownId?: string|null}} saved
+ * @returns {Promise<"revoked"|"still-valid"|"unverified">} revoked: Zalo refused the saved login; still-valid: it
+ *   logged in; unverified: the attempt failed for another reason (no network, a timeout), which proves nothing
  */
-const SESSION_REJECTED = new Set([600]);
-
-let _utils = null;
-/** zca-js internals, located the same way ./sync-v2/board.js does. */
-function zcaUtils() {
-    if (_utils) return _utils;
-    _utils = require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
-    return _utils;
-}
-
-/**
- * Send Zalo Web's production logout.
- *
- * @param {object} api - a logged-in zca-js API
- * @returns {Promise<*>} the response's `data`, decoded if it arrives encrypted
- * @throws {Error} carrying `.code` when Zalo answers with a non-zero error_code
- */
-async function productionLogout(api) {
-    const zu = zcaUtils();
-    const call = zu.apiFactory()((_api, ctx, utils) => async () => {
-        const url = utils.makeURL(PRODUCTION_LOGOUT_URL, {
-            time: Math.floor(Date.now() / 1000),
-            client_version: ctx.API_VERSION,
-            type: ctx.API_TYPE,
-            imei: ctx.imei,
-            computer_name: "Web",
-        });
-        const resp = await utils.request(url, { method: "GET" });
-        // Nobody has captured this call's response. logoutV2 answered in plain
-        // JSON, so read it unencrypted; if `data` turns out to be an encrypted
-        // string, decode it and honour an error code inside it.
-        const data = await utils.resolve(resp, undefined, false);
-        if (typeof data !== "string" || !data) return data;
-        let inner;
-        try {
-            inner = JSON.parse(zu.decodeAES(ctx.secretKey, data));
-        } catch {
-            return data; // not an encrypted payload
-        }
-        if (inner?.error_code !== undefined && Number(inner.error_code) !== 0) {
-            throw Object.assign(new Error(inner.error_message || `error_code ${inner.error_code}`), {
-                code: inner.error_code,
-            });
-        }
-        return inner?.data ?? inner;
-    })(api.getContext(), api);
-    return call();
-}
-
-/**
- * End this session at Zalo's servers.
- *
- * The production logout runs FIRST, while the session key is still valid, then
- * the optional staging `logoutV2` (best-effort), then a `fetchAccountInfo`
- * probe. Order matters: measured live 2026-09-30, running `logoutV2` first
- * kills the in-process session key, and the production call then answers
- * "Invalid Param". Sent first, the production call succeeds ("Successful.").
- *
- * What this does NOT do, also measured 2026-09-30: end the login. Both calls
- * end only this device's session key. The saved login (cookie) still
- * auto-logs-in on the next command, and the web session stays listed on the
- * phone as signed in until it is removed from the phone's device list. So the
- * `logout` command deletes the local credentials on top of this, and points
- * the user at the phone for a server-side revoke. This helper only reports what
- * the server calls did; it never claims the login ended.
- *
- * @param {object} api - a logged-in zca-js API
- * @returns {Promise<{
- *   v2: {ok: boolean, error?: string},
- *   production: {ok: boolean, error?: string, code?: number|null},
- *   verdict: "ended"|"still-answers"|"unverified",
- *   probeError?: string,
- * }>}
- */
-export async function serverLogout(api) {
-    const result = { v2: null, production: null, verdict: "unverified" };
-
+async function probeSavedLogin(saved) {
     try {
-        await productionLogout(api);
-        result.production = { ok: true };
+        const { probeSavedLogin: login } = await import("./zalo-client.js");
+        await login(saved.creds, saved.proxy ?? null, { ownId: saved.ownId ?? null });
+        return "still-valid";
     } catch (e) {
-        result.production = { ok: false, error: e.message, code: e.code ?? null };
+        return isLoginRefused(e) ? "revoked" : "unverified";
     }
-
-    if (typeof api.logoutV2 === "function") {
-        try {
-            await api.logoutV2();
-            result.v2 = { ok: true };
-        } catch (e) {
-            result.v2 = { ok: false, error: e.message };
-        }
-    } else {
-        result.v2 = { ok: false, error: "logoutV2 is not available (unpatched zca-js)" };
-    }
-
-    // The probe is expected to fail after a working logout, and zca-js logs
-    // that failure with a raw stack trace (measured 2026-09-30: an empty reply,
-    // "Failed to parse response data", every time). Its logger reads
-    // ctx.options.logging on each call, so silence it for this call only.
-    const options = typeof api.getContext === "function" ? api.getContext()?.options : null;
-    const logging = options?.logging;
-    if (options) options.logging = false;
-    try {
-        await api.fetchAccountInfo();
-        result.verdict = "still-answers";
-    } catch (e) {
-        if (SESSION_REJECTED.has(Number(e?.code))) result.verdict = "ended";
-        else result.probeError = e.message;
-    } finally {
-        if (options) options.logging = logging;
-    }
-
-    return result;
 }
 
-/** zca-js's words for a reply with no body — what the probe got after every successful logout. */
+/**
+ * Sign this device out at Zalo, the way Zalo's own app does: `serverLogout` of src/zalo/logout.js, with the
+ * saved login tried in a new login of this CLI's own making.
+ *
+ * @param {object} api - a logged-in session API
+ * @param {object} [opts]
+ * @param {boolean} [opts.keepSession] - only end this session's key (the pre-v3.0 behavior)
+ * @param {{creds: object, proxy?: string|null, ownId?: string|null}|null} [opts.savedLogin] - the saved login to
+ *   test afterwards; without it the result says the device sign-out could not be verified
+ * @param {(saved: object) => Promise<"revoked"|"still-valid"|"unverified">} [opts.probeLogin] - replaces the
+ *   default login attempt (tests)
+ * @returns {Promise<object>} see src/zalo/logout.js
+ */
+export async function serverLogout(api, { keepSession = false, savedLogin = null, probeLogin = probeSavedLogin } = {}) {
+    return zaloServerLogout(api, { keepSession, savedLogin, probeLogin });
+}
+
+/** The words for a reply with no body — what the probe got after every successful logout. */
 const EMPTY_REPLY = /Failed to parse response data/;
 
 /**
  * Delete the local chat cache (zalo.db + WAL/SHM sidecars) and downloaded media
- * for one account. Mirrors Zalo Web's "Xóa lịch sử trò chuyện khi đăng xuất"
- * checkbox — a purely local operation there too (a z_cleardata localStorage
- * flag consumed by the web's own deleteAllData(), no server call), so no
- * network round trip here either.
+ * for one account, like Zalo's "Xóa lịch sử trò chuyện khi đăng xuất" checkbox:
+ * a purely local operation, no network round trip.
  *
  * @param {string} ownId
  * @returns {{dbDeleted: boolean, mediaDeleted: boolean}}
@@ -182,6 +76,31 @@ export function deleteLocalHistory(ownId) {
         }
     }
     return { dbDeleted, mediaDeleted };
+}
+
+/**
+ * What a person should know about this client's companion-device identity when an account is signed out or removed
+ * here (decision D19, 2026-10-28). The official QR login makes this CLI a trusted companion device of the account;
+ * the identity that proves it lives in `accounts/<ownId>/trusted-device.json`.
+ *
+ * - `logout` (also `--delete-history`) keeps it, with the account's other data. Measured 2026-11-09: the next QR
+ *   login still adds a NEW entry to the phone's device list and logs the older entry out, but it keeps the device id,
+ *   so Zalo's offline queue for this device carries over.
+ * - `logout --purge` and `account remove` delete it with the account's folder. Zalo still lists the entry on the phone
+ *   until it is removed there (Settings, linked devices; `account devices` shows it), and a later QR login adds a
+ *   new one.
+ *
+ * Null when this machine holds no such identity (a login by the old flow, or none made yet).
+ *
+ * @param {string} ownId
+ * @param {"kept"|"deleted"} what - whether the caller's route keeps the identity or deletes it
+ * @returns {string|null}
+ */
+export function describeTrustedDevice(ownId, what) {
+    if (!existsSync(join(getAccountDir(ownId), TRUST_FILE))) return null;
+    return what === "kept"
+        ? "This CLI keeps its companion-device identity: the next QR login adds a new entry to the phone's device list and logs the older one out, but keeps the device id, so messages Zalo queued for this device while it was away are still delivered. `logout --purge` deletes it."
+        : "This CLI's companion-device identity was deleted. Zalo still lists it as a linked device until you remove it on your phone (`account devices` shows the list); a later QR login adds a new entry.";
 }
 
 /**
@@ -250,6 +169,7 @@ export function finishLocalLogout(ownId, { deleteHistory = false } = {}) {
  * @returns {{level: "success"|"warning"|"info", text: string}[]}
  */
 export function describeLogout(r) {
+    if (r.mode === "official") return describeOfficialLogout(r);
     const lines = [];
     if (!r.production.ok) {
         lines.push({ level: "warning", text: `Zalo's logout call failed: ${r.production.error}` });
@@ -274,6 +194,48 @@ export function describeLogout(r) {
         });
     } else {
         lines.push({ level: "info", text: `Logout sent; could not confirm the session key died: ${r.probeError}` });
+    }
+    return lines;
+}
+
+/**
+ * The lines for an official logout: what failed, then what was found out. "Signed out" is a success line only
+ * for a saved login that Zalo then refused.
+ *
+ * @param {{steps: Array<{id: string, ok: boolean, error?: string}>, key: {verdict: string, probeError?: string},
+ *   login: "revoked"|"still-valid"|"unverified"}} r
+ * @returns {{level: "success"|"warning"|"info", text: string}[]}
+ */
+function describeOfficialLogout(r) {
+    const lines = [];
+    for (const s of r.steps.filter((x) => !x.ok)) {
+        lines.push({ level: "warning", text: `Logout step "${s.id}" failed: ${s.error ?? "no answer"}` });
+    }
+    if (r.login === "revoked") {
+        lines.push({
+            level: "success",
+            text: "Signed this device out at Zalo — a new login with the saved session was refused.",
+        });
+    } else if (r.login === "still-valid") {
+        lines.push({
+            level: "warning",
+            text: "Zalo accepted the logout calls, but the saved login still works — this device may still be signed in. Remove it from your phone's list of logged-in devices.",
+        });
+    } else if (r.key.verdict === "ended") {
+        lines.push({
+            level: "info",
+            text: "Zalo ended this session's key — the next call on it was rejected. Whether the saved login was refused could not be checked.",
+        });
+    } else if (r.key.verdict === "still-answers") {
+        lines.push({
+            level: "warning",
+            text: "Zalo accepted the logout calls, but this session still answers — it may still be valid at Zalo.",
+        });
+    } else {
+        lines.push({
+            level: "info",
+            text: `Logout sent; could not confirm that Zalo signed this device out${r.key.probeError ? `: ${r.key.probeError}` : ""}.`,
+        });
     }
     return lines;
 }

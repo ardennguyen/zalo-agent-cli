@@ -1,19 +1,17 @@
 /**
  * `msg history` writes what it fetched into zalo.db -- insert-if-absent.
  *
- * Arden's rule (2026-09-30): msg history may cache fetched history if Zalo
- * Web does, and it does. Zalo Web writes getrecentv2/getoldv2 rows into the
- * same local message table as live messages, through the same writer
- * (ZStorage.setMessage -> Core.Message.insertMulti), but only rows it does not
- * already hold, and with replace:false -- a stored row is never overwritten
- * (findMsgsAddDb / addMessageAndUpdateConvDb in its bundle).
+ * Arden's rule (2026-09-30): msg history may cache fetched history if Zalo's
+ * own apps do, and they do: getrecentv2/getoldv2 rows go into the
+ * same local message table as live messages, through the same writer,
+ * but only rows not already held -- a stored row is never overwritten.
  *
  * So both fetch paths -- the cloud-message store and the socket scan -- go
  * through one write-back that inserts a row only when its msgId is new. A row
  * the listener stored keeps everything the listener and later events put on
  * it: localPath, the receipt's msgStatus, the st/at/cmd a seen receipt needs.
  *
- * Each test runs the real command on a real zca-js session whose transport is
+ * Each test runs the real command on a real session whose transport is
  * ./fake-zalo-session.js and reads zalo.db afterwards.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
@@ -150,7 +148,7 @@ describe("msg history writes fetched history insert-if-absent", () => {
         assert.equal(text.timestamp, Number(wire(textId, GID).ts));
         const pic = stored(photoId);
         assert.ok(pic, "the store's photo row was not written");
-        assert.equal(pic.type, "photo", "shared vocabulary, not zca-js's chat.photo");
+        assert.equal(pic.type, "photo", "shared vocabulary, not the previous engine's chat.photo");
         assert.equal(pic.has_attachment, 1, "otherwise sync-media can never fetch it");
 
         // Identical to the row the listener writes for the same frame, apart
@@ -203,7 +201,17 @@ describe("msg history writes fetched history insert-if-absent", () => {
                 ],
             ]);
             try {
-                const r = await history(threadId, "-t", String(type), "-n", "10", "--no-cache", "--timeout", "2000");
+                const r = await history(
+                    threadId,
+                    "-t",
+                    String(type),
+                    "-n",
+                    "10",
+                    "--no-cache",
+                    "--scan",
+                    "--timeout",
+                    "2000",
+                );
                 assert.equal(r.exitCode, 0, `${r.stdout} ${r.stderr}`);
             } finally {
                 socket.restore();
@@ -214,6 +222,29 @@ describe("msg history writes fetched history insert-if-absent", () => {
             assert.deepEqual(stored(keptId), before, "the socket scan modified or removed a row the listener stored");
         });
     }
+
+    it("a DM without --scan answers from the cache and never scans the socket", async () => {
+        const cachedId = freshId();
+        const unseenId = freshId();
+        listenerStoredPhoto(cachedId, PEER, 0);
+        const socket = serveOldMessages(api, [[{ threadId: PEER, type: 0, data: wire(unseenId, PEER) }]]);
+        let r;
+        try {
+            // Neither the default (no -n) nor --no-cache reaches the socket for a 1-1 conversation.
+            r = await history(PEER, "-t", "0", "--timeout", "2000");
+            const forced = await history(PEER, "-t", "0", "--no-cache", "--timeout", "2000");
+            assert.equal(forced.exitCode ?? 0, 0, `${forced.stdout} ${forced.stderr}`);
+        } finally {
+            socket.restore();
+        }
+        assert.equal(r.exitCode ?? 0, 0, `${r.stdout} ${r.stderr}`);
+        // Red under the old default, which scanned 2000 raw messages of the socket stream for a DM.
+        assert.equal(socket.requests.length, 0, "the socket was scanned without --scan");
+        assert.equal(stored(unseenId), null, "a row the socket held was written without --scan");
+        const out = JSON.parse(r.stdout);
+        assert.equal(out.source, "sqlite");
+        assert.ok(out.messages.some((m) => m.msgId === cachedId));
+    });
 
     it("skips rows older than the conversation's delete marker, keeps newer ones", async () => {
         const deletedGroup = "7000000000000000009"; // its own thread: the marker must not leak

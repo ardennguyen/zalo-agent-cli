@@ -1,12 +1,38 @@
 # Caddyfile: one account's MCP server on the internet, TLS terminated by Caddy.
 # The engine stays on 127.0.0.1:3847 (ZALO_MCP_HOST / ZALO_MCP_HTTP_PORT).
 zalo.example.com {
-	encode zstd gzip
+	# Media links (/zalo/media/<token>) are never compressed: a compressed body
+	# breaks byte ranges (video seek). Caddy already sends the engine the real
+	# client address in X-Forwarded-For; set trustedProxies: ["127.0.0.1"]
+	# (ZALO_MCP_TRUSTED_PROXIES=127.0.0.1) so a capability link's per-client
+	# limit counts clients, not this proxy.
+	@compress not path /zalo/media/*
+	encode @compress zstd gzip
+
+	# Never from the internet: the admin API (/zalo/admin/*: runtime policy,
+	# usage, export) and the Prometheus endpoints. Reach the admin API on
+	# loopback (ssh -L 3847:127.0.0.1:3847 <host>), over a VPN, or through a
+	# separate admin host that only your console's address may reach.
+	@internal path /metrics /status /zalo/admin /zalo/admin/*
+	respond @internal 404
 
 	# Optional: only your office or CRM addresses may connect at all.
 	# @blocked not remote_ip 203.0.113.0/24 198.51.100.7
 	# respond @blocked 403
 
+	# The QR login page of `zalo-agent login --public-url https://zalo.example.com`
+	# (or ZALO_MCP_PUBLIC_URL / publicUrl): the login prints
+	# https://zalo.example.com/zalo/qr/<one-time token> and serves it on its QR
+	# port (18927 unless --qr-port), which answers only while the login runs.
+	# Without this block the request reaches the MCP server, which knows no
+	# such token (404).
+	handle /zalo/qr/* {
+		reverse_proxy 127.0.0.1:18927
+	}
+
+	# Everything else, the one-time secure page /zalo/secure/<token> and the
+	# media links /zalo/media/<token> included, goes to the MCP server. Its links are built from publicUrl
+	# (ZALO_MCP_PUBLIC_URL=https://zalo.example.com), never from the Host header.
 	# `/events/wait` holds the request open for up to 300 s and MCP replies are
 	# streamed: no response buffering, and a read timeout above 300 s.
 	reverse_proxy 127.0.0.1:3847 {

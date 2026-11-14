@@ -7,14 +7,17 @@
  *   DATA_DIR        = <CONFIG_DIR>/accounts         (env: ZALO_DATA_DIR,        flag: --data-dir)
  *   MEDIA_DIR       = null (<DATA_DIR>/<id>/media)  (env: ZALO_MEDIA_DIR,       flag: --media-dir)
  *
- * All credential files use 0600 permissions (owner read/write only).
+ * All credential files use 0600 permissions (owner read/write only), and since 3.0.0 they are sealed under the
+ * account's boot key (src/core/keystore/): a copied file is unreadable without the key provider of this machine.
  */
 
-import { readFileSync, unlinkSync, existsSync, mkdirSync } from "fs";
+import { readFileSync, unlinkSync, existsSync, mkdirSync, statSync } from "fs";
 import { join, resolve } from "path";
 import { homedir } from "os";
 import { parseEnv } from "node:util";
-import { writeFileAtomic } from "../utils/atomic-file.js";
+import { openFile, sealFile } from "./keystore/index.js";
+import { writeFileAtomic } from "../zalo/kernel/atomic-file.js";
+import { sessionExpiryOf } from "./session-expiry.js";
 
 const defaultConfigDir = join(homedir(), ".zalo-agent-cli");
 
@@ -168,31 +171,129 @@ function credPath(ownId) {
     return join(CREDENTIALS_DIR, `cred_${ownId}.json`);
 }
 
+/** What the key layer calls the saved login: sealed under the boot key, which opens without a login. */
+const CRED_SPEC = { kind: "credentials", use: "boot" };
+
 /**
- * Save credentials for a specific account.
+ * What this machine last saved for an account's device: the imei, when that device id was first used here
+ * (`deviceSince`, ms), and when the file was last written (`mtime`, ms).
+ *
+ * Zalo keeps the offline queue per device (imei): a new device's queue starts at its login, so the time a device id
+ * was first used bounds what Zalo's queue can give back (agent research: offline-queue retention §4). Never throws.
+ *
  * @param {string} ownId
- * @param {object} creds - {imei, cookie, userAgent, language?}
- * @returns {string} File path
+ * @returns {{state: "none"|"unreadable"|"ok", imei?: string|null, deviceSince?: number|null, mtime?: number|null}}
+ *   `none` when nothing is saved, `unreadable` when a file exists but cannot be opened or parsed
  */
-export function saveCredentials(ownId, creds) {
-    ensureDirs();
+export function readSavedDevice(ownId) {
     const target = credPath(ownId);
-    // Atomic and created at 0600: a login is never left half written, and the file is never readable
-    // by others, even for the moment between a write and a chmod.
-    writeFileAtomic(target, JSON.stringify(creds, null, 2));
-    return target;
+    if (!existsSync(target)) return { state: "none" };
+    try {
+        const mtime = statSync(target).mtimeMs;
+        const bytes = openFile(target, String(ownId), CRED_SPEC);
+        if (bytes === null) return { state: "none" };
+        const creds = JSON.parse(bytes.toString("utf8"));
+        const since = Number(creds?.deviceSince);
+        return {
+            state: "ok",
+            imei: typeof creds?.imei === "string" && creds.imei ? creds.imei : null,
+            deviceSince: Number.isFinite(since) && since > 0 ? since : null,
+            mtime: Number.isFinite(mtime) ? Math.floor(mtime) : null,
+        };
+    } catch {
+        return { state: "unreadable" };
+    }
 }
 
 /**
- * Load credentials for a specific account.
+ * The `deviceSince` a save should carry: the time this device id was first used for the account here.
+ *
+ * - Same imei as the saved login: the saved stamp. A login saved before stamps existed has none; its file's last write
+ *   is used instead. That is never earlier than the imei's first use (every save rewrites the file), so coverage is
+ *   never claimed from before the device existed.
+ * - Nothing saved, and the new credentials carry their own stamp (an exported login, with its imei): that stamp.
+ * - Anything else (a new or changed imei, or a saved login that cannot be read): now. A new device.
+ *
+ * @param {{state: string, imei?: string|null, deviceSince?: number|null, mtime?: number|null}} prev - readSavedDevice()
+ * @param {{imei?: string, deviceSince?: number}} creds - what is being saved
+ * @param {number} now
+ * @returns {number}
+ */
+export function deviceSinceFor(prev, creds, now) {
+    const imei = typeof creds?.imei === "string" && creds.imei ? creds.imei : null;
+    if (prev?.state === "ok" && imei && prev.imei === imei) {
+        if (Number.isFinite(prev.deviceSince) && prev.deviceSince > 0) return Math.min(prev.deviceSince, now);
+        if (Number.isFinite(prev.mtime) && prev.mtime > 0) return Math.min(prev.mtime, now);
+        return now;
+    }
+    const carried = Number(creds?.deviceSince);
+    if (prev?.state === "none" && imei && Number.isFinite(carried) && carried > 0 && carried <= now) return carried;
+    return now;
+}
+
+/**
+ * Save credentials for a specific account, sealed. Stamps `deviceSince` (see {@link deviceSinceFor}): kept while
+ * the imei stays the same, set to now when it changes. Every login path saves through here.
  * @param {string} ownId
- * @returns {object|null}
+ * @param {object} creds - {imei, cookie, userAgent, language?}
+ * @param {{now?: number}} [opts]
+ * @returns {string} File path
+ * @throws {Error} a KeystoreError when no key can be had: the login is then not saved at all, never in the clear
+ */
+export function saveCredentials(ownId, creds, { now = Date.now() } = {}) {
+    ensureDirs();
+    const target = credPath(ownId);
+    const deviceSince = deviceSinceFor(readSavedDevice(ownId), creds, now);
+    // Sealed, atomic and created at 0600: a login is never left half written, and never readable by others.
+    sealFile(target, String(ownId), CRED_SPEC, JSON.stringify({ ...creds, deviceSince }, null, 2));
+    noteSessionEnd(ownId, creds?.cookie);
+    return target;
+}
+
+/** The account folder's session-end marker (src/core/session-notice.js SESSION_NOTICE_FILE). */
+const SESSION_MARKER = "session-notice.json";
+
+/**
+ * Record when the login just saved ends, in the account folder's marker, so `fleet status` shows it before the
+ * account's daemon has ever run (the marker needs no key to read). A new end resets the thresholds already sent;
+ * the same end leaves the marker alone. Best effort: a marker that cannot be written never fails a login.
+ *
+ * @param {string} ownId
+ * @param {unknown} jar - the saved cookie jar
+ */
+function noteSessionEnd(ownId, jar) {
+    try {
+        const end = sessionExpiryOf(jar);
+        if (!end) return;
+        const file = join(getAccountDir(ownId), SESSION_MARKER);
+        let prev = null;
+        try {
+            prev = JSON.parse(readFileSync(file, "utf8"));
+        } catch {
+            prev = null;
+        }
+        if (prev?.expiresAt === end.expiresAt) return;
+        mkdirSync(getAccountDir(ownId), { recursive: true });
+        writeFileAtomic(file, JSON.stringify({ expiresAt: end.expiresAt, threshold: null }) + "\n", { mode: 0o600 });
+    } catch {
+        // The daemon's watch writes it on its first look.
+    }
+}
+
+/**
+ * Load credentials for a specific account. A plaintext file from before 3.0.0 is sealed on the way.
+ * @param {string} ownId
+ * @returns {object|null} null when there are none (or the file is not JSON)
+ * @throws {Error} a KeystoreError / SealError when the file exists but cannot be opened (no provider, wrong key,
+ *   edited): saying "not logged in" then would send people to a QR login that would not fix it
  */
 export function loadCredentials(ownId) {
     const target = credPath(ownId);
     if (!existsSync(target)) return null;
+    const bytes = openFile(target, String(ownId), CRED_SPEC);
+    if (bytes === null) return null;
     try {
-        return JSON.parse(readFileSync(target, "utf-8"));
+        return JSON.parse(bytes.toString("utf8"));
     } catch {
         return null;
     }

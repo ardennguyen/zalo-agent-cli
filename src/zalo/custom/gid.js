@@ -1,0 +1,123 @@
+/**
+ * Tier-3 conversation-id resolution — the path Zalo uses for peers not in the
+ * local friend/group cache.
+ *
+ * A synced conversation is keyed by an opaque "global noised id". Friends and
+ * current groups are resolved from their lists (both carry `globalId`). Everyone
+ * else — non-friend 1-1s, OA/bot accounts — falls back to Zalo's profile server:
+ *
+ *   GET {profileDomain}/api/gid/decrypt   (cmd 12054)
+ *     params = AES({ globalUids: JSON.stringify([id, …]) })
+ *     -> { <globalNoisedId>: <userId> }
+ *
+ * We then batch `getUserInfo(userIds)` for display names. Left groups have no
+ * per-item endpoint server-side, so they stay unresolved.
+ *
+ * Built on the kernel's bound session helpers (src/zalo/kernel/bound.js), so the
+ * authenticated envelope is the one every session call sends.
+ */
+import { boundUtils } from "../kernel/bound.js";
+import { isRateLimitError, runPacedBatches } from "./user-info.js";
+
+/** A failed `gid/decrypt` batch is asked for twice more, after these pauses, before it counts as failed (Y9). */
+export const GID_RETRY_DELAYS_MS = Object.freeze([500, 1500]);
+
+/**
+ * Run `fn`, and again after each pause while it throws. A rate limit is not retried here: the paced batches back
+ * off for those, and asking again at once would only make it worse.
+ *
+ * @template T
+ * @param {() => Promise<T>} fn
+ * @param {(ms: number) => Promise<void>} [sleep]
+ * @param {readonly number[]} [delays]
+ * @returns {Promise<T>}
+ */
+export async function retrying(
+    fn,
+    sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+    delays = GID_RETRY_DELAYS_MS,
+) {
+    for (let attempt = 0; ; attempt++) {
+        try {
+            return await fn();
+        } catch (e) {
+            if (isRateLimitError(e) || attempt >= delays.length) throw e;
+            await sleep(delays[attempt]);
+        }
+    }
+}
+
+const GID_BATCH = 50;
+const NAME_BATCH = 100;
+
+/** Build the authenticated `/api/gid/decrypt` caller bound to this session. */
+function makeGidDecrypt(api) {
+    const base = `${api.zpwServiceMap.profile[0]}/api/gid/decrypt`;
+    // Built now, so a session that cannot make the call is refused here, before any batch.
+    const utils = boundUtils(api);
+    const ctx = api.getContext();
+    return async (globalIds) => {
+        const enc = utils.encodeAES(JSON.stringify({ globalUids: JSON.stringify(globalIds), imei: ctx.imei }));
+        const resp = await utils.request(utils.makeURL(base, { params: enc }), { method: "GET" });
+        const result = await utils.resolve(resp);
+        // response shape: resolve() -> { data: { <globalId>: <userId> } } (or the map directly)
+        return result && typeof result.data === "object" ? result.data : result || {};
+    };
+}
+
+/**
+ * Resolve opaque 1-1 global-noised ids to real numeric user ids + names.
+ *
+ * @param {object} api - logged-in session
+ * @param {string[]} globalIds - the 32-char ids (partition without the `oneone/` prefix)
+ * @param {(m: string) => void} [log]
+ * @returns {Promise<Map<string, {id: string, name: string}>>} globalId -> {id, name}
+ */
+export async function resolveNonFriendDms(api, globalIds, log = () => {}) {
+    const out = new Map();
+    if (!globalIds || !globalIds.length) return out;
+
+    // 1. globalId -> userId via /api/gid/decrypt (cmd 12054), batched.
+    let gidDecrypt;
+    try {
+        gidDecrypt = makeGidDecrypt(api);
+    } catch (e) {
+        log(`gid/decrypt unavailable (${e.message}); non-friend 1-1s stay opaque`);
+        return out;
+    }
+    const idToUser = new Map();
+    const decrypted = await runPacedBatches(globalIds, {
+        batchSize: GID_BATCH,
+        label: "gid/decrypt",
+        log,
+        call: (batch) => retrying(() => gidDecrypt(batch)),
+    });
+    for (const map of decrypted.results) {
+        for (const [gid, uid] of Object.entries(map || {})) if (uid) idToUser.set(gid, String(uid));
+    }
+    if (!idToUser.size) return out;
+
+    // 2. userId -> display name via getUserInfo (batched). Best-effort.
+    const names = new Map();
+    const zaloNames = new Map();
+    const uids = [...new Set([...idToUser.values()])];
+    const named = await runPacedBatches(uids, {
+        batchSize: NAME_BATCH,
+        label: "getUserInfo",
+        log,
+        call: (batch) => api.getUserInfo(batch),
+    });
+    for (const info of named.results) {
+        for (const bag of [info?.changed_profiles, info?.unchanged_profiles]) {
+            for (const [uid, p] of Object.entries(bag || {})) {
+                if (!names.has(uid) && p) names.set(uid, p.zaloName || p.displayName || "");
+                if (p?.zaloName) zaloNames.set(uid, p.zaloName);
+            }
+        }
+    }
+    if (named.failed || named.skippedIds) log("some names may be blank (getUserInfo did not answer for every batch)");
+
+    for (const [gid, uid] of idToUser)
+        out.set(gid, { id: uid, name: names.get(uid) || "", zaloName: zaloNames.get(uid) || "" });
+    return out;
+}

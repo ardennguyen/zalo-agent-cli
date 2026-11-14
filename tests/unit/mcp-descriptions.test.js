@@ -4,7 +4,8 @@
  *
  * A model calls a tool only as well as it understands it. A parameter with no description, a tool that points at a
  * tool that does not exist, or ids that carry different names in different replies (`id` in the live buffer,
- * `msgId` in history, `messageId` in a send reply) are how a weaker model ends up with the wrong field name.
+ * `msgId` in history, `messageId` in a send reply, before 3.0 made it `msgId` everywhere) are how a weaker model ends up
+ * with the wrong field name.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
@@ -15,6 +16,11 @@ import { SERVER_INSTRUCTIONS } from "../../src/mcp/instructions.js";
 import { newMcpServer } from "../../src/mcp/new-server.js";
 import { createHTTPServer } from "../../src/mcp/mcp-http-transport.js";
 import { tool } from "./support/mcp-send-harness.js";
+import { accountStateSystemEvent } from "../../src/core/account-state.js";
+import { pickName } from "../../src/core/contact-names.js";
+import { groupGoneSystemEvent } from "../../src/core/group-exit.js";
+import { queueOverflowSystemEvent } from "../../src/core/overflow-repair.js";
+import { quotaSystemEvent } from "../../src/core/storage-quota.js";
 
 before(() => {
     assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR);
@@ -27,8 +33,8 @@ const toolNames = new Set(tools.keys());
 const mentionedTools = (text) => [...text.matchAll(/\bzalo_[a-z_]+\b/g)].map((m) => m[0]);
 
 describe("every tool and parameter is described", () => {
-    it("has 25 tools, each with a description long enough to say what it does and when to use it", () => {
-        assert.equal(tools.size, 25);
+    it("has 37 tools, each with a description long enough to say what it does and when to use it", () => {
+        assert.equal(tools.size, 37);
         for (const [name, { meta }] of tools) {
             assert.ok(meta.description.length >= 80, `${name}: description is ${meta.description.length} characters`);
         }
@@ -60,7 +66,7 @@ describe("every tool and parameter is described", () => {
 });
 
 describe("the id vocabulary is stated where an agent needs it", () => {
-    it("says what each id is called in each reply: `id` in the live buffer, `msgId` in history, `messageId` from a send", () => {
+    it("says where each msgId comes from, and names the one vocabulary in the instructions", () => {
         // Red if a tool that takes a msgId stops saying where it comes from.
         for (const name of ["zalo_react", "zalo_undo", "zalo_view_media"]) {
             const text = params(tools.get(name).meta)
@@ -69,15 +75,20 @@ describe("the id vocabulary is stated where an agent needs it", () => {
             assert.match(text, /zalo_get_history|zalo_send_message/, `${name}: where msgId comes from`);
         }
         assert.match(tools.get("zalo_get_messages").meta.description, /`msgId` \(pass it as/);
-        assert.match(tools.get("zalo_get_messages").meta.description, /`id` is the same value/);
         assert.match(tools.get("zalo_send_message").meta.description, /`msgId` and `cliMsgId`/);
         assert.match(SERVER_INSTRUCTIONS, /called `msgId` in every input and reply/);
-        assert.match(SERVER_INSTRUCTIONS, /`id`.*`messageId`/);
-        assert.match(
-            SERVER_INSTRUCTIONS,
-            /never pass that text back/,
-            "the threadType trap: the output is text, the input a number",
-        );
+        assert.match(SERVER_INSTRUCTIONS, /threadType is `dm` or `group`, in inputs and in replies/);
+    });
+
+    it("mentions no older name: the aliases are gone, so nothing may say they are kept", () => {
+        const all = [SERVER_INSTRUCTIONS];
+        for (const [, { meta }] of tools)
+            all.push(meta.description, ...params(meta).map(([, s]) => s.description ?? ""));
+        for (const text of all) {
+            assert.doesNotMatch(text, /older clients/);
+            assert.doesNotMatch(text, /\bmessageId\b/);
+            assert.doesNotMatch(text, /0 = DM|0=DM/);
+        }
     });
 
     it("tells the agent to send real line breaks, in the instructions, the tool and the parameter", () => {
@@ -129,6 +140,61 @@ describe("the server instructions", () => {
             assert.equal(JSON.parse(data).result.instructions, SERVER_INSTRUCTIONS);
         } finally {
             http.close();
+        }
+    });
+});
+
+describe("the read and wait tools describe what the buffer really carries", () => {
+    // The system events src/commands/mcp.js pushes into the buffer, by the builders it pushes them with.
+    const systemTypes = [
+        accountStateSystemEvent({ accountId: "1", state: "connected" }).type,
+        groupGoneSystemEvent({ threadId: "2", reason: "leave", mode: "keep" }).type,
+        queueOverflowSystemEvent({ fromTs: 0, toTs: 1, queues: ["user"], pending: false }).type,
+        quotaSystemEvent({ accountId: "1", level: "ok" }).type,
+    ];
+
+    it("name every system event type, not only storage_quota", () => {
+        assert.deepEqual([...systemTypes].sort(), ["account_state", "group_gone", "queue_overflow", "storage_quota"]);
+        for (const name of ["zalo_get_messages", "zalo_wait_for_message"]) {
+            const d = tools.get(name).meta.description;
+            for (const type of systemTypes) assert.ok(d.includes(`\`${type}\``), `${name}: ${type}`);
+        }
+    });
+
+    it("give senderDisplayName's fallbacks in the order the code picks them", () => {
+        // The code's order, read off pickName by taking away the winner each time.
+        const fields = { alias: "a", pbName: "p", zaloName: "z", displayName: "d" };
+        const order = [];
+        for (;;) {
+            const { source } = pickName("1", fields);
+            order.push(source);
+            if (source === "uid") break;
+            delete fields[{ alias: "alias", phonebook: "pbName", zalo: "zaloName", display: "displayName" }[source]];
+            if (source === "alias") fields.alias = null;
+        }
+        assert.deepEqual(order, ["alias", "phonebook", "zalo", "display", "uid"]);
+        const words = {
+            alias: "alias",
+            phonebook: "phonebook name",
+            zalo: "Zalo name",
+            display: "display name",
+            uid: "uid",
+        };
+        for (const name of ["zalo_get_messages", "zalo_get_history"]) {
+            const d = tools.get(name).meta.description;
+            const at = d.indexOf("`senderDisplayName`");
+            assert.ok(at >= 0, name);
+            const tail = d.slice(at);
+            const positions = order.map((s) => tail.indexOf(words[s]));
+            assert.ok(
+                positions.every((p) => p >= 0),
+                `${name}: ${positions}`,
+            );
+            assert.deepEqual(
+                [...positions].sort((x, y) => x - y),
+                positions,
+                `${name}: fallbacks out of order`,
+            );
         }
     });
 });

@@ -4,6 +4,8 @@
 
 import { getApi } from "../core/zalo-client.js";
 import { success, error, output } from "../utils/output.js";
+import { guardSubcommand } from "../core/confirm-guard.js";
+import { setQuickMessageStatus } from "../core/profile-settings.js";
 
 export function registerQuickMsgCommands(program) {
     const qm = program.command("quick-msg").description("Manage quick/saved messages");
@@ -52,4 +54,28 @@ export function registerQuickMsgCommands(program) {
                 error(`Remove quick message failed: ${e.message}`);
             }
         });
+    // Asked about first, as Zalo does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    for (const [name, enabled] of [
+        ["enable", true],
+        ["disable", false],
+    ]) {
+        qm.command(name)
+            .description(
+                `Turn quick messages ${enabled ? "on" : "off"} for this account, as Zalo's switch does ` +
+                    "(`profile settings` shows the current state)",
+            )
+            .action(async () => {
+                try {
+                    // The same reply as zalo_quick_message's action of this name (src/core/profile-settings.js).
+                    const result = await setQuickMessageStatus(getApi(), enabled);
+                    output(result, program.opts().json, () =>
+                        success(`Quick messages ${enabled ? "enabled" : "disabled"}`),
+                    );
+                } catch (e) {
+                    error(`Quick message ${name} failed: ${e.message}`);
+                }
+            });
+    }
+
+    guardSubcommand(qm, "remove", "quickMsg.remove", { target: (itemIds) => ({ quickMessageIds: itemIds }) });
 }

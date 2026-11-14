@@ -15,7 +15,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as acorn from "acorn";
 import { SECRET_FLAGS, maskSecretArgs, resolveWebhookSecret } from "../../src/utils/secrets.js";
-import { walkAst } from "../helpers/zca-call-sites.js";
+import { walkAst } from "../helpers/api-call-sites.js";
 
 describe("resolveWebhookSecret -- flag, then environment, then config", () => {
     it("takes the flag over the environment and the config", () => {

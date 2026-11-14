@@ -1,16 +1,18 @@
 /**
- * `src/core/sync-v2/reactions.js` — retrieving the reaction backlog.
+ * `src/core/sync-v2/reactions.js` (over `src/zalo/listener/reactions.js`) — retrieving the reaction backlog.
  *
  * Reactions were documented in this repo as unrecoverable, which conflated two
  * different things: the Sync2 transfer payload genuinely has no reaction field,
- * but the socket serves them on cmd 610 (1-1) and cmd 611 (group), and Zalo Web
+ * but the socket serves them on cmd 610 (1-1) and cmd 611 (group), and a client
  * asks for both on every connect. Measured live: one request pair returned 28
  * direct and 62 group reactions while the cache held one row.
  *
- * The listener is faked here — a started zca-js listener is just an EventEmitter
+ * The listener is faked here — a started listener is just an EventEmitter
  * with `requestOldReactions`, `ws` and `cipherKey` — so the paging, the ordering
  * and the removal semantics are all reachable offline.
  */
+// The cache is encrypted under a keyring the key layer makes: the sandbox gives it its offline test provider.
+import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
@@ -19,7 +21,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initDb, getReactions, insertMessage, upsertThread } from "../../src/core/db.js";
 import { drainReactions, placeUnresolvedReactions } from "../../src/core/sync-v2/reactions.js";
+import { CONFIG_DIR } from "../../src/core/credentials.js";
 
+assertSandboxed(CONFIG_DIR);
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-react-drain-"));
 const opened = [];
 let n = 0;
@@ -91,7 +95,7 @@ function fakeListener(pages) {
     return l;
 }
 
-// The drain reads `more`/`lastActionId` off the raw socket because zca-js does
+// The drain reads `more`/`lastActionId` off the raw socket because the listener's events do
 // not surface them. Feeding a real encrypted frame in a unit test would test
 // the decoder, not the drain, so the tap is satisfied with a pre-decoded frame.
 function tapPages(listener, pages) {
@@ -171,8 +175,27 @@ describe("drainReactions", () => {
         };
         const l = fakeListener(pages);
         tapPages(l, pages);
-        const stats = await drainReactions({ listener: l, timeoutMs: 400, maxPages: 5 });
-        assert.ok(stats.pages <= 3, `a repeated cursor must not page forever (got ${stats.pages})`);
+        const stats = await drainReactions({ listener: l, timeoutMs: 400 });
+        // One DM page, then the group pages: the second repeats "555", which ends the drain and flags it.
+        assert.equal(stats.pages, 3, `a repeated cursor must not page forever (got ${stats.pages})`);
+        assert.equal(stats.stalled, true);
+    });
+
+    it("has no page cap by default: drains 25 group pages until more is 0", async () => {
+        const many = Array.from({ length: 25 }, (_, i) => ({
+            objs: [react("/-heart", 5, "m1", `u${i}`)],
+            more: i < 24 ? 1 : 0,
+            lastActionId: String(i + 1),
+        }));
+        const pages = { 0: [{ objs: [], more: 0 }], 1: many };
+        const l = fakeListener(pages);
+        tapPages(l, pages);
+        const stats = await drainReactions({ listener: l, timeoutMs: 400 });
+        // Past the old 20-page cap.
+        assert.equal(stats.pages, 26);
+        assert.equal(stats.received, 25);
+        assert.equal(stats.truncated, false);
+        assert.equal(stats.stalled, false);
     });
 
     it("applies un-reacts in order by default, because the backlog is an action log", async () => {

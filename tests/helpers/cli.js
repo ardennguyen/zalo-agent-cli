@@ -3,19 +3,18 @@
  *
  * Two important facts about this CLI that shape every assertion here:
  *
- *  1. **API failures do not set a non-zero exit code.** Almost every action
- *     handler is `try { ... } catch (e) { error(e.message) }`, and `error()`
- *     writes `  ✗ <message>` to *stdout* via console.log. So "did it work?"
- *     is a question about output text, not about `code`. Commander's own
- *     parse errors (unknown option, missing required option) *do* exit 1.
+ *  1. **A failure exits 1 (since 3.0.0; before, most exited 0).** Almost every
+ *     action handler is `try { ... } catch (e) { error(e.message) }`, and
+ *     `error()` sets exit code 1 and writes `  ✗ <message>` to *stdout* in
+ *     human mode, `{"error": ...}` with --json. A confirmation refusal exits 2.
  *
- *  2. **`--json` mode is not reliably JSON.** Success paths emit JSON, but
- *     the `✗` error line is printed on the same stream. `runJson()` below
- *     therefore reports failures explicitly rather than throwing a bare
- *     JSON.parse SyntaxError.
+ *  2. **`--json` stdout is one JSON object or array** (tests/cli/json-contract.test.js
+ *     holds every personal command to it). `runJson()` below still reports a
+ *     failure explicitly rather than throwing a bare JSON.parse SyntaxError.
  */
 
 import { execFile } from "node:child_process";
+import { availableParallelism } from "node:os";
 import { resolve } from "node:path";
 
 const CLI = resolve(import.meta.dirname, "..", "..", "src", "index.js");
@@ -80,6 +79,30 @@ export function runCli(args, opts = {}) {
             },
         );
     });
+}
+
+/**
+ * Run the CLI once per argument list, a few at a time, and resolve with the results in the same order.
+ *
+ * Each run is a full CLI process of about 100 MB. Started all at once, sixty `--help` calls thrash a small machine
+ * (a 4-core, 4 GB VM: every one ran past the 90 s timeout, though one alone takes 0.6 s), so at most one per core
+ * runs at a time.
+ *
+ * @param {string[][]} argLists
+ * @param {object} [opts] - as {@link runCli}
+ * @returns {Promise<Array<Awaited<ReturnType<typeof runCli>>>>}
+ */
+export async function runCliEach(argLists, opts = {}) {
+    const results = new Array(argLists.length);
+    let next = 0;
+    const worker = async () => {
+        while (next < argLists.length) {
+            const i = next++;
+            results[i] = await runCli(argLists[i], opts);
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(availableParallelism(), argLists.length) }, worker));
+    return results;
 }
 
 /** The `  ✗ ...` line `error()` prints, if present. */

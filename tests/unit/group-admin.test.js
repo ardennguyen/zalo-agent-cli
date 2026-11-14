@@ -2,10 +2,11 @@
  * src/core/group-admin.js -- how `zalo_group` reads Zalo's answers.
  *
  * Zalo reports a partial failure inside a successful reply (`errorMembers`),
- * and zca-js spells one of its fields `sucessMembers`. These pin both, plus the
+ * and Zalo spells one of its fields `sucessMembers`. These pin both, plus the
  * group-details reshape that deliberately leaves the member list to
  * `zalo_get_group_members`.
  */
+import "../helpers/sandbox.js"; // first: the name helpers now reach the account db (src/core/contact-names.js)
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -81,7 +82,7 @@ describe("createdGroupFrom", () => {
         assert.deepEqual(createdGroupFrom({ groupId: G, sucessMembers: [OWNER, A], errorMembers: [] }, [A]).added, [A]);
     });
 
-    it("reads zca-js's misspelled sucessMembers, and the corrected spelling too", () => {
+    it("reads the misspelled sucessMembers, and the corrected spelling too", () => {
         assert.deepEqual(createdGroupFrom({ groupId: G, sucessMembers: [A], errorMembers: [B] }, [A, B]), {
             groupId: G,
             added: [A],

@@ -3,7 +3,8 @@
  * the zalo_wait_for_message tool, `mcp wait` over the daemon channel). Before this a call returned one
  * message, so a bot behind a busy account made one round trip per message.
  *
- * The contract kept: with no `limit` the reply is what it always was, plus `messages`, `count`, `hasMore`.
+ * Since 3.0.0 a call with no `limit` returns every message already waiting (it used to return one); `limit` is an
+ * opt-in bound with no cap of its own, and `limit` 1 is the single-message reply it always was.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, after, beforeEach } from "node:test";
@@ -14,35 +15,36 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { MessageBuffer } from "../../src/mcp/message-buffer.js";
-import { MAX_BATCH, MAX_SETTLE_MS, batchParams, waitResult } from "../../src/mcp/wait-result.js";
+import { MAX_SETTLE_MS, batchParams, waitResult } from "../../src/mcp/wait-result.js";
 import { createHTTPServer } from "../../src/mcp/mcp-http-transport.js";
 import { registerTools } from "../../src/mcp/mcp-tools.js";
 import { startDaemonChannel, waitViaDaemon } from "../../src/core/daemon-channel.js";
+import { noteAliasSnapshot, resetAliasBook } from "../../src/core/contact-names.js";
 
 before(() => {
     assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR);
 });
 
 // A real timestamp: the buffer evicts anything older than its max age, and 1970 is older.
-const msg = (n, threadId = "t1") => ({ id: `m${n}`, threadId, text: `hello ${n}`, timestamp: Date.now() });
+const msg = (n, threadId = "t1") => ({ msgId: `m${n}`, threadId, text: `hello ${n}`, timestamp: Date.now() });
 const fill = (buf, n, threadId = "t1") => {
     for (let i = 1; i <= n; i++) buf.push(threadId, msg(i, threadId));
 };
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 describe("batchParams", () => {
-    it("clamps to 1..100 messages and 0..5000 ms, and falls back on anything unusable", () => {
-        assert.deepEqual(batchParams(), { limit: 1, settleMs: 0 });
+    it("no limit (or an unusable one) is null, meaning all; a limit has no cap; settleMs is 0..5000 ms", () => {
+        assert.deepEqual(batchParams(), { limit: null, settleMs: 0 });
         assert.deepEqual(batchParams({ limit: 25, settleMs: 200 }), { limit: 25, settleMs: 200 });
         assert.deepEqual(
             batchParams({ limit: "30", settleMs: "300" }),
             { limit: 30, settleMs: 300 },
             "query strings are text",
         );
-        assert.deepEqual(batchParams({ limit: 5000, settleMs: 999999 }), { limit: MAX_BATCH, settleMs: MAX_SETTLE_MS });
+        assert.deepEqual(batchParams({ limit: 5000, settleMs: 999999 }), { limit: 5000, settleMs: MAX_SETTLE_MS });
         assert.deepEqual(batchParams({ limit: 2.9 }), { limit: 2, settleMs: 0 });
-        for (const bad of [0, -3, NaN, "many", null, undefined, Infinity]) {
-            assert.equal(batchParams({ limit: bad }).limit, 1, String(bad));
+        for (const bad of [0, -3, NaN, "many", null, undefined, "", Infinity]) {
+            assert.equal(batchParams({ limit: bad }).limit, null, String(bad));
         }
         for (const bad of [0, -1, NaN, "soon", null])
             assert.equal(batchParams({ settleMs: bad }).settleMs, 0, String(bad));
@@ -64,16 +66,16 @@ describe("waitResult", () => {
     it("a batch has the first message as `message` and the LAST cursor as `cursor`", () => {
         const r = waitResult({
             messages: [
-                { id: "a", _cursor: 4 },
-                { id: "b", _cursor: 5 },
-                { id: "c", _cursor: 9 },
+                { msgId: "a", _cursor: 4 },
+                { msgId: "b", _cursor: 5 },
+                { msgId: "c", _cursor: 9 },
             ],
             hasMore: true,
             cursorWhenEmpty: 0,
             decorate: (m) => ({ ...m, threadName: "G" }),
         });
         assert.deepEqual([r.status, r.count, r.cursor, r.hasMore], ["message", 3, 9, true]);
-        assert.equal(r.message.id, "a");
+        assert.equal(r.message.msgId, "a");
         assert.deepEqual(
             r.messages.map((m) => m.threadName),
             ["G", "G", "G"],
@@ -98,13 +100,13 @@ describe("MessageBuffer.waitForMessages", () => {
         buf.push("b", msg(4, "b"));
         const r = await buf.waitForMessages({ since: 0, limit: 3, timeoutMs: 1000 });
         assert.deepEqual(
-            r.messages.map((m) => m.id),
+            r.messages.map((m) => m.msgId),
             ["m1", "m2", "m3"],
         );
         assert.equal(r.hasMore, true);
         const rest = await buf.waitForMessages({ since: r.messages[2]._cursor, limit: 3, timeoutMs: 1000 });
         assert.deepEqual(
-            rest.messages.map((m) => m.id),
+            rest.messages.map((m) => m.msgId),
             ["m4"],
         );
         assert.equal(rest.hasMore, false);
@@ -116,7 +118,7 @@ describe("MessageBuffer.waitForMessages", () => {
         buf.push("a", msg(3, "a"));
         const r = await buf.waitForMessages({ threadId: "a", since: 0, limit: 10, timeoutMs: 1000 });
         assert.deepEqual(
-            r.messages.map((m) => m.id),
+            r.messages.map((m) => m.msgId),
             ["m1", "m3"],
         );
     });
@@ -124,10 +126,18 @@ describe("MessageBuffer.waitForMessages", () => {
     it("limit 1 is exactly what waitForMessage always returned", async () => {
         fill(buf, 3);
         const one = await buf.waitForMessage({ since: 0, timeoutMs: 1000 });
-        const batch = await buf.waitForMessages({ since: 0, timeoutMs: 1000 });
-        assert.equal(one.id, "m1");
+        const batch = await buf.waitForMessages({ since: 0, limit: 1, timeoutMs: 1000 });
+        assert.equal(one.msgId, "m1");
         assert.deepEqual(batch.messages, [one]);
         assert.equal(batch.hasMore, true);
+    });
+
+    it("with no limit it returns every message already waiting (past the old cap of 100)", async () => {
+        fill(buf, 150);
+        const r = await buf.waitForMessages({ since: 0, timeoutMs: 1000 });
+        // Red if a default batch size comes back: 1 (the old default) or 100 (the old cap).
+        assert.equal(r.messages.length, 150);
+        assert.equal(r.hasMore, false);
     });
 
     it("with no `since` it waits for the next message and returns it", async () => {
@@ -137,7 +147,7 @@ describe("MessageBuffer.waitForMessages", () => {
         buf.push("t1", msg(3));
         const r = await p;
         assert.deepEqual(
-            r.messages.map((m) => m.id),
+            r.messages.map((m) => m.msgId),
             ["m3"],
         );
     });
@@ -150,7 +160,7 @@ describe("MessageBuffer.waitForMessages", () => {
         buf.push("t1", msg(3));
         const r = await p;
         assert.deepEqual(
-            r.messages.map((m) => m.id),
+            r.messages.map((m) => m.msgId),
             ["m1", "m2", "m3"],
         );
     });
@@ -165,7 +175,7 @@ describe("MessageBuffer.waitForMessages", () => {
         await delay(60);
         buf.push("t1", msg(3));
         assert.deepEqual(
-            (await settled).messages.map((m) => m.id),
+            (await settled).messages.map((m) => m.msgId),
             ["m1", "m2", "m3"],
         );
 
@@ -176,7 +186,7 @@ describe("MessageBuffer.waitForMessages", () => {
         await delay(60);
         buf2.push("t1", msg(2));
         assert.deepEqual(
-            (await quick).messages.map((m) => m.id),
+            (await quick).messages.map((m) => m.msgId),
             ["m1"],
         );
     });
@@ -190,7 +200,7 @@ describe("MessageBuffer.waitForMessages", () => {
         buf.push("t1", msg(3));
         const r = await p;
         assert.deepEqual(
-            r.messages.map((m) => m.id),
+            r.messages.map((m) => m.msgId),
             ["m1", "m2", "m3"],
         );
         assert.ok(Date.now() - t0 < 2000, "the 5 s settle was not waited out");
@@ -204,7 +214,7 @@ describe("MessageBuffer.waitForMessages", () => {
         buf.push("t1", msg(3));
         const r = await p;
         assert.deepEqual(
-            r.messages.map((m) => m.id),
+            r.messages.map((m) => m.msgId),
             ["m1", "m2", "m3"],
         );
         assert.ok(Date.now() - t0 >= 50, "it waited for the third message instead of returning the two already there");
@@ -243,7 +253,7 @@ describe("MessageBuffer.waitForMessages", () => {
         ac.abort();
         const r = await p;
         assert.deepEqual(
-            r.messages.map((m) => m.id),
+            r.messages.map((m) => m.msgId),
             ["m1"],
         );
         assert.ok(Date.now() - t0 < 1000, "the settle was cut short, not waited out");
@@ -264,14 +274,20 @@ describe("GET /events/wait", () => {
     const get = async (base, qs) =>
         (await fetch(`${base}/events/wait?${qs}`, { headers: { Authorization: "Bearer T0KEN" } })).json();
 
-    it("without `limit` the reply is the old one plus messages, count and hasMore", async () => {
+    it("without `limit` the reply holds every message already waiting; `message` is the first", async () => {
         const buf = new MessageBuffer();
         fill(buf, 3);
         const r = await get(await start(buf), "since=0&timeout=2");
         assert.equal(r.status, "message");
-        assert.equal(r.message.id, "m1");
-        assert.equal(r.cursor, r.message._cursor, "cursor is the message's own, as before");
-        assert.deepEqual([r.count, r.hasMore, r.messages.length], [1, true, 1]);
+        assert.equal(r.message.msgId, "m1");
+        assert.equal(r.cursor, r.messages[2]._cursor, "cursor is the last message's, so since=cursor skips none");
+        assert.deepEqual([r.count, r.hasMore, r.messages.length], [3, false, 3]);
+        const one = await get(await start(buf), "since=0&limit=1&timeout=2");
+        assert.deepEqual(
+            [one.count, one.hasMore, one.cursor],
+            [1, true, one.message._cursor],
+            "limit=1 is the old reply",
+        );
     });
 
     it("`limit` returns a batch, `cursor` is the last one, and a drain loop gets everything exactly once", async () => {
@@ -285,7 +301,7 @@ describe("GET /events/wait", () => {
             const r = await get(base, `since=${since}&limit=3&timeout=1`);
             calls++;
             if (r.status !== "message") break;
-            seen.push(...r.messages.map((m) => m.id));
+            seen.push(...r.messages.map((m) => m.msgId));
             since = r.cursor;
             if (!r.hasMore) break;
         }
@@ -293,14 +309,15 @@ describe("GET /events/wait", () => {
         assert.equal(calls, 3, "seven messages in three calls instead of seven");
     });
 
-    it("an unusable or oversized limit is clamped, never an error", async () => {
+    it("an unusable limit is no limit, and an oversized one is just more than is waiting, never an error", async () => {
         const buf = new MessageBuffer();
         fill(buf, 5);
         const base = await start(buf);
-        assert.equal((await get(base, "since=0&limit=abc&timeout=1")).count, 1);
-        assert.equal((await get(base, "since=0&limit=0&timeout=1")).count, 1);
-        assert.equal((await get(base, "since=0&limit=-4&timeout=1")).count, 1);
+        assert.equal((await get(base, "since=0&limit=abc&timeout=1")).count, 5);
+        assert.equal((await get(base, "since=0&limit=0&timeout=1")).count, 5);
+        assert.equal((await get(base, "since=0&limit=-4&timeout=1")).count, 5);
         assert.equal((await get(base, "since=0&limit=100000&timeout=1")).count, 5);
+        assert.equal((await get(base, "since=0&limit=2&timeout=1")).count, 2);
     });
 
     it("`settle` collects a burst into one reply", async () => {
@@ -317,7 +334,7 @@ describe("GET /events/wait", () => {
         buf.push("t1", msg(2));
         const r = await p;
         assert.deepEqual(
-            r.messages.map((m) => m.id),
+            r.messages.map((m) => m.msgId),
             ["m1", "m2"],
         );
     });
@@ -341,7 +358,7 @@ describe("zalo_wait_for_message", () => {
             {},
             buffer,
             { isWatched: () => true },
-            { limits: { maxMessagesPerPoll: 20 } },
+            {},
             { ready: true, get: (id) => (id === "t1" ? { name: "Team", type: "group" } : null), search: () => [] },
             undefined,
         );
@@ -363,17 +380,18 @@ describe("zalo_wait_for_message", () => {
             ["Team", "Team", "Team"],
         );
         assert.equal(r.cursor, r.messages[2]._cursor);
-        assert.equal(r.message.id, "m1");
+        assert.equal(r.message.msgId, "m1");
         const rest = await call({ since: r.cursor, timeoutSec: 2, limit: 3 });
         assert.deepEqual([rest.count, rest.hasMore], [1, false]);
     });
 
-    it("with no limit it is one message, as before", async () => {
+    it("with no limit it returns every message already waiting", async () => {
         const buf = new MessageBuffer();
         fill(buf, 2);
         const r = await tool(buf).call({ since: 0, timeoutSec: 2 });
-        assert.equal(r.count, 1);
-        assert.equal(r.message.id, "m1");
+        assert.equal(r.count, 2);
+        assert.equal(r.message.msgId, "m1");
+        assert.equal(r.hasMore, false);
     });
 
     it("declares limit and settleMs with their bounds, so a client is refused before the server clamps", () => {
@@ -381,15 +399,15 @@ describe("zalo_wait_for_message", () => {
         const schema = tools.get("zalo_wait_for_message").meta.inputSchema;
         const ok = (args) => schema.safeParse(args).success;
         assert.equal(ok({ limit: 100, settleMs: 5000 }), true);
-        assert.equal(ok({ limit: 101 }), false);
+        assert.equal(ok({ limit: 500 }), true, "an explicit limit has no cap of its own");
         assert.equal(ok({ limit: 0 }), false);
         assert.equal(ok({ limit: 1.5 }), false);
         assert.equal(ok({ settleMs: 5001 }), false);
         assert.equal(ok({ settleMs: -1 }), false);
         assert.deepEqual(
             [schema.parse({}).limit, schema.parse({}).settleMs],
-            [1, 0],
-            "left out, a call is the single-message call it always was",
+            [undefined, 0],
+            "left out, a call returns every message already waiting",
         );
     });
 });
@@ -414,8 +432,8 @@ describe("mcp wait over the daemon channel", () => {
                 seen.push(params);
                 return waitResult({
                     messages: [
-                        { id: "a", _cursor: 1 },
-                        { id: "b", _cursor: 2 },
+                        { msgId: "a", _cursor: 1 },
+                        { msgId: "b", _cursor: 2 },
                     ],
                     hasMore: true,
                     cursorWhenEmpty: 0,
@@ -427,10 +445,10 @@ describe("mcp wait over the daemon channel", () => {
         assert.equal(r.ok, true);
         assert.deepEqual([r.count, r.hasMore, r.cursor], [2, true, 2]);
         assert.deepEqual(
-            r.messages.map((m) => m.id),
+            r.messages.map((m) => m.msgId),
             ["a", "b"],
         );
-        assert.equal(r.message.id, "a");
+        assert.equal(r.message.msgId, "a");
         assert.deepEqual([seen[0].limit, seen[0].settleMs], [10, 150]);
     });
 
@@ -439,15 +457,51 @@ describe("mcp wait over the daemon channel", () => {
         const chan = await startDaemonChannel({
             getApi: () => ({}),
             accountDir: old,
-            onWait: async () => ({ status: "message", message: { id: "x", _cursor: 5 }, cursor: 5 }),
+            onWait: async () => ({ status: "message", message: { msgId: "x", _cursor: 5 }, cursor: 5 }),
         });
         started.push(chan);
         const r = await waitViaDaemon(old, { since: 0, timeoutSec: 2, limit: 10 });
         assert.deepEqual([r.ok, r.count, r.hasMore], [true, 1, false]);
         assert.deepEqual(
-            r.messages.map((m) => m.id),
+            r.messages.map((m) => m.msgId),
             ["x"],
         );
         rmSync(old, { recursive: true, force: true });
+    });
+});
+
+describe("a wait names the sender as of now, not as of when the message arrived", () => {
+    after(() => resetAliasBook());
+
+    it("an alias set after the message was buffered is the senderName every wait returns", () => {
+        resetAliasBook();
+        noteAliasSnapshot(new Map([["u-renamed", "Old Alias"]]));
+        // As the daemon buffered it: alias-first at the time, the carried name kept as senderZaloName.
+        const buffered = {
+            _cursor: 7,
+            msgId: "m7",
+            threadId: "t1",
+            senderId: "u-renamed",
+            senderName: "Old Alias",
+            senderAlias: "Old Alias",
+            senderZaloName: "Carried Name",
+        };
+        // The rename lands in the same catch-up, a moment after the message.
+        noteAliasSnapshot(new Map([["u-renamed", "New Alias"]]));
+        const r = waitResult({ messages: [buffered], cursorWhenEmpty: 0 });
+        assert.equal(r.messages[0].senderName, "New Alias");
+        assert.equal(r.messages[0].senderAlias, "New Alias");
+        assert.equal(r.messages[0].senderZaloName, "Carried Name", "the carried name is kept");
+        assert.equal(r.message.senderName, "New Alias", "the single-message field too");
+        // The alias removed: the carried name, not the stale alias.
+        noteAliasSnapshot(new Map());
+        const r2 = waitResult({ messages: [buffered], cursorWhenEmpty: 0 });
+        assert.equal(r2.messages[0].senderName, "Carried Name");
+        assert.equal(r2.messages[0].senderAlias, null);
+    });
+
+    it("a system event passes as it is", () => {
+        const ev = { _cursor: 8, system: true, type: "account_state", text: "x", threadId: null };
+        assert.deepEqual(waitResult({ messages: [ev], cursorWhenEmpty: 0 }).messages[0], ev);
     });
 });

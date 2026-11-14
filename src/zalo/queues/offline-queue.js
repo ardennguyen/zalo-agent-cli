@@ -1,0 +1,275 @@
+/**
+ * Zalo's offline message queues: ask what this session missed since a cursor.
+ *
+ * What the server expects on every authenticated connect: the queue list comes
+ * from the handshake's `data.qCmds`, and every queue is asked for with
+ *
+ *     {cmd, subCmd, data: {first, reqId, lastId, preIds}}
+ *
+ *   `lastId` is that queue's saved cursor ("1" when it has none). The client
+ *   pages while the answer says `data.more`, asking again with `first:false`
+ *   from the answer's `lastActionId`, and reads `queueStatus[q].evict` -- the
+ *   server's word that it dropped queued items.
+ *
+ * On the wire: the handshake lists `510_1` (1-1) and `511_1` (group) among its
+ * `qCmds`; both are asked within a millisecond of each other with `first:true`, a
+ * msgId-shaped `lastId` and `preIds:[]`; each answer arrives in ~100 ms as
+ * `{lastActionId, more, msgs|groupMsgs, queueStatus: {"511_1": {ids, lastId,
+ * evict}}, reqId}`. Live pushes carry the same `queueStatus`, and for these
+ * two queues its `lastId` is the pushed message's msgId.
+ *
+ * The listener already sends this request shape (`listener.requestOldMessages`) but
+ * only ever with `first:true`, and its `old_messages` event drops `more`,
+ * `lastActionId` and `queueStatus` -- so a queue longer than one page could
+ * never be finished. This module sends through `listener.sendWs` and reads
+ * the answers off the raw socket (../listener/socket-tap.js).
+ */
+
+import { nextReqId } from "../req-id.js";
+import { idsOf } from "./queue-verify.js";
+
+/** Thread type values. */
+const THREAD_USER = 0;
+const THREAD_GROUP = 1;
+
+/**
+ * The offline queues this module can drain, keyed by cmd: the two that carry
+ * plaintext messages. The handshake also lists 515/517/518 -- the E2EE
+ * session and ack queues (516/517 session offline, 518 1-1 offline ack) --
+ * which we do not decode.
+ */
+const MESSAGE_QUEUES = new Map([
+    [510, { threadType: THREAD_USER, rows: "msgs" }],
+    [511, { threadType: THREAD_GROUP, rows: "groupMsgs" }],
+]);
+
+/**
+ * The control queue this module can replay, keyed by cmd: 603, whose answers carry `controls[]` in the envelope of a
+ * `601` push (group and friend events, unread marks, transcripts, sync statuses). The control queues' names come
+ * from the handshake's `ctrl_qCmds`; there is no default, because a handshake without them means the server does
+ * not serve this client a control queue at all.
+ */
+const CONTROL_QUEUES = new Map([[603, { rows: "controls" }]]);
+
+/**
+ * The control queues a handshake names, in its order.
+ *
+ * @param {Array<{cmd: number, subCmd: number, queueName?: string}>} [ctrlQCmds] - the handshake's `ctrl_qCmds`
+ * @returns {Array<{cmd: number, subCmd: number, queueName: string}>}
+ */
+export function controlQueuesFrom(ctrlQCmds) {
+    if (!Array.isArray(ctrlQCmds)) return [];
+    const out = [];
+    for (const q of ctrlQCmds) {
+        const cmd = Number(q?.cmd);
+        if (!CONTROL_QUEUES.has(cmd)) continue;
+        const subCmd = Number(q?.subCmd) || 0;
+        out.push({ cmd, subCmd, queueName: String(q?.queueName || `${cmd}_${subCmd}`) });
+    }
+    return out;
+}
+
+/** What the captured handshake lists for them, used until a handshake has been read. */
+export const DEFAULT_MESSAGE_QUEUES = Object.freeze([
+    Object.freeze({ cmd: 510, subCmd: 1, queueName: "510_1", threadType: THREAD_USER }),
+    Object.freeze({ cmd: 511, subCmd: 1, queueName: "511_1", threadType: THREAD_GROUP }),
+]);
+
+/**
+ * How long a whole drain may take, every page included: Zalo's offline timeout (480 s, one timer for the whole
+ * offline phase), the budget of a long multi-page drain. One page is waited for at
+ * most {@link DEFAULT_PAGE_TIMEOUT_MS} inside it. At that deadline a client would reconnect, and the
+ * new handshake asks every queue again from its saved cursor; here the socket supervisor owns reconnects, so the
+ * drain ends as "timeout" and the next connect or wake asks again.
+ */
+export const DEFAULT_DRAIN_TIMEOUT_MS = 480_000;
+
+/**
+ * How long one page's answer is waited for before the queue is given up on this socket, inside the drain's deadline.
+ * Every queue answers in ~100 ms on the wire, an empty one included (`more: 0`, empty arrays), so silence is not an
+ * empty queue: it is an answer that never came. Waiting it out and then dropping the socket, 480 s on a
+ * live one held a daemon's start (2026-11-12: every queue silent for the full 480 s, while a wake minutes later had
+ * every answer in under 300 ms). So a silent queue ends as "timeout" after this, and the next connect or wake asks
+ * again. 30 s, not 10: one cold control answer was seen live past 10 s.
+ */
+export const DEFAULT_PAGE_TIMEOUT_MS = 30_000;
+
+/** Pages per queue: none -- a queue is read until the server says no more (`more: 0`); the runaway stop is a cursor
+ * (`lastActionId`) that does not move, which ends the drain as "stalled". A caller may still pass a bound. */
+export const DEFAULT_MAX_PAGES = Infinity;
+
+/**
+ * The message queues a handshake names, in its order.
+ *
+ * Follows `qCmds` rather than assuming 510/511, and keeps only
+ * the queues whose answers this module can store. With no handshake to go on,
+ * the usual pair.
+ *
+ * @param {Array<{cmd: number, subCmd: number, queueName?: string}>} [qCmds]
+ * @returns {Array<{cmd: number, subCmd: number, queueName: string, threadType: number}>}
+ */
+export function messageQueuesFrom(qCmds) {
+    if (!Array.isArray(qCmds) || qCmds.length === 0) return [...DEFAULT_MESSAGE_QUEUES];
+    const out = [];
+    for (const q of qCmds) {
+        const cmd = Number(q?.cmd);
+        const kind = MESSAGE_QUEUES.get(cmd);
+        if (!kind) continue;
+        const subCmd = Number(q?.subCmd) || 0;
+        out.push({ cmd, subCmd, queueName: String(q?.queueName || `${cmd}_${subCmd}`), threadType: kind.threadType });
+    }
+    return out;
+}
+
+/** What {@link request} resolves to when the socket it was sent on closed first. */
+const CLOSED = Symbol("closed");
+
+/**
+ * Ask once and wait for the answer to THIS request, until the drain's deadline or until the socket closes.
+ *
+ * @returns {Promise<object|null|symbol>} the decoded answer body, null when the deadline passed, or CLOSED
+ */
+function request({ listener, tap, queue, data, deadline, onFrame, onStray }) {
+    return new Promise((resolve) => {
+        const ws = listener.ws;
+        let off = () => {};
+        let timer = null;
+        const done = (value) => {
+            clearTimeout(timer);
+            off();
+            ws?.off?.("close", onClose);
+            resolve(value);
+        };
+        // A close ends the offline phase with the socket; an answer can never come on a closed one.
+        const onClose = () => done(CLOSED);
+        timer = setTimeout(() => done(null), Math.max(0, deadline - Date.now()));
+        off = tap.on(queue.cmd, (frame, from) => {
+            if (from && from !== listener) return;
+            if (frame.subCmd !== queue.subCmd) return;
+            // Only the answer to THIS request. The server echoes reqId (every
+            // captured 510/511 answer does), while another reader of the same
+            // stream -- zalo_get_history, or `msg history`'s scan, which page it
+            // through the listener outside this request -- gets answers without ours.
+            // Taking one of those would store the wrong page and claim coverage
+            // from it. An answer with no reqId at all is taken (routed by cmd
+            // alone); one naming another request is logged
+            // and skipped, so a wait that runs out is never unexplained.
+            const got = String(frame.data?.reqId ?? "");
+            if (got !== "" && got !== data.reqId) {
+                try {
+                    onStray?.(frame, got, data.reqId);
+                } catch {
+                    /* a failing log must not turn an answer into a timeout */
+                }
+                return;
+            }
+            try {
+                onFrame?.(frame);
+            } catch {
+                /* a failing page hook must not turn an answer into a timeout */
+            }
+            done(frame.body || {});
+        });
+        ws?.once?.("close", onClose);
+        try {
+            // The request carries its own `reqId` in `data`.
+            listener.sendWs({ version: 1, cmd: queue.cmd, subCmd: queue.subCmd, data });
+        } catch {
+            done(null);
+        }
+    });
+}
+
+/**
+ * Drain one offline queue from a cursor, as `doGetOffline` / `onGotOffline` do.
+ *
+ * The first request goes out before this returns its promise. Callers drain one queue at a time (../../core/self-heal.js:
+ * asked in the same moment, Zalo answered only the first). `timeoutMs` is the whole drain's budget (Zalo's
+ * offline timeout); a page silent for `pageTimeoutMs` ends the drain as "timeout" on this socket, and a socket that
+ * closes ends it at once ("closed").
+ *
+ * @param {object} args
+ * @param {object} args.listener - a listener whose socket is open and authenticated
+ * @param {ReturnType<import("../listener/socket-tap.js").createSocketTap>} args.tap - attached to that listener
+ * @param {{cmd: number, subCmd: number, queueName: string}} args.queue
+ * @param {string} args.lastId - the cursor: the last queue id this session holds
+ * @param {number} [args.timeoutMs] - the whole drain's deadline, from now ({@link DEFAULT_DRAIN_TIMEOUT_MS})
+ * @param {number} [args.pageTimeoutMs] - how long one answer is waited for ({@link DEFAULT_PAGE_TIMEOUT_MS})
+ * @param {(line: string) => void} [args.log] - told of an answer on this queue that named another request
+ * @param {number} [args.maxPages]
+ * @param {(frame: object) => void} [args.onPage] - told each answer's frame (with its raw bytes) as it arrives,
+ *   before the next page is asked for: how the control replay hands each page on
+ * @returns {Promise<{rows: object[], ids: string[], pages: number, complete: boolean,
+ *   reason: "drained"|"timeout"|"closed"|"stalled"|"page-cap"|"reset"|"error",
+ *   evicted: boolean, resetTo: string|null, lastActionId: string|null}>}
+ *   `rows` are the server's raw message rows, oldest page first; `ids` the queue items the pages named
+ *   (`queueStatus[queue].ids`), for the acknowledgement that follows once the rows are stored. `complete`
+ *   is true only when the server said there is nothing more; `evicted` is
+ *   its word that it dropped queued items, `resetTo` a cursor it told us to
+ *   start over from (`resetLastActionId`).
+ */
+export async function drainOfflineQueue({
+    listener,
+    tap,
+    queue,
+    lastId,
+    timeoutMs = DEFAULT_DRAIN_TIMEOUT_MS,
+    pageTimeoutMs = DEFAULT_PAGE_TIMEOUT_MS,
+    log,
+    maxPages = DEFAULT_MAX_PAGES,
+    onPage,
+}) {
+    const deadline = Date.now() + timeoutMs;
+    const onStray = log
+        ? (frame, got, ours) =>
+              log(
+                  `offline queue ${queue.queueName}: skipped an answer for another request ` +
+                      `(reqId ${got}, ours ${ours}; more ${Number(frame?.data?.more) || 0})`,
+              )
+        : undefined;
+    const kind = MESSAGE_QUEUES.get(Number(queue.cmd)) ?? CONTROL_QUEUES.get(Number(queue.cmd));
+    const rowsKey = kind?.rows || "msgs";
+    const out = {
+        rows: [],
+        ids: [],
+        pages: 0,
+        complete: false,
+        reason: "page-cap",
+        evicted: false,
+        resetTo: null,
+        lastActionId: null,
+    };
+    let cursor = String(lastId);
+    let first = true;
+
+    while (out.pages < maxPages) {
+        const data = { first, reqId: nextReqId(), lastId: cursor, preIds: [] };
+        const pageDeadline = Math.min(deadline, Date.now() + pageTimeoutMs);
+        const body = await request({ listener, tap, queue, data, deadline: pageDeadline, onFrame: onPage, onStray });
+        if (body === CLOSED) return { ...out, reason: "closed" };
+        if (!body) return { ...out, reason: "timeout" };
+        out.pages++;
+        if (Number(body.error_code) && Number(body.error_code) !== 0) return { ...out, reason: "error" };
+        const d = body.data || {};
+
+        // The cursors are reset and nothing else is processed
+        // when the server sends this.
+        const reset = d.resetLastActionId;
+        if (reset !== undefined && reset !== null && reset !== "" && reset !== 0 && reset !== "0") {
+            return { ...out, reason: "reset", resetTo: String(reset) };
+        }
+
+        if (Array.isArray(d[rowsKey])) out.rows.push(...d[rowsKey]);
+        out.ids.push(...idsOf(d.queueStatus, queue.queueName));
+        if (Number(d.queueStatus?.[queue.queueName]?.evict) === 1) out.evicted = true;
+        if (d.lastActionId !== undefined && d.lastActionId !== null) out.lastActionId = String(d.lastActionId);
+
+        if (!Number(d.more)) return { ...out, complete: true, reason: "drained" };
+        const next = d.lastActionId;
+        // A cursor that does not move would ask for the same page forever.
+        if (next === undefined || next === null || String(next) === cursor) return { ...out, reason: "stalled" };
+        cursor = String(next);
+        first = false;
+    }
+    return out;
+}

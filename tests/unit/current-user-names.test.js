@@ -65,7 +65,11 @@ describe("current user labels", () => {
         const [first, second] = await Promise.all([withCurrentSenderNames(a, [row]), withCurrentSenderNames(b, [row])]);
         assert.equal(first[0].senderDisplayName, "My Alias");
         assert.equal(second[0].senderDisplayName, "Other Account Alias");
-        assert.equal(first[0].senderName, "Historical Name");
+        // The name shown is the owner's alias; the name the message carried stays beside it.
+        assert.equal(first[0].senderName, "My Alias");
+        assert.equal(second[0].senderName, "Other Account Alias");
+        assert.equal(first[0].senderAlias, "My Alias");
+        assert.equal(first[0].senderZaloName, "Historical Name");
         assert.equal(row.senderDisplayName, undefined);
         assert.equal(row.senderName, "Historical Name");
     });
@@ -116,7 +120,7 @@ describe("current user labels", () => {
         assert.equal(messages[0].senderName, "Historical Name");
     });
 
-    it("does not mistake an ambiguous displayName for a verified Zalo profile name", async () => {
+    it("falls back to a profile's displayName only when it has no Zalo name (zaloName || dName)", async () => {
         const names = await resolveCurrentUserNames(
             {
                 getUserInfo: async () => ({
@@ -127,7 +131,7 @@ describe("current user labels", () => {
             },
             ["101"],
         );
-        assert.deepEqual(names.get("101"), { name: "101", source: "uid" });
+        assert.deepEqual(names.get("101"), { name: "Possibly An Old Alias", source: "display" });
     });
 
     it("reads alias pages and deduplicates profile requests in batches of 100", async () => {
@@ -183,6 +187,45 @@ describe("current user labels", () => {
         });
         assert.equal(calls, 2);
         assert.equal(aliases.size, 0);
+    });
+
+    /** A page of `n` aliases whose ids start after `from`. */
+    const aliasPage = (from, n, extra = {}) => ({
+        items: Array.from({ length: n }, (_, i) => ({ userId: String(from + i + 1), alias: `A${from + i + 1}` })),
+        ...extra,
+    });
+
+    it("stops at a full page that says hasMore: false", async () => {
+        const pages = [];
+        const aliases = await readUserAliases({
+            getAliasList: async (count, page) => {
+                pages.push(page);
+                return page === 1 ? aliasPage(0, 100, { hasMore: false }) : assert.fail("asked past the last page");
+            },
+        });
+        // Red if a full page is read as "there is more" whatever the reply says.
+        assert.deepEqual(pages, [1]);
+        assert.equal(aliases.size, 100);
+    });
+
+    it("keeps paging a short page that says hasMore: true", async () => {
+        const pages = [];
+        const aliases = await readUserAliases({
+            getAliasList: async (_count, page) => {
+                pages.push(page);
+                return page === 1 ? aliasPage(0, 3, { hasMore: true }) : aliasPage(3, 2, { hasMore: false });
+            },
+        });
+        // Red if a short page ends the list although the reply says more follow.
+        assert.deepEqual(pages, [1, 2]);
+        assert.deepEqual([...aliases.keys()], ["1", "2", "3", "4", "5"]);
+    });
+
+    it("keeps what it read when page 2 answers Zalo's end-of-list (212, an empty page)", async () => {
+        const aliases = await readUserAliases({
+            getAliasList: async (_count, page) => (page === 1 ? aliasPage(0, 100) : { items: [] }),
+        });
+        assert.equal(aliases.size, 100);
     });
 
     it("does not send opaque unresolved sender IDs to getUserInfo", async () => {
@@ -247,7 +290,10 @@ describe("current DM names and immutable message snapshots", () => {
         api.state.zaloName = "Renamed Profile";
         const message = await read();
         assert.equal(message.senderDisplayName, "Renamed Profile");
+        // No alias: the name shown is the one the message carried.
         assert.equal(message.senderName, "Historical Name");
+        assert.equal(message.senderAlias, null);
+        assert.equal(message.senderZaloName, "Historical Name");
         assert.equal(getMessages("202", 10)[0].senderName, "Historical Name");
     });
 
@@ -290,7 +336,8 @@ describe("current DM names and immutable message snapshots", () => {
         const response = await handlers.get("zalo_get_messages")({ since: 0, limit: 10 });
         const row = JSON.parse(response.content[0].text).messages[0];
         assert.equal(row.senderDisplayName, "My Alias");
-        assert.equal(row.senderName, "Historical Name");
+        assert.equal(row.senderName, "My Alias");
+        assert.equal(row.senderZaloName, "Historical Name");
         assert.equal(original.senderDisplayName, undefined);
         assert.equal(original.senderName, "Historical Name");
     });

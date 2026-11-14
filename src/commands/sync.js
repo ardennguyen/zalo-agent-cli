@@ -5,45 +5,46 @@ import { getAccountDir } from "../core/credentials.js";
 import { acquireLock, releaseLock, checkLock } from "../core/lock.js";
 import { error, info, success, warning, output } from "../utils/output.js";
 import { parseIntAtLeast, parseIntOption } from "../utils/parse-options.js";
+import { whileInterruptible } from "../utils/interrupt.js";
 import { SyncManager } from "../core/sync.js";
 import { SyncV2, resolveSyncWindow, FULL_HISTORY_FROM } from "../core/sync-v2/index.js";
+import { CONFIRM_WAIT_MS } from "../zalo/transfer-sync/transfer.js";
 import {
     downloadSyncedMedia,
     pruneDownloadedMedia,
     describeDownloadReasons,
     DOWNLOADABLE_KINDS,
 } from "../core/sync-v2/media.js";
-import { syncBoards } from "../core/sync-v2/board.js";
+import { runBoardPass } from "../core/board-pass.js";
 import { drainReactions, placeUnresolvedReactions } from "../core/sync-v2/reactions.js";
+import { getCloudSettings, getCloudUsage, getMyCloudUsage, summarizeCloudQuota } from "../zalo/zcloud.js";
 import { syncCloudIndex } from "../core/sync-v2/zcloud.js";
 import { syncConvState } from "../core/sync-v2/conv-state.js";
 import { planSyncRun } from "../core/sync-v2/plan.js";
-import { startKeepAlive } from "../core/sync-v2/keepalive.js";
-import { getSyncChannel, syncViaDaemon } from "../core/daemon-channel.js";
+import { pingPayload, startKeepAlive } from "../zalo/listener/keepalive.js";
+import { cancelViaDaemon, getSyncChannel, syncViaDaemon } from "../core/daemon-channel.js";
 import { attachLiveStore } from "../core/live-store.js";
 import {
     initDb,
-    getRecentThreads,
     getThreadNames,
     countPendingAttachments,
     getSyncState,
     setSyncState,
-    clearSyncState,
     getOrphanThreads,
     recordConversationList,
 } from "../core/db.js";
 
-/** Zalo close code for a duplicate web session (Zalo Web is open elsewhere). */
+/** Zalo close code for a duplicate web session (Zalo is open in a browser elsewhere). */
 const CLOSE_DUPLICATE = 3000;
 
 /**
  * Reaction-drain budget for the unified run.
  *
  * Named because the daemon path has to ask for exactly the same thing: the
- * stage runs in another process there, and a page cap that differed between
+ * stage runs in another process there, and a page bound that differed between
  * the two would make the same command truncate in one setup and not the other.
  */
-const DRAIN_PAGES = 20;
+const DRAIN_PAGES = undefined; // no page cap: until the server says no more, or its cursor stops moving
 const DRAIN_WAIT_MS = 15000;
 
 /**
@@ -81,9 +82,9 @@ export function registerSyncCommands(program) {
         .option("--from <date>", "Restore messages from this date onward (YYYY-MM-DD); overrides --days")
         .option(
             "-w, --wait <seconds>",
-            "How long to wait for the phone confirmation (floored at 180)",
+            "How long to wait for the phone confirmation (floored at 600, as Zalo's own clients wait)",
             parseIntOption,
-            180,
+            600,
         )
         .option("--no-messages", "Skip the message restore (no phone prompt)")
         .option("--no-reactions", "Skip the reaction backlog")
@@ -91,6 +92,11 @@ export function registerSyncCommands(program) {
         .option("--no-boards", "Skip notes, pinned messages, polls and reminders")
         .option("--no-cloud", "Skip the zCloud index")
         .option("--no-media", "Skip downloading attachments")
+        .option(
+            "--media-limit <n>",
+            "Download at most this many attachments in this run, two at a time; the rest wait for `sync-media`. Default: all of them",
+            parseIntAtLeast(1),
+        )
         .option(
             "--no-removals",
             "Do not apply un-react entries from the reaction backlog (see sync-reactions --no-removals)",
@@ -102,12 +108,16 @@ export function registerSyncCommands(program) {
                 "more sync sessions. The server rejects a batch of more than 30",
             parseIntAtLeast(1),
         )
+        .option(
+            "--full-resync",
+            "Ask the phone for every conversation in full, ignoring what earlier runs settled (by default a run asks only for conversations an earlier run did not finish, or that have new messages since)",
+        )
         .option("--plan", "Print which stages would run, in what order and why, then exit. Sends nothing")
         .action(async (opts) => {
             // Only the message restore carries a window; accepting one with the
             // restore switched off would silently mean nothing.
-            if ((opts.days !== undefined || opts.from !== undefined) && opts.messages === false) {
-                error("--days/--from apply to the message restore, which --no-messages switches off.");
+            if ((opts.days !== undefined || opts.from !== undefined || opts.fullResync) && opts.messages === false) {
+                error("--days/--from/--full-resync apply to the message restore, which --no-messages switches off.");
                 process.exit(1);
             }
             await runUnifiedSync(requireAccount(), opts, Boolean(program.opts().json));
@@ -119,7 +129,7 @@ export function registerSyncCommands(program) {
             "Restore message history from your phone into the local cache (zalo.db). " +
                 "This IS the real phone-backed restore (transfer-sync-v2) by default: it sends one " +
                 "sync request your phone confirms, then decrypts and stores your history. " +
-                "--socket asks for the old server backfill instead (measured empty).",
+                "--socket asks for the older server backfill instead.",
         )
         .option(
             "-t, --transfer",
@@ -127,11 +137,11 @@ export function registerSyncCommands(program) {
         )
         .option(
             "--socket",
-            "Ask for the old best-effort server socket backfill (cmd 510/511) instead of the phone-backed restore. Measured to answer empty, so this is a cheap probe, not a data path",
+            "Ask for the old best-effort server socket backfill (cmd 510/511) instead of the phone-backed restore. Zalo answers it empty, so it is a cheap probe, not a data path",
         )
         .option(
             "-F, --force",
-            "Skip the 'already synced recently' shortcut and sync anyway. By default a sync is skipped when a successful one completed within the last hour and no gap is pending — mirroring Zalo Web, which only re-syncs when it thinks something is missing",
+            "Skip the 'already synced recently' shortcut and sync anyway. By default a sync is skipped when a successful one completed within the last hour and no gap is pending — as Zalo does, re-syncing only when something seems to be missing",
         )
         .option(
             "-d, --days <n>",
@@ -160,6 +170,10 @@ export function registerSyncCommands(program) {
                 "drops, at the cost of more sync sessions. The server rejects a batch of more than 30",
             parseIntAtLeast(1),
         )
+        .option(
+            "--full-resync",
+            "Ask the phone for every conversation in full, ignoring what earlier runs settled (by default a run asks only for conversations an earlier run did not finish, or that have new messages since)",
+        )
         .action(async (opts) => {
             // --days is a property of the cmd 590 query the phone answers, so
             // it only means anything on the transfer path. Say so instead of
@@ -173,6 +187,7 @@ export function registerSyncCommands(program) {
                 [opts.from !== undefined, "--from"],
                 [opts.days !== undefined, "--days"],
                 [opts.shardSize !== undefined, "--shard-size"],
+                [opts.fullResync, "--full-resync"],
             ]
                 .filter(([passed]) => passed)
                 .map(([, flag]) => flag);
@@ -208,9 +223,18 @@ export function registerSyncCommands(program) {
             "-k, --kind <kinds>",
             `Comma-separated kinds to fetch (${[...DOWNLOADABLE_KINDS].join(", ")}). Default: all of them`,
         )
-        .option("-n, --limit <n>", "Consider at most this many messages", parseIntAtLeast(1), 500)
+        .option(
+            "-n, --limit <n>",
+            "Consider at most this many messages (default: every one still missing its file)",
+            parseIntAtLeast(1),
+        )
         .option("-d, --days <n>", "Only attachments from the last N days", parseIntAtLeast(1))
-        .option("-c, --concurrency <n>", "Parallel downloads", parseIntAtLeast(1), 4)
+        .option("-c, --concurrency <n>", "Parallel downloads", parseIntAtLeast(1), 2)
+        .option(
+            "--media-limit <n>",
+            "Download at most this many attachments in this run; the rest stay pending for the next run. Default: all of them",
+            parseIntAtLeast(1),
+        )
         .option("-m, --max-size <mb>", "Skip attachments larger than this many MB", parseIntAtLeast(1))
         .option(
             "--timeout <seconds>",
@@ -274,11 +298,15 @@ export function registerSyncCommands(program) {
         .description(
             "Retrieve existing reactions from Zalo's servers into the local cache. Reactions are the one " +
                 "thing a transfer sync cannot restore — the Sync2 payload has no reaction field — but they " +
-                "ARE served over the socket (cmd 610 for 1-1, 611 for groups), which is how Zalo Web shows " +
+                "ARE served over the socket (cmd 610 for 1-1, 611 for groups), which is how Zalo shows " +
                 "them after a fresh login. Needs no phone confirmation",
         )
         .option("-w, --wait <seconds>", "Per-page deadline", parseIntAtLeast(1), 15)
-        .option("-p, --pages <n>", "Max pages per thread type", parseIntAtLeast(1), 20)
+        .option(
+            "-p, --pages <n>",
+            "Stop after this many pages per thread type (default: until the server says no more)",
+            parseIntAtLeast(1),
+        )
         .option(
             "--no-removals",
             "Do not apply un-react entries from the backlog. The default DOES apply them, because the " +
@@ -297,7 +325,11 @@ export function registerSyncCommands(program) {
                 "they need this separate pass. Needs no phone confirmation",
         )
         .option("-T, --thread <threadId>", "Only this conversation")
-        .option("-n, --limit <n>", "Visit at most this many threads (most recent first)", parseIntAtLeast(1), 200)
+        .option(
+            "-n, --limit <n>",
+            "Visit at most this many threads, most recent first (default: every thread)",
+            parseIntAtLeast(1),
+        )
         .option("-c, --concurrency <n>", "Threads fetched in parallel", parseIntAtLeast(1), 3)
         .option("--no-reminders", "Skip reminders")
         .option("--no-boards", "Skip notes/pinned messages/polls")
@@ -309,16 +341,35 @@ export function registerSyncCommands(program) {
         .command("sync-cloud")
         .description(
             "Walk the zCloud ('Cloud của tôi') media index and record it locally — the same " +
-                "reconciliation Zalo Web runs when it receives a cloud verify event. Records where " +
+                "reconciliation Zalo runs when it receives a cloud verify event. Records where " +
                 "each backup lives; it does not download or decrypt cloud blobs",
         )
-        .option("-p, --pages <n>", "Maximum pages to walk", parseIntAtLeast(1), 50)
-        .option("-s, --page-size <n>", "Items per page (Zalo Web uses 300)", parseIntAtLeast(1), 300)
-        .option("-r, --resume <noiseId>", "Resume from this cursor instead of starting over")
+        .option(
+            "-p, --pages <n>",
+            "Stop after this many pages (default: until the server says the walk is done)",
+            parseIntAtLeast(1),
+        )
+        .option("-s, --page-size <n>", "Items per page (Zalo uses 300)", parseIntAtLeast(1), 300)
+        .option("-r, --resume <noiseId>", "Resume from this cursor instead of the saved one")
+        .option(
+            "--full",
+            "Walk from the top and, once the server says it is done, delete every local item no page listed " +
+                "(corrects an index the incremental walks left stale)",
+        )
         .action(async (opts) => {
             await runCloudSync(requireAccount(), opts);
         });
 }
+
+/**
+ * Whether stdout is reserved for one JSON value (`--json`; set by src/index.js). The single-stage commands below
+ * print their human lines either way -- in JSON mode those go to stderr -- and then their result through
+ * `output()`, which prints only in JSON mode when given no human formatter of its own.
+ */
+const jsonMode = () => Boolean(process.env.ZALO_JSON_MODE);
+
+/** Print `data` as the command's JSON result; a no-op in human mode, whose lines are already out. */
+const jsonResult = (data) => output(data, jsonMode(), () => {});
 
 /** The active account, or exit with the same message every command uses. */
 function requireAccount() {
@@ -371,6 +422,7 @@ async function runMediaDownload(activeAcc, opts) {
     if (!pending) {
         success("No attachments waiting to be downloaded.");
         info("Run `zalo-agent sync-mobile --transfer` first if you have not synced yet.");
+        jsonResult({ pending: 0, considered: 0, downloaded: 0, ...(opts.dryRun && { dryRun: true }) });
         process.exit(0);
     }
     info(`${pending} attachment(s) not yet downloaded.`);
@@ -394,6 +446,7 @@ async function runMediaDownload(activeAcc, opts) {
         limit: opts.limit,
         since,
         concurrency: opts.concurrency,
+        maxFiles: opts.mediaLimit,
         maxBytes: opts.maxSize ? opts.maxSize * MB : undefined,
         timeoutMs: (opts.timeout || 60) * 1000,
         thumbs: Boolean(opts.thumbs),
@@ -412,12 +465,24 @@ async function runMediaDownload(activeAcc, opts) {
 
     if (opts.dryRun) {
         success(`Dry run: ${stats.considered} attachment(s) would be fetched.`);
+        jsonResult({ dryRun: true, pending, ...stats });
         process.exit(0);
     }
     success(`Downloaded ${stats.downloaded}/${stats.considered} attachment(s) (${formatBytes(stats.bytes)}).`);
+    if (stats.deferred) {
+        info(
+            `${stats.deferred} more attachment(s) are waiting (this run was capped at ${opts.mediaLimit}); run it again to continue.`,
+        );
+    }
     if (stats.renewed) info(`Renewed ${stats.renewed} expired link(s).`);
     if (stats.expired) {
         warning(`${stats.expired} link(s) are gone (HTTP 404/410 or a lapsed signature).`);
+        if (stats.cloudBacked) {
+            info(
+                `${stats.cloudBacked} of the files that are gone are listed in your zCloud index: the cloud holds a copy ` +
+                    "this tool cannot open (it is end-to-end encrypted under the account's cloud key, which this tool never holds).",
+            );
+        }
         info("Zalo only keeps media for a limited time; past that the file exists only on the sending device.");
     }
     if (stats.throttled) {
@@ -449,6 +514,7 @@ async function runMediaDownload(activeAcc, opts) {
         warning(`${other} attachment(s) failed for other reasons.`);
         for (const f of stats.failures.slice(0, 5)) info(`  ${f.msgId}: ${f.reason}`);
     }
+    jsonResult({ pending, ...stats });
     process.exit(0);
 }
 
@@ -465,6 +531,7 @@ async function runPruneOrphans(activeAcc, opts) {
         info(
             "Orphans come from leave/removal events, `conv delete`, and the conversation list a full-history sync returns.",
         );
+        jsonResult({ orphans: [], deleted: 0, bytes: 0, ...(opts.dryRun && { dryRun: true }) });
         process.exit(0);
     }
 
@@ -494,6 +561,7 @@ async function runPruneOrphans(activeAcc, opts) {
         if (total.missing)
             info(`${total.missing} row(s) point at files already gone; a real run clears those pointers.`);
         info("Message text is kept. Use `conv forget --orphans` to remove that too.");
+        jsonResult({ dryRun: true, orphans: orphanList(orphans), ...total });
         process.exit(0);
     }
 
@@ -506,8 +574,12 @@ async function runPruneOrphans(activeAcc, opts) {
         for (const f of total.failures.slice(0, 5)) info(`  ${f.msgId}: ${f.reason}`);
     }
     info("Their message text is still here — `conv forget --orphans` removes that too.");
+    jsonResult({ orphans: orphanList(orphans), ...total });
     process.exit(0);
 }
+
+/** The orphaned conversations a prune covered, as its JSON result lists them. */
+const orphanList = (orphans) => orphans.map((t) => ({ threadId: t.threadId, name: t.name || "", files: t.files }));
 
 /** Delete downloaded media older than N days. Never removes message rows. */
 async function runMediaPrune(activeAcc, opts) {
@@ -533,14 +605,17 @@ async function runMediaPrune(activeAcc, opts) {
     });
 
     const cutoff = stats.all ? "any date" : new Date(stats.cutoff).toISOString().slice(0, 10);
+    const result = { scope, cutoff, ...(opts.dryRun && { dryRun: true }), ...stats };
     if (!stats.considered) {
         success(`Nothing to prune — no downloaded media matched ${scope}.`);
+        jsonResult(result);
         process.exit(0);
     }
     if (opts.dryRun) {
         success(`Dry run: ${stats.considered} file(s), ${formatBytes(stats.bytes)} — ${scope}.`);
         info("Message text is untouched; pruned files can be re-downloaded while their links live.");
         info("Re-run without --dry-run to delete them.");
+        jsonResult(result);
         process.exit(0);
     }
     success(`Deleted ${stats.deleted} file(s), reclaiming ${formatBytes(stats.bytes)} (${scope}, before ${cutoff}).`);
@@ -555,6 +630,7 @@ async function runMediaPrune(activeAcc, opts) {
         "Message history is unchanged. These attachments are not fetched again on their own; " +
             "`zalo-agent sync-media --include-pruned` re-downloads them while their links still work.",
     );
+    jsonResult(result);
     process.exit(0);
 }
 
@@ -576,6 +652,7 @@ async function runBoardSync(activeAcc, opts) {
         warning(opts.thread ? `Thread ${opts.thread} is not in the local cache.` : "No threads in the local cache.");
         info("Run `zalo-agent sync-mobile --transfer` first.");
     }
+    jsonResult(r);
     process.exit(0);
 }
 
@@ -588,48 +665,26 @@ async function runBoardSync(activeAcc, opts) {
  * @returns {Promise<{status: "ok"|"skipped", reason?: string, stats?: object}>}
  */
 async function boardPass(api, opts) {
-    const all = getRecentThreads(opts.limit);
-    const threads = (opts.thread ? all.filter((t) => String(t.threadId) === String(opts.thread)) : all).map((t) => ({
-        threadId: String(t.threadId),
-        type: t.type,
-        name: t.name,
-    }));
-    if (!threads.length) {
-        return {
-            status: "skipped",
-            reason: opts.thread ? `thread ${opts.thread} is not in the local cache` : "no threads in the local cache",
-        };
-    }
-
-    // A live board event flags its thread; those go first so a quick run after
-    // seeing "Board changed" refreshes the thing that actually moved.
-    const stale = threads.filter((t) => getSyncState(`boardStale:${t.threadId}`));
-    if (stale.length && !opts.thread) {
-        info(`${stale.length} thread(s) had a board change since the last pass — doing those first.`);
-        const rest = threads.filter((t) => !getSyncState(`boardStale:${t.threadId}`));
-        threads.length = 0;
-        threads.push(...stale, ...rest);
-    }
-
-    info(`Checking ${threads.length} thread(s) — one request each, so this is paced deliberately.`);
+    // The pass itself (which threads, stale-first order, the per-thread flag, the 221 stop and resume) is the one the
+    // MCP server runs too (src/core/board-pass.js); this only prints.
     let last = 0;
-    const stats = await syncBoards({
-        api,
-        threads,
-        boards: opts.boards !== false,
-        reminders: opts.reminders !== false,
-        concurrency: opts.concurrency,
+    let announced = false;
+    const r = await runBoardPass(api, {
+        ...opts,
+        onNote: (m) => info(`${m}.`),
         onProgress: (p) => {
-            // The flag exists to say "come back to this one". Clearing it is
-            // what makes the next run's prioritization mean anything, and it
-            // must not be cleared for a thread whose own fetch failed.
-            if (p.phase === "thread" && p.ok) clearSyncState(`boardStale:${p.threadId}`);
+            if (!announced) {
+                announced = true;
+                info(`Checking ${p.total} thread(s) — paced deliberately, at most 3 at a time.`);
+            }
             if (p.done === p.total || p.done - last >= 25) {
                 last = p.done;
                 info(`  ${p.done}/${p.total} threads`);
             }
         },
     });
+    if (r.status !== "ok") return r;
+    const stats = r.stats;
 
     success(
         `Stored ${stats.boardItems} board item(s) and ${stats.reminders} reminder(s) from ${stats.threads} thread(s).`,
@@ -638,7 +693,9 @@ async function boardPass(api, opts) {
         warning(`${stats.failed} request(s) failed (left groups and blocked peers are expected here).`);
         for (const f of stats.failures.slice(0, 5)) info(`  ${f.threadId} (${f.what}): ${f.reason}`);
     }
-    return { status: "ok", stats };
+    if (stats.stalled) info(`${stats.stalled} board(s) ended early: the server repeated a page (cursor did not move).`);
+    if (r.note) warning(r.note);
+    return r;
 }
 
 /**
@@ -646,7 +703,7 @@ async function boardPass(api, opts) {
  *
  * Reactions were long documented here as unrecoverable, which conflated two
  * things: the transfer-sync payload genuinely has no reaction field, but the
- * socket serves them on cmd 610/611 and Zalo Web asks for both on every
+ * socket serves them on cmd 610/611 and Zalo asks for both on every
  * connect. Measured on a real account, one request pair returned 28 direct and
  * 50 group reactions while the local cache held one row.
  *
@@ -682,7 +739,7 @@ async function runReactionSync(activeAcc, opts) {
             error(`Failed: ${daemonStageError(r)}`);
             process.exit(1);
         }
-        reportReactionStage(r.result, r.result.placed || 0, r.result.unresolvedLeft || 0, opts.pages);
+        jsonResult(reportReactionStage(r.result, r.result.placed || 0, r.result.unresolvedLeft || 0, opts.pages));
         process.exit(0);
     }
 
@@ -706,13 +763,19 @@ async function runReactionSync(activeAcc, opts) {
         if (!connected.ok) {
             if (connected.reason === "duplicate") {
                 error("Zalo closed this connection: another web session is already open on this account.");
-                info("Zalo allows one web session per account. Sign out of Zalo Web, then run this again.");
+                info("Zalo allows one web session per account. Sign out of Zalo in your browser, then run this again.");
             } else {
                 error(`Could not open a connection: ${connected.reason}`);
             }
         } else {
             const stats = await drainPass(api, { waitMs, pages: opts.pages, removals: opts.removals });
             reportReactionDrain(stats, opts);
+            // The shape the daemon path prints (reportReactionStage), without its retry pass.
+            jsonResult({
+                status: stats.truncated || stats.stalled ? "partial" : "ok",
+                reason: `${stats.stored} stored`,
+                stats: { received: stats.received, stored: stats.stored },
+            });
             exitCode = 0;
         }
     } catch (err) {
@@ -786,7 +849,7 @@ function reportReactionStage(stats, placed, left, pages = DRAIN_PAGES) {
     reportReactionDrain(stats, { pages });
     if (placed) info(`Placed ${placed} reaction(s) whose message is now stored.`);
     return {
-        status: stats.truncated ? "partial" : "ok",
+        status: stats.truncated || stats.stalled ? "partial" : "ok",
         reason: `${stats.stored + placed} stored`,
         stats: { received: stats.received, stored: stats.stored + placed, unresolved: left },
     };
@@ -830,7 +893,7 @@ function reportReactionDrain(stats, opts) {
     if (stats.received === 0) {
         warning("The server returned no reactions.");
         info(
-            "That is a caught-up queue, not a missing feature: this channel is what Zalo Web itself " +
+            "That is a caught-up queue, not a missing feature: this channel is what Zalo itself " +
                 "asks on every connect. Reactions arriving from now on are captured by `zalo-agent listen`.",
         );
         return;
@@ -846,7 +909,10 @@ function reportReactionDrain(stats, opts) {
         );
     }
     if (stats.truncated) {
-        warning(`Stopped at the ${opts.pages}-page cap; re-run with a higher --pages for the rest.`);
+        warning(`Stopped at the ${opts.pages}-page bound you asked for; re-run without --pages for the rest.`);
+    }
+    if (stats.stalled) {
+        warning("Stopped early: the server said more follows but its cursor did not advance.");
     }
 }
 
@@ -863,7 +929,24 @@ async function runCloudSync(activeAcc, opts) {
         process.exit(1);
     }
 
-    const r = await cloudPass(api, opts);
+    const route = routeCloudWalk(accountDir);
+    if (route.via === "skip") {
+        error(`Not walking the cloud queue: ${route.reason}.`);
+        process.exit(1);
+    }
+    if (route.via === "daemon") info("A listen/mcp daemon holds this account — walking the cloud queue in it.");
+    let r;
+    try {
+        r = await cloudPass(api, { ...opts, walk: route.walk });
+    } catch (err) {
+        error(`Failed: ${err.message}`);
+        process.exit(1);
+    }
+    if (r.status === "skipped") {
+        info("Pass --full to walk the queue anyway.");
+        jsonResult(r);
+        process.exit(0);
+    }
     if (r.status === "unavailable") {
         error("Could not read the cloud index.");
         for (const f of r.stats.failures.slice(0, 3)) info(`  ${f.reason}`);
@@ -872,38 +955,169 @@ async function runCloudSync(activeAcc, opts) {
     }
     if (r.stats.lastNoiseId && !r.stats.complete) info(`Resume cursor: ${r.stats.lastNoiseId}`);
     info("Cloud blobs are stored encrypted; this pass records where they live, it does not download them.");
+    jsonResult(r);
     process.exit(0);
+}
+
+/**
+ * What the account's zCloud plan is, read in the order and with the calls Zalo makes at start-up: the settings, then
+ * `usage-mycloud`, which carries the plan; the full `v2/usage` only when that plan is not the free one (-1), as
+ * Zalo does. A free account therefore never asks for `v2/usage`. Null when the plan could not be read.
+ *
+ * @param {object} api
+ * @param {{settings?: () => Promise<object>, myCloud?: () => Promise<object>, usage?: () => Promise<object>}} [opts]
+ *   test seams: the settings, `usage-mycloud` and `v2/usage` reads
+ * @returns {Promise<ReturnType<typeof summarizeCloudQuota>|null>}
+ */
+export async function readCloudPlan(api, opts = {}) {
+    try {
+        let settings = {};
+        try {
+            settings = (await (opts.settings ? opts.settings() : getCloudSettings(api))) ?? {};
+        } catch {
+            /* the settings add the opt-in and file limits; the plan stands without them */
+        }
+        let mine = null;
+        try {
+            mine = (await (opts.myCloud ? opts.myCloud() : getMyCloudUsage(api))) ?? null;
+        } catch {
+            /* the plan can still come from v2/usage */
+        }
+        const free = mine !== null && Number(mine.plan) === -1;
+        const usage = free ? mine : await (opts.usage ? opts.usage() : getCloudUsage(api));
+        return summarizeCloudQuota(usage ?? {}, settings);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * One line that says what the plan is.
+ *
+ * @param {NonNullable<Awaited<ReturnType<typeof readCloudPlan>>>} plan
+ * @returns {string}
+ */
+export function describeCloudPlan(plan) {
+    if (plan.planCode === -1 && !plan.usageBytes) {
+        return "zCloud: no plan on this account (free), so the cloud holds nothing to index.";
+    }
+    const used = plan.usageBytes === null ? "?" : formatBytes(plan.usageBytes);
+    const quota = plan.quotaBytes === null ? "?" : formatBytes(plan.quotaBytes);
+    return `zCloud: ${plan.plan ?? "unknown plan"}, ${used} of ${quota} used.`;
+}
+
+/**
+ * Where a cloud walk may run (D31, ZP-09). The daemon walks the same queue on its own when the server sends cmd 621,
+ * under its stage lock, and two walkers at once can write the saved place out of order or sweep what the other just
+ * recorded. So with a daemon up the walk runs in it, through its channel; a process that holds the account but cannot
+ * run the walk (a daemon older than the route, or another `sync` holding the lock) means no walk here.
+ *
+ * @param {object} args
+ * @param {boolean} args.locked - whether another live process holds `daemon.lock`
+ * @param {object|null} args.chan - the daemon's channel when it runs the `cloud` stage (`getSyncChannel(dir, "cloud")`)
+ * @returns {{via: "local"|"daemon"|"skip", reason: string}}
+ */
+export function cloudWalkRoute({ locked, chan }) {
+    if (chan) return { via: "daemon", reason: "" };
+    if (locked) {
+        return {
+            via: "skip",
+            reason:
+                "another process holds this account (a listen/mcp daemon that cannot run the cloud walk, or another " +
+                "sync), and it may walk the cloud queue itself; restart the daemon to pick the capability up",
+        };
+    }
+    return { via: "local", reason: "" };
+}
+
+/**
+ * The `walk` that runs a cloud walk in the daemon, for {@link cloudPass}. A daemon that did not run it throws, with
+ * the reason the other daemon stages give.
+ *
+ * @param {string} accountDir
+ * @returns {(params: object) => Promise<object>}
+ */
+function daemonCloudWalk(accountDir) {
+    return async ({ onProgress, ...params }) => {
+        const r = await syncViaDaemon(accountDir, { stage: "cloud", params, onEvent: onProgress });
+        if (!r?.ok) throw new Error(daemonStageError(r));
+        return r.result;
+    };
+}
+
+/**
+ * {@link cloudWalkRoute} for this account, with the `walk` it implies.
+ *
+ * @param {string} accountDir
+ * @returns {{via: "local"|"daemon"|"skip", reason: string, walk?: (params: object) => Promise<object>}}
+ */
+function routeCloudWalk(accountDir) {
+    const route = cloudWalkRoute({
+        locked: checkLock(accountDir).locked,
+        chan: getSyncChannel(accountDir, "cloud"),
+    });
+    return route.via === "daemon" ? { ...route, walk: daemonCloudWalk(accountDir) } : route;
 }
 
 /**
  * One walk of the zCloud index. Exit-free.
  *
- * The cursor used to be printed and thrown away, so a walk capped by --pages
- * could only be continued by hand-copying it into --resume. It is now kept:
- * saved when the walk stops on the cap, cleared when the server says it has
- * nothing further, and an explicit --resume still wins.
+ * The cursor is saved after every page and kept when the walk is complete, as Zalo keeps its last noise id: the
+ * next walk starts there and reads only what is new (a killed or capped walk carries on from its last page, not from
+ * the top). `full` ignores the saved place, walks from the top and sweeps what no page listed; an explicit `resume`
+ * wins over the saved place.
+ *
+ * The walk itself runs where {@link cloudWalkRoute} says: here, or in the running daemon (`walk`), which also walks
+ * this queue on its own and must not do it beside us.
  *
  * @param {object} api
- * @param {{resume?: string, pageSize?: number, pages?: number}} opts
- * @returns {Promise<{status: "ok"|"unavailable", stats: object}>}
+ * @param {{resume?: string, full?: boolean, pageSize?: number, pages?: number,
+ *   walk?: (params: {resume: string, full: boolean, pageSize?: number, maxPages?: number,
+ *     onProgress: (p: object) => void}) => Promise<object>,
+ *   verify?: (params: object) => Promise<object>, usage?: () => Promise<object>, myCloud?: () => Promise<object>,
+ *   settings?: () => Promise<object>}} opts - `walk` runs the walk elsewhere (the daemon) and returns its stats;
+ *   `verify`, `usage`, `myCloud` and `settings` replace the network calls (tests)
+ * @returns {Promise<{status: "ok"|"unavailable"|"skipped", plan: object|null, stats: object}>} `skipped`: the account
+ *   has no zCloud plan and nothing in the cloud, so no page was asked for (a `full` or `resume` walk is never skipped)
  */
-async function cloudPass(api, opts) {
+export async function cloudPass(api, opts) {
+    // The plan first: an account without zCloud has nothing in the cloud to index, and says so here instead of
+    // walking an empty queue and leaving the person to wonder. A failed read is not a verdict: the walk goes on.
+    const plan = await readCloudPlan(api, opts);
+    if (plan) info(describeCloudPlan(plan));
+    if (plan && plan.planCode === -1 && !plan.usageBytes && !opts.full && !opts.resume) {
+        return { status: "skipped", plan, stats: { items: 0, pages: 0, failures: [], complete: true } };
+    }
     const saved = getSyncState("cloudCursor");
     const resume = opts.resume || saved || "";
-    if (!opts.resume && saved) info("Continuing the cloud walk from where the last capped run stopped.");
-    info("Walking the zCloud media index…");
-    const stats = await syncCloudIndex({
-        api,
-        lastNoiseId: resume,
-        pageSize: opts.pageSize,
-        maxPages: opts.pages,
-        onProgress: (p) => info(`  page ${p.page}: ${p.items} item(s) so far`),
-    });
-    if (stats.failed && !stats.items) return { status: "unavailable", stats };
-    if (stats.complete) clearSyncState("cloudCursor");
-    else if (stats.lastNoiseId) setSyncState("cloudCursor", String(stats.lastNoiseId));
-    success(`Recorded ${stats.items} cloud item(s) across ${stats.pages} page(s).`);
-    return { status: "ok", stats };
+    if (!opts.full && !opts.resume && saved) info("Reading the cloud queue from where the last walk stopped.");
+    info(opts.full ? "Walking the whole zCloud queue…" : "Walking the zCloud media index…");
+    const onProgress = (p) => info(`  page ${p.page}: ${p.items} item(s) so far`);
+    const stats = opts.walk
+        ? await opts.walk({
+              resume: opts.resume || "",
+              full: !!opts.full,
+              pageSize: opts.pageSize,
+              maxPages: opts.pages,
+              onProgress,
+          })
+        : await syncCloudIndex({
+              api,
+              lastNoiseId: resume,
+              full: !!opts.full,
+              verify: opts.verify,
+              pageSize: opts.pageSize,
+              maxPages: opts.pages,
+              onProgress,
+              onPage: (p) => setSyncState("cloudCursor", p.cursor),
+          });
+    if (stats.failed && !stats.items && !stats.removed) return { status: "unavailable", plan, stats };
+    const bits = [`Recorded ${stats.items} cloud item(s) across ${stats.pages} page(s)`];
+    if (stats.removed) bits.push(`removed ${stats.removed} the cloud no longer holds`);
+    if (stats.swept) bits.push(`swept ${stats.swept} no page listed`);
+    success(`${bits.join(", ")}.`);
+    if (stats.stalled) warning("Stopped early: zCloud said more follows but its cursor did not advance.");
+    return { status: "ok", plan, stats };
 }
 
 /** Human-readable byte count for the download summary. */
@@ -920,16 +1134,26 @@ function formatBytes(n) {
 }
 
 /**
- * Open the listener socket and resolve once connected (or on close/error/timeout).
+ * Open the listener socket and resolve once the server's hello has been processed (or on close/error/timeout).
  *
  * @param {object} api
  * @param {number} waitMs
  * @returns {Promise<{ok: boolean, reason?: string}>}
  */
-function connectListener(api, waitMs) {
+export function connectListener(api, waitMs) {
     return new Promise((res) => {
         let settled = false;
-        const onConnected = () => done({ ok: true });
+        // Zalo sends nothing until the server's hello (cmd 1/1, which carries the key) has been processed, and
+        // then pings at once before anything else. "Open" is therefore not "connected": a reconnect
+        // that asked for sessions 1 ms ahead of the hello was closed again within seconds.
+        const onHello = () => {
+            try {
+                api.listener.sendWs(pingPayload());
+            } catch {
+                /* a socket that cannot take a ping is reported by the close that follows */
+            }
+            done({ ok: true });
+        };
         const onClosed = (code) =>
             done({ ok: false, reason: code === CLOSE_DUPLICATE ? "duplicate" : `closed (${code})` });
         const onError = (e) => done({ ok: false, reason: e && e.message ? e.message : "socket error" });
@@ -942,18 +1166,46 @@ function connectListener(api, waitMs) {
             if (settled) return;
             settled = true;
             clearTimeout(timer);
-            api.listener.removeListener("connected", onConnected);
+            api.listener.removeListener("cipher_key", onHello);
             api.listener.removeListener("closed", onClosed);
             api.listener.removeListener("error", onError);
             res(v);
         };
         const timer = setTimeout(() => done({ ok: false, reason: "timeout" }), waitMs);
-        api.listener.on("connected", onConnected);
+        api.listener.on("cipher_key", onHello);
         api.listener.on("closed", onClosed);
         api.listener.on("error", onError);
         api.listener.start({ retryOnClose: false });
     });
 }
+
+/** What Ctrl+C says while a restore lets go of the sessions it opened on the phone. */
+function stoppingNotice() {
+    warning("Stopping: releasing the sync on your phone. Press Ctrl+C again to quit at once.");
+}
+
+/**
+ * Run the message restore on the daemon's socket, and let Ctrl+C stop it there: the first press asks the daemon
+ * to cancel (it keeps what arrived and releases the sessions on the phone), a second quits at once and leaves the
+ * cancel to finish by itself.
+ *
+ * @param {string} accountDir
+ * @param {object} req - as for syncViaDaemon
+ * @param {{proc?: object}} [opts] - the process, replaceable in a test
+ * @returns {Promise<object|null>} syncViaDaemon's answer
+ */
+export function restoreViaDaemon(accountDir, req, { proc = process } = {}) {
+    return whileInterruptible(
+        (signal) => {
+            signal.addEventListener("abort", () => void cancelViaDaemon(accountDir), { once: true });
+            return syncViaDaemon(accountDir, req);
+        },
+        { onStop: stoppingNotice, proc },
+    );
+}
+
+/** The shortest pause Zalo puts before retrying a socket that closed abnormally (its table: 2, 3, 5, 8 s). */
+export const RECONNECT_DELAY_MS = 2000;
 
 /**
  * Re-open the socket after it dropped mid-stage.
@@ -962,17 +1214,20 @@ function connectListener(api, waitMs) {
  * stops the listener itself, so the decision to reconnect is the caller's. A
  * 1006 is NOT in the server's own `close_and_retry_codes`
  * (`settings.features.socket`, measured: 5008 5007 3003 3000 5014 4002 5015
- * 5017 5016), so zca-js will never retry one for us -- without this, a dropped
+ * 5017 5016), so the supervisor will never retry one for us -- without this, a dropped
  * wire ends the run and the phone confirmation it already spent is gone.
  *
  * @param {object} api
  * @param {number} [waitMs=30000]
+ * @param {number} [delayMs=RECONNECT_DELAY_MS] - how long to wait before opening the new socket
  * @returns {Promise<boolean>} true once a live socket is back
  */
-async function reconnectListener(api, waitMs = 30000) {
-    // zca-js nulls `ws` on close and throws "Already started" while it is set,
+export async function reconnectListener(api, waitMs = 30000, delayMs = RECONNECT_DELAY_MS) {
+    // The listener nulls `ws` on close and refuses to start again while it is set,
     // so a socket still hanging around has to be put down first.
     if (api?.listener?.ws) await closeListener(api);
+    // Zalo's first retry after a 1006 comes after 2 s (then 3, 5, 8); this one came after 0.5 s.
+    if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
     const r = await connectListener(api, waitMs);
     return r.ok === true;
 }
@@ -1016,7 +1271,7 @@ async function runTransferSync(activeAcc, opts) {
     }
 
     // Transfer sync needs time for the phone confirmation; use a generous window.
-    const waitMs = Math.max(180, Number(opts.wait) || 0) * 1000;
+    const waitMs = Math.max(CONFIRM_WAIT_MS / 1000, Number(opts.wait) || 0) * 1000;
     let exitCode = 1;
 
     // A running daemon holds the account's one web session and can run the
@@ -1035,9 +1290,15 @@ async function runTransferSync(activeAcc, opts) {
         if (win.clamped) info("(--days reaches past the oldest history this sync can request.)");
         warning("This sends ONE sync request to your phone — confirm the 'ĐỒNG BỘ NGAY' prompt when it appears.");
         const startedAt = Date.now();
-        const r = await syncViaDaemon(accountDir, {
+        const r = await restoreViaDaemon(accountDir, {
             stage: "messages",
-            params: { days: opts.days ?? null, from: opts.from, shardSize: opts.shardSize, waitMs },
+            params: {
+                days: opts.days ?? null,
+                from: opts.from,
+                shardSize: opts.shardSize,
+                fullResync: Boolean(opts.fullResync),
+                waitMs,
+            },
             onEvent: ({ phase, detail }) => {
                 if (phase === "confirm") warning(detail);
                 else if (detail) info(`  ${detail}`);
@@ -1067,7 +1328,9 @@ async function runTransferSync(activeAcc, opts) {
             if (!connected.ok) {
                 if (connected.reason === "duplicate") {
                     error("Zalo closed this connection: another web session is already open on this account.");
-                    info("Zalo allows one web session per account. Sign out of Zalo Web, then run this again.");
+                    info(
+                        "Zalo allows one web session per account. Sign out of Zalo in your browser, then run this again.",
+                    );
                 } else {
                     error(`Could not open a connection: ${connected.reason}`);
                 }
@@ -1081,21 +1344,27 @@ async function runTransferSync(activeAcc, opts) {
                 );
                 const sv = new SyncV2(api, activeAcc.ownId);
                 const startedAt = Date.now();
-                const res = await sv.restore({
-                    days: opts.days,
-                    from: opts.from,
-                    shardSize: opts.shardSize,
-                    waitMs,
-                    // This command owns the socket for the whole run, so it owns
-                    // the heartbeat too -- see runUnifiedSync for why.
-                    keepAlive: false,
-                    reconnect: () => reconnectListener(api),
-                    onSelfName: (name) => updateAccountName(activeAcc.ownId, name),
-                    onStatus: ({ phase, detail }) => {
-                        if (phase === "confirm") warning(detail);
-                        else if (detail) info(`  ${detail}`);
-                    },
-                });
+                const res = await whileInterruptible(
+                    (signal) =>
+                        sv.restore({
+                            days: opts.days,
+                            from: opts.from,
+                            shardSize: opts.shardSize,
+                            fullResync: Boolean(opts.fullResync),
+                            waitMs,
+                            signal,
+                            // This command owns the socket for the whole run, so it owns
+                            // the heartbeat too -- see runUnifiedSync for why.
+                            keepAlive: false,
+                            reconnect: () => reconnectListener(api),
+                            onSelfName: (name) => updateAccountName(activeAcc.ownId, name),
+                            onStatus: ({ phase, detail }) => {
+                                if (phase === "confirm") warning(detail);
+                                else if (detail) info(`  ${detail}`);
+                            },
+                        }),
+                    { onStop: stoppingNotice },
+                );
                 reportRestore(res, win, { startedAt, keep: ownThreadIds(api, activeAcc.ownId) });
                 exitCode = 0;
             }
@@ -1122,7 +1391,7 @@ async function runTransferSync(activeAcc, opts) {
     // a successful restore into a failed run -- the messages are already safe.
     if (exitCode === 0 && !opts.messagesOnly) {
         try {
-            await fetchMediaAfterRestore(accountDir, api, win.from);
+            await fetchMediaAfterRestore(accountDir, api, win.from, { limit: opts.mediaLimit });
         } catch (err) {
             warning(`Media download stopped: ${err.message}`);
             info("The messages are stored. Run `zalo-agent sync-media` to retry the files.");
@@ -1243,7 +1512,7 @@ function recordRestoreList(res, win, ctx) {
  * @param {{startedAt?: number, keep?: string[]}} [ctx] - see recordRestoreList
  * @returns {{status: "ok"|"partial"|"unconfirmed", reason: string}}
  */
-function reportRestore(res, win, ctx = {}) {
+export function reportRestore(res, win, ctx = {}) {
     // Before the early returns: a thread IN a partial list is still present.
     let list = null;
     try {
@@ -1258,6 +1527,11 @@ function reportRestore(res, win, ctx = {}) {
         if (win.days) info("Pass a larger --days, or drop --days for full history.");
         return { status: "ok", reason: "phone confirmed: nothing missed in this window" };
     }
+    if (res.reason === "cancelled") {
+        warning(`Cancelled: ${res.messagesSaved} message(s) from ${res.conversations} conversation(s) were stored.`);
+        info("The sync was released on your phone. Run it again to fetch the rest.");
+        return { status: "partial", reason: "cancelled by you" };
+    }
     if (res.reason === "partial" || res.reason === "socket-lost") {
         const how =
             res.reason === "socket-lost"
@@ -1268,7 +1542,7 @@ function reportRestore(res, win, ctx = {}) {
         if (res.rowErrors) {
             warning(
                 `${res.rowErrors} message(s) could not be written to the local cache (${res.firstRowError ?? "unknown error"}). ` +
-                    "Re-run with --force once the cause is gone.",
+                    "Their conversations are not marked as restored, so the next run asks for them again.",
             );
         }
         warning(
@@ -1338,12 +1612,18 @@ function reportRestore(res, win, ctx = {}) {
  *
  * @param {string} accountDir
  * @param {object|null} api - needed only to renew expired links
+ * @param {number} [since] - epoch ms; only media inside the window this run covered
+ * @param {{limit?: number}} [cap] - `limit`: download at most this many files in this run (`--media-limit`)
  */
-async function fetchMediaAfterRestore(accountDir, api, since) {
+async function fetchMediaAfterRestore(accountDir, api, since, { limit } = {}) {
     const pending = countPendingAttachments();
     if (!pending) return null;
 
-    info(`Downloading ${pending} attachment(s) — no phone confirmation needed. Ctrl-C is safe; it resumes.`);
+    const capped = Number.isFinite(limit) && limit > 0 && limit < pending;
+    info(
+        `Downloading ${capped ? `up to ${limit} of ${pending}` : pending} attachment(s) — no phone confirmation needed. ` +
+            "Ctrl-C is safe; it resumes.",
+    );
     let last = 0;
     // Tallied here rather than read off the result: the result does not exist
     // until the whole download resolves, so progress lines would all read 0 B.
@@ -1358,7 +1638,9 @@ async function fetchMediaAfterRestore(accountDir, api, since) {
         // an unscoped fetch re-downloads exactly what was just deleted.
         since: Number.isFinite(since) && since > 0 ? since : undefined,
         includePruned: false,
-        concurrency: 4,
+        // Two at a time, as Zalo fetches: a burst is what the CDN answers with 403 and 429.
+        concurrency: 2,
+        maxFiles: limit,
         threadNames: getThreadNames(),
         onProgress: (p) => {
             if (p.phase !== "saved") return;
@@ -1370,9 +1652,20 @@ async function fetchMediaAfterRestore(accountDir, api, since) {
         },
     });
     success(`Downloaded ${stats.downloaded}/${stats.considered} file(s) (${formatBytes(stats.bytes)}).`);
+    if (stats.deferred) {
+        info(
+            `${stats.deferred} more file(s) are waiting (this run was capped at ${limit}); run \`zalo-agent sync-media\` to continue.`,
+        );
+    }
     if (stats.renewed) info(`Renewed ${stats.renewed} expired link(s).`);
     if (stats.expired) {
         warning(`${stats.expired} link(s) are gone and could not be renewed.`);
+        if (stats.cloudBacked) {
+            info(
+                `${stats.cloudBacked} of the files that are gone are listed in your zCloud index: the cloud holds a copy ` +
+                    "this tool cannot open (it is end-to-end encrypted under the account's cloud key, which this tool never holds).",
+            );
+        }
         info("Zalo keeps media for a limited time; past that the file exists only on the sending device.");
     }
     if (stats.throttled) {
@@ -1446,6 +1739,7 @@ function printPlan(plan, win, jsonMode) {
             window: win.label,
             openSocket: plan.openSocket,
             viaDaemon: plan.viaDaemon,
+            cloudViaDaemon: Boolean(plan.cloudViaDaemon),
             stages: plan.stages.map((s) => ({
                 stage: s.name,
                 transport: s.transport,
@@ -1464,6 +1758,10 @@ function printPlan(plan, win, jsonMode) {
             } else {
                 info(plan.openSocket ? "Opens the WebSocket once, for the socket stages." : "Opens no WebSocket.");
             }
+            if (plan.cloudViaDaemon) {
+                info("The zCloud walk runs in the running daemon (it walks the same queue on its own; two walkers");
+                info("would write its saved place out of order).");
+            }
             for (const s of plan.stages) {
                 const tag = s.run ? (s.phone ? "RUN  (wakes your phone)" : "RUN") : "skip";
                 // The transport column says HOW; this says WHOSE socket.
@@ -1481,7 +1779,7 @@ function printPlan(plan, win, jsonMode) {
  * of the messages and conversations, and they were split across five
  * commands -- two of which each opened their own socket and took their own
  * lock, so a full refresh meant running five things in the right order and
- * evicting Zalo Web twice. This runs them as stages of one process: one lock,
+ * evicting a browser Zalo session twice. This runs them as stages of one process: one lock,
  * one socket window shared by the socket stages, then the REST stages, and one
  * exit code at the end. The five commands remain for targeted re-runs.
  *
@@ -1541,6 +1839,10 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
                 freshness,
                 lockOk: !checkLock(accountDir).locked,
                 daemonChannel: Boolean(chan),
+                cloudRoute: cloudWalkRoute({
+                    locked: checkLock(accountDir).locked,
+                    chan: getSyncChannel(accountDir, "cloud"),
+                }),
             }),
             win,
             jsonMode,
@@ -1584,13 +1886,14 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
             // the owner's phone can supply the history.
             warning("This sends ONE sync request to your phone — confirm the 'ĐỒNG BỘ NGAY' prompt when it appears.");
             const startedAt = Date.now();
-            const r = await syncViaDaemon(accountDir, {
+            const r = await restoreViaDaemon(accountDir, {
                 stage: "messages",
                 params: {
                     days: opts.days ?? null,
                     from: opts.from,
                     shardSize: opts.shardSize,
-                    waitMs: Math.max(180, Number(opts.wait) || 0) * 1000,
+                    fullResync: Boolean(opts.fullResync),
+                    waitMs: Math.max(CONFIRM_WAIT_MS / 1000, Number(opts.wait) || 0) * 1000,
                 },
                 onEvent: ({ phase, detail }) => {
                     if (phase === "confirm") warning(detail);
@@ -1639,10 +1942,10 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
         // ONE heartbeat for the whole socket window, covering every socket
         // stage and the gaps between them.
         //
-        // The socket is not unpinged without this -- zca-js sends Zalo's
+        // The socket is not unpinged without this -- the listener sends Zalo's
         // `cmd 2/1` ping on the interval the server hands out at login, which
-        // this account's login reports as 180000 ms, the same value a captured
-        // Zalo Web session used. The problem is that 180 s is the entire width
+        // this account's login reports as 180000 ms, the same value Zalo's own
+        // sessions use. The problem is that 180 s is the entire width
         // of the phone wait: the restore sends nothing and receives nothing for
         // minutes, so the flow can sit silent right up against the server's own
         // liveness bound with no margin, and one late ping means six minutes of
@@ -1659,7 +1962,7 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
             if (!connected.ok) {
                 const why =
                     connected.reason === "duplicate"
-                        ? "another web session is open on this account (sign out of Zalo Web)"
+                        ? "another web session is open on this account (sign out of Zalo in your browser)"
                         : `could not open a connection: ${connected.reason}`;
                 warning(`Socket stages skipped — ${why}.`);
                 for (const n of ["messages", "reactions"]) if (runs(n)) record(n, "failed", why);
@@ -1670,7 +1973,7 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
                 // The restore runs FIRST and ALONE, exactly as `sync-mobile
                 // --transfer` runs it -- its own live-store tap included. The
                 // first version drained the reaction backlog concurrently, as
-                // Zalo Web does on connect, and the restore then lost its socket
+                // Zalo does on connect, and the restore then lost its socket
                 // (close 1006) at batch 0 of 5 on both live attempts, right after
                 // the phone confirmed. The same window on the same account
                 // restored 11,324 messages through the old command minutes later.
@@ -1684,20 +1987,26 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
                     );
                     try {
                         const startedAt = Date.now();
-                        const res = await new SyncV2(api, activeAcc.ownId).restore({
-                            days: opts.days,
-                            from: opts.from,
-                            shardSize: opts.shardSize,
-                            waitMs: Math.max(180, Number(opts.wait) || 0) * 1000,
-                            // The window-level heartbeat above covers this stage.
-                            keepAlive: false,
-                            reconnect: () => reconnectListener(api),
-                            onSelfName: (name) => updateAccountName(activeAcc.ownId, name),
-                            onStatus: ({ phase, detail }) => {
-                                if (phase === "confirm") warning(detail);
-                                else if (detail) info(`  ${detail}`);
-                            },
-                        });
+                        const res = await whileInterruptible(
+                            (signal) =>
+                                new SyncV2(api, activeAcc.ownId).restore({
+                                    days: opts.days,
+                                    from: opts.from,
+                                    shardSize: opts.shardSize,
+                                    fullResync: Boolean(opts.fullResync),
+                                    waitMs: Math.max(CONFIRM_WAIT_MS / 1000, Number(opts.wait) || 0) * 1000,
+                                    signal,
+                                    // The window-level heartbeat above covers this stage.
+                                    keepAlive: false,
+                                    reconnect: () => reconnectListener(api),
+                                    onSelfName: (name) => updateAccountName(activeAcc.ownId, name),
+                                    onStatus: ({ phase, detail }) => {
+                                        if (phase === "confirm") warning(detail);
+                                        else if (detail) info(`  ${detail}`);
+                                    },
+                                }),
+                            { onStop: stoppingNotice },
+                        );
                         const r = reportRestore(res, win, { startedAt, keep: ownThreadIds(api, activeAcc.ownId) });
                         record("messages", r.status, r.reason, {
                             conversations: res.conversations,
@@ -1789,14 +2098,21 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
 
     if (runs("boards")) {
         try {
-            const r = await boardPass(api, { limit: 200, concurrency: 3, boards: true, reminders: true });
+            const r = await boardPass(api, { concurrency: 3, boards: true, reminders: true });
             if (r.status === "skipped") record("boards", "skipped", r.reason);
             else {
-                record("boards", r.stats.failed ? "partial" : "ok", `${r.stats.failed} request(s) failed`, {
-                    boardItems: r.stats.boardItems,
-                    reminders: r.stats.reminders,
-                    threads: r.stats.threads,
-                });
+                record(
+                    "boards",
+                    r.stats.failed || r.stats.stoppedBy ? "partial" : "ok",
+                    r.note || `${r.stats.failed} request(s) failed`,
+                    {
+                        boardItems: r.stats.boardItems,
+                        reminders: r.stats.reminders,
+                        threads: r.stats.threads,
+                        ...(r.stats.stoppedBy && { stoppedBy: r.stats.stoppedBy, left: r.stats.left }),
+                        ...(r.stats.stalled && { stalled: r.stats.stalled }),
+                    },
+                );
             }
         } catch (err) {
             warning(`Boards failed: ${err.message}`);
@@ -1804,10 +2120,17 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
         }
     }
 
-    if (runs("cloud")) {
+    const cloudRoute = runs("cloud") ? routeCloudWalk(accountDir) : null;
+    if (cloudRoute?.via === "skip") {
+        info(`zCloud index skipped: ${cloudRoute.reason}.`);
+        record("cloud", "skipped", cloudRoute.reason);
+    } else if (cloudRoute) {
         try {
-            const r = await cloudPass(api, { pages: 50, pageSize: 300 });
-            if (r.status === "unavailable") {
+            if (cloudRoute.via === "daemon") info("Walking the zCloud index in the running daemon.");
+            const r = await cloudPass(api, { pageSize: 300, walk: cloudRoute.walk });
+            if (r.status === "skipped") {
+                record("cloud", "skipped", "no zCloud plan on this account", { plan: r.plan?.plan ?? null });
+            } else if (r.status === "unavailable") {
                 // Not a failure: an account without zCloud answers exactly like
                 // this, and `sync` must not exit 1 on every such account.
                 info("zCloud index unavailable (zCloud off, or the endpoint changed).");
@@ -1831,13 +2154,14 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
     if (runs("media")) {
         try {
             const since = Number(getSyncState("lastSyncOkFrom"));
-            const m = await fetchMediaAfterRestore(accountDir, api, since);
+            const m = await fetchMediaAfterRestore(accountDir, api, since, { limit: opts.mediaLimit });
             if (!m) record("media", "ok", "nothing waiting to download");
             else {
                 const short = m.expired || m.throttled || m.unknown || m.abortedEarly;
                 record("media", short ? "partial" : "ok", "", {
                     downloaded: m.downloaded,
                     considered: m.considered,
+                    deferred: m.deferred,
                     expired: m.expired,
                     throttled: m.throttled,
                     unknown: m.unknown,
@@ -1873,13 +2197,13 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
  *
  * HONEST STATUS, measured 2026-09-20: on the account this was developed
  * against, Zalo answers both commands with an EMPTY set — including when given
- * the exact `lastId` anchors Zalo Web itself sends. Zalo Web gets the same
+ * the exact `lastId` anchors Zalo itself sends. Zalo gets the same
  * empty answer and then falls back to `transfer-sync-v2` (socket cmd 590/591,
  * libsignal-encrypted), which is the only path observed carrying real data and
  * is NOT implemented here.
  *
  * DO NOT read "no phone contact" as a feature. The phone IS the data source:
- * the account owner confirmed that a real Zalo Web sync makes their phone show
+ * the account owner confirmed that a real Zalo sync makes their phone show
  * a request notification, which means cmd 590 causes the server to wake the
  * phone, and the phone encrypts the payload that comes back as cmd 601. A run
  * of this command that leaves the phone silent has not synced anything.
@@ -1897,9 +2221,9 @@ async function runSocketBackfill(activeAcc, opts) {
 
     // Build the SyncManager first so we can consult the local sync-freshness
     // marker BEFORE touching the network. A redundant run should neither open
-    // a socket (which would evict a live Zalo Web session) nor, once the
+    // a socket (which would evict a live browser Zalo session) nor, once the
     // transfer-sync path lands, wake the owner's phone — the same debounce Zalo
-    // Web applies to its own "Đồng bộ tin nhắn".
+    // applies to its own "Đồng bộ tin nhắn".
     let api;
     let syncManager;
     try {
@@ -1951,7 +2275,7 @@ async function runSocketBackfill(activeAcc, opts) {
         if (!connected.ok) {
             if (connected.reason === "duplicate") {
                 error("Zalo closed this connection: another web session is already open on this account.");
-                info("Zalo allows one web session per account. Sign out of Zalo Web, then run this again.");
+                info("Zalo allows one web session per account. Sign out of Zalo in your browser, then run this again.");
             } else {
                 error(`Could not open a connection: ${connected.reason}`);
             }
@@ -1968,7 +2292,7 @@ async function runSocketBackfill(activeAcc, opts) {
             if (res.total === 0) {
                 warning("No history returned — and your phone was never asked.");
                 info(
-                    "A real Zalo sync notifies your phone, because the phone is the data source: Zalo Web sends " +
+                    "A real Zalo sync notifies your phone, because the phone is the data source: Zalo sends " +
                         "socket cmd 590, the server wakes the phone, the phone encrypts and uploads, and the payload " +
                         "comes back as cmd 601. That handshake (transfer-sync-v2) is what `--transfer` runs; this " +
                         "default path does not, so the absence of a notification on your phone means no real sync took place.",

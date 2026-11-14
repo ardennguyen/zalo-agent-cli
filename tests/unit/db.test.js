@@ -8,6 +8,8 @@
  * reconnect backfill depends on.
  */
 
+// The cache is encrypted under a keyring the key layer makes: the sandbox gives it its offline test provider.
+import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
@@ -29,7 +31,9 @@ import {
     resolveAllPendingSyncGaps,
     countSyncGaps,
 } from "../../src/core/db.js";
+import { CONFIG_DIR } from "../../src/core/credentials.js";
 
+assertSandboxed(CONFIG_DIR);
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-db-test-"));
 
 /**

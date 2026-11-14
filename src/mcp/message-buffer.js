@@ -7,9 +7,14 @@
  * cursor. It used to delete the messages, so one bot's zalo_mark_read emptied
  * every other bot's inbox (triage M7). Messages now leave only by eviction
  * (maxSize per thread, maxAge), which bounds memory as before.
+ *
+ * Cursors live only as long as the process, but a long-poller keeps its cursor across a daemon restart
+ * (bug-reports #10). So the daemon's buffer starts counting at the clock (`forSession`), above anything
+ * an earlier run handed out, and a cursor beyond the newest message is read as stale (from the start of
+ * this buffer) rather than as "nothing yet": skipping is silent, a repeat is not.
  */
 
-import { batchParams } from "./wait-result.js";
+import { batchParams } from "./wait-batch.js";
 
 /** Sleep `ms`, or less if `signal` aborts. */
 function sleep(ms, signal) {
@@ -48,6 +53,12 @@ async function settleUntilFull(read, limit, settleMs, signal) {
     return r;
 }
 
+/**
+ * The key system events are buffered under (not a conversation's messages: a `storage_quota` event). No thread id is
+ * this word (they are digits), so no conversation's read returns them, and the conversation lists leave the key out.
+ */
+export const SYSTEM_EVENTS = "system";
+
 /** The consumer a caller that names none reads as. */
 export const DEFAULT_CONSUMER = "default";
 
@@ -58,17 +69,39 @@ export class MessageBuffer {
     /**
      * @param {number} maxSize - Max messages per thread before eviction
      * @param {number} maxAge - Max message age in ms before eviction (default 2h)
+     * @param {{ startCursor?: number }} [opts] - The cursor the first message follows
      */
-    constructor(maxSize = 500, maxAge = 2 * 60 * 60 * 1000) {
+    constructor(maxSize = 500, maxAge = 2 * 60 * 60 * 1000, { startCursor = 0 } = {}) {
         /** @type {Map<string, { messages: Array, lastActivity: number }>} */
         this._threads = new Map();
         this._maxSize = maxSize;
         this._maxAge = maxAge;
-        this._globalCursor = 0;
+        this._globalCursor = startCursor;
         /** @type {Map<string, { cursor: number, at: number }>} */
         this._readCursors = new Map();
         /** @type {Set<{ threadId: string|null, resolve: Function, timer: NodeJS.Timeout }>} */
         this._waiters = new Set();
+    }
+
+    /**
+     * The buffer a daemon serves from: cursors start at the clock (epoch ms), so a cursor saved before a
+     * restart is below every cursor this run hands out, as long as the earlier run buffered fewer messages
+     * than it lived milliseconds.
+     * @param {number} [maxSize]
+     * @param {number} [maxAge]
+     * @returns {MessageBuffer}
+     */
+    static forSession(maxSize, maxAge) {
+        return new MessageBuffer(maxSize, maxAge, { startCursor: Date.now() });
+    }
+
+    /**
+     * A caller's cursor, with one from beyond the newest message (an earlier run's) read as 0.
+     * @param {number} since
+     * @returns {number}
+     */
+    _fresh(since) {
+        return since > this._globalCursor ? 0 : since;
     }
 
     /**
@@ -107,6 +140,15 @@ export class MessageBuffer {
     }
 
     /**
+     * Add one system event: every read and wait that names no conversation gets it, in order with the messages
+     * (it moves the same cursor), marked `system: true` with `threadId` and `msgId` null.
+     * @param {object} event - `{type, ...}`
+     */
+    pushSystem(event) {
+        this.push(SYSTEM_EVENTS, { threadId: null, msgId: null, timestamp: Date.now(), ...event, system: true });
+    }
+
+    /**
      * Wait for the next buffered message (or return immediately if `since` is
      * provided and a newer message is already in the buffer).
      *
@@ -134,7 +176,7 @@ export class MessageBuffer {
      * @param {number} [opts.since] - Optional cursor (exclusive)
      * @param {number} [opts.timeoutMs=60000] - Max wait for the FIRST message
      * @param {AbortSignal} [opts.signal]
-     * @param {number} [opts.limit=1] - Most messages to return (1-100)
+     * @param {number|null} [opts.limit] - Most messages to return; omitted = every one already waiting
      * @param {number} [opts.settleMs=0] - After the first message, wait this long for more (0-5000)
      * @returns {Promise<{ messages: object[], hasMore: boolean }>} `messages` is empty on timeout or abort
      */
@@ -143,11 +185,12 @@ export class MessageBuffer {
         since = undefined,
         timeoutMs = 60000,
         signal = undefined,
-        limit = 1,
+        limit = null,
         settleMs = 0,
     } = {}) {
-        const { limit: max, settleMs: settle } = batchParams({ limit, settleMs });
-        const from = (cursor) => this.read(threadId || undefined, cursor, max);
+        const { limit: asked, settleMs: settle } = batchParams({ limit, settleMs });
+        const max = asked ?? Infinity;
+        const from = (cursor) => this.read(threadId || undefined, this._fresh(cursor), max);
 
         if (since !== undefined && since !== null && Number.isFinite(Number(since))) {
             let r = from(Number(since));
@@ -211,10 +254,12 @@ export class MessageBuffer {
      * Read messages from a thread, optionally since a cursor.
      * @param {string} [threadId] - If omitted, reads from all threads
      * @param {number} [since=0] - Cursor to read from (exclusive)
-     * @param {number} [maxCount=20] - Max messages to return
+     * @param {number|null} [maxCount] - Max messages to return; omitted, null or <= 0 = every one buffered
      * @returns {{ messages: Array, cursor: number, hasMore: boolean }}
      */
-    read(threadId, since = 0, maxCount = 20) {
+    read(threadId, since = 0, maxCount = null) {
+        since = this._fresh(since);
+        if (!(Number(maxCount) > 0)) maxCount = Infinity;
         const sources = threadId ? [this._threads.get(threadId)].filter(Boolean) : Array.from(this._threads.values());
 
         // Collect all messages after cursor, sorted by cursor
@@ -235,14 +280,15 @@ export class MessageBuffer {
 
     /**
      * Advance one consumer's read cursor to `cursor`. Nothing is deleted, and no
-     * other consumer's cursor moves; a cursor never moves backwards.
+     * other consumer's cursor moves; a cursor never moves backwards, and a stale one (beyond the newest
+     * message) does not move it at all.
      * @param {number} cursor
      * @param {string} [consumer="default"]
      * @returns {number} how many buffered messages this newly marked read for that consumer
      */
     markRead(cursor, consumer = DEFAULT_CONSUMER) {
         const from = this.readCursor(consumer);
-        const to = Math.max(from, Number(cursor) || 0);
+        const to = Math.max(from, this._fresh(Number(cursor) || 0));
         let marked = 0;
         for (const [, thread] of this._threads) {
             for (const m of thread.messages) if (m._cursor > from && m._cursor <= to) marked++;
@@ -263,7 +309,7 @@ export class MessageBuffer {
     getStats(readCursor = 0) {
         const stats = [];
         for (const [threadId, thread] of this._threads) {
-            if (thread.messages.length === 0) continue;
+            if (thread.messages.length === 0 || threadId === SYSTEM_EVENTS) continue;
             const unread = thread.messages.filter((m) => m._cursor > readCursor).length;
             stats.push({
                 threadId,

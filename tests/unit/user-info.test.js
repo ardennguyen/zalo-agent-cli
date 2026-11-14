@@ -1,5 +1,5 @@
 /**
- * src/core/user-info.js -- profile lookups that notice a rate limit.
+ * src/zalo/custom/user-info.js -- profile lookups that notice a rate limit.
  *
  * A restore of a busy account asks Zalo for thousands of profiles in batches
  * of 100. The old loops swallowed every error with a fixed sentence and went
@@ -8,6 +8,7 @@
  * behavior: pace, retry a rate limit, stop when it persists, and log what Zalo
  * said -- with every wait injected, so nothing here sleeps.
  */
+import "../helpers/sandbox.js"; // first: the name helpers now reach the account db (src/core/contact-names.js)
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -17,11 +18,11 @@ import {
     isRateLimitError,
     runPacedBatches,
     setUserInfoLogger,
-} from "../../src/core/user-info.js";
+} from "../../src/zalo/custom/user-info.js";
 import { resolveCurrentUserNames } from "../../src/core/current-user-names.js";
 
 const ids = (n) => Array.from({ length: n }, (_, i) => String(1000 + i));
-/** An error shaped like zca-js's: a code and a message. */
+/** An error shaped like the session's: a code and a message. */
 const zaloError = (code, message) => Object.assign(new Error(message), { code });
 
 /** A sleep that records its waits instead of waiting. */

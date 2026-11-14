@@ -19,7 +19,7 @@ import {
     MEDIA_TYPES,
     classifyLiveMessage,
     LIVE_MSG_TYPES,
-} from "../../src/core/sync-v2/message-types.js";
+} from "../../src/zalo/transfer-sync/message-types.js";
 
 /** Build a decoded sync message with one attachment. */
 const msg = (msgType, content, attach = null, meta = {}) => ({
@@ -267,7 +267,7 @@ describe("extractSyncAttachments", () => {
     });
 
     it("keeps mobile-only renewal hints", () => {
-        // These never appear in Zalo Web; they are the phone's re-upload
+        // These never appear outside a phone backup; they are the phone's re-upload
         // breadcrumbs and the only lead once a CDN copy has aged out.
         const a = extractSyncAttachments(msg(22, "", FILE), "file")[0];
         assert.ok(a.urlToRenew.includes("/renew/"));
@@ -429,7 +429,7 @@ describe("nothing the phone sent is dropped", () => {
 });
 
 describe("classifyLiveMessage — one vocabulary for both capture paths", () => {
-    it("maps every zca-js live type into the sync vocabulary", () => {
+    it("maps every live listener type into the sync vocabulary", () => {
         // Stored verbatim, `WHERE type='photo'` misses every listener row and
         // `WHERE type='chat.photo'` misses every synced one.
         const expected = {

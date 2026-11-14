@@ -1,12 +1,11 @@
 /**
  * The daemon self-heals a coverage gap from Zalo's offline queue, on its own socket.
  *
- * Zalo Web, on every authenticated connect (bundle 1.e0ef5e98…: `_doAfterAuth`
- * → `onAuthenticated` reads the handshake's `qCmds`, then `signalGetOffline` →
- * `doGetOffline` per queue), asks each queue for what it missed since its
+ * On every authenticated connect (after reading the handshake's `qCmds`),
+ * a client asks each queue for what it missed since its
  * saved cursor -- `{first:true, reqId, lastId, preIds:[]}` on cmd 510/511 sub 1
- * -- and pages while the answer says `more`, continuing from `lastActionId`
- * (`onGotOffline`). No phone is involved: that is the full restore's job
+ * -- and pages while the answer says `more`, continuing from `lastActionId`.
+ * No phone is involved: that is the full restore's job
  * (cmd 590), which only a `zalo-agent sync` someone typed may start.
  *
  * These tests drive the real socket tap, the real frame decoder, the real
@@ -20,7 +19,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { GroupMessage, UserMessage } from "zca-js";
+import { GroupMessage, Undo, UserMessage } from "../../src/zalo/listener/models.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import {
     initDb,
@@ -28,12 +27,13 @@ import {
     getPendingSyncGaps,
     getSyncState,
     recordSyncGap,
+    setSyncState,
     setMessageLocalPath,
     setMessageStatus,
 } from "../../src/core/db.js";
-import { storeLiveMessage } from "../../src/core/live-store.js";
+import { storeLiveMessage, storeLiveUndo } from "../../src/core/live-store.js";
 import { createStageLock, startDaemonChannel, syncViaDaemon } from "../../src/core/daemon-channel.js";
-import { createSocketTap } from "../../src/core/socket-tap.js";
+import { createSocketTap } from "../../src/zalo/listener/socket-tap.js";
 import { createSelfHeal } from "../../src/core/self-heal.js";
 import { fakeListener } from "./support/fake-socket.js";
 
@@ -130,8 +130,14 @@ function daemon({
     lock = createStageLock(),
     now,
     store = storeLiveMessage,
+    acks,
+    storeUndo,
+    deviceSince,
+    groupRepair,
+    timeoutMs = 150,
 } = {}) {
     const listener = fakeListener({ respond });
+    const notices = [];
     const tap = createSocketTap();
     const logs = [];
     const recovered = [];
@@ -143,18 +149,29 @@ function daemon({
         enabled,
         log: (line) => logs.push(line),
         onRecovered: (items) => recovered.push(...items),
-        timeoutMs: 150,
+        timeoutMs,
         maxPages: 4,
         now,
+        acks,
+        storeUndo,
+        deviceSince,
+        groupRepair,
+        onNotice: (e) => notices.push(e),
     });
     listener.on("message", (m) => store(m));
     tap.attach(listener);
     heal.attach(listener);
     listener.emit("connected");
-    return { listener, tap, heal, logs, recovered, lock, api };
+    return { listener, tap, heal, logs, recovered, lock, api, notices };
 }
 
-/** A message the listener received live, as zca-js hands it over. */
+/** A `storeUndo` that notes each recall's `[type, isGroup, threadId]`, then stores it as the daemon does. */
+const recording = (into) => (undo) => {
+    into.push([undo.type, undo.isGroup, undo.threadId]);
+    return storeLiveUndo(undo);
+};
+
+/** A message the listener received live, as the listener hands it over. */
 const live = (listener, r, group = true) =>
     listener.emit("message", group ? new GroupMessage(OWN, { ...r }) : new UserMessage(OWN, { ...r }));
 
@@ -198,7 +215,7 @@ describe("self-heal: catch up from the offline queue on the daemon's own socket"
         live(d.listener, row(g1));
         assert.ok(getMessageById(g1), "seed: the listener stored it");
 
-        d.listener.reconnect(); // a NEW ws object, as zca-js makes on retry
+        d.listener.reconnect(); // a NEW ws object, as the listener makes on retry
         await connectAndSettle(d);
 
         const asked = queueRequests(d.listener);
@@ -210,12 +227,54 @@ describe("self-heal: catch up from the offline queue on the daemon's own socket"
                 { cmd: 510, subCmd: 1, first: true, lastId: g1 },
                 { cmd: 511, subCmd: 1, first: true, lastId: g1 },
             ],
-            "510 has no cursor of its own, so it starts where 511 is -- the web's shared lastActionId",
+            "510 has no cursor of its own, so it starts where 511 is -- the shared lastActionId",
         );
         for (const p of asked) {
             assert.deepEqual(p.data.preIds, []);
-            assert.match(String(p.data.reqId), /^req_\d+$/, "the web's reqId shape");
+            assert.match(String(p.data.reqId), /^req_\d+$/, "the expected reqId shape");
         }
+    });
+
+    it("(a) it asks one queue at a time, controls last: asked at once, Zalo answered only the first", async () => {
+        const g1 = nextId();
+        const order = [];
+        const answers = scripted();
+        const respond = (payload) => {
+            order.push(`ask ${payload.cmd}`);
+            if (payload.cmd === 603) {
+                const data = { lastActionId: "0", more: 0, controls: [], queueStatus: {}, reqId: payload.data.reqId };
+                return { error_code: 0, error_message: "", data };
+            }
+            return answers(payload);
+        };
+        const d = daemon({ respond });
+        for (const cmd of [510, 511, 603]) d.tap.on(cmd, () => order.push(`answer ${cmd}`));
+        live(d.listener, row(g1));
+        setSyncState("offlineCursor:603_1", JSON.stringify({ id: "40", ts: 1 }));
+
+        d.listener.auth({ qCmds: QCMDS, ctrl_qCmds: [{ cmd: 603, subCmd: 1, queueName: "603_1" }] });
+        await sleep(0);
+        await d.heal.settled();
+
+        // Red on asking at once (5c99017): every first page would go out before any
+        // answer, and live Zalo then left 511_1 and 603_1 unanswered (2026-11-12).
+        assert.deepEqual(
+            order,
+            ["ask 510", "answer 510", "ask 511", "answer 511", "ask 603", "answer 603"],
+            "each queue is asked only once the one before it has answered",
+        );
+        const result = await d.heal.run("check");
+        assert.deepEqual(
+            result.queues.map((q) => [q.queueName, q.complete]),
+            [
+                ["510_1", true],
+                ["511_1", true],
+            ],
+        );
+        assert.deepEqual(
+            result.controls.map((c) => [c.queueName, c.complete]),
+            [["603_1", true]],
+        );
     });
 
     it("(a) at start-up with no saved cursor, each queue starts from its newest stored message", async () => {
@@ -309,7 +368,8 @@ describe("self-heal: catch up from the offline queue on the daemon's own socket"
                 destId: GROUP,
             },
         });
-        const d = daemon({ respond: scripted({ 511: [page(511, [undo])] }) });
+        const undos = [];
+        const d = daemon({ respond: scripted({ 511: [page(511, [undo])] }), storeUndo: recording(undos) });
         live(d.listener, row(said));
 
         await connectAndSettle(d);
@@ -318,6 +378,30 @@ describe("self-heal: catch up from the offline queue on the daemon's own socket"
         // sender withdrew it, and the cache would still show it.
         assert.equal(getMessageById(said).type, "deleted", "the recall was not applied");
         assert.equal(getMessageById(undoId), null, "the recall notification was stored as a message");
+        // Red if self-heal builds the group queue's recall as a 1-1 one (the isGroup flag swapped).
+        assert.deepEqual(undos, [[1, true, GROUP]]);
+    });
+
+    it("(b) a 1-1 recall from the user queue (510) is applied too, read as a 1-1 recall", async () => {
+        const said = nextId();
+        const undoId = nextId();
+        const undo = row(undoId, {
+            group: false,
+            msgType: "chat.undo",
+            content: { globalMsgId: said, cliMsgId: String(tsOf(said) + 3), deleteMsg: 0, srcId: PEER, destId: OWN },
+        });
+        const undos = [];
+        const d = daemon({ respond: scripted({ 510: [page(510, [undo])] }), storeUndo: recording(undos) });
+        live(d.listener, row(said, { group: false }), false);
+
+        await connectAndSettle(d);
+
+        // Red if the user queue's recalls are skipped.
+        assert.equal(getMessageById(said).type, "deleted", "the 1-1 recall was not applied");
+        assert.equal(getMessageById(undoId), null, "the recall notification was stored as a message");
+        // The recall's thread type does not reach zalo.db (a recall is matched by its message ids), so it is read off
+        // the Undo self-heal hands the store. Red if the user queue's recall is built as a group one.
+        assert.deepEqual(undos, [[0, false, PEER]]);
     });
 
     it("(c) a gap inside the covered window is resolved", async () => {
@@ -422,7 +506,7 @@ describe("self-heal: catch up from the offline queue on the daemon's own socket"
     });
 
     it("(c) a queue answering with messages from before the cursor is not taken as coverage", async () => {
-        // The web's own use says lastId means "after this"; an answer that
+        // lastId means "after this"; an answer that
         // contradicts it cannot vouch for the window after the cursor either.
         const older = nextId();
         const g1 = nextId();
@@ -439,14 +523,17 @@ describe("self-heal: catch up from the offline queue on the daemon's own socket"
     });
 
     it("(c) only the answer to its own request counts -- another reader's page on the same cmd is ignored", async () => {
-        // zalo_get_history pages the same 510/511 stream through zca-js, outside
-        // the stage lock, and its answers carry no reqId of ours. Taking one as
-        // a queue page would store the wrong rows and claim coverage from them.
+        // zalo_get_history pages the same 510/511 stream through the listener, outside
+        // the stage lock, with its own reqId (src/zalo/pulls.js buildPull), which the
+        // server echoes. Taking one as a queue page would store the wrong rows and
+        // claim coverage from them.
         const foreign = nextId();
         const g1 = nextId();
         const answers = scripted();
         const respond = (payload, listener) => {
-            if (payload.cmd === 511) listener.push(511, 1, page(511, [row(foreign)], { lastActionId: foreign }));
+            if (payload.cmd === 511) {
+                listener.push(511, 1, page(511, [row(foreign)], { lastActionId: foreign, reqId: "history-scan-7" }));
+            }
             return answers(payload);
         };
         const d = daemon({ respond });
@@ -486,8 +573,13 @@ describe("self-heal: catch up from the offline queue on the daemon's own socket"
         const lock = createStageLock();
 
         let hold = false;
+        const held = [];
         const answers = scripted();
-        const respond = (payload) => (hold ? null : answers(payload));
+        const respond = (payload) => {
+            if (!hold) return answers(payload);
+            held.push(payload); // answered by hand below, once the refusal is checked
+            return null;
+        };
         const d = daemon({ lock, respond });
         live(d.listener, row(nextId()));
         const wrapped = d.listener.sendWs;
@@ -529,6 +621,7 @@ describe("self-heal: catch up from the offline queue on the daemon's own socket"
             const refused = await syncViaDaemon(accountDir, { stage: "messages" });
             assert.equal(refused.status, 409);
             assert.equal(refused.busyStage, "self-heal");
+            for (const p of held) d.listener.push(p.cmd, p.subCmd, answers(p));
             await d.heal.settled();
         } finally {
             channel.stop();
@@ -583,5 +676,541 @@ describe("M2: the server saying it dropped or reset a queue is a gap, not covera
             getPendingSyncGaps().some((g) => g.reason === "reconnect-gap" || g.reason.startsWith("queue-reset")),
             "a reset queue cannot vouch for the window it was asked about",
         );
+    });
+});
+
+describe("Y10: queue items are acknowledged (532) only after their rows are stored", () => {
+    before(() => assertSandboxed(CONFIG_DIR));
+
+    /** The 532 frames sent so far. */
+    const acksOf = (listener) => listener.sent.filter((p) => p.cmd === 532);
+    const idsIn = (frame) => frame.data.ids.map((i) => i.actionId);
+
+    /** A live push envelope for one group message, as the server sends it (ids as the queue names them). */
+    const envelope = (r, queueIds = [r.msgId]) => ({
+        error_code: 0,
+        error_message: "",
+        data: {
+            msgs: [],
+            groupMsgs: [r],
+            pageMsgs: [],
+            queueStatus: { "511_1": { ids: queueIds, lastId: r.msgId, evict: 0 } },
+        },
+    });
+
+    it("a live push is acknowledged once its message is stored", async () => {
+        const d = daemon();
+        const id = nextId();
+        const r = row(id);
+        d.listener.push(521, 0, envelope(r));
+        assert.equal(d.heal.flushAcks(), 0, "nothing is stored yet, so nothing may be acknowledged");
+        live(d.listener, r);
+        assert.ok(getMessageById(id), "seed: the listener stored it");
+        assert.equal(d.heal.flushAcks(), 1);
+        const [ack] = acksOf(d.listener);
+        assert.equal(ack.data.queueName, "511_1");
+        assert.deepEqual(idsIn(ack), [id]);
+        assert.equal(ack.data.nretry, 0);
+        assert.match(ack.data.reqId, /^req_\d+$/);
+    });
+
+    it("a live push whose message was already stored when its frame was read is acknowledged at once", async () => {
+        const d = daemon();
+        const id = nextId();
+        const r = row(id);
+        live(d.listener, r);
+        d.listener.push(521, 0, envelope(r));
+        assert.equal(d.heal.flushAcks(), 1);
+        assert.deepEqual(idsIn(acksOf(d.listener)[0]), [id]);
+    });
+
+    it("a push whose message the writer failed to store is never acknowledged: the server must send it again", async () => {
+        const lost = nextId();
+        const d = daemon({ store: () => ({ stored: false }) });
+        const r = row(lost);
+        d.listener.push(521, 0, envelope(r));
+        live(d.listener, r);
+        assert.equal(getMessageById(lost), null, "seed: that write failed");
+        assert.equal(d.heal.flushAcks(), 0);
+        assert.equal(acksOf(d.listener).length, 0);
+        assert.equal(d.heal.queueAcks().pending, 0);
+    });
+
+    it("a push naming several items waits for every one of its messages", async () => {
+        const a = nextId();
+        const b = nextId();
+        const d = daemon();
+        const ra = row(a);
+        const rb = row(b);
+        d.listener.push(521, 0, {
+            ...envelope(ra, [a, b]),
+            data: { ...envelope(ra, [a, b]).data, groupMsgs: [ra, rb] },
+        });
+        live(d.listener, ra);
+        assert.equal(d.heal.flushAcks(), 0, "one of two is stored: not yet");
+        live(d.listener, rb);
+        assert.equal(d.heal.flushAcks(), 1);
+        assert.deepEqual(idsIn(acksOf(d.listener)[0]).sort(), [a, b].sort());
+    });
+
+    it("an offline page is stored and moves the cursor, but is never acknowledged", async () => {
+        const g1 = nextId();
+        const next = nextId();
+        const d = daemon({ respond: scripted({ 511: [page(511, [row(next)])] }) });
+        live(d.listener, row(g1));
+        await connectAndSettle(d);
+        assert.ok(getMessageById(next), "seed: the page's row was written");
+        assert.equal(d.heal.cursor("511_1").id, next, "the cursor still moves past a stored offline row");
+        // Red if the drained page's ids are handed to the verifier: a 532 flood scaled to the backlog.
+        assert.equal(d.heal.queueAcks().pending, 0, "the page's ids were queued for an ack");
+        assert.equal(d.heal.flushAcks(), 0);
+        assert.equal(acksOf(d.listener).length, 0);
+    });
+
+    it("a live push during the catch-up is acknowledged only once the catch-up is over (verify_on_done_offline)", async () => {
+        const g1 = nextId();
+        const old = nextId();
+        const held = [];
+        const answers = scripted({ 511: [page(511, [row(old)])] });
+        const respond = (payload) => {
+            held.push(payload); // nothing answers until the live push below is in
+            return null;
+        };
+        // The queues share one catch-up deadline; this test answers them by hand, so give it room (150 ms ran out
+        // under a loaded full run and released the hold early, which is the deadline working, not a leak).
+        const d = daemon({ respond, timeoutMs: 10_000 });
+        live(d.listener, row(g1));
+        d.listener.auth({ qCmds: QCMDS });
+        await sleep(0);
+        assert.equal(held.length, 1, "seed: the first queue is being drained");
+
+        const id = nextId();
+        const r = row(id);
+        live(d.listener, r);
+        d.listener.push(521, 0, envelope(r));
+        // Red if the verifier sends while the offline queues drain: it must not have started yet.
+        assert.equal(d.heal.flushAcks(), 0, "an ack went out mid-drain");
+        assert.equal(acksOf(d.listener).length, 0);
+        assert.equal(d.heal.queueAcks().held, true);
+
+        // Answer each queue as it is asked: the next one goes out only after the one before has its answer.
+        for (let i = 0; i < held.length; i++) {
+            if (i > 0) assert.equal(d.heal.queueAcks().held, true, "still held between queues");
+            d.listener.push(held[i].cmd, held[i].subCmd, answers(held[i]));
+            await sleep(5);
+        }
+        assert.equal(held.length, 2, "both queues were asked");
+        await d.heal.settled();
+        assert.equal(d.heal.queueAcks().held, false);
+        assert.equal(d.heal.flushAcks(), 1, "the held live ack goes out after the catch-up");
+        assert.deepEqual(idsIn(acksOf(d.listener)[0]), [id], "only the live push's id, never the offline page's");
+    });
+
+    it("an offline page whose rows could not be written is not acknowledged: the server must deliver it again", async () => {
+        const g1 = nextId();
+        const next = nextId();
+        const db = initDb(join(ROOT, `db-fail-${dbSeq++}.sqlite`));
+        const d = daemon({ respond: scripted({ 511: [page(511, [row(next)])] }) });
+        live(d.listener, row(g1));
+        // the writer breaks after the cursor exists: every insert now throws, while reads still work, so the
+        // failure is the write's own and nothing else in the run can account for it
+        db.exec("CREATE TRIGGER no_inserts BEFORE INSERT ON messages BEGIN SELECT RAISE(ABORT, 'disk full'); END");
+        await connectAndSettle(d);
+        assert.equal(d.heal.flushAcks(), 0, "a failed write holds back the acknowledgement");
+        assert.equal(acksOf(d.listener).length, 0);
+    });
+
+    it("a re-sent message (534) whose write failed is neither handed on nor acknowledged", async () => {
+        const db = initDb(join(ROOT, `db-fail-${dbSeq++}.sqlite`));
+        const d = daemon();
+        db.exec("CREATE TRIGGER no_inserts BEFORE INSERT ON messages BEGIN SELECT RAISE(ABORT, 'disk full'); END");
+        const id = nextId();
+        d.listener.push(534, 0, envelope(row(id)));
+        await sleep(0);
+        assert.equal(getMessageById(id), null);
+        assert.deepEqual(d.recovered, []);
+        assert.equal(d.heal.flushAcks(), 0);
+    });
+
+    it("a re-sent row that is deliberately not written (already cached, no content) is still acknowledged: it is handled", async () => {
+        const cached = nextId();
+        const empty = nextId();
+        const d = daemon();
+        live(d.listener, row(cached));
+        const rc = row(cached);
+        const re = row(empty, { content: "" });
+        d.listener.push(534, 0, {
+            ...envelope(rc, [cached, empty]),
+            data: { ...envelope(rc, [cached, empty]).data, groupMsgs: [rc, re] },
+        });
+        await sleep(0);
+        assert.equal(d.heal.flushAcks(), 1);
+        assert.deepEqual(idsIn(acksOf(d.listener)[0]).sort(), [cached, empty].sort());
+    });
+
+    it("a message the server re-sends (534) is stored, handed on, and then acknowledged", async () => {
+        const d = daemon();
+        const id = nextId();
+        const r = row(id);
+        d.listener.push(534, 0, envelope(r));
+        await sleep(0);
+        assert.ok(getMessageById(id), "the re-sent message is in zalo.db");
+        assert.deepEqual(
+            d.recovered.map((x) => x.msg.data.msgId),
+            [id],
+        );
+        assert.equal(d.heal.flushAcks(), 1);
+        assert.deepEqual(idsIn(acksOf(d.listener)[0]), [id]);
+        assert.ok(d.logs.some((l) => /Zalo re-sent 1 message/.test(l)));
+    });
+
+    it("a new connection forgets what was waiting on the old one", async () => {
+        const d = daemon();
+        const id = nextId();
+        const r = row(id);
+        live(d.listener, r);
+        d.listener.push(521, 0, envelope(r));
+        assert.equal(d.heal.queueAcks().pending, 1);
+        d.listener.reconnect();
+        await connectAndSettle(d);
+        assert.equal(d.heal.queueAcks().pending, 0);
+        assert.equal(d.heal.flushAcks(), 0);
+    });
+
+    it("the server's answer is read: done, and then the count shows it", async () => {
+        const d = daemon();
+        const id = nextId();
+        const r = row(id);
+        live(d.listener, r);
+        d.listener.push(521, 0, envelope(r));
+        d.heal.flushAcks();
+        const [ack] = acksOf(d.listener);
+        d.listener.push(532, 0, { error_code: 0, error_message: "", data: { reqId: ack.data.reqId, error: 0 } });
+        const stats = d.heal.queueAcks();
+        assert.equal(stats.acked, 1);
+        assert.equal(stats.inFlight, 0);
+    });
+
+    it("sends nothing of the kind with acks off or self-heal off", async () => {
+        for (const opts of [{ acks: false }, { enabled: false }]) {
+            const d = daemon(opts);
+            const id = nextId();
+            const r = row(id);
+            d.listener.push(521, 0, envelope(r));
+            live(d.listener, r);
+            assert.equal(d.heal.queueAcks(), null);
+            assert.equal(d.heal.flushAcks(), 0);
+            assert.equal(acksOf(d.listener).length, 0);
+        }
+    });
+});
+
+describe("X4: the 601 control queues", () => {
+    before(() => assertSandboxed(CONFIG_DIR));
+
+    const controlFrame = (controls, queueStatus) => ({
+        error_code: 0,
+        error_message: "",
+        data: { lastActionId: "0", more: 0, controls, reacts: [], reactGroups: [], queueStatus },
+    });
+    const ctl = (id, act_type, act) => ({ actionId: id, controlId: id, content: { act, act_type, data: "{}" } });
+
+    it("keeps the control queues' cursors, forward only, for the pull that will use them", async () => {
+        const d = daemon();
+        d.listener.push(
+            601,
+            0,
+            controlFrame([], { "603_1": { ids: [], lastId: "500" }, "603_0": { ids: [], lastId: "40" } }),
+        );
+        await sleep(0);
+        assert.equal(d.heal.cursor("603_1").id, "500");
+        assert.equal(d.heal.cursor("603_0").id, "40");
+        assert.equal(JSON.parse(getSyncState("offlineCursor:603_1")).id, "500", "persisted, like the message queues'");
+
+        d.listener.push(601, 0, controlFrame([], { "603_1": { ids: [], lastId: "300" } }));
+        await sleep(0);
+        assert.equal(d.heal.cursor("603_1").id, "500", "never back");
+        d.listener.push(601, 0, controlFrame([], { "603_1": { ids: [], lastId: "900" } }));
+        await sleep(0);
+        assert.equal(d.heal.cursor("603_1").id, "900");
+    });
+
+    it("names a control it has no handler for once, and says nothing of one it handles", async () => {
+        const d = daemon();
+        d.listener.push(
+            601,
+            0,
+            controlFrame(
+                [ctl("1", "transfer_sync2", "transfer_status"), ctl("2", "board_update", "topic_changed")],
+                {},
+            ),
+        );
+        d.listener.push(601, 0, controlFrame([ctl("3", "board_update", "topic_changed")], {}));
+        await sleep(0);
+        const lines = d.logs.filter((l) => /no handler for/.test(l));
+        assert.equal(lines.length, 1, "once, however often it comes");
+        assert.match(lines[0], /act_type "board_update", act "topic_changed"/);
+        assert.ok(!d.logs.some((l) => /transfer_sync2/.test(l)));
+    });
+
+    it("no longer names the controls seen live that are now handled or known to need nothing", async () => {
+        const d = daemon();
+        const seenLive = [
+            ["mute", "set"],
+            ["mute", "unset"],
+            ["label_convers", "update"],
+            ["archived_chat", "update"],
+            ["quick_message", "create"],
+            ["quick_message", "update"],
+            ["quick_message", "delete"],
+            ["conv_settings", "update_ttl"],
+            ["media_send2me", "remove_media"],
+            ["photo", "renew_link"],
+            ["file", "renew_link"],
+            ["emoji_status", "add"],
+            ["emoji_status", "delete"],
+            ["contact_tab", "clicked"],
+            ["transfer_msg", "transfer_after_login"],
+        ];
+        d.listener.push(
+            601,
+            0,
+            controlFrame(
+                seenLive.map(([t, a], i) => ctl(String(i + 1), t, a)),
+                {},
+            ),
+        );
+        await sleep(0);
+        // Red if any of them loses its entry in the control map: it would be named here again.
+        assert.deepEqual(
+            d.logs.filter((l) => /no handler for/.test(l)),
+            [],
+        );
+    });
+
+    it("sends nothing in answer to a control frame", async () => {
+        const d = daemon();
+        d.listener.push(
+            601,
+            0,
+            controlFrame([ctl("2", "board_update", "x")], { "603_1": { ids: ["1"], lastId: "5" } }),
+        );
+        await sleep(0);
+        assert.deepEqual(d.listener.sent, []);
+    });
+});
+
+describe("self-heal: the recall it builds from a queue page", () => {
+    // self-heal builds `new Undo(ownId, row, queue.threadType === GROUP)`: the user queue (510) gives a 1-1 recall,
+    // the group queue (511) a group recall.
+    const recall = (group) =>
+        row(nextId(), { group, msgType: "chat.undo", content: { globalMsgId: "5300001", deleteMsg: 0 } });
+
+    it("a row from the user queue is a 1-1 recall in the peer's thread", () => {
+        const u = new Undo(OWN, recall(false), false);
+        assert.deepEqual([u.type, u.isGroup, u.threadId], [0, false, PEER]);
+    });
+
+    it("a row from the group queue is a group recall in the group's thread", () => {
+        const g = new Undo(OWN, recall(true), true);
+        assert.deepEqual([g.type, g.isGroup, g.threadId], [1, true, GROUP]);
+    });
+});
+
+describe("coverage never spans a device change (Zalo keeps the offline queue per device)", () => {
+    before(() => assertSandboxed(CONFIG_DIR));
+
+    /** A daemon whose device logged in at `since`, with a startup gap from just after its last stored message. */
+    async function startAfterRelogin({ since, ...opts }) {
+        const g1 = nextId();
+        const d = daemon({ deviceSince: since, ...opts });
+        live(d.listener, row(g1));
+        const gapFrom = tsOf(g1) + 1_000;
+        recordSyncGap(gapFrom, Date.now(), "startup-gap");
+        await connectAndSettle(d);
+        return { d, g1, gapFrom };
+    }
+
+    it("a 0-row drain from a cursor older than the device's login does not close the window before the login", async () => {
+        // The live bug of 2026-11-08: a QR re-login made a new imei, the old cursor drained 0 rows with no evict, and
+        // the whole startup gap was closed ("covered since <29 h ago>").
+        const since = Date.now() - 3_600_000;
+        const { d, gapFrom } = await startAfterRelogin({ since: () => ({ ts: since, source: "credentials" }) });
+
+        // Red without the floor: the gap is closed and nothing stays pending.
+        assert.deepEqual(pending(), [{ fromTs: gapFrom, toTs: since, reason: "new-device" }]);
+        assert.ok(d.logs.some((l) => /logged in at/.test(l) && /per device/.test(l)));
+        assert.ok(d.logs.some((l) => /new-device/.test(l) && /zalo-agent sync --from/.test(l)));
+        assert.ok(!d.logs.some((l) => /covered since/.test(l) && l.includes(new Date(gapFrom).toISOString())));
+        assert.deepEqual(d.notices, [], "an empty answer with no evict is not an overflow");
+    });
+
+    it("a device older than the cursor changes nothing: the drain covers from the cursor", async () => {
+        const { d } = await startAfterRelogin({ since: () => T0 - 60_000 });
+        assert.deepEqual(pending(), []);
+        assert.deepEqual(d.notices, []);
+    });
+
+    it("a phone-backed restore that finished after the login and reached past the gap lifts the floor", async () => {
+        const since = Date.now() - 3_600_000;
+        setSyncState("lastSyncOkKind", "transfer");
+        setSyncState("lastSyncOkFrom", String(T0 - 86_400_000));
+        setSyncState("lastSyncOkAt", String(since + 60_000));
+        await startAfterRelogin({ since: () => since });
+        assert.deepEqual(pending(), []);
+    });
+
+    it("a restore from before the login does not lift it", async () => {
+        const since = Date.now() - 3_600_000;
+        setSyncState("lastSyncOkKind", "transfer");
+        setSyncState("lastSyncOkFrom", String(T0 - 86_400_000));
+        setSyncState("lastSyncOkAt", String(since - 60_000));
+        const { gapFrom } = await startAfterRelogin({ since: () => since });
+        assert.deepEqual(pending(), [{ fromTs: gapFrom, toTs: since, reason: "new-device" }]);
+    });
+
+    it("a device login time that cannot be read claims nothing: the gap stays exactly as it was", async () => {
+        const g1 = nextId();
+        const d = daemon({
+            deviceSince: () => {
+                throw new Error("unreadable");
+            },
+        });
+        live(d.listener, row(g1));
+        recordSyncGap(tsOf(g1) + 1_000, Date.now() - 1_000, "startup-gap");
+        const before = pending();
+        await connectAndSettle(d);
+        assert.deepEqual(pending(), before);
+    });
+});
+
+describe("queue overflow (evict): groups repaired from their cloud store, 1-1 left pending, one notice", () => {
+    before(() => assertSandboxed(CONFIG_DIR));
+
+    const OTHER = "7302";
+    /** A group's cloud store, newest first, as getGroupHistory answers. */
+    const cloudStore = (byGroup) => {
+        const calls = [];
+        return {
+            calls,
+            fetchGroup: async (_api, groupId, count) => {
+                calls.push([groupId, count]);
+                const rows = (byGroup[groupId] || []).map((r) => new GroupMessage(OWN, { ...r }));
+                rows.sort((a, b) => Number(b.data.ts) - Number(a.data.ts));
+                return { groupMsgs: rows.slice(0, count), more: 0, pages: 1, filtered: false };
+            },
+        };
+    };
+
+    async function overflowOn511({ maxGroups = 50 } = {}) {
+        const quiet = nextId(); // the other group's last message, from before the loss
+        const g1 = nextId();
+        const missed = nextId(); // dropped from the queue, still in the group's cloud store
+        const survivor = nextId();
+        const cloud = cloudStore({
+            [GROUP]: [row(g1), row(missed), row(survivor)],
+            [OTHER]: [row(quiet, { idTo: OTHER })],
+        });
+        const d = daemon({
+            respond: scripted({ 511: [page(511, [row(survivor)], { evict: 1 })] }),
+            groupRepair: {
+                listGroups: async () => [GROUP, OTHER],
+                recentGroups: () => [GROUP],
+                fetchGroup: cloud.fetchGroup,
+                delayMs: 0,
+                maxGroups,
+            },
+        });
+        live(d.listener, row(g1));
+        await connectAndSettle(d);
+        return { d, g1, missed, survivor, cloud };
+    }
+
+    it("the group loss is repaired without a tap when every group was read back to it", async () => {
+        const { d, missed, cloud } = await overflowOn511();
+        assert.ok(getMessageById(missed), "the dropped group message came back from the cloud store");
+        assert.equal(JSON.parse(getMessageById(missed).raw_data).src, "group-cloud");
+        assert.deepEqual(pending(), [], "the group gap is closed");
+        assert.deepEqual(
+            cloud.calls.map(([g]) => g),
+            [GROUP, OTHER],
+            "each group is read once; the quiet one costs one request",
+        );
+        assert.equal(d.notices.length, 1);
+        const n = d.notices[0];
+        assert.equal(n.event, "queue_overflow");
+        assert.deepEqual(n.queues, ["511_1"]);
+        assert.equal(n.direct, false);
+        assert.deepEqual(n.groups, { checked: 2, active: 1, added: 1, complete: true });
+        assert.equal(n.pending, false);
+        assert.equal(n.command, null);
+        assert.ok(
+            d.recovered.some((r) => r.msg.data.msgId === missed),
+            "a bot is shown the repaired message",
+        );
+    });
+
+    it("bounded: groups past the cap are not read, and the group gap stays pending with the restore command", async () => {
+        const { d, g1, survivor, cloud } = await overflowOn511({ maxGroups: 1 });
+        assert.deepEqual(
+            cloud.calls.map(([g]) => g),
+            [GROUP],
+            "the most recently active group first, then stop",
+        );
+        assert.deepEqual(pending(), [{ fromTs: tsOf(g1), toTs: tsOf(survivor), reason: "queue-evicted:511_1" }]);
+        const [n] = d.notices;
+        assert.equal(n.groups.complete, false);
+        assert.equal(n.pending, true);
+        assert.match(n.command, /^zalo-agent sync --from \d{4}-\d{2}-\d{2}$/);
+    });
+
+    it("a 1-1 overflow stays pending, reads no group store, and says the phone must restore it", async () => {
+        const dm = nextId();
+        const survivor = nextId();
+        const cloud = cloudStore({});
+        const d = daemon({
+            respond: scripted({ 510: [page(510, [row(survivor, { group: false })], { evict: 1 })] }),
+            groupRepair: { listGroups: async () => [GROUP], fetchGroup: cloud.fetchGroup, delayMs: 0 },
+        });
+        live(d.listener, row(dm, { group: false }), false);
+        await connectAndSettle(d);
+
+        assert.deepEqual(cloud.calls, []);
+        assert.deepEqual(pending(), [{ fromTs: tsOf(dm), toTs: tsOf(survivor), reason: "queue-evicted:510_1" }]);
+        assert.equal(d.notices.length, 1);
+        assert.equal(d.notices[0].direct, true);
+        assert.equal(d.notices[0].groups, null);
+        assert.equal(d.notices[0].pending, true);
+        assert.match(d.notices[0].command, /zalo-agent sync --from/);
+    });
+
+    it("a 0-row drain with no evict is not an overflow", async () => {
+        const cloud = cloudStore({});
+        const d = daemon({ groupRepair: { listGroups: async () => [GROUP], fetchGroup: cloud.fetchGroup } });
+        live(d.listener, row(nextId()));
+        await connectAndSettle(d);
+        assert.deepEqual(d.notices, []);
+        assert.deepEqual(cloud.calls, []);
+        assert.deepEqual(pending(), []);
+    });
+
+    it("a live push reporting evict starts the same repair and notice", async () => {
+        const g1 = nextId();
+        const missed = nextId();
+        const after = nextId();
+        const cloud = cloudStore({ [GROUP]: [row(g1), row(missed), row(after)] });
+        const d = daemon({
+            groupRepair: { listGroups: async () => [GROUP], recentGroups: () => [], fetchGroup: cloud.fetchGroup },
+        });
+        live(d.listener, row(g1));
+        await connectAndSettle(d);
+        d.listener.push(521, 0, page(511, [row(after)], { evict: 1 }));
+        await sleep(0);
+        await d.heal.settled();
+
+        assert.ok(getMessageById(missed));
+        assert.deepEqual(pending(), []);
+        assert.equal(d.notices.length, 1);
+        assert.equal(d.notices[0].groups.complete, true);
     });
 });

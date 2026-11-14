@@ -13,7 +13,7 @@
  *
  * 2. Unread-mark ids arrive as JSON NUMBERS. A thread id is 19 digits, far
  *    past Number.MAX_SAFE_INTEGER, so `4123456789012345678` comes back as
- *    `4123456789012346000` before zca-js even returns it. Written with
+ *    `4123456789012346000` before the call even returns it. Written with
  *    String(id), the mark lands on a thread that does not exist. The exact id
  *    cannot be recovered from the number, but it can be MATCHED: a cached
  *    thread whose id rounds to the same double is the one -- provided exactly
@@ -36,9 +36,26 @@ export function parsePinnedId(raw) {
 }
 
 /**
+ * The pinned-list entry that is not a conversation: `m1` is skipped when the list is read (spec-actions
+ * 7.3), so it is neither a pin nor an unresolved id here.
+ */
+export const PINNED_NOT_A_CONVERSATION = "m1";
+
+/**
+ * The entries of a pinned-conversation list that are conversations: the list without {@link
+ * PINNED_NOT_A_CONVERSATION}. `conv pinned` and the pin sync both read the list through this.
+ *
+ * @param {unknown} list - `getPinConversations().conversations`
+ * @returns {Array<string|number>} the entries kept, in order ([] for anything not an array)
+ */
+export function pinnedConversations(list) {
+    return (Array.isArray(list) ? list : []).filter((raw) => String(raw ?? "") !== PINNED_NOT_A_CONVERSATION);
+}
+
+/**
  * Resolve a precision-lost numeric id to the one cached thread it came from.
  *
- * @param {number|string} lossy - the id as zca-js returned it
+ * @param {number|string} lossy - the id as the call returned it
  * @param {Array<{threadId: string, type: string}>} threads - cached threads to match against
  * @param {"group"|"dm"} [type] - restrict the match to one kind
  * @returns {{threadId: string|null, why?: "unknown"|"ambiguous"}}
@@ -61,7 +78,7 @@ export function resolveLossyThreadId(lossy, threads, type) {
  * whose state was cleared on another device.
  *
  * @param {object} args
- * @param {object} args.api - logged-in zca-js api (REST only; no socket)
+ * @param {object} args.api - logged-in session (REST only; no socket)
  * @param {number} [args.now] - clock, for tests
  * @param {Array<{threadId: string, type: string}>} [args.threads] - cached threads; defaults to the cache
  * @returns {Promise<{pinned: number, unpinned: number, unread: number, unmarked: number,
@@ -82,7 +99,7 @@ export async function syncConvState({ api, now = Date.now(), threads } = {}) {
     try {
         const res = await api.getPinConversations();
         pinnedIds = new Set();
-        for (const raw of res?.conversations || []) {
+        for (const raw of pinnedConversations(res?.conversations)) {
             const { threadId } = parsePinnedId(raw);
             // Only conversations the cache knows: a pin for a thread we have
             // never seen has nothing to attach to, and inventing a row would

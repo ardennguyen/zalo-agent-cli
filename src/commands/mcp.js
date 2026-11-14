@@ -10,11 +10,13 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { getApi, clearSession } from "../core/zalo-client.js";
 import { liveApi } from "../core/live-api.js";
+import { quotedReply, resolveReplyTo } from "../core/cached-message.js";
 import { parseAccountId, selectDaemonAccount, loginDaemonAccount } from "../core/daemon-account.js";
 import { updateAccountName } from "../core/accounts.js";
 import { CONFIG_DIR, getAccountDir, MEDIA_DIR } from "../core/credentials.js";
 import { createStartupGate, resolveStartupSettings } from "../core/startup-gate.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
+import { startMediaMigration } from "../core/media-store.js";
 import {
     createStageLock,
     startDaemonChannel,
@@ -30,14 +32,61 @@ import { success, error, info, output } from "../utils/output.js";
 import { resolveWebhookSecret } from "../utils/secrets.js";
 import { createSyncRunners } from "../core/daemon-sync.js";
 import { createSocketContext, startEventLoopMonitor } from "../core/daemon-log.js";
-import { setUserInfoLogger } from "../core/user-info.js";
+import { setUserInfoLogger } from "../zalo/custom/user-info.js";
 import { createSyncJobs } from "../mcp/sync-jobs.js";
-import { createSocketTap } from "../core/socket-tap.js";
+import { createMcpStageRunners } from "../mcp/sync-stages.js";
+import { createSocketTap } from "../zalo/listener/socket-tap.js";
 import { createSelfHeal } from "../core/self-heal.js";
+import { createUndecryptableNotice } from "../core/e2ee-notice.js";
+import { createCloudVerifier } from "../core/cloud-verify.js";
+import { attachUnknownActs } from "../core/unknown-acts.js";
+import { attachVoiceText, voiceTextFile } from "../core/voice-text.js";
 import { createReadStateSync } from "../core/read-state.js";
-import { initDb, getPendingSyncGaps, getThreadNames } from "../core/db.js";
+import { attachLastOnline } from "../core/last-online.js";
+import { attachControlEvents } from "../core/control-events.js";
+import { attachHiddenChatControls, hiddenChatsFor, hiddenEventView } from "../core/hidden-chats.js";
+import {
+    resolveApproval,
+    resolveHiddenChats,
+    resolveMediaDelivery,
+    resolveMediaLinkAuth,
+    resolvePublicUrl,
+    resolveTrustedProxies,
+} from "../core/deploy-policy.js";
+import { getMediaLinks, linkForCachedMessage, startTempfileSweeper } from "../core/media-deliver.js";
+import { ensureMediaServed } from "../core/media-route.js";
+import { scopeOfDir } from "../core/keystore/keyring.js";
+import { approverStatus } from "../core/approval.js";
+import { resolveConfirmMode } from "../core/confirm-guard.js";
+import { getSecurePage } from "../core/secure-page.js";
+import { getQrPage } from "../utils/qr-http-server.js";
+import { readControls } from "../zalo/queues/control-queue.js";
+import {
+    clearSyncState,
+    dbUsedBytes,
+    initDb,
+    getMessageById,
+    getPendingSyncGaps,
+    getSyncState,
+    getThreadNames,
+    setSyncState,
+} from "../core/db.js";
 import { SyncManager } from "../core/sync.js";
-import { createGapTracker, HEARTBEAT_MS } from "../core/listener-lifecycle.js";
+import {
+    alarmingGapCount,
+    createGapTracker,
+    HEARTBEAT_MS,
+    IDLE_GAP_REASON,
+    PARKED_AT_KEY,
+    startupGapReason,
+} from "../core/listener-lifecycle.js";
+import { createDaemonPresence, presenceTransport, resolveDaemonPresence } from "../core/daemon-presence.js";
+import {
+    accountStateSystemEvent,
+    createAccountStateTracker,
+    createBufferStateFilter,
+    describeAccountState,
+} from "../core/account-state.js";
 import {
     storeLiveMessage,
     refreshLiveMessageIdentities,
@@ -49,8 +98,8 @@ import {
     storeReceipts,
 } from "../core/live-store.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
-import { classifyLiveMessage } from "../core/sync-v2/message-types.js";
-import { createDeliveredReceipts } from "../core/receipts.js";
+import { classifyLiveMessage } from "../zalo/transfer-sync/message-types.js";
+import { createDeliveredReceipts } from "../zalo/receipts.js";
 import { MessageBuffer } from "../mcp/message-buffer.js";
 import { ThreadFilter } from "../mcp/thread-filter.js";
 import {
@@ -59,29 +108,44 @@ import {
     envForAccount,
     parseDuration,
     resolveWebhookDelivery,
+    resolveWebhookUrl,
 } from "../mcp/mcp-config.js";
-import { startWebhookDelivery } from "../core/webhook-outbox.js";
-import { batchParams, waitResult, MAX_BATCH, MAX_SETTLE_MS } from "../mcp/wait-result.js";
+import { purgeDeadDeliveries, startWebhookDelivery } from "../core/webhook-outbox.js";
+import { batchParams, waitResult, MAX_SETTLE_MS } from "../mcp/wait-result.js";
 import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
+import { describeSessionExpiry, sessionExpiryFor } from "../core/session-expiry.js";
+import {
+    describeSessionExpiring,
+    sessionExpiringSystemEvent,
+    startSessionExpiryWatch,
+} from "../core/session-notice.js";
+import { createSocketHost, EXIT_CODE } from "../core/socket-host.js";
+import { kickFile } from "../core/kick-marker.js";
 import { DEBUG_MARK, LOG_LEVELS } from "../core/log-sink.js";
 import { registerMCPWebhookCommands } from "./mcp-webhook.js";
+import { registerMCPApproverCommand } from "./mcp-approver.js";
 import { createMCPServer } from "../mcp/mcp-server.js";
 import { registerTools } from "../mcp/mcp-tools.js";
 import { createHTTPServer } from "../mcp/mcp-http-transport.js";
+import { createAdminApi, resolveAdminCredentials } from "../core/admin-api.js";
+import { createExportApi } from "../core/data-export.js";
+import { servePolicyRequest, startPolicyRuntime, touches } from "../core/policy-store.js";
+import { describeQuotaEvent, describeStorage, quotaSystemEvent, startStorageJobs } from "../core/storage-quota.js";
+import { applyGroupExit, describeGroupGone, groupGoneSystemEvent, setGroupGoneSink } from "../core/group-exit.js";
 import { ZaloNotifier } from "../mcp/notifier.js";
+import { deviceSinceOf } from "../core/device-since.js";
+import { describeQueueOverflow, queueOverflowSystemEvent } from "../core/overflow-repair.js";
 import { ThreadNameCache } from "../mcp/thread-name-cache.js";
+import { senderNameFields, startDaemonAliases } from "../core/contact-names.js";
 
 const PKG_VERSION = JSON.parse(readFileSync(join(import.meta.dirname, "..", "..", "package.json"), "utf8")).version;
-
-/** Zalo close code for duplicate web session — fatal, do not retry */
-const CLOSE_DUPLICATE = 3000;
 
 /** Sync2.Message.MessageStatus values carried by live receipts. */
 const STATUS_RECEIVED = 4;
 const STATUS_SEEN = 5;
 
 /**
- * Normalize a raw zca-js message event into the buffer's message shape.
+ * Normalize a raw listener message event into the buffer's message shape.
  *
  * Classification comes from the shared `classifyLiveMessage`, the same
  * function the listener and the mobile sync use, so an agent reading
@@ -90,7 +154,7 @@ const STATUS_SEEN = 5;
  * raw `chat.photo` strings this used to emit, which never matched anything
  * else in the tool.
  *
- * @param {object} msg - Raw zca-js message event
+ * @param {object} msg - Raw listener message event
  * @param {object} [info] - Pre-computed classification, when the caller has one
  * @returns {object} Normalized message
  */
@@ -99,14 +163,15 @@ export function normalizeMessage(msg, info = null) {
     const cls = info || classifyLiveMessage(data);
     const media = cls.attachments.find((a) => a.url || a.thumbUrl) || null;
     return {
-        // `msgId` is the name every tool takes and every other reply uses; `id` is the same value, kept for clients
-        // that already read it (the webhook and /events/wait payloads carry both).
+        // `msgId`, the name every tool takes and every reply uses (3.0 dropped the older `id`).
         msgId: data.msgId,
-        id: data.msgId,
+        // The id the sender's client gave it: a reply from the phone names the message it quotes by this one.
+        cliMsgId: data.cliMsgId ? String(data.cliMsgId) : null,
         threadId: msg.threadId,
         threadType: msg.type === 0 ? "dm" : "group",
         senderId: data.uidFrom || null,
-        senderName: data.dName || null,
+        // Alias first, as Zalo shows the sender to this account; `senderZaloName` is the name the message carried.
+        ...senderNameFields(data.uidFrom, data.dName),
         text: cls.text,
         // The message's own timestamp, not the moment we happened to process
         // it: buffer eviction is age-based, and Date.now() made every message
@@ -118,9 +183,43 @@ export function normalizeMessage(msg, info = null) {
                   type: cls.type,
                   url: media.url || media.thumbUrl || null,
                   description: media.title || null,
-                  localPath: null,
               }
             : null,
+        // What this message replies to, so an agent can tell what "look at this" points at (bug-reports #8).
+        replyTo: resolveReplyTo(quotedReply(data.quote), msg.threadId),
+    };
+}
+
+/**
+ * Normalize a listener `undo` (recall) event into the same shape as a buffered message, so a
+ * long-poll waiter wakes for it and zalo_get_messages lists it in order with the messages.
+ *
+ * `msgId` is the RECALLED message (what every tool calls a message), not the notification's own
+ * id: an agent reading `{ type: "undo", msgId }` knows which earlier message is gone. The
+ * target is named inside `content` (see storeLiveUndo); a recall that names neither a global nor
+ * a client id cannot be attributed and is not normalized.
+ *
+ * @param {object} undo - Raw listener undo event
+ * @returns {object|null} Normalized recall event, or null when it names no message
+ */
+export function normalizeUndo(undo) {
+    const data = undo?.data || {};
+    const content = data.content || {};
+    const target = content.globalMsgId && Number(content.globalMsgId) !== 0 ? String(content.globalMsgId) : null;
+    const cliMsgId = content.cliMsgId && Number(content.cliMsgId) !== 0 ? String(content.cliMsgId) : null;
+    if (!target && !cliMsgId) return null;
+    return {
+        msgId: target,
+        cliMsgId,
+        threadId: undo.threadId,
+        threadType: undo.type === 0 ? "dm" : "group",
+        senderId: data.uidFrom || null,
+        // Alias first, as Zalo shows the sender to this account; `senderZaloName` is the name the message carried.
+        ...senderNameFields(data.uidFrom, data.dName),
+        text: "",
+        timestamp: data.ts ? Number(data.ts) : Date.now(),
+        type: "undo",
+        attachment: null,
         replyTo: null,
     };
 }
@@ -133,7 +232,7 @@ export function normalizeMessage(msg, info = null) {
  * @returns {object}
  */
 export function buildMCPWebhookPayload(message, extra = {}) {
-    return { event: "message", ...extra, ...message };
+    return { event: message?.type === "undo" ? "undo" : "message", ...extra, ...message };
 }
 
 /**
@@ -169,6 +268,45 @@ export async function postMCPWebhook(webhookUrl, message, extra = {}, fetchFn = 
         console.error(`[mcp] Webhook failed: ${e.message}`);
         return false;
     }
+}
+
+/**
+ * The start-up warnings about how one-time pages reach a person (src/core/approval.js): a webhook delivery with no
+ * webhook, and, under confirmMode "human", an approve link that reaches the agent and asks only for a click (an agent
+ * that can open a link could approve its own action). Printed once, at start-up.
+ *
+ * @param {object} opts
+ * @param {object} opts.config - the MCP config
+ * @param {string} opts.accountId
+ * @param {string|null} opts.accountDir
+ * @param {boolean} opts.hasWebhook
+ * @param {NodeJS.ProcessEnv} [opts.env]
+ * @param {(line: string) => void} [opts.log]
+ * @returns {string[]} the lines printed
+ */
+export function warnApprovalPolicy({ config, accountId, accountDir, hasWebhook, env = process.env, log }) {
+    const approval = resolveApproval({ config, env, accountId });
+    const lines = [];
+    if (approval.deliver !== "result" && !hasWebhook) {
+        lines.push(
+            `approval.deliver is "${approval.deliver}" (${approval.deliverSource}) but no webhook is set: ` +
+                (approval.deliver === "webhook"
+                    ? "every approve and PIN page will be refused until one is."
+                    : "links go in the tool result only."),
+        );
+    }
+    const { mode } = resolveConfirmMode({ config, env, accountId });
+    const linkReachesAgent = approval.deliver !== "webhook";
+    const clickOnly = approval.secret === "none" || (approval.secret === "auto" && !approverStatus(accountDir).set);
+    if (mode === "human" && linkReachesAgent && clickOnly) {
+        lines.push(
+            'confirmMode is "human" and approve links reach the agent with no approver secret: an agent that can ' +
+                "open a link could approve its own action. Set an approver password (`zalo-agent mcp approver set`), " +
+                'or approval.secret "pin", or approval.deliver "webhook".',
+        );
+    }
+    for (const line of lines) (log ?? ((l) => console.error(`[mcp] WARNING: ${l}`)))(line);
+    return lines;
 }
 
 /**
@@ -234,9 +372,10 @@ export function registerMCPCommands(program) {
             "OAuth 2.0 Client Secret (defaults to --auth / ZALO_MCP_AUTH_TOKEN, or ZALO_MCP_OAUTH_CLIENT_SECRET)",
         )
         .option(
-            "--issuer-url <url>",
-            "Explicit OAuth 2.0 issuer base URL (e.g. https://mcp.example.com:3100; default: inferred from request Host)",
+            "--public-url <url>",
+            "The one public address of this server behind a reverse proxy or TLS terminator (e.g. https://zalo.example.com): the MCP endpoint, the OAuth issuer, and the links to the one-time secure and QR pages. https, or http on localhost; an optional base path. Or ZALO_MCP_PUBLIC_URL[_<ownId>] / publicUrl in mcp-config.json. Default: links use this server's local address and OAuth infers its issuer from the request",
         )
+        .option("--issuer-url <url>", "Deprecated name of --public-url (still works)")
         .option(
             "-w, --webhook <url>",
             "POST each watched incoming message as JSON to this URL (or set webhook in mcp-config.json)",
@@ -251,7 +390,7 @@ export function registerMCPCommands(program) {
         )
         .option(
             "--no-self-heal",
-            "Do not pull what a dropped socket missed from Zalo's offline queue on reconnect (the default does, as Zalo Web does, on this socket and with no phone tap)",
+            "Do not pull what a dropped socket missed from Zalo's offline queue on reconnect (the default does, as Zalo does, on this socket and with no phone tap)",
         )
         .option(
             "--log-level <level>",
@@ -385,6 +524,31 @@ export function registerMCPCommands(program) {
             const effectiveHttpPort =
                 opts.http ?? envForAccount("ZALO_MCP_HTTP_PORT", activeAcc.ownId) ?? config?.httpPort ?? null;
 
+            // On-demand presence (src/core/daemon-presence.js): stdio MCP is always-on, --http follows the settings.
+            // On-demand without the self-heal would lose what arrives while parked, so that pair is refused here,
+            // before anything logs in (and before a background daemon is spawned).
+            const presenceRole = presenceTransport({ command: "mcp", http: Boolean(effectiveHttpPort) });
+            const presenceCheck = resolveDaemonPresence({
+                config,
+                ownId: activeAcc.ownId,
+                transport: presenceRole,
+                selfHeal: opts.selfHeal !== false,
+            });
+            if (presenceCheck.problem) failStart(`Refusing to start: ${presenceCheck.problem}`);
+
+            // One public address for the MCP endpoint, the OAuth issuer and every link this server hands out
+            // (src/core/deploy-policy.js); --issuer-url, ZALO_MCP_ISSUER_URL and oauth.issuerUrl are its 2.x names.
+            // Only the HTTP transport uses it; a value that cannot be used is refused here, before a daemon is spawned.
+            const publicUrl = effectiveHttpPort
+                ? resolvePublicUrl({
+                      flag: opts.publicUrl,
+                      issuerFlag: opts.issuerUrl,
+                      config,
+                      accountId: activeAcc.ownId,
+                  })
+                : { publicUrl: null, source: "default", error: null };
+            if (publicUrl.error) failStart(`Refusing to start: ${publicUrl.error}.`);
+
             if (!tlsOptions) {
                 const acctCert = envForAccount("ZALO_MCP_TLS_CERT", activeAcc.ownId) ?? config?.tls?.cert;
                 const acctKey = envForAccount("ZALO_MCP_TLS_KEY", activeAcc.ownId) ?? config?.tls?.key;
@@ -440,7 +604,7 @@ export function registerMCPCommands(program) {
 
             // Safety net: redirect ALL console.log to stderr for the entire MCP process.
             // Stdout is the MCP JSON-RPC transport — any non-JSON output corrupts the stream.
-            // This catches rogue prints from dependencies (zca-js, chalk, etc.) that we can't control.
+            // This catches rogue prints from dependencies (chalk, etc.) that we can't control.
             console.log = (...args) => console.error(...args);
 
             // This server now opens the account's WebSocket *and* writes to
@@ -498,10 +662,30 @@ export function registerMCPCommands(program) {
             try {
                 initDb(join(accountDir, "zalo.db"));
                 console.error(`[mcp] Local cache: ${join(accountDir, "zalo.db")}`);
+                // Media a 2.x install downloaded is sealed in the background, a batch at a time (media-store.js).
+                startMediaMigration(activeAcc.ownId, { log: (l) => console.error(`[mcp] ${l}`) });
             } catch (e) {
                 gate.leave();
                 dropLock();
                 console.error(`[mcp] Failed to initialize local DB: ${e.message}`);
+                process.exit(1);
+            }
+
+            // The runtime policy (src/core/policy-store.js): read now, watched for file drops, changed live by the admin
+            // API and `policy set`. A policy file that cannot be used stops the start: it is never replaced by defaults.
+            let onPolicyChanged = () => {};
+            let policyRuntime;
+            try {
+                policyRuntime = startPolicyRuntime({
+                    ownId: activeAcc.ownId,
+                    onChange: (changed) => onPolicyChanged(changed),
+                    log: (l) => console.error(`[mcp] ${l}`),
+                });
+                console.error(`[mcp] Runtime policy: ${policyRuntime.describe()}`);
+            } catch (e) {
+                gate.leave();
+                dropLock();
+                console.error(`[mcp] The runtime policy cannot be used: ${e.message}`);
                 process.exit(1);
             }
 
@@ -510,16 +694,85 @@ export function registerMCPCommands(program) {
             // Build buffer + filter from config
             const maxAge = parseDuration(config.limits?.bufferMaxAge ?? "2h");
             const maxSize = config.limits?.bufferMaxSize ?? 500;
-            const buffer = new MessageBuffer(maxSize, maxAge);
+            const buffer = MessageBuffer.forSession(maxSize, maxAge);
             const filter = new ThreadFilter(config);
 
+            // The owner's aliases, which every reply, buffer line and webhook names people by: kept in the account's
+            // db, reread on an `alias` control and every 30 minutes (src/core/contact-names.js); the name cache's
+            // init below is the read at start. Same in `listen`.
+            const daemonAliases = startDaemonAliases({
+                getApi,
+                log: (line) => console.error(`[mcp] ${line}`),
+                onOwnName: (name) => updateAccountName(activeAcc.ownId, name),
+                onRetitled: (titles) => {
+                    for (const [id, name] of titles) nameCache.set(id, { name, type: "dm" });
+                },
+            });
             // Build thread name cache (groups + friends → in-memory index)
             const nameCache = new ThreadNameCache();
             try {
-                await nameCache.init(getApi());
+                await nameCache.init(getApi(), { ownId: activeAcc.ownId });
             } catch (e) {
                 console.error("[mcp] Thread name cache init failed (non-fatal):", e.message);
             }
+            // The account's hidden chats (src/core/hidden-chats.js), read once now and kept current from the 601
+            // `hidden_chat` controls below; the deployment's hiddenChats policy decides what agents see of them.
+            const hidden = hiddenChatsFor(activeAcc.ownId, { stateDir: accountDir });
+            await hidden.ensure(getApi());
+            let hiddenPolicy = resolveHiddenChats({ config, accountId: activeAcc.ownId });
+            console.error(
+                `[mcp] Hidden chats: ${hiddenPolicy.mode} (${hiddenPolicy.source})` +
+                    (hidden.known ? `, ${hidden.ids.size} hidden` : ", the hidden list could not be read yet"),
+            );
+            /** An event list as the policy shows it: hidden ones left out, or contentless. */
+            const hiddenEvents = (list) =>
+                list
+                    .map((m) =>
+                        hiddenEventView(m, hidden, hiddenPolicy.mode, {
+                            name: m?.type === "undo" ? "undo" : "message",
+                        }),
+                    )
+                    .filter(Boolean);
+            // The one-time secure input page (src/core/secure-page.js): this process's account, and, over --http,
+            // the public address a person's browser reaches it at.
+            const securePage = getSecurePage().configure({ accountId: activeAcc.ownId });
+            // The QR login page, served on the HTTP port when a login runs in this process (src/utils/qr-http-server.js).
+            const qrPage = getQrPage();
+            // Media links (src/core/media-deliver.js): the policy they are issued under. Over --http they are served
+            // on its port and point at publicUrl (below); under stdio a 127.0.0.1 listener serves them on first use.
+            let mediaPolicy = resolveMediaDelivery({ config, accountId: activeAcc.ownId });
+            let mediaAuth = resolveMediaLinkAuth({
+                config,
+                accountId: activeAcc.ownId,
+                publicUrl: effectiveHttpPort ? publicUrl.publicUrl : null,
+            });
+            const trustedProxies = resolveTrustedProxies({ config, accountId: activeAcc.ownId });
+            const mediaLinks = getMediaLinks().configure({
+                linkAuth: effectiveHttpPort ? mediaAuth.linkAuth : "capability",
+                maxClients: mediaAuth.maxClients,
+                clientTtlMs: mediaAuth.clientTtlMs,
+                ttlMs: mediaPolicy.linkTtlMs,
+                rateLimit: mediaPolicy.linkRateLimit,
+                trustedProxies,
+                log: (line) => console.error(line),
+            });
+            // A chat hidden while its links are out: they stop working at once (unless the policy shows hidden chats).
+            hidden.onChange((set) => {
+                // An export made before a chat was hidden holds it unmarked: its download stops (data-export.js).
+                const exports = mediaLinks.revokeWhere(
+                    (l) => l.kind === "export" && [...set.ids].some((id) => !l.hiddenAtExport?.has(id)),
+                    "a chat was hidden after the export was made",
+                );
+                if (exports) console.error(`[mcp] ${exports} export link(s) revoked: a chat was hidden since`);
+                if (hiddenPolicy.mode === "include") return;
+                const n = mediaLinks.revokeWhere(
+                    (l) => l.threadId !== null && set.isHidden(l.threadId),
+                    "its chat was hidden",
+                );
+                if (n) console.error(`[mcp] ${n} media link(s) revoked: their chat was hidden`);
+            });
+            // Decrypted copies a CLI command or a crash left behind expire on time while this daemon runs.
+            startTempfileSweeper({ ttlMs: mediaPolicy.tempfileTtlMs });
             // Logged in and the friend and group lists are loaded: the heavy part of start-up is over.
             gate.leave();
 
@@ -555,7 +808,13 @@ export function registerMCPCommands(program) {
                     }
                 },
             });
-            const syncJobs = createSyncJobs({ runners: syncRunners, lock: stageLock });
+            // The media and board stages run in this server too (src/mcp/sync-stages.js), under the same lock.
+            const stageRunners = createMcpStageRunners({
+                getApi,
+                accountDir,
+                mediaRoot: MEDIA_DIR || config.media?.downloadDir || undefined,
+            });
+            const syncJobs = createSyncJobs({ runners: { ...syncRunners, ...stageRunners }, lock: stageLock });
             syncJobs.onSelfName = onSelfName;
 
             // What the tools and the notifier call. Not getApi()'s object:
@@ -566,6 +825,24 @@ export function registerMCPCommands(program) {
                     "The Zalo session is logging in again after a dropped connection; try again in a few seconds.",
             });
 
+            // On-demand presence (src/core/daemon-presence.js), built below once the socket's parts exist. The tools,
+            // /events/wait and the CRM leases reach it through these doors, which the servers take now.
+            let daemonPresence = null;
+            const presenceDoor = {
+                admit: (o) =>
+                    daemonPresence ? daemonPresence.admit(o) : Promise.resolve({ release: () => {}, warming: null }),
+                serve: (p) =>
+                    daemonPresence
+                        ? daemonPresence.serve(p)
+                        : Promise.reject(new Error("presence is not running yet; try again in a moment")),
+            };
+            const leaseDoor = {
+                handle: (req, res) =>
+                    daemonPresence
+                        ? daemonPresence.leaseRoutes.handle(req, res)
+                        : res.status(503).json({ error: "the server is starting; try again in a moment" }),
+            };
+
             // Start MCP server — stdio (default) or HTTP/HTTPS
             // What this daemon can say about itself: /health, /ready, /status and /metrics over HTTP, and
             // `mcp start --status` over the loopback channel (src/core/daemon-health.js). The sources that do not
@@ -575,8 +852,13 @@ export function registerMCPCommands(program) {
                 const stats = buffer.getStats();
                 return { threads: stats.length, messages: stats.reduce((n, t) => n + t.total, 0) };
             });
-            health.setSource("gaps", () => getPendingSyncGaps().length);
+            // Planned idle windows (on-demand presence) are not worth a warning; everything else is.
+            health.setSource("gaps", () => alarmingGapCount(getPendingSyncGaps()));
             health.setSource("stage", () => stageLock.current());
+            health.setSource("session", () => sessionExpiryFor(activeAcc.ownId));
+            health.setSource("presence", () => daemonPresence?.snapshot() ?? null);
+            const sessionLine = describeSessionExpiry(sessionExpiryFor(activeAcc.ownId));
+            if (sessionLine) console.error(`[mcp] ${sessionLine}`);
 
             let httpServer = null;
             try {
@@ -589,7 +871,69 @@ export function registerMCPCommands(program) {
                     }
                     const host =
                         opts.host || envForAccount("ZALO_MCP_HOST", activeAcc.ownId) || config?.host || "127.0.0.1";
+                    // The admin API (src/core/admin-api.js): its own credential, never the agent's.
+                    const adminCreds = resolveAdminCredentials({ config, accountId: activeAcc.ownId });
+                    for (const p of adminCreds.problems) console.error(`[mcp] WARNING: ${p}`);
+                    let adminCa = null;
+                    if (adminCreds.clientCaFile) {
+                        if (!tlsOptions) {
+                            console.error("[mcp] WARNING: admin.clientCa needs --cert and --key (HTTPS); mTLS is off");
+                        } else {
+                            try {
+                                adminCa = readFileSync(adminCreds.clientCaFile);
+                            } catch (e) {
+                                dropLock();
+                                console.error(
+                                    `[mcp] Refusing to start: cannot read admin.clientCa ${adminCreds.clientCaFile} (${e.code || e.message}).`,
+                                );
+                                process.exit(1);
+                            }
+                        }
+                    }
+                    // "Export my data" (src/core/data-export.js): jobs, the hidden-chat grant, the download links.
+                    const exportApi = createExportApi({
+                        ownId: activeAcc.ownId,
+                        accountDir,
+                        dbFile: join(accountDir, "zalo.db"),
+                        hidden,
+                        getApi: () => getApi(),
+                        securePage,
+                        links: mediaLinks,
+                        trustedProxies,
+                        log: (l) => console.error(`[mcp] ${l}`),
+                    });
+                    const admin = createAdminApi({
+                        ownId: activeAcc.ownId,
+                        exportApi,
+                        config,
+                        hashes: adminCreds.hashes,
+                        mtls: Boolean(adminCa),
+                        publicUrl: publicUrl.publicUrl,
+                        usage: () => ({
+                            accounts: [
+                                {
+                                    accountId: activeAcc.ownId,
+                                    ...describeStorage(activeAcc.ownId, {
+                                        mediaRoot: MEDIA_DIR || config.media?.downloadDir,
+                                        dbBytes: dbUsedBytes(),
+                                    }),
+                                },
+                            ],
+                        }),
+                        effectiveExtra: (id) => {
+                            const st = describeStorage(id);
+                            return { quota: st.quota, retention: st.retention };
+                        },
+                        // GET /zalo/admin/presence, POST /zalo/admin/presence/resume (after a yield).
+                        presence: presenceDoor,
+                        log: (l) => console.error(`[mcp] ${l}`),
+                    });
+                    if (admin.enabled())
+                        console.error(
+                            `[mcp] Admin API: on /zalo/admin${adminCreds.sources.length ? ` (${adminCreds.sources.join(", ")})` : ""}${adminCa ? ", mTLS" : ""}`,
+                        );
                     const deps = {
+                        admin,
                         api: sessionApi,
                         buffer,
                         filter,
@@ -599,6 +943,13 @@ export function registerMCPCommands(program) {
                         stageLock,
                         syncJobs,
                         health,
+                        securePage,
+                        qrPage,
+                        hiddenEvents,
+                        mediaLinks,
+                        trustedProxies,
+                        presence: presenceDoor,
+                        leases: leaseDoor,
                     };
                     const authToken =
                         opts.auth?.trim() ||
@@ -616,11 +967,7 @@ export function registerMCPCommands(program) {
                         envForAccount("ZALO_MCP_OAUTH_CLIENT_SECRET", activeAcc.ownId) ||
                         config?.oauth?.clientSecret?.trim() ||
                         authToken;
-                    const oauthIssuerUrl =
-                        opts.issuerUrl?.trim() ||
-                        envForAccount("ZALO_MCP_ISSUER_URL", activeAcc.ownId) ||
-                        config?.oauth?.issuerUrl?.trim() ||
-                        null;
+                    const oauthIssuerUrl = publicUrl.publicUrl;
                     const oauthClients = Array.isArray(config?.oauth?.clients) ? config.oauth.clients : [];
                     const oauthOptions =
                         oauthClientSecret || oauthClients.length > 0
@@ -632,7 +979,36 @@ export function registerMCPCommands(program) {
                               }
                             : null;
                     const scheme = tlsOptions ? "HTTPS" : "HTTP";
-                    httpServer = createHTTPServer(registerTools, deps, port, authToken, host, tlsOptions, oauthOptions);
+                    httpServer = createHTTPServer(
+                        registerTools,
+                        deps,
+                        port,
+                        authToken,
+                        host,
+                        tlsOptions && adminCa ? { ...tlsOptions, ca: adminCa } : tlsOptions,
+                        oauthOptions,
+                    );
+                    // The secure page (/zalo/secure/<token>) and the QR login page (/zalo/qr/<token>) are served on this
+                    // port; their links use publicUrl (behind a reverse proxy or TLS) or else this server's own address,
+                    // never a request's Host header.
+                    const localHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+                    const localBaseUrl = `${tlsOptions ? "https" : "http"}://${localHost.includes(":") ? `[${localHost}]` : localHost}:${port}`;
+                    securePage.configure({ publicUrl: publicUrl.publicUrl, localBaseUrl });
+                    qrPage.configure({ publicUrl: publicUrl.publicUrl, localBaseUrl, mounted: true });
+                    mediaLinks.configure({
+                        publicUrl: publicUrl.publicUrl,
+                        localBaseUrl,
+                        bearerAvailable: Boolean(authToken || oauthClientSecret || oauthClients.length > 0),
+                    });
+                    console.error(
+                        `[mcp] Media links: ${mediaLinks.linkAuth} (${mediaAuth.source}), ${Math.round(mediaPolicy.linkTtlMs / 60_000)} min` +
+                            (mediaLinks.linkAuth === "capability" && publicUrl.publicUrl
+                                ? `, at most ${mediaAuth.maxClients} client address(es) per link`
+                                : ""),
+                    );
+                    console.error(
+                        `[mcp] Public address: ${publicUrl.publicUrl ? `${publicUrl.publicUrl} (${publicUrl.source})` : `none set: links use ${localBaseUrl} (set publicUrl behind a proxy)`}`,
+                    );
                     console.error(`[mcp] ${scheme} server started on port ${port}`);
                     if (!authToken && !oauthClientSecret && oauthClients.length === 0) {
                         console.error(
@@ -650,6 +1026,7 @@ export function registerMCPCommands(program) {
                         accountDir,
                         stageLock,
                         syncJobs,
+                        { presence: presenceDoor },
                     );
                 }
             } catch (e) {
@@ -660,11 +1037,7 @@ export function registerMCPCommands(program) {
 
             // Setup notifier (sends to Zalo group when agent is offline)
             const notifier = new ZaloNotifier(sessionApi, config);
-            const webhookUrl =
-                opts.webhook?.trim() ||
-                envForAccount("ZALO_WEBHOOK_URL", activeAcc.ownId) ||
-                config.webhook?.trim() ||
-                null;
+            const webhookUrl = resolveWebhookUrl({ accountId: activeAcc.ownId, flag: opts.webhook, config });
             const webhookSecret = resolveWebhookSecret({
                 flag: opts.webhookSecret,
                 env: envForAccount("ZALO_WEBHOOK_SECRET", activeAcc.ownId),
@@ -676,30 +1049,180 @@ export function registerMCPCommands(program) {
             // Events are written to an on-disk outbox first and delivered from it, so a receiver
             // that is down or slow costs a backlog (mcp webhook status), not messages.
             let webhookDelivery = null;
-            if (webhookUrl) {
+            /** Start the delivery, or move a running one to the current receiver and settings (a live policy change). */
+            const applyWebhook = (url) => {
                 const delivery = resolveWebhookDelivery(activeAcc.ownId, config);
                 for (const w of delivery.warnings) console.error(`[mcp] ${w}`);
+                if (!url) {
+                    if (webhookDelivery)
+                        console.error("[mcp] Webhook disabled by the policy; queued events stay in the outbox");
+                    webhookDelivery?.stop();
+                    webhookDelivery = null;
+                    return;
+                }
+                if (webhookDelivery) {
+                    webhookDelivery.reconfigure({ url, batchSize: delivery.batchSize, maxAgeMs: delivery.maxAgeMs });
+                    console.error(`[mcp] Webhook settings changed by the policy (${delivery.batchSize} per POST)`);
+                    return;
+                }
                 webhookDelivery = startWebhookDelivery({
                     accountDir,
                     accountId: activeAcc.ownId,
-                    url: webhookUrl,
+                    url,
                     secret: webhookSecret,
                     batchSize: delivery.batchSize,
                     maxAgeMs: delivery.maxAgeMs,
                     log: (line) => console.error(`[mcp] ${line}`),
                 });
                 console.error(
-                    `[mcp] Webhook enabled: ${webhookUrl}${webhookSecret ? " (signed)" : ""}, ` +
+                    `[mcp] Webhook enabled: ${url}${webhookSecret ? " (signed)" : ""}, ` +
                         `durable outbox, ${delivery.batchSize === 1 ? "one event per POST" : `up to ${delivery.batchSize} events per POST`}`,
                 );
-            }
+            };
+            if (webhookUrl) applyWebhook(webhookUrl);
             health.setSource("webhook", () => webhookDelivery?.status() ?? null);
-            /** Queue one buffered message for the webhook, in the shape `postMCPWebhook` always sent. */
-            const queueWebhook = (normalized) =>
-                webhookDelivery?.enqueue(
-                    `message:${normalized.id}`,
+            // approval.deliver "webhook"/"both": a one-time page's link goes to the webhook as an `approval_requested`
+            // event, signed and queued like the others, for a CRM's approval UI to show a person
+            // (src/core/secure-page.js). No dedupe key: each request is its own event.
+            securePage.configure({
+                notify: webhookDelivery ? (payload) => webhookDelivery.enqueue(null, payload) : null,
+            });
+            warnApprovalPolicy({
+                config,
+                accountId: activeAcc.ownId,
+                accountDir,
+                hasWebhook: Boolean(webhookDelivery),
+            });
+            // Quotas and retention (src/core/storage-quota.js): this daemon holds daemon.lock, so it is the one process
+            // that purges, on its timer (retention.purgeEvery) and for `db purge` over its channel. Over a limit,
+            // caching goes on; the storage_quota events go to the webhook and, as system events, to the live buffer that
+            // zalo_get_messages / zalo_wait_for_message read (not every MCP client is an agent: a person sees their usage).
+            // group_gone (src/core/group-exit.js): to the log, the webhook and the live buffer, like storage_quota;
+            // the thread-name cache drops a purged group and flags a kept one (zalo_search_threads).
+            setGroupGoneSink((event) => {
+                console.error(`[mcp] ${describeGroupGone(event)}`);
+                webhookDelivery?.enqueue(null, event);
+                buffer.pushSystem(groupGoneSystemEvent(event));
+                if (event.mode === "keep") {
+                    nameCache?.set?.(event.threadId, { gone: true, leftAt: event.leftAt, goneReason: event.reason });
+                } else nameCache?.drop?.(event.threadId);
+            });
+            const storageJobs = startStorageJobs({
+                ownId: activeAcc.ownId,
+                mediaRoot: MEDIA_DIR || config.media?.downloadDir || null,
+                emit: (event) => {
+                    console.error(`[mcp] ${describeQuotaEvent(event)}`);
+                    webhookDelivery?.enqueue(null, event);
+                    buffer.pushSystem(quotaSystemEvent(event));
+                },
+                log: (l) => console.error(`[mcp] ${l}`),
+                purgeOutboxDead: (cutoff) => purgeDeadDeliveries(accountDir, cutoff),
+            });
+            // account_state (src/core/account-state.js): one word per change, to the webhook, the live buffer and
+            // /status, the same as `listen`; detail.presence is the mode presence runs in.
+            // A park and its wake stay out of the buffer a wait reads (createBufferStateFilter says why).
+            const intoBuffer = createBufferStateFilter();
+            const accountState = createAccountStateTracker({
+                accountId: activeAcc.ownId,
+                emit: (event) => {
+                    console.error(`[mcp] ${describeAccountState(event)}`);
+                    webhookDelivery?.enqueue(null, event);
+                    if (intoBuffer(event)) buffer.pushSystem(accountStateSystemEvent(event));
+                },
+                detail: () => daemonPresence?.detail() ?? { presence: presenceCheck.settings.mode },
+            });
+            health.setSource("accountState", () => accountState.current());
+            // session_expiring (src/core/session-notice.js): the saved login ends by itself; once per threshold (14, 7,
+            // 3, 1 days, ended) to the log, the webhook and the live buffer, the same as `listen`.
+            const sessionWatch = startSessionExpiryWatch({
+                ownId: activeAcc.ownId,
+                accountDir,
+                emit: (event) => {
+                    console.error(`[mcp] ${describeSessionExpiring(event)}`);
+                    webhookDelivery?.enqueue(null, event);
+                    buffer.pushSystem(sessionExpiringSystemEvent(event));
+                },
+            });
+            // A policy change (admin API, `policy set`, a file drop) counts from the next tool call: the per-call readers
+            // (confirm mode, approval, delivery modes) read the live policy themselves; what was set up at start is set
+            // up again here.
+            onPolicyChanged = (changed) => {
+                const id = activeAcc.ownId;
+                console.error(`[mcp] Policy changed: ${changed.join(", ")}`);
+                if (touches(changed, ["hiddenChats"])) {
+                    hiddenPolicy = resolveHiddenChats({ config, accountId: id });
+                    if (hiddenPolicy.mode !== "include") {
+                        mediaLinks.revokeWhere(
+                            (l) => l.threadId !== null && hidden.isHidden(l.threadId),
+                            "its chat is hidden by the policy",
+                        );
+                    }
+                }
+                if (touches(changed, ["media"])) {
+                    mediaPolicy = resolveMediaDelivery({ config, accountId: id });
+                    mediaAuth = resolveMediaLinkAuth({
+                        config,
+                        accountId: id,
+                        publicUrl: effectiveHttpPort ? publicUrl.publicUrl : null,
+                    });
+                    mediaLinks.configure({
+                        linkAuth: effectiveHttpPort ? mediaAuth.linkAuth : "capability",
+                        maxClients: mediaAuth.maxClients,
+                        clientTtlMs: mediaAuth.clientTtlMs,
+                        ttlMs: mediaPolicy.linkTtlMs,
+                        rateLimit: mediaPolicy.linkRateLimit,
+                    });
+                    startTempfileSweeper({ ttlMs: mediaPolicy.tempfileTtlMs });
+                    // Links issued under the old rule must not outlive it.
+                    if (touches(changed, ["media.linkAuth", "media.capability"])) {
+                        const n = mediaLinks.revokeAll("the link policy changed");
+                        if (n) console.error(`[mcp] ${n} media link(s) revoked: the link policy changed`);
+                    }
+                }
+                // A lower limit or a new rule is checked at once; a new interval counts from now.
+                if (touches(changed, ["quota", "retention"])) storageJobs.reschedule();
+                if (touches(changed, ["webhook", "webhookBatchSize", "webhookMaxAge"])) {
+                    applyWebhook(resolveWebhookUrl({ accountId: id, flag: opts.webhook, config }));
+                    securePage.configure({
+                        notify: webhookDelivery ? (payload) => webhookDelivery?.enqueue(null, payload) : null,
+                    });
+                }
+                // presence.*: live (a switch to always-on holds the socket now; one to on-demand starts the idle clock).
+                daemonPresence?.applyPolicy(changed);
+            };
+            /**
+             * Queue one buffered message for the webhook, in the shape `postMCPWebhook` always sent; a message in a
+             * hidden chat goes as the policy says: not at all, or as `{event, hidden: true}` with no ids or content.
+             */
+            const queueWebhook = (normalized) => {
+                const kind = normalized.type === "undo" ? "undo" : "message";
+                const view = hiddenEventView(normalized, hidden, hiddenPolicy.mode, { name: kind });
+                if (!view) return undefined;
+                const key = `${kind}:${normalized.msgId ?? normalized.cliMsgId}`;
+                if (view.hidden) {
+                    return webhookDelivery?.enqueue(`hidden-${key}`, {
+                        event: view.event,
+                        hidden: true,
+                        accountId: activeAcc.ownId,
+                    });
+                }
+                return webhookDelivery?.enqueue(
+                    key,
                     buildMCPWebhookPayload(normalized, { accountId: activeAcc.ownId }),
                 );
+            };
+            /**
+             * Hand one message (or recall) to the agents: the buffer, the notifier, the webhook. A hidden chat's is
+             * dropped under `exclude`; under `contentless` the buffer keeps it (the tools show it without content)
+             * and the notifier, whose preview names the sender, is skipped.
+             */
+            const deliverToAgents = (n, { notify = true } = {}) => {
+                const isHidden = hiddenPolicy.mode !== "include" && hidden.isHidden(n.threadId);
+                if (isHidden && hiddenPolicy.mode === "exclude") return;
+                buffer.push(n.threadId, n);
+                if (notify && !isHidden) notifier.onMessage(n);
+                queueWebhook(n);
+            };
 
             // Delivered receipts: the same shared implementation `listen` uses
             // (AGENTS.md §13 -- the two listeners must not differ). Diagnostics
@@ -731,6 +1254,11 @@ export function registerMCPCommands(program) {
                 const gapId = syncManager.recordGap(fromTs, Date.now(), reason);
                 if (!gapId) return false;
                 const since = new Date(fromTs).toISOString();
+                // A parked window (on-demand presence) is planned: one quiet line, the self-heal closes it.
+                if (reason === IDLE_GAP_REASON) {
+                    console.error(`[mcp] Parked since ${since}: catching up from Zalo's offline queue`);
+                    return true;
+                }
                 console.error(
                     opts.selfHeal !== false
                         ? `[mcp] Coverage gap (${reason}) since ${since}: recovering it now from Zalo's offline ` +
@@ -741,11 +1269,23 @@ export function registerMCPCommands(program) {
                 );
                 return true;
             };
-            const lifecycle = createGapTracker({ syncManager, reportGap });
+            const lifecycle = createGapTracker({
+                syncManager,
+                reportGap,
+                setState: setSyncState,
+                deleteState: clearSyncState,
+            });
 
             // Same startup check `listen` does: a window between the last
             // recorded connection and now is unobserved until something says so.
-            if (!reportGap(syncManager.getLastConnectedAt(), "startup-gap")) {
+            // One that ended in a park (a stop or crash while parked) is a planned window.
+            const lastConnectedAt = syncManager.getLastConnectedAt();
+            const parkedStamp = Number(getSyncState(PARKED_AT_KEY)) || null;
+            const startupReason = parkedStamp
+                ? startupGapReason({ lastConnectedAt, parkedAt: parkedStamp })
+                : "startup-gap";
+            if (parkedStamp) clearSyncState(PARKED_AT_KEY);
+            if (!reportGap(lastConnectedAt, startupReason)) {
                 syncManager.markConnected();
             }
             const pending = getPendingSyncGaps();
@@ -759,21 +1299,109 @@ export function registerMCPCommands(program) {
             }
             const mcpHeartbeatTimer = setInterval(() => lifecycle.heartbeat(), HEARTBEAT_MS);
 
+            // On-demand presence: when this daemon holds the account's socket (src/core/daemon-presence.js, shared
+            // with `listen`). Built before the socket host, which it drives through park/wake.
+            try {
+                daemonPresence = createDaemonPresence({
+                    ownId: activeAcc.ownId,
+                    config,
+                    transport: presenceRole,
+                    selfHeal: opts.selfHeal !== false,
+                    configDir: CONFIG_DIR,
+                    log: (line) => console.error(`[mcp] ${line}`),
+                    getSocketHost: () => socketHost,
+                    stageLock,
+                    deliveredReceipts,
+                    lifecycle,
+                    health,
+                    accountState,
+                    coveredUntil: () => syncManager.getLastConnectedAt(),
+                });
+            } catch (e) {
+                dropLock();
+                console.error(`[mcp] Refusing to start: ${e.message}`);
+                process.exit(1);
+            }
+            {
+                const p = daemonPresence.settings;
+                console.error(
+                    `[mcp] Presence: ${p.mode}${daemonPresence.forced ? ` (${daemonPresence.forced})` : ""}` +
+                        (p.mode === "on-demand"
+                            ? `: parks after ${Math.round(p.idleTimeoutMs / 1000)}s with no demand, ` +
+                              `never within ${Math.round(p.minConnectedMs / 1000)}s of a connect` +
+                              `${p.connectOnStart ? "; catches up once at start" : ""}`
+                            : ""),
+                );
+            }
+
             // The same catch-up `listen` runs (AGENTS.md §13): one stage at a
-            // time on this socket, a raw reader for the fields zca-js drops, and
+            // time on this socket, a raw reader for the fields the listener's events drop, and
             // the offline-queue pull on every handshake (src/core/self-heal.js).
             // `stageLock` is the one created before the server above.
             const socketTap = createSocketTap({ log: (line) => console.error(`[mcp] ${line}`) });
             // The read state other devices report, stored exactly as `listen`
             // stores it, so a thread the human read on the phone stops
             // looking unread (src/core/read-state.js).
-            createReadStateSync({ tap: socketTap, log: (line) => console.error(`[mcp] ${line}`) });
+            createReadStateSync({
+                tap: socketTap,
+                ownId: activeAcc.ownId,
+                log: (line) => console.error(`[mcp] ${line}`),
+            });
+            // A user's last-online time as Zalo pushes it (602 online_status), kept for zalo_friend `last_online`
+            // with `cached`, as in `listen` (src/core/last-online.js).
+            attachLastOnline({ tap: socketTap, log: (line) => console.error(`[mcp] ${line}`) });
+            // The cloud queue, kept current when the server says it may be stale (cmd 621): bounded, read-only,
+            // never beside another stage (src/core/cloud-verify.js). Same in `listen` and `mcp start`.
+            createCloudVerifier({
+                tap: socketTap,
+                getApi,
+                lock: stageLock,
+                log: (line) => console.error(`[mcp] ${line}`),
+            });
+            // The control actions the server sends that nobody handles, named once in the account folder
+            // (src/core/unknown-acts.js). Same in `listen` and `mcp start`.
+            attachUnknownActs({
+                tap: socketTap,
+                file: join(accountDir, "unknown-acts.json"),
+                log: (line) => console.error(`[mcp] ${line}`),
+            });
+            // The text of a voice message Zalo transcribed arrives as a control push; it is kept in the account
+            // folder for `read run voice-transcript` (src/core/voice-text.js). Same in `listen` and `mcp start`.
+            attachVoiceText({
+                tap: socketTap,
+                file: voiceTextFile(accountDir),
+                log: (line) => console.error(`[mcp] ${line}`),
+            });
+            // A DM reminder created, edited or removed on another device is stored or dropped in the cache, a
+            // device-list change is logged, the conversation, quick-message, catalog and settings changes are read
+            // (there is no cache of them to keep), as in `listen` (src/core/control-events.js); the events are
+            // printed only by `listen`.
+            attachControlEvents({
+                tap: socketTap,
+                ownId: activeAcc.ownId,
+                log: (line) => console.error(`[mcp] ${line}`),
+            });
+            // Hidden chats hidden, unhidden or their PIN changed or removed on another device (601 `hidden_chat`).
+            // Same in `listen` and `mcp start`.
+            attachHiddenChatControls({ tap: socketTap, set: hidden, getApi, readControls });
+            // End-to-end encrypted messages this client cannot read: the first is named in the log, the rest counted.
+            const undecryptable = createUndecryptableNotice({ log: (line) => console.error(`[mcp] ${line}`) });
             const selfHeal = createSelfHeal({
                 getApi,
                 tap: socketTap,
                 lock: stageLock,
                 enabled: opts.selfHeal !== false,
                 log: (line) => console.error(`[mcp] ${line}`),
+                // Coverage never spans a device change (src/core/device-since.js). Same in `listen`.
+                deviceSince: () => deviceSinceOf(activeAcc.ownId, getApi()),
+                // A catch-up finished: on-demand presence ends its start-up and pulse holds. Same in `listen`.
+                onRun: ({ ms }) => daemonPresence?.noteCatchUpDone({ ms }),
+                // Zalo dropped part of a queue: the log, the webhook and the live buffer, like the other notices.
+                onNotice: (event) => {
+                    console.error(`[mcp] ${describeQueueOverflow(event)}`);
+                    webhookDelivery?.enqueue(null, event);
+                    buffer.pushSystem(queueOverflowSystemEvent(event));
+                },
                 // A bot must see what arrived while the socket was down, as it
                 // would have seen it live -- same filters, flagged as catch-up.
                 onRecovered: (items) => {
@@ -783,9 +1411,7 @@ export function registerMCPCommands(program) {
                         const normalized = { ...normalizeMessage(msg, info), catchUp: true };
                         if (!filter.shouldWatch(normalized.threadId, normalized.threadType)) continue;
                         if (!filter.shouldKeep(normalized)) continue;
-                        buffer.push(normalized.threadId, normalized);
-                        notifier.onMessage(normalized);
-                        queueWebhook(normalized);
+                        deliverToAgents(normalized);
                     }
                 },
             });
@@ -814,11 +1440,16 @@ export function registerMCPCommands(program) {
             /**
              * Attach Zalo listener handlers to the current API instance.
              * Must be called again after each re-login with the new API instance.
-             * @param {object} api - zca-js API instance
+             * @param {object} api - session object
              */
             function attachListenerHandlers(api) {
                 health.attach(api.listener);
+                daemonAliases.attach(api.listener);
                 api.listener.on("message", (msg) => {
+                    // A message Zalo re-sent (534) that is already stored was buffered when it was stored; self-heal
+                    // owns re-pushes, so it is not buffered or posted twice.
+                    if (selfHeal.isRepeatedRepush(msg)) return;
+                    undecryptable.note(msg);
                     // Persist FIRST and unconditionally. The buffer is what an
                     // agent polls; the cache is the durable record, and it must
                     // not depend on whether a thread happens to be watched or
@@ -858,9 +1489,7 @@ export function registerMCPCommands(program) {
                     // Apply noise filter (stickers, system msgs, short emoji)
                     if (!filter.shouldKeep(normalized)) return;
 
-                    buffer.push(normalized.threadId, normalized);
-                    notifier.onMessage(normalized);
-                    queueWebhook(normalized);
+                    deliverToAgents(normalized);
                     console.error(
                         `${DEBUG_MARK}[mcp] Buffered ${normalized.threadType} msg from ${normalized.threadId}`,
                     );
@@ -888,6 +1517,18 @@ export function registerMCPCommands(program) {
                 api.listener.on("undo", (u) => {
                     const r = storeLiveUndo(u);
                     if (!r.stored && r.reason) console.error(`[mcp] recall not applied: ${r.reason}`);
+                    // The cache is updated above whatever happens next; this is what an agent
+                    // sees. A recall used to stop at the cache, so a waiter on
+                    // zalo_wait_for_message never woke for one and zalo_get_messages never
+                    // listed it (bug-reports #3). Self recalls are the agent's own zalo_undo.
+                    if (u?.isSelf) return;
+                    const recalled = normalizeUndo(u);
+                    if (!recalled) return;
+                    if (!filter.shouldWatch(recalled.threadId, recalled.threadType)) return;
+                    deliverToAgents(recalled, { notify: false });
+                    console.error(
+                        `${DEBUG_MARK}[mcp] Buffered recall of ${recalled.msgId ?? recalled.cliMsgId} in ${recalled.threadId}`,
+                    );
                 });
 
                 api.listener.on("delivered_messages", (m) => storeReceipts(m, STATUS_RECEIVED));
@@ -895,6 +1536,20 @@ export function registerMCPCommands(program) {
 
                 api.listener.on("group_event", (event) => {
                     noteBoardChange(event);
+                    // Same call as `listen`: our uid tells being removed from removing someone else. A gone group's
+                    // later events are skipped until a join names us (as Zalo does).
+                    const gone = storeGroupEvent(event, { ownId: activeAcc.ownId });
+                    if (gone.ignored) return;
+                    if (gone.gone) {
+                        // Purge or keep (groups.onLeave, read now); the group_gone event goes through the sink.
+                        applyGroupExit({
+                            ownId: activeAcc.ownId,
+                            threadId: gone.threadId,
+                            reason: gone.reason,
+                            at: gone.at,
+                        }).catch((e) => console.error(`[mcp] group exit of ${gone.threadId} failed: ${e.message}`));
+                        return;
+                    }
                     storeGroupEventRow(event);
                     const groupName = typeof event?.data?.groupName === "string" ? event.data.groupName.trim() : "";
                     if (groupName && event?.threadId !== undefined && event?.threadId !== null) {
@@ -903,10 +1558,6 @@ export function registerMCPCommands(program) {
                             nameCache?.set(tid, { name: groupName, type: "group" });
                         }
                     }
-                    // Same call as `listen`: our uid tells being removed from
-                    // removing someone else, and a later event clears the flag.
-                    const gone = storeGroupEvent(event, { ownId: activeAcc.ownId });
-                    if (gone.gone) console.error(`[mcp] no longer in ${gone.threadId} — local history orphaned`);
                 });
 
                 api.listener.on("connected", () => {
@@ -919,47 +1570,17 @@ export function registerMCPCommands(program) {
 
                 api.listener.on("disconnected", (code) => {
                     if (lifecycle.isStopping()) return;
+                    // A park's close (on-demand presence) is planned, like a shutdown's.
+                    if (socketHost.isParking() || socketHost.isParked()) return;
+                    // After a kick the socket host has already said why it is not reconnecting.
+                    if (socketHost.kicked()) return;
                     console.error(`[mcp] Disconnected (code: ${code}). Auto-retrying... (${socketContext.describe()})`);
+                    if (!lifecycle.isDown()) reconnectCount++;
                     lifecycle.noteDown();
                 });
 
-                api.listener.on("closed", async (code) => {
-                    if (lifecycle.isStopping()) return;
-                    lifecycle.noteDown();
-                    if (code === CLOSE_DUPLICATE) {
-                        dropLock();
-                        console.error("[mcp] Duplicate Zalo Web session detected. Exiting.");
-                        process.exit(1);
-                    }
-                    reconnectCount++;
-                    console.error(
-                        `[mcp] Connection closed (code: ${code}). Re-login in 5s... (reconnect #${reconnectCount}; ${socketContext.describe()})`,
-                    );
-                    await new Promise((r) => setTimeout(r, 5000));
-                    try {
-                        clearSession();
-                        await loginDaemonAccount(activeAcc);
-                        console.error("[mcp] Re-login successful. Restarting listener...");
-                        const newApi = getApi();
-                        attachListenerHandlers(newApi);
-                        newApi.listener.start({ retryOnClose: true });
-                    } catch (e) {
-                        console.error(`[mcp] Re-login failed: ${e.message}. Retrying in 30s...`);
-                        await new Promise((r) => setTimeout(r, 30000));
-                        try {
-                            clearSession();
-                            await loginDaemonAccount(activeAcc);
-                            const retryApi = getApi();
-                            attachListenerHandlers(retryApi);
-                            retryApi.listener.start({ retryOnClose: true });
-                            console.error("[mcp] Re-login successful on retry.");
-                        } catch (e2) {
-                            dropLock();
-                            console.error(`[mcp] Re-login retry failed: ${e2.message}. Exiting.`);
-                            process.exit(1);
-                        }
-                    }
-                });
+                // There is no `closed` handler on purpose; see the same place in `listen`. The socket
+                // host (src/core/socket-host.js) keeps this socket alive and ends the daemon on a kick.
 
                 api.listener.on("error", () => {
                     // WS errors are followed by close/disconnect — suppress to avoid noise
@@ -972,6 +1593,7 @@ export function registerMCPCommands(program) {
                 // for a window nothing was missed in.
                 lifecycle.setStopping();
                 health.noteStopping();
+                daemonPresence?.stop();
                 clearInterval(mcpHeartbeatTimer);
                 deliveredReceipts.stop();
                 const receipts = deliveredReceipts.stats();
@@ -983,23 +1605,73 @@ export function registerMCPCommands(program) {
                 } catch (e) {
                     console.error(`[mcp] Failed to stamp shutdown state: ${e.message}`);
                 }
+                // The supervisor first, so the close that follows is read as a stop and not as a drop.
+                socketHost.stop().catch(() => {});
                 try {
                     getApi().listener.stop();
                 } catch {
                     /* already stopped */
                 }
                 notifier?.destroy();
+                policyRuntime.stop();
+                storageJobs.stop();
+                sessionWatch.stop();
                 webhookDelivery?.stop();
+                mediaLinks.revokeAll("the server stopped");
                 httpServer?.close();
                 dropLock();
                 process.exit(0);
             };
 
+            // The one place that keeps the socket alive, shared with `listen`.
+            const socketHost = createSocketHost({
+                log: (_level, message) => console.error(`[mcp] ${message}`),
+                // The supervisor's states reach presence, health and account_state through one place.
+                health: { noteSocketState: (state) => daemonPresence.noteSocketState(state) },
+                // On-demand: a kick by another session of this login yields (the daemon stays up, refusing requests
+                // until `presence resume`); a park marks its close as planned before the supervisor stops.
+                yieldOnKick: () => daemonPresence.yieldOnKick(),
+                onParking: () => daemonPresence.onParking(),
+                isStopping: () => lifecycle.isStopping(),
+                anomalyFile: join(accountDir, "sock-anomaly.json"),
+                kickFile: kickFile(accountDir),
+                relogin: async () => {
+                    clearSession();
+                    await loginDaemonAccount(activeAcc);
+                    const newApi = getApi();
+                    attachListenerHandlers(newApi);
+                    return newApi;
+                },
+                onKicked: () => {
+                    // Said before the exit: the account is not coming back by itself.
+                    accountState.note("kicked", { exitCode: EXIT_CODE.KICKED });
+                    // The session ended: no media link may outlive it, even for the moments before the exit.
+                    mediaLinks.revokeAll("the session ended");
+                    dropLock();
+                    process.exit(EXIT_CODE.KICKED);
+                },
+                onRevoked: (e) => {
+                    mediaLinks.revokeAll("the session ended");
+                    console.error(
+                        `[mcp] Zalo keeps refusing the saved login (${e?.message ?? e}): another browser or device ` +
+                            "took the web login. Add the account again by QR (`zalo-agent login`).",
+                    );
+                    // Signed out: the daemon stays up (status, API, a QR re-add) and refuses requests; exit 4 only with
+                    // ZALO_EXIT_ON_SIGNED_OUT[_<ownId>]=1.
+                    if (daemonPresence.signOut(e)) return;
+                    accountState.note("login_needed", { exitCode: EXIT_CODE.SESSION_REVOKED });
+                    dropLock();
+                    process.exit(EXIT_CODE.SESSION_REVOKED);
+                },
+            });
+
             // Wire listener and start
             try {
                 const api = getApi();
                 attachListenerHandlers(api);
-                api.listener.start({ retryOnClose: true });
+                // The host takes the session; presence opens the socket now (always-on, the start-up catch-up) or
+                // on the first demand.
+                daemonPresence.start(api);
                 console.error("[mcp] Zalo listener started. MCP server ready.");
                 // This process holds the account's one permitted socket, so it
                 // performs the work that needs one on behalf of the CLI:
@@ -1019,6 +1691,25 @@ export function registerMCPCommands(program) {
                         lock: stageLock,
                         onStop: shutdown,
                         onStatus: () => health.snapshot(),
+                        // `policy set|unset`: applied here, so it counts at once (src/core/policy-store.js).
+                        onPolicy: servePolicyRequest,
+                        // `db purge`: this daemon is the account's one writer, so the purge runs here.
+                        onPurge: ({ dryRun }) => ({ report: storageJobs.runNow({ dryRun: dryRun !== false }) }),
+                        // `presence status|wake|park|resume`, and the fleet controller's relay.
+                        onPresence: (p) => daemonPresence.serve(p),
+                        // An upload, a sync stage, a wait: each holds the socket (refused while yielded or signed out).
+                        presenceGate: (o) => daemonPresence.admit(o),
+                        // `msg media --deliver link`: a link this daemon serves (on its HTTP port, or 127.0.0.1).
+                        onMediaLink: ({ msgId }) =>
+                            linkForCachedMessage({
+                                row: getMessageById(msgId),
+                                scope: scopeOfDir(accountDir),
+                                accountId: activeAcc.ownId,
+                                hidden: hiddenPolicy.mode === "include" ? null : hidden,
+                                links: mediaLinks,
+                                ensureServed: ensureMediaServed,
+                                policy: mediaPolicy,
+                            }),
                         onWait: async (params, signal) => {
                             const cleanThreadId =
                                 typeof params?.threadId === "string" && params.threadId.trim()
@@ -1109,8 +1800,7 @@ export function registerMCPCommands(program) {
         .option("--timeout <seconds>", "Maximum seconds to wait before returning timeout (1-300, default: 55)", "55")
         .option(
             "-n, --limit <count>",
-            `Return up to this many buffered messages in one call, in order (1-${MAX_BATCH}, default: 1)`,
-            "1",
+            "Return at most this many buffered messages, in order (default: every message already waiting)",
         )
         .option(
             "--settle <ms>",
@@ -1143,9 +1833,9 @@ export function registerMCPCommands(program) {
                 error(`Invalid --consumer "${consumer}": must be 1-64 characters matching [A-Za-z0-9._:@-].`);
                 process.exit(1);
             }
-            const limit = Number(opts.limit);
-            if (!Number.isInteger(limit) || limit < 1 || limit > MAX_BATCH) {
-                error(`Invalid --limit "${opts.limit}": must be an integer between 1 and ${MAX_BATCH}.`);
+            const limit = opts.limit === undefined ? undefined : Number(opts.limit);
+            if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) {
+                error(`Invalid --limit "${opts.limit}": must be a whole number of at least 1.`);
                 process.exit(1);
             }
             const settleMs = Number(opts.settle);
@@ -1195,6 +1885,11 @@ export function registerMCPCommands(program) {
                 () => {
                     if (res.status === "message" && res.messages?.length) {
                         for (const m of res.messages) {
+                            // A system event (account_state, group_gone, queue_overflow, session_expiring, storage_quota) is no message.
+                            if (m.system) {
+                                info(`[cursor ${m._cursor}] ${m.type}: ${m.text ?? ""}`);
+                                continue;
+                            }
                             const label = m.threadName ? `${m.threadName} (${m.threadId})` : m.threadId;
                             success(
                                 `[cursor ${m._cursor}] ${m.senderName || m.senderId} in ${label}: ${m.text || `(${m.type})`}`,
@@ -1272,4 +1967,5 @@ export function registerMCPCommands(program) {
         });
 
     registerMCPWebhookCommands(mcp, program);
+    registerMCPApproverCommand(mcp, program);
 }

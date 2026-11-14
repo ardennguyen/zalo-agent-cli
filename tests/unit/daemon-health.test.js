@@ -417,3 +417,50 @@ describe("HTTP routes", () => {
         assert.equal((await fetch(`${base}/ready`)).status, 200, "no health object: nothing to say it is not ready");
     });
 });
+
+describe("socket supervisor states", () => {
+    it("shows maintenance, a kick and a login being redone as states of their own, and none of them is ready", () => {
+        health.noteUp();
+        for (const [supervisorState, shown] of [
+            ["maintenance", "maintenance"],
+            ["kicked", "kicked"],
+            ["session-invalid", "relogin"],
+        ]) {
+            health.noteSocketState(supervisorState);
+            const s = health.snapshot();
+            assert.equal(s.socket.state, shown);
+            assert.equal(s.ready, false);
+            assert.equal(health.ready().ready, false);
+            assert.ok(s.warnings.length >= 1, `${shown} should warn`);
+        }
+    });
+
+    it("explains each in its warning", () => {
+        health.noteSocketState("maintenance");
+        assert.match(health.snapshot().warnings.join("\n"), /Zalo is in maintenance/);
+        health.noteSocketState("kicked");
+        assert.match(health.snapshot().warnings.join("\n"), /another Zalo session took this account/);
+        health.noteSocketState("session-invalid");
+        assert.match(health.snapshot().warnings.join("\n"), /logging in again/);
+    });
+
+    it("leaves up and down to the listener's events, but ends a hold when the supervisor moves on", () => {
+        health.noteUp();
+        health.noteSocketState("connecting");
+        health.noteSocketState("retrying");
+        health.noteSocketState("offline");
+        assert.equal(health.snapshot().socket.state, "up", "the supervisor's own states must not flip up to down");
+        health.noteSocketState("maintenance");
+        health.noteSocketState("connecting");
+        assert.equal(health.snapshot().socket.state, "down", "a hold must not outlive the supervisor's move");
+        health.noteUp();
+        assert.equal(health.snapshot().socket.state, "up");
+    });
+
+    it("never undoes a shutdown", () => {
+        health.noteStopping();
+        health.noteSocketState("kicked");
+        health.noteSocketState("connecting");
+        assert.equal(health.snapshot().socket.state, "stopping");
+    });
+});

@@ -2,7 +2,7 @@
  * src/core/sync.js — the sync-freshness debounce (`checkSyncFreshness`,
  * `markSyncSuccess`, `getLastSuccessfulSyncAt`).
  *
- * Background: a live capture of Zalo Web (2026-09-21) showed that after a
+ * Background: a live capture (2026-09-21) showed that after a
  * successful sync it sets a "sufficient messages / synced recently" marker and
  * a repeat "Đồng bộ tin nhắn" becomes a silent no-op — it never re-opens the
  * transfer session, so it never re-pings the phone. This suite covers the CLI
@@ -20,7 +20,7 @@ import assert from "node:assert/strict";
 import EventEmitter from "node:events";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { SyncManager, SYNC_FRESHNESS_MS } from "../../src/core/sync.js";
-import { recordSyncGap } from "../../src/core/db.js";
+import { markSyncRangesPending, recordSyncGap, setSyncRangeStatus } from "../../src/core/db.js";
 
 const THREAD_USER = 0;
 const THREAD_GROUP = 1;
@@ -101,6 +101,26 @@ describe("SyncManager sync-freshness debounce", () => {
         const r = manager.checkSyncFreshness({ now: last + 1000 });
         assert.equal(r.skip, false);
         assert.equal(r.reason, "pending-gap");
+    });
+
+    it("a conversation range a restore left unfinished forces a sync, even when fresh (Y5b)", () => {
+        manager.markSyncSuccess("transfer");
+        manager._ensureDb();
+        markSyncRangesPending([{ partition: "oneone/X", fromTs: 0, toTs: 10 }]);
+        const last = manager.getLastSuccessfulSyncAt();
+        const r = manager.checkSyncFreshness({ now: last + 1000 });
+        assert.equal(r.skip, false);
+        assert.equal(r.reason, "unfinished-ranges");
+    });
+
+    it("a failed range does too, and settled ranges do not", () => {
+        manager.markSyncSuccess("transfer");
+        manager._ensureDb();
+        setSyncRangeStatus("oneone/X", "done", { fromTs: 0, toTs: 10 });
+        const last = manager.getLastSuccessfulSyncAt();
+        assert.equal(manager.checkSyncFreshness({ now: last + 1000 }).skip, true, "only settled ranges: still fresh");
+        setSyncRangeStatus("group/Y", "failed", { reason: "error:1" });
+        assert.equal(manager.checkSyncFreshness({ now: last + 1000 }).reason, "unfinished-ranges");
     });
 
     it("a narrow --days run does not suppress a later, wider one", () => {

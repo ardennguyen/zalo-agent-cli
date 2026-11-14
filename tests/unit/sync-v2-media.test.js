@@ -6,6 +6,8 @@
  * expiry: a lapsed Zalo URL answers **HTTP 200** with a small JSON error body,
  * so a downloader that trusts the status code silently writes garbage files.
  */
+// The cache is encrypted under a keyring the key layer makes: the sandbox gives it its offline test provider.
+import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -30,15 +32,31 @@ import {
     DEFAULT_REQUEST_TIMEOUT_MS,
     THROTTLE_GIVE_UP,
     pruneDownloadedMedia,
+    jpegUrl,
 } from "../../src/core/sync-v2/media.js";
-import { extractRenewedUrls } from "../../src/core/sync-v2/renewlink.js";
+import { extractRenewedUrls } from "../../src/zalo/custom/renewlink.js";
+import { CONFIG_DIR } from "../../src/core/credentials.js";
+import { readSealedJson } from "../../src/core/keystore/index.js";
+import { scopeOfDir } from "../../src/core/keystore/keyring.js";
+import { mediaFileState, readMediaFile } from "../../src/core/keystore/media-seal.js";
 
+/** The plaintext of a downloaded file, which is sealed on disk (no byte of it in the clear). */
+function plainOf(file, accountDir, msgId) {
+    assert.equal(mediaFileState(file), "sealed", `${file} is not sealed`);
+    const bytes = readMediaFile(file, scopeOfDir(accountDir), { msgId });
+    assert.equal(readFileSync(file).includes(bytes.subarray(0, 64)), false, `${file} holds plaintext`);
+    return bytes;
+}
+
+assertSandboxed(CONFIG_DIR);
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-media-test-"));
 const opened = [];
 let server;
 let base;
 /** Counts requests per path so tests can assert a renewal actually re-fetched. */
 let hits;
+/** The request headers of every request the server saw, in order. */
+let heads = [];
 
 const PHOTO_BYTES = Buffer.from("\xff\xd8\xff\xe0JFIF-pretend-jpeg", "binary");
 /**
@@ -54,6 +72,15 @@ before(async () => {
     server = createServer((req, res) => {
         const path = req.url.split("?")[0];
         hits[path] = (hits[path] || 0) + 1;
+        heads.push(req.headers);
+        if (path === "/jpg/9/abc.jpg") {
+            res.writeHead(200, { "content-type": "image/jpeg" });
+            return res.end(PHOTO_BYTES);
+        }
+        if (path.endsWith(".jxl")) {
+            res.writeHead(200, { "content-type": "image/jxl" });
+            return res.end(Buffer.from("pretend-jxl"));
+        }
         if (path === "/ok.jpg" || path === "/renewed.jpg") {
             res.writeHead(200, { "content-type": "image/jpeg" });
             return res.end(PHOTO_BYTES);
@@ -209,7 +236,28 @@ describe("downloadSyncedMedia — happy path", () => {
         const saved = getMessages("t1").find((m) => m.msgId === id);
         assert.ok(saved.localPath, "localPath was not recorded");
         assert.ok(existsSync(saved.localPath));
-        assert.deepEqual(readFileSync(saved.localPath), PHOTO_BYTES);
+        assert.deepEqual(plainOf(saved.localPath, dir, saved.msgId), PHOTO_BYTES);
+    });
+
+    it("fetches a JPEG XL photo as its JPEG twin, as Zalo does for a client without JPEG XL (bug-reports #8)", async () => {
+        const id = row({}, [photo("/jxl/9/abc.jxl?jxlstatus=1")]);
+        const stats = await downloadSyncedMedia({ accountDir: dir, limit: 10 });
+        assert.equal(stats.downloaded, 1);
+        const saved = getMessages("t1").find((m) => m.msgId === id);
+        assert.match(saved.localPath, /\.jpg$/, "saved as .jxl, which most viewers and models cannot open");
+        assert.deepEqual(plainOf(saved.localPath, dir, saved.msgId), PHOTO_BYTES);
+    });
+
+    it("a photo that has only an HD or only a thumbnail link is still fetched, not skipped forever", async () => {
+        const hd = row({}, [{ kind: "photo", hdUrl: `${base}/ok.jpg`, thumbUrl: `${base}/thumb.jpg` }]);
+        const thumbOnly = row({}, [{ kind: "photo", thumbUrl: `${base}/thumb.jpg` }]);
+        const stats = await downloadSyncedMedia({ accountDir: dir, limit: 10 });
+        assert.equal(stats.downloaded, 2, JSON.stringify(stats));
+        const rows = getMessages("t1");
+        const hdPath = rows.find((m) => m.msgId === hd).localPath;
+        assert.ok(hdPath, "the HD-only photo was never downloaded");
+        assert.deepEqual(plainOf(hdPath, dir), PHOTO_BYTES, "the thumbnail was taken over the HD photo");
+        assert.ok(rows.find((m) => m.msgId === thumbOnly).localPath, "the thumbnail-only photo was never downloaded");
     });
 
     it("files media under the thread ID, not its display name", async () => {
@@ -248,7 +296,9 @@ describe("downloadSyncedMedia — happy path", () => {
             accountDir: dir,
             threadNames: new Map([["t1", { name: "Team Chat", type: "group" }]]),
         });
-        const index = JSON.parse(readFileSync(join(dir, "media", "_conversations.json"), "utf8"));
+        const indexFile = join(dir, "media", "_conversations.json");
+        assert.equal(readFileSync(indexFile).includes("Team Chat"), false, "the index is sealed");
+        const index = readSealedJson(indexFile, scopeOfDir(dir), { kind: "media-index" });
         assert.equal(index.t1.name, "Team Chat");
         assert.equal(index.t1.type, "group");
     });
@@ -271,10 +321,69 @@ describe("downloadSyncedMedia — happy path", () => {
         assert.equal(hits["/ok.jpg"], 1);
     });
 
+    it("downloads in the account's own identity: its User-Agent and the expected Referer, no cookie", async () => {
+        heads = [];
+        row({}, [photo("/ok.jpg")]);
+        const api = { getContext: () => ({ userAgent: "Test-UA/1.0", options: {} }) };
+        const stats = await downloadSyncedMedia({ accountDir: dir, api });
+        assert.equal(stats.downloaded, 1);
+        const h = heads.find((x) => x.referer);
+        assert.ok(h, "the download carried a Referer");
+        assert.equal(h["user-agent"], "Test-UA/1.0");
+        assert.equal(h.referer, "https://chat.zalo.me/");
+        assert.equal(h.cookie, undefined);
+    });
+
     it("downloads several attachments concurrently", async () => {
         for (let i = 0; i < 8; i++) row({}, [photo("/ok.jpg")]);
         const stats = await downloadSyncedMedia({ accountDir: dir, concurrency: 4, limit: 50 });
         assert.equal(stats.downloaded, 8);
+    });
+
+    it("fetches two at a time unless told otherwise", async () => {
+        for (let i = 0; i < 6; i++) row({}, [photo("/slow.jpg")]);
+        let live = 0;
+        let peak = 0;
+        const stats = await downloadSyncedMedia({
+            accountDir: dir,
+            limit: 50,
+            fetchImpl: async () => {
+                peak = Math.max(peak, ++live);
+                await new Promise((r) => setTimeout(r, 20));
+                live--;
+                return new Response(Buffer.from("x"), { status: 200, headers: { "content-type": "image/jpeg" } });
+            },
+        });
+        // Red if the default goes back to four (peak 4) or the workers stop sharing the queue (peak 1).
+        assert.equal(stats.downloaded, 6);
+        assert.equal(peak, 2);
+    });
+});
+
+describe("downloadSyncedMedia — maxFiles", () => {
+    it("downloads at most that many and counts the rest as deferred, still pending for the next run", async () => {
+        for (let i = 0; i < 5; i++) row({}, [photo("/ok.jpg")]);
+        const first = await downloadSyncedMedia({ accountDir: dir, limit: 50, maxFiles: 2 });
+        assert.equal(first.downloaded, 2);
+        assert.equal(first.considered, 2);
+        assert.equal(first.deferred, 3);
+
+        // Nothing was marked done for what was left out: the next run takes it.
+        const second = await downloadSyncedMedia({ accountDir: dir, limit: 50, maxFiles: 2 });
+        assert.equal(second.downloaded, 2);
+        assert.equal(second.deferred, 1);
+        const third = await downloadSyncedMedia({ accountDir: dir, limit: 50, maxFiles: 2 });
+        assert.equal(third.downloaded, 1);
+        assert.equal(third.deferred, 0);
+    });
+
+    it("is no cap at all when unset or larger than what is pending", async () => {
+        for (let i = 0; i < 3; i++) row({}, [photo("/ok.jpg")]);
+        const stats = await downloadSyncedMedia({ accountDir: dir, limit: 50, maxFiles: 10 });
+        assert.equal(stats.downloaded, 3);
+        assert.equal(stats.deferred, 0);
+        const none = await downloadSyncedMedia({ accountDir: dir, limit: 50 });
+        assert.equal(none.deferred, 0);
     });
 });
 
@@ -307,6 +416,67 @@ describe("downloadSyncedMedia — expiry", () => {
         assert.equal(asked.threadId, "t1");
         assert.equal(asked.msgType, 3);
         assert.ok(asked.msgInfo.normalUrl.endsWith("/expired.jpg"));
+    });
+
+    it("counts a gone file that the local zCloud index lists as cloud-backed, and one it does not list as not", async () => {
+        row({ msgId: "m-in-cloud" }, [photo("/expired.jpg")]);
+        row({ msgId: "m-not-in-cloud" }, [photo("/expired.jpg")]);
+        const stats = await downloadSyncedMedia({
+            accountDir: dir,
+            cloudLookup: (msgId) => ({ found: msgId === "m-in-cloud" }),
+        });
+        assert.equal(stats.expired, 2);
+        assert.equal(stats.failed, 2);
+        assert.equal(stats.cloudBacked, 1, "only the one the index lists");
+    });
+
+    it("asks the index with the queue key of the message, which is how most of its entries can be found", async () => {
+        // The queue's global message id is "0" for most entries; only cliMsgId_conversation_sender finds them.
+        row({ msgId: "m-zero" }, [photo("/expired.jpg")]);
+        let asked;
+        const stats = await downloadSyncedMedia({
+            accountDir: dir,
+            cloudLookup: (msgId, zKey) => {
+                asked = { msgId, zKey };
+                return { found: zKey === "999_t1_u1" };
+            },
+        });
+        assert.deepEqual(asked, { msgId: "m-zero", zKey: "999_t1_u1" });
+        assert.equal(stats.cloudBacked, 1);
+    });
+
+    it("counts only files that are gone: a refusal the index also lists is a different problem", async () => {
+        row({ msgId: "m-refused" }, [photo("/servererr.jpg")]);
+        const stats = await downloadSyncedMedia({
+            accountDir: dir,
+            backoffBaseMs: 0,
+            cloudLookup: () => ({ found: true }),
+        });
+        assert.equal(stats.expired, 0, "a 503 is not a gone file");
+        assert.equal(stats.cloudBacked, 0);
+    });
+
+    it("does not count a file the renewal brought back, even if the index lists it", async () => {
+        row({ msgId: "m-renewed" }, [photo("/expired.jpg")]);
+        const stats = await downloadSyncedMedia({
+            accountDir: dir,
+            renewLink: async () => ({ data: { normalUrl: `${base}/renewed.jpg` } }),
+            cloudLookup: () => ({ found: true }),
+        });
+        assert.equal(stats.downloaded, 1);
+        assert.equal(stats.cloudBacked, 0);
+    });
+
+    it("takes a lookup that cannot run for no verdict, not for a failure of the download pass", async () => {
+        row({ msgId: "m1" }, [photo("/expired.jpg")]);
+        const stats = await downloadSyncedMedia({
+            accountDir: dir,
+            cloudLookup: () => {
+                throw new Error("no database open");
+            },
+        });
+        assert.equal(stats.expired, 1);
+        assert.equal(stats.cloudBacked, 0);
     });
 
     it("gives up cleanly when renewal yields nothing usable", async () => {
@@ -375,6 +545,17 @@ describe("downloadSyncedMedia — filtering", () => {
         row({ threadId: "t2" }, [photo("/ok.jpg")]);
         const stats = await downloadSyncedMedia({ accountDir: dir, threadId: "t2" });
         assert.equal(stats.considered, 1);
+    });
+
+    it("fetches a message asked for by id, however many newer ones are pending (zalo_view_media)", async () => {
+        // The old view_media scan took the thread's 50 newest pending rows: an older message never downloaded.
+        const old = row({ timestamp: 1_600_000_000_000 }, [photo("/ok.jpg")]);
+        for (let i = 0; i < 60; i++) row({ timestamp: 1_750_000_000_000 + i }, [photo("/ok.jpg")]);
+        const stats = await downloadSyncedMedia({ accountDir: dir, threadId: "t1", msgIds: [old], limit: 1 });
+        assert.equal(stats.considered, 1);
+        assert.equal(stats.downloaded, 1);
+        assert.ok(getMessages("t1", 100).find((m) => m.msgId === old).localPath, "the asked message has its file");
+        assert.equal((await downloadSyncedMedia({ accountDir: dir, msgIds: [], dryRun: true })).considered, 0);
     });
 
     it("honours a time window", async () => {
@@ -784,7 +965,7 @@ describe("a text attachment is a file, not an error", () => {
 
         const saved = getMessages("t1").find((m) => m.msgId === id);
         assert.ok(saved.localPath, "localPath was not recorded");
-        assert.deepEqual(readFileSync(saved.localPath), CSV_BYTES, "the bytes on disk must be the CSV");
+        assert.deepEqual(plainOf(saved.localPath, dir, saved.msgId), CSV_BYTES, "the bytes on disk must be the CSV");
     });
 
     it("saves it even with no content-disposition to lean on", async () => {
@@ -1127,5 +1308,28 @@ describe("pruneDownloadedMedia — all mode", () => {
         await pruneDownloadedMedia({ all: true, now: NOW });
         const again = await downloadSyncedMedia({ accountDir: dir, limit: 100 });
         assert.equal(again.considered, 0);
+    });
+});
+
+describe("jpegUrl", () => {
+    it("turns a JPEG XL photo URL into its JPEG twin and drops the marker", () => {
+        assert.equal(
+            jpegUrl("https://f20-zpc.zdn.vn/jxl/123/abcdef.jxl?jxlstatus=1"),
+            "https://f20-zpc.zdn.vn/jpg/123/abcdef.jpg",
+        );
+        assert.equal(
+            jpegUrl("https://f20-zpc.zdn.vn/jxl/123/abcdef.jxl?jxlstatus=1&x=2"),
+            "https://f20-zpc.zdn.vn/jpg/123/abcdef.jpg?x=2",
+        );
+    });
+
+    it("leaves every other URL alone, and an encrypted session's URL in its own form", () => {
+        for (const u of ["https://f20-zpc.zdn.vn/jpg/1/a.jpg", "https://example.invalid/f.pdf", null, undefined]) {
+            assert.equal(jpegUrl(u), u);
+        }
+        assert.equal(
+            jpegUrl("https://f20-zpc.zdn.vn/jxl/1/a.jxl?e2esession=1&jxlstatus=1"),
+            "https://f20-zpc.zdn.vn/jxl/1/a.jxl?e2esession=1",
+        );
     });
 });

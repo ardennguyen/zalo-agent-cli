@@ -1,15 +1,14 @@
 /**
  * The protocol version this CLI announces to Zalo.
  *
- * zca-js defaults to zpw_ver=685 (`createContext(apiType = 30, apiVersion =
- * 685)`, zca-js dist/context.js); the live Zalo Web client sends 691 on every
- * URL (agent/work/zalo-web-capture-2026-09-29: FINDINGS.md §7, comparison
- * §3g). `createZalo()` now asks for 691, overridable with ZALO_API_VERSION so
+ * The previous engine defaulted to zpw_ver=685; Zalo expected 691 on every
+ * URL, then 694, and 695 now. `createZalo()` asks for 695, overridable with ZALO_API_VERSION so
  * a bad bump can be rolled back without a release.
  *
  * Asserted on the wire, through a real login against ./fake-zalo-session.js --
  * never by reading the options object back:
- *   - getLoginInfo carries it as zpw_ver AND client_version,
+ *   - getLoginInfo carries it as client_version, and no zpw_ver / zpw_type (the
+ *     protocol carries those on API calls only),
  *   - getServerInfo carries it as client_version,
  *   - an ordinary API call carries it as zpw_ver,
  *   - the WebSocket URL the listener would dial carries it as zpw_ver
@@ -43,8 +42,8 @@ async function announced(fake) {
 }
 
 const everywhere = (v) => ({
-    loginZpwVer: v,
-    loginZpwType: "30",
+    loginZpwVer: undefined,
+    loginZpwType: undefined,
     loginClientVersion: v,
     serverClientVersion: v,
     apiZpwVer: v,
@@ -59,7 +58,7 @@ describe("protocol version (zpw_ver / client_version)", () => {
     before(() => {
         assertSandboxed(CONFIG_DIR);
         assert.equal(CONFIG_DIR, SANDBOX_CONFIG_DIR);
-        process.env.ZALO_JSON_MODE = "1"; // keeps zca-js's login logging off stdout
+        process.env.ZALO_JSON_MODE = "1"; // keeps any login logging off stdout
         fake = installFakeZalo();
     });
 
@@ -75,8 +74,8 @@ describe("protocol version (zpw_ver / client_version)", () => {
         else process.env.ZALO_API_VERSION = saved;
     });
 
-    it("announces 691, the live Zalo Web version, by default", async () => {
-        assert.deepEqual(await announced(fake), everywhere("691"));
+    it("announces 695, the current protocol version, by default", async () => {
+        assert.deepEqual(await announced(fake), everywhere("695"));
     });
 
     it("announces ZALO_API_VERSION instead when it is set", async () => {
@@ -84,14 +83,14 @@ describe("protocol version (zpw_ver / client_version)", () => {
         assert.deepEqual(await announced(fake), everywhere("700"));
     });
 
-    it("can roll back to zca-js's 685", async () => {
+    it("can roll back to the previous engine's 685", async () => {
         process.env.ZALO_API_VERSION = "685";
         assert.deepEqual(await announced(fake), everywhere("685"));
     });
 
     it("treats an empty ZALO_API_VERSION as unset", async () => {
         process.env.ZALO_API_VERSION = "  ";
-        assert.deepEqual(await announced(fake), everywhere("691"));
+        assert.deepEqual(await announced(fake), everywhere("695"));
     });
 
     it("refuses anything but a positive whole number, naming the variable, before any request", async () => {

@@ -8,7 +8,7 @@
  * entry points now build one of these (AGENTS.md section 13: they must not differ) and expose it:
  *
  *   - `mcp start --http`: `GET /health` (liveness, unchanged shape plus the socket), `GET /ready`
- *     (200 only while the socket is up), and, behind the bearer token, `GET /status` (everything)
+ *     (200 while the socket is up, or parked idle by on-demand presence), and, behind the bearer token, `GET /status` (everything)
  *     and `GET /metrics` (Prometheus text).
  *   - both: `POST /status` on the loopback channel, which `listen --status` / `mcp start --status`
  *     print, so a `listen` daemon with no HTTP port is just as visible.
@@ -19,6 +19,7 @@
  */
 
 import { monitorEventLoopDelay } from "node:perf_hooks";
+import { EXPIRY_WARN_DAYS, describeSessionExpiry } from "./session-expiry.js";
 
 /** The listener events whose arrival means the account is alive; their counts are exported. */
 export const COUNTED_EVENTS = Object.freeze([
@@ -54,8 +55,10 @@ const ageSec = (since, now) => (typeof since === "number" ? Math.max(0, Math.rou
  *   noteUp: () => void,
  *   noteDown: (code?: number|string|null) => void,
  *   noteStopping: () => void,
+ *   noteParked: () => void,
+ *   noteSocketState: (state: string) => void,
  *   noteEvent: (kind: string, info?: {self?: boolean}) => void,
- *   setSource: (name: 'webhook'|'buffer'|'gaps'|'stage', fn: () => any) => void,
+ *   setSource: (name: 'webhook'|'buffer'|'gaps'|'stage'|'session'|'presence'|'accountState', fn: () => any) => void,
  *   snapshot: () => object,
  *   ready: () => {ready: boolean, socket: string},
  *   stop: () => void,
@@ -102,12 +105,50 @@ export function createDaemonHealth({ kind, accountId, version, now = Date.now })
             setState("up");
         },
         noteDown(code = null) {
-            if (socketState === "stopping") return;
+            // A parked socket closed on purpose (on-demand presence), or one let go to another session or after a
+            // refused login: that close is not a drop.
+            if (["stopping", "idle", "yielded", "signed-out"].includes(socketState)) return;
             lastClose = { code: code ?? null, at: now() };
             setState("down");
         },
         noteStopping() {
             setState("stopping");
+        },
+        /**
+         * On-demand presence parked the socket: `idle`, not `down`. It wakes on demand; a wake shows as `connecting`
+         * until the socket is up.
+         */
+        noteParked() {
+            if (socketState === "stopping") return;
+            setState("idle");
+        },
+        /** On-demand presence let the socket go to another session of the same login: it waits for a resume. */
+        noteYielded() {
+            if (socketState === "stopping") return;
+            setState("yielded");
+        },
+        /** Zalo keeps refusing the saved login: the daemon stays up, the account needs a QR login again. */
+        noteSignedOut() {
+            if (socketState === "stopping") return;
+            setState("signed-out");
+        },
+        /**
+         * What the socket supervisor says it is doing (src/zalo/socket.js). Up and down are still decided by
+         * the listener's own events; this adds the states a person must be able to see from outside:
+         * Zalo in maintenance, the account taken by another session, and a login being redone.
+         *
+         * @param {string} state - a supervisor state
+         */
+        noteSocketState(state) {
+            if (socketState === "stopping") return;
+            const named = { maintenance: "maintenance", kicked: "kicked", "session-invalid": "relogin" }[state];
+            if (named) return setState(named);
+            // A wake from idle (or a resume): a new supervisor is connecting.
+            if (["idle", "yielded"].includes(socketState) && ["connecting", "retrying", "offline"].includes(state))
+                return setState("connecting");
+            if (socketState === "signed-out") return;
+            // Any other supervisor state ends a hold, but leaves up and down to the listener's events.
+            if (["maintenance", "kicked", "relogin"].includes(socketState)) setState("down");
         },
         noteEvent(eventKind, { self = false } = {}) {
             lastEventAt = now();
@@ -125,7 +166,7 @@ export function createDaemonHealth({ kind, accountId, version, now = Date.now })
          * Subscribe to a listener. Call again with the new listener after a re-login.
          * Never subscribes to `cipher_key`, which carries the session's key material.
          *
-         * @param {object} listener - zca-js listener
+         * @param {object} listener - listener
          */
         attach(listener) {
             listener.on("connected", () => api.noteUp());
@@ -138,7 +179,8 @@ export function createDaemonHealth({ kind, accountId, version, now = Date.now })
 
         /** @returns {{ready: boolean, socket: string}} */
         ready() {
-            return { ready: socketState === "up", socket: socketState };
+            // Idle (a parked socket, on-demand presence) is ready too: the process serves, and wakes on demand.
+            return { ready: socketState === "up" || socketState === "idle", socket: socketState };
         },
 
         /** @returns {object} Everything, JSON-safe */
@@ -152,6 +194,9 @@ export function createDaemonHealth({ kind, accountId, version, now = Date.now })
             const buffer = read("buffer");
             const gaps = read("gaps");
             const stage = read("stage");
+            const session = read("session");
+            const presence = read("presence");
+            const accountState = read("accountState");
             const mem = process.memoryUsage();
             const p99Ms = lag.count ? lag.percentile(99) / 1e6 : 0;
             const maxMs = lag.count ? lag.max / 1e6 : 0;
@@ -162,6 +207,16 @@ export function createDaemonHealth({ kind, accountId, version, now = Date.now })
                     `socket down for ${ageSec(socketSince, t)}s (last close code ${lastClose?.code ?? "unknown"})`,
                 );
             }
+            if (socketState === "maintenance") warnings.push("Zalo is in maintenance; the daemon is waiting for it");
+            if (socketState === "kicked")
+                warnings.push("another Zalo session took this account; the daemon does not reconnect");
+            if (socketState === "relogin") warnings.push("Zalo refused the session; the daemon is logging in again");
+            if (socketState === "yielded")
+                warnings.push(
+                    "another session of this login holds the account; requests are refused until `presence resume`",
+                );
+            if (socketState === "signed-out")
+                warnings.push("Zalo refuses the saved login (another browser took it); add the account again by QR");
             if (webhook && webhook.pending && webhook.oldestPendingAgeMs >= WEBHOOK_AGE_WARN_MS) {
                 warnings.push(
                     `webhook backlog: ${webhook.pending} queued, oldest ${Math.round(webhook.oldestPendingAgeMs / 1000)}s` +
@@ -170,6 +225,9 @@ export function createDaemonHealth({ kind, accountId, version, now = Date.now })
             }
             if (webhook?.dead) warnings.push(`webhook: ${webhook.dead} dead-lettered event(s)`);
             if (gaps) warnings.push(`coverage: ${gaps} gap(s) not yet recovered`);
+            if (session && (session.expired || session.daysLeft <= EXPIRY_WARN_DAYS)) {
+                warnings.push(describeSessionExpiry(session).replace(/\.$/, ""));
+            }
             if (maxMs >= LAG_WARN_MS)
                 warnings.push(`event loop was blocked for ${(maxMs / 1000).toFixed(1)}s recently`);
 
@@ -181,7 +239,7 @@ export function createDaemonHealth({ kind, accountId, version, now = Date.now })
                 startedAt: iso(startedAt),
                 uptimeSec: Math.round((t - startedAt) / 1000),
                 status: warnings.length ? "degraded" : "ok",
-                ready: socketState === "up",
+                ready: socketState === "up" || socketState === "idle",
                 warnings,
                 socket: {
                     state: socketState,
@@ -203,6 +261,9 @@ export function createDaemonHealth({ kind, accountId, version, now = Date.now })
                     byKind: { ...counts },
                 },
                 coverage: { pendingGaps: gaps ?? 0 },
+                session,
+                presence,
+                accountState,
                 stage: stage ? { running: stage.stage, forSec: ageSec(stage.startedAt, t) } : null,
                 webhook,
                 buffer,
@@ -249,7 +310,43 @@ export function renderPrometheus(s) {
     metric("zalo_info", "gauge", "Daemon build and kind; the value is always 1.", [
         [`kind="${esc(s.kind)}",version="${esc(s.version)}"`, 1],
     ]);
-    metric("zalo_up", "gauge", "1 while the Zalo socket is connected, else 0.", one(s.ready ? 1 : 0));
+    metric("zalo_up", "gauge", "1 while the Zalo socket is connected, else 0.", one(s.socket.state === "up" ? 1 : 0));
+    if (s.accountState?.state) {
+        metric(
+            "zalo_presence_state",
+            "gauge",
+            "1 for the account's current state (idle, connecting, connected, kicked, yielded, login_needed, " +
+                "signed_out, maintenance).",
+            [[`state="${esc(s.accountState.state)}",mode="${esc(s.presence?.mode ?? "always-on")}"`, 1]],
+        );
+    }
+    if (s.presence) {
+        const secs = (ms) => (typeof ms === "number" ? Math.round(ms) / 1000 : null);
+        metric(
+            "zalo_presence_last_wake_seconds",
+            "gauge",
+            "Seconds the last wake took, from the first hold to the socket up (on-demand presence).",
+            one(secs(s.presence.lastWakeMs)),
+        );
+        metric(
+            "zalo_presence_last_catch_up_seconds",
+            "gauge",
+            "Seconds the last catch-up (self-heal after a handshake) took.",
+            one(secs(s.presence.lastCatchUpMs)),
+        );
+        metric(
+            "zalo_presence_connected_seconds_total",
+            "counter",
+            "Seconds the socket has been connected since the daemon started (metered for usage).",
+            one(secs(s.presence.meter?.connectedMs)),
+        );
+        metric(
+            "zalo_presence_wakes_total",
+            "counter",
+            "Wakes since the daemon started (on-demand presence).",
+            one(s.presence.meter?.wakes),
+        );
+    }
     metric(
         "zalo_socket_state_age_seconds",
         "gauge",
@@ -294,6 +391,12 @@ export function renderPrometheus(s) {
         "gauge",
         "Time windows whose messages are not yet recovered.",
         one(s.coverage.pendingGaps),
+    );
+    metric(
+        "zalo_session_days_left",
+        "gauge",
+        "Days until the saved Zalo session ends and a new QR login is needed (negative once it has).",
+        one(s.session?.daysLeft ?? null),
     );
     metric(
         "zalo_stage_running",

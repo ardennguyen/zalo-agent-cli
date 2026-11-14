@@ -10,8 +10,11 @@
  * signature produced by the real webhook sender.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
-import { describe, it, before } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { PROVIDER_NAMES } from "../../src/core/keystore/config.js";
+import { verifyOnReadMode } from "../../src/core/row-mac.js";
+import { validatePolicy } from "../../src/core/policy-schema.js";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -25,9 +28,20 @@ import {
     resolveAccountMCPConfig,
 } from "../../src/mcp/mcp-config.js";
 import { postMCPWebhook } from "../../src/commands/mcp.js";
+import {
+    DEFAULT_MEDIA_DELIVER,
+    resolveMediaDelivery,
+    resolveMediaLinkAuth,
+    resolvePublicUrl,
+    resolveTrustedProxies,
+    validatePublicUrl,
+} from "../../src/core/deploy-policy.js";
 import { eventsOf, verifyWebhook } from "../../docs/config-samples/clients/crm-webhook-receiver.mjs";
 import { createWebhookDispatcher, openOutbox } from "../../src/core/webhook-outbox.js";
 import { createDaemonHealth, renderPrometheus } from "../../src/core/daemon-health.js";
+import { PRESENCE_KEYS, resolvePresenceSettings } from "../../src/core/presence-config.js";
+import { generateFleetFiles } from "../../src/core/fleet.js";
+import { USE_CASES, generateFor } from "../helpers/use-case-manifest.js";
 
 before(() => {
     assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR);
@@ -62,7 +76,7 @@ describe("mcp-config samples", () => {
         it(`${file}: valid JSON that uses only keys the loader merges`, () => {
             const cfg = JSON.parse(read("mcp-config", file));
             for (const key of Object.keys(cfg)) assert.ok(known.has(key), `unknown top-level key "${key}"`);
-            for (const section of ["notify", "limits", "media", "tls", "oauth"]) {
+            for (const section of ["notify", "limits", "media", "tls", "oauth", "approval", "admin", "presence"]) {
                 for (const key of Object.keys(cfg[section] ?? {})) {
                     assert.ok(key in defaults[section], `unknown key "${key}" in "${section}"`);
                 }
@@ -71,6 +85,11 @@ describe("mcp-config samples", () => {
                 assert.match(id, /^[1-9][0-9]*$/, "an account block is keyed by the numeric account id");
                 for (const key of Object.keys(block))
                     assert.ok(known.has(key) && key !== "accounts", `${id}: unknown key "${key}"`);
+            }
+            // publicUrl is one address for the whole server; its 2.x names stay out of the samples.
+            assert.equal(cfg.oauth?.issuerUrl, undefined, "oauth.issuerUrl is the deprecated name of publicUrl");
+            if (cfg.publicUrl !== null && cfg.publicUrl !== undefined) {
+                assert.equal(validatePublicUrl(cfg.publicUrl).error, null, "a sample publicUrl must be usable");
             }
             // And it merges: no section the loader spreads is replaced by a non-object.
             const merged = mergeMCPConfigLayer(defaults, cfg);
@@ -92,6 +111,64 @@ describe("mcp-config samples", () => {
         });
     }
 
+    it("crm-backend.json: the CRM reaches this server, and its one-time pages, at one public address", () => {
+        const cfg = mergeMCPConfigLayer(defaults, JSON.parse(read("mcp-config", "crm-backend.json")));
+        assert.deepEqual(resolvePublicUrl({ config: cfg, env: {} }), {
+            publicUrl: "https://zalo.crm.example.com",
+            source: "publicUrl",
+            error: null,
+            deprecated: false,
+        });
+    });
+
+    it("every sample sets each media key explicitly, and they resolve to what the docs say", () => {
+        for (const file of list("mcp-config", ".json")) {
+            const cfg = mergeMCPConfigLayer(defaults, JSON.parse(read("mcp-config", file)));
+            for (const key of ["deliver", "inlineMaxBytes", "allowDeliver", "linkTtl", "tempfileTtl", "linkAuth"]) {
+                assert.notEqual(cfg.media[key], null, `${file}: media.${key} is set`);
+            }
+            const p = resolveMediaDelivery({ config: cfg, env: {} });
+            assert.deepEqual(p.deliver, DEFAULT_MEDIA_DELIVER, `${file}: the documented defaults, spelled out`);
+            assert.equal(p.inlineMaxBytes, 5_242_880);
+            assert.equal(p.linkTtlMs, 600_000);
+        }
+        const auth = (file, id) => {
+            const base = mergeMCPConfigLayer(defaults, JSON.parse(read("mcp-config", file)));
+            const cfg = id ? resolveAccountMCPConfig(base, { accountId: id }).config : base;
+            return resolveMediaLinkAuth({ config: cfg, env: {}, accountId: id, publicUrl: cfg.publicUrl });
+        };
+        assert.equal(auth("internet.json").linkAuth, "bearer");
+        assert.equal(auth("crm-backend.json").linkAuth, "bearer");
+        assert.equal(auth("local-agent.json").linkAuth, "capability");
+        assert.deepEqual(
+            [auth("multi-account.json", "1000000000000000002").maxClients, auth("multi-account.json").maxClients],
+            [10, 3],
+            "a per-account tier raises the capability limit for that account only",
+        );
+        const internet = mergeMCPConfigLayer(defaults, JSON.parse(read("mcp-config", "internet.json")));
+        assert.deepEqual(resolveMediaDelivery({ config: internet, env: {} }).allowDeliver, ["inline", "link"]);
+        assert.deepEqual(resolveTrustedProxies({ config: internet, env: {} }), ["127.0.0.1"]);
+    });
+
+    it("every sample sets each presence key explicitly; backends are on-demand, the local agent always-on", () => {
+        for (const file of list("mcp-config", ".json")) {
+            const cfg = mergeMCPConfigLayer(defaults, JSON.parse(read("mcp-config", file)));
+            for (const key of Object.keys(PRESENCE_KEYS)) {
+                assert.notEqual(cfg.presence[key], null, `${file}: presence.${key} is set`);
+            }
+            const r = resolvePresenceSettings({ config: cfg, env: {} });
+            assert.equal(r.settings.mode, file === "local-agent.json" ? "always-on" : "on-demand", file);
+            assert.equal(r.settings.idleTimeoutMs, 300_000);
+            assert.equal(r.settings.catchUpEveryMs, 0, `${file}: the pulse is off until L1/L2 are measured`);
+            assert.equal(r.settings.connectOnStart, true);
+            assert.equal(validatePolicy({ presence: JSON.parse(read("mcp-config", file)).presence }).errors.length, 0);
+        }
+        const env = parseEnv(read("env", "multi-account.env"));
+        const one = resolvePresenceSettings({ accountId: "1000000000000000001", env });
+        const two = resolvePresenceSettings({ accountId: "1000000000000000002", env });
+        assert.deepEqual([one.settings.mode, two.settings.mode], ["always-on", "on-demand"]);
+    });
+
     it("multi-account.json: each account block overrides the shared settings for that account only", () => {
         const base = mergeMCPConfigLayer(defaults, JSON.parse(read("mcp-config", "multi-account.json")));
         const a = resolveAccountMCPConfig(base, { accountId: "1000000000000000001" }).config;
@@ -102,7 +179,7 @@ describe("mcp-config samples", () => {
         assert.deepEqual(b.watchThreads, ["dm:*", "group:support"]);
         assert.deepEqual(a.watchThreads, ["dm:*"], "shared setting still applies where the block does not override");
         assert.equal(other.httpPort, null, "an account without a block gets none of the overrides");
-        assert.equal(a.groupConfirm, false);
+        assert.equal(a.confirmMode, "agent");
     });
 });
 
@@ -113,7 +190,11 @@ describe("env samples", () => {
         [...text.matchAll(/^#?\s*([A-Z][A-Z0-9_]*)=(.*)$/gm)].map((m) => ({ name: m[1], value: m[2].trim() }));
     const base = (name) => name.replace(/_[1-9][0-9]{8,}$/, "");
 
-    const files = [...list("env", ".env").map((f) => join("env", f)), join("systemd", "common.env")];
+    const files = [
+        ...list("env", ".env").map((f) => join("env", f)),
+        join("systemd", "common.env"),
+        join("systemd", "home.env"),
+    ];
     for (const file of files) {
         it(`${file}: every variable is one the engine reads`, () => {
             const found = assignments(read(file));
@@ -125,7 +206,9 @@ describe("env samples", () => {
 
         it(`${file}: tokens and secrets are CHANGE_ME placeholders`, () => {
             for (const { name, value } of assignments(read(file))) {
-                if (/TOKEN|SECRET/.test(name)) assert.match(value, /^CHANGE_ME/, `${name} must be a placeholder`);
+                // A *_FILE names where a secret is kept (a path), never the secret itself.
+                if (/_FILE$/.test(name)) assert.match(value, /^\//, `${name} must be an absolute path`);
+                else if (/TOKEN|SECRET/.test(name)) assert.match(value, /^CHANGE_ME/, `${name} must be a placeholder`);
             }
         });
     }
@@ -145,6 +228,14 @@ describe("env samples", () => {
             assert.ok(envForAccount("ZALO_MCP_AUTH_TOKEN", "1000000000000000001", env), `${file}: token`);
             assert.ok(envForAccount("ZALO_MCP_HTTP_PORT", "1000000000000000001", env), `${file}: port`);
         }
+    });
+
+    it("crm-backend.env: the admin console's credential is a file the service reads, never inline or the agent's", () => {
+        const env = parseEnv(read("env", "crm-backend.env"));
+        assert.match(envForAccount("ZALO_MCP_ADMIN_TOKEN_FILE", "1000000000000000001", env), /^\//);
+        assert.equal(envForAccount("ZALO_MCP_ADMIN_TOKEN", "1000000000000000001", env), null);
+        const cfg = JSON.parse(read("mcp-config", "crm-backend.json"));
+        assert.deepEqual(Object.keys(cfg.admin).sort(), ["clientCa", "tokenFile"]);
     });
 
     it("the wrapper-folder .env keeps to ports", () => {
@@ -170,6 +261,52 @@ describe("systemd unit and proxy samples", () => {
         const nginx = read("proxy", "nginx.internet.conf");
         assert.match(nginx, /proxy_read_timeout 3[1-9]\d?s/);
         assert.match(nginx, /proxy_buffering off/);
+    });
+
+    it("the proxies never compress media links (byte ranges) and give the engine the client's own address", () => {
+        assert.match(read("proxy", "Caddyfile.internet"), /@compress not path \/zalo\/media\/\*\s+encode @compress /);
+        assert.match(
+            read("proxy", "Caddyfile.multi-account"),
+            /@compress not path \/a\/\*\/zalo\/media\/\*\s+encode @compress /,
+        );
+        assert.doesNotMatch(read("proxy", "Caddyfile.internet"), /^\tencode zstd/m, "no unconditional encode");
+        const media = /location \/zalo\/media\/ \{([^}]*)\}/.exec(read("proxy", "nginx.internet.conf"))?.[1] ?? "";
+        assert.match(media, /gzip off;/);
+        assert.match(media, /proxy_buffering off;/);
+        assert.match(media, /proxy_set_header X-Forwarded-For \$remote_addr;/);
+    });
+
+    // G5: the admin API (runtime policy, usage, export) and the Prometheus endpoints never answer from the internet.
+    it("every internet proxy answers 404 for /zalo/admin/*, /metrics and /status", () => {
+        for (const f of ["Caddyfile.internet", "Caddyfile.multi-account"]) {
+            const text = read("proxy", f);
+            const blocks = text.split(/reverse_proxy 127\.0\.0\.1:39|reverse_proxy 127\.0\.0\.1:3847/).length - 1;
+            assert.ok(blocks >= 1, f);
+            assert.equal(
+                (
+                    text.match(
+                        /@internal path \/metrics \/status \/zalo\/admin \/zalo\/admin\/\*\n\t+respond @internal 404/g,
+                    ) || []
+                ).length,
+                blocks,
+                `${f}: every MCP upstream keeps the admin API and metrics inside`,
+            );
+        }
+        const nginx = read("proxy", "nginx.internet.conf");
+        assert.match(nginx, /location \/zalo\/admin \{ return 404; \}/);
+        assert.match(nginx, /location = \/metrics +\{ return 404; \}/);
+        assert.match(nginx, /location = \/status +\{ return 404; \}/);
+    });
+
+    it("the internet proxies route the one-time QR link to the login's QR port, and the rest to the MCP server", () => {
+        assert.match(
+            read("proxy", "Caddyfile.internet"),
+            /handle \/zalo\/qr\/\* \{\s*reverse_proxy 127\.0\.0\.1:18927/,
+        );
+        assert.match(
+            read("proxy", "nginx.internet.conf"),
+            /location \/zalo\/qr\/ \{\s*proxy_pass http:\/\/127\.0\.0\.1:18927;/,
+        );
     });
 });
 
@@ -292,6 +429,8 @@ describe("monitoring samples", () => {
         }));
         health.setSource("buffer", () => ({ threads: 1, messages: 1 }));
         health.setSource("stage", () => ({ stage: "messages", startedAt: Date.now() }));
+        health.setSource("accountState", () => ({ state: "connected", since: null }));
+        health.setSource("session", () => ({ expiresAt: "2027-01-01T00:00:00.000Z", daysLeft: 30, expired: false }));
         const text = renderPrometheus(health.snapshot());
         health.stop();
         return new Set(text.match(/^zalo_[a-z_]+/gm));
@@ -305,14 +444,25 @@ describe("monitoring samples", () => {
             assert.ok(emitted.has(name), `alert-rules.yml reads ${name}, which /metrics does not expose`);
     });
 
-    it("the ten documented alerts are all there, each with an expression, a severity and a summary", () => {
+    it("the twelve documented alerts are all there, each with an expression, a severity and a summary", () => {
         const blocks = rules.split(/^\s+- alert: /m).slice(1);
-        assert.equal(blocks.length, 10);
+        assert.equal(blocks.length, 12);
         for (const b of blocks) {
             assert.match(b, /\n\s+expr: \S/, `${b.split("\n")[0]} has no expr`);
             assert.match(b, /severity: (page|warn|info)/);
             assert.match(b, /summary: "/);
         }
+    });
+
+    it("the session's end warns from 14 days left and pages from 3", () => {
+        const block = (name) => rules.split(/^\s+- alert: /m).find((b) => b.startsWith(name));
+        assert.match(
+            block("ZaloSessionEndingSoon"),
+            /expr: zalo_session_days_left <= 14 and zalo_session_days_left > 3/,
+        );
+        assert.match(block("ZaloSessionEndingSoon"), /severity: warn/);
+        assert.match(block("ZaloSessionEndingNow"), /expr: zalo_session_days_left <= 3\n/);
+        assert.match(block("ZaloSessionEndingNow"), /severity: page/);
     });
 
     it("the scrape config sends the bearer token from a file, never inline", () => {
@@ -322,5 +472,248 @@ describe("monitoring samples", () => {
         assert.match(scrape, /credentials_file: /);
         assert.doesNotMatch(scrape, /^\s+credentials: /m);
         assert.ok(!scrape.includes("\t") && !rules.includes("\t"), "YAML does not allow tabs");
+    });
+});
+
+describe("storage samples", () => {
+    // docs/config-samples/storage/*.json are what docs/security.md points operators at: each names a provider the key
+    // layer knows and holds no key material (a key id or path only).
+    for (const file of list("storage", ".json")) {
+        it(`${file}: a known provider, a boolean dkeyLayer, no key material`, () => {
+            const cfg = JSON.parse(read("storage", file));
+            assert.ok(PROVIDER_NAMES.includes(cfg.provider), `${cfg.provider} is a provider`);
+            assert.equal(typeof cfg.dkeyLayer, "boolean");
+            // Every key set explicitly, even at its default (the owner's rule), and to a value the layer takes.
+            assert.equal(verifyOnReadMode(cfg), cfg.rowMac?.verifyOnRead, "rowMac.verifyOnRead is set and valid");
+            assert.doesNotMatch(read("storage", file), /"(key|secret|passphrase)"\s*:\s*"[A-Za-z0-9+/=]{40,}"/);
+            // Retention and quota: every key set, each to a value the policy schema takes (no "none" mode).
+            for (const key of ["messages", "media", "outboxDead", "purgeEvery"])
+                assert.ok(cfg.retention?.[key], `retention.${key} is set`);
+            for (const key of ["graceDays", "warnAt", "purgeOrder"])
+                assert.ok(key in (cfg.quota ?? {}), `quota.${key} is set`);
+            assert.ok("limit" in (cfg.quota?.account ?? {}), "quota.account.limit is set (null: no limit)");
+            // What a left, removed-from, blocked-from or disbanded group's history becomes: set, at its default.
+            assert.equal(cfg.groups?.onLeave, "purge", "groups.onLeave is set");
+            const v = validatePolicy(
+                { retention: cfg.retention, quota: cfg.quota, groups: cfg.groups },
+                { allowNull: true },
+            );
+            assert.deepEqual(v.errors, [], JSON.stringify(v.errors));
+        });
+    }
+});
+
+describe("use-case sample sets (docs/config-samples/use-cases/)", () => {
+    const UC = join(SAMPLES, "use-cases");
+    const inSource = namesInSource();
+    const base = (name) => name.replace(/_[1-9][0-9]{8,}$/, "");
+    const assignments = (text) =>
+        [...text.matchAll(/^#?\s*([A-Z][A-Z0-9_]*)=(.*)$/gm)].map((m) => ({ name: m[1], value: m[2].trim() }));
+    const walk = (dir, prefix = "") =>
+        readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+            e.isDirectory() ? walk(join(dir, e.name), `${prefix}${e.name}/`) : [`${prefix}${e.name}`],
+        );
+    const ucRead = (uc, rel) => readFileSync(join(UC, uc, rel), "utf8");
+
+    // What `fleet generate` writes for each set the samples are made from, in a scratch folder.
+    const gens = {};
+    before(() => {
+        for (const [name, cfg] of Object.entries(generateFor)) {
+            const out = mkdtempSync(join(tmpdir(), "zalo-uc-gen-"));
+            generateFleetFiles({ outDir: out, ...cfg });
+            gens[name] = out;
+        }
+    });
+    after(() => {
+        for (const out of Object.values(gens)) rmSync(out, { recursive: true, force: true });
+    });
+
+    it("there is one folder per use case, and nothing else", () => {
+        assert.deepEqual(readdirSync(UC).sort(), Object.keys(USE_CASES).sort());
+    });
+
+    for (const [uc, manifest] of Object.entries(USE_CASES)) {
+        it(`${uc}: holds its full set, nothing missing and nothing extra`, () => {
+            assert.deepEqual(walk(join(UC, uc)).sort(), Object.keys(manifest).sort());
+        });
+
+        it(`${uc}: every shared file is byte-identical to its building block or to fleet generate`, () => {
+            for (const [rel, src] of Object.entries(manifest)) {
+                if (!src) continue;
+                const want = src.sample
+                    ? readFileSync(join(SAMPLES, src.sample), "utf8")
+                    : src.gen
+                      ? readFileSync(join(gens[src.gen], src.file), "utf8")
+                      : readFileSync(join(UC, src.useCase), "utf8");
+                assert.equal(ucRead(uc, rel), want, `${uc}/${rel} drifted from ${JSON.stringify(src)}`);
+            }
+        });
+
+        it(`${uc}: the README (EN and VN) names every file, and the two have the same sections`, () => {
+            const files = Object.keys(manifest).filter((f) => !/^(README|MIGRATE)(\.vi)?\.md$/.test(f));
+            for (const doc of ["README.md", "README.vi.md"]) {
+                const text = ucRead(uc, doc);
+                for (const f of files) assert.ok(text.includes(f), `${uc}/${doc} does not name ${f}`);
+            }
+            for (const [en, vi] of [
+                ["README.md", "README.vi.md"],
+                ["MIGRATE.md", "MIGRATE.vi.md"],
+            ]) {
+                if (!(en in manifest)) continue;
+                const sections = (t) => (t.match(/^#{2,3} /gm) || []).length;
+                assert.equal(sections(ucRead(uc, vi)), sections(ucRead(uc, en)), `${uc}: ${vi} and ${en} sections`);
+                assert.ok(ucRead(uc, en).includes(vi) && ucRead(uc, vi).includes(en), `${uc}: ${en} and ${vi} link`);
+            }
+        });
+
+        it(`${uc}: no token on a command line, and no 0.0.0.0 bind`, () => {
+            for (const rel of Object.keys(manifest)) {
+                const text = ucRead(uc, rel);
+                assert.doesNotMatch(text, /--auth[ =]/, `${uc}/${rel}: a token on a command line is in ps and history`);
+                for (const line of text.split("\n").filter((l) => l.includes("0.0.0.0")))
+                    assert.match(line, /\b(not|never|không)\b/, `${uc}/${rel}: bind an address, not every interface`);
+            }
+        });
+
+        const envFiles = Object.keys(manifest).filter((f) => /(^|\/)(\.env|[^/]+\.env)$/.test(f));
+        if (envFiles.length) {
+            it(`${uc}: every variable in its env files is one the engine reads, and every secret a placeholder`, () => {
+                for (const rel of envFiles) {
+                    for (const { name, value } of assignments(ucRead(uc, rel))) {
+                        assert.ok(inSource.has(base(name)), `${uc}/${rel}: no source file reads ${name}`);
+                        if (/_FILE$/.test(name)) assert.match(value, /^\//, `${uc}/${rel}: ${name} is a path`);
+                        else if (/TOKEN|SECRET/.test(name)) assert.match(value, /^CHANGE_ME/, `${uc}/${rel}: ${name}`);
+                    }
+                }
+            });
+        }
+
+        const configs = Object.keys(manifest).filter((f) => f.endsWith("mcp-config.json"));
+        for (const rel of configs) {
+            it(`${uc}: ${rel} uses only keys the loader merges and sets every presence key`, () => {
+                const defaults = getDefaultConfig();
+                const cfg = JSON.parse(ucRead(uc, rel));
+                for (const key of Object.keys(cfg)) assert.ok(key in defaults || key === "accounts", key);
+                const merged = mergeMCPConfigLayer(defaults, cfg);
+                for (const key of Object.keys(PRESENCE_KEYS)) assert.notEqual(merged.presence[key], null, key);
+                assert.equal(merged.media.downloadDir, null, "media under the account folder, inside ReadWritePaths");
+            });
+        }
+
+        const storages = Object.keys(manifest).filter((f) => /storage(\.[a-z]+)?\.json$/.test(f));
+        for (const rel of storages) {
+            it(`${uc}: ${rel} names a known provider and holds no key`, () => {
+                const cfg = JSON.parse(ucRead(uc, rel));
+                assert.ok(PROVIDER_NAMES.includes(cfg.provider));
+                assert.doesNotMatch(ucRead(uc, rel), /"(key|secret|passphrase)"\s*:\s*"[A-Za-z0-9+/=]{40,}"/);
+            });
+        }
+    }
+
+    const VPS = ["c-vps-few-accounts", "d-crm-backend", "e-saas-kms"];
+    const HOME = "home/zalo/.zalo-agent-cli";
+
+    // G1, on the sets themselves.
+    it("c, d, e: every path an env file sets is under the unit's ReadWritePaths; common.env sets none", () => {
+        for (const uc of VPS) {
+            const rw = /^ReadWritePaths=(.+)$/m.exec(ucRead(uc, "etc/systemd/system/zalo-mcp@.service"))[1].split(" ");
+            const dirs = (rel) =>
+                Object.entries(parseEnv(ucRead(uc, rel)))
+                    .filter(([k]) => /_DIR$/.test(k))
+                    .map(([, v]) => v);
+            assert.deepEqual(dirs("etc/zalo-mcp/common.env"), [], `${uc}: common.env is read by the units only`);
+            for (const p of dirs(`${HOME}/.env`))
+                assert.ok(
+                    rw.some((w) => p === w || p.startsWith(`${w}/`)),
+                    `${uc}: ${p}`,
+                );
+            assert.ok(rw.includes("/home/zalo/.zalo-agent-cli"), uc);
+        }
+    });
+
+    // G2, on the sets themselves.
+    it("c and d: the passphrase provider is wired for every unit that opens sealed files, and for za", () => {
+        for (const uc of ["c-vps-few-accounts", "d-crm-backend"]) {
+            assert.equal(JSON.parse(ucRead(uc, `${HOME}/storage.json`)).provider, "passphrase", uc);
+            const units = Object.keys(USE_CASES[uc]).filter((f) =>
+                /^etc\/systemd\/system\/zalo-(mcp@|mcp-purge|backup|fleet-controller)\.service$/.test(f),
+            );
+            assert.ok(units.length >= 3, uc);
+            for (const unit of units) {
+                const dropin = `${unit}.d/credentials.conf`;
+                assert.ok(dropin in USE_CASES[uc], `${uc}: ${unit} gets the credential`);
+                assert.match(
+                    ucRead(uc, dropin),
+                    /^LoadCredentialEncrypted=zalo-storage-passphrase:\/etc\/zalo-mcp\/storage-passphrase\.cred$/m,
+                );
+            }
+            assert.match(ucRead(uc, "usr/local/bin/za"), /LoadCredentialEncrypted=zalo-storage-passphrase:/);
+        }
+        assert.equal(JSON.parse(ucRead("e-saas-kms", `${HOME}/storage.json`)).provider, "kms");
+        assert.doesNotMatch(ucRead("e-saas-kms", "usr/local/bin/za"), /LoadCredential/);
+    });
+
+    // G4 and G5, on the sets themselves.
+    it("c, d, e: each account's public URL comes back through its own proxy block, and the admin API never does", () => {
+        for (const uc of VPS) {
+            const common = parseEnv(ucRead(uc, "etc/zalo-mcp/common.env"));
+            assert.deepEqual(resolveTrustedProxies({ config: {}, env: common }), ["127.0.0.1"], uc);
+            const caddy = ucRead(uc, "etc/caddy/Caddyfile");
+            const [pub, admin] = caddy.split(/^admin\.zalo\.example\.com \{$/m);
+            for (const id of ["1000000000000000001", "1000000000000000002"]) {
+                const env = { ...common, ...parseEnv(ucRead(uc, `etc/zalo-mcp/accounts/${id}.env`)) };
+                const url = resolvePublicUrl({ env, config: {}, aliases: false }).publicUrl;
+                assert.equal(url, `https://zalo.example.com/a/${id}`, `${uc}/${id}`);
+                const block = new RegExp(
+                    `handle_path /a/${id}/\\* \\{\\n\\t\\t@internal path /metrics /status /zalo/admin /zalo/admin/\\*\\n\\t\\trespond @internal 404\\n\\n\\t\\treverse_proxy 127\\.0\\.0\\.1:39\\d\\d \\{\\n\\t\\t\\tflush_interval -1\\n\\t\\t\\ttransport http \\{\\n\\t\\t\\t\\tread_timeout 310s`,
+                );
+                assert.match(pub, block, `${uc}: ${id}'s public block`);
+            }
+            assert.match(pub, /@compress not path \/a\/\*\/zalo\/media\/\*\n\tencode @compress /, uc);
+            assert.equal((pub.match(/reverse_proxy 127\.0\.0\.1:39\d\d/g) || []).length, 2, `${uc}: no other upstream`);
+            if (admin) {
+                assert.match(admin, /^\troute \{\n\t\t@outsider not remote_ip \S+\n\t\trespond @outsider 404\n/m, uc);
+                assert.equal((admin.match(/@other not path \/zalo\/admin \/zalo\/admin\/\*/g) || []).length, 3, uc);
+            }
+        }
+    });
+
+    it("c: the main account is the one always-on; the companion and the rest are on-demand", () => {
+        const base = mergeMCPConfigLayer(
+            getDefaultConfig(),
+            JSON.parse(ucRead("c-vps-few-accounts", `${HOME}/mcp-config.json`)),
+        );
+        const mode = (id) =>
+            resolvePresenceSettings({ config: resolveAccountMCPConfig(base, { accountId: id }).config, env: {} })
+                .settings.mode;
+        assert.deepEqual([mode("1000000000000000001"), mode("1000000000000000002")], ["always-on", "on-demand"]);
+        const d = JSON.parse(ucRead("d-crm-backend", `${HOME}/mcp-config.json`));
+        assert.equal(d.approval.deliver, "webhook");
+        assert.equal(d.admin.tokenFile, "/etc/zalo-mcp/admin-token");
+    });
+
+    it("e: the tenant file is a policy the store accepts, and each account names its own KMS key", () => {
+        const doc = JSON.parse(ucRead("e-saas-kms", `${HOME}/tenants/tenant-a.json`));
+        assert.deepEqual(validatePolicy(doc.policy, { scope: "tenant", allowNull: true }).errors, []);
+        // In storage.json, which the daemon, `za` and the purge and backup units all read; never an account env
+        // file, which only the account's own daemon reads.
+        const storage = JSON.parse(ucRead("e-saas-kms", `${HOME}/storage.json`));
+        const ids = ["1000000000000000001", "1000000000000000002"];
+        const keys = ids.map((id) => storage.accounts[id].kms.key);
+        assert.ok(keys.every((k) => /^arn:aws:kms:/.test(k) && k !== storage.kms.key));
+        assert.notEqual(keys[0], keys[1]);
+        for (const id of ids) {
+            const env = parseEnv(ucRead("e-saas-kms", `etc/zalo-mcp/accounts/${id}.env`));
+            assert.equal(env.ZALO_KMS_KEY, undefined, id);
+        }
+    });
+
+    it("c: MIGRATE (EN and VN) says to copy before any 3.0 command and never to run two copies of one login", () => {
+        for (const doc of ["MIGRATE.md", "MIGRATE.vi.md"]) {
+            const text = ucRead("c-vps-few-accounts", doc);
+            assert.match(text, /account security provider passphrase/, doc);
+            assert.match(text, /account security migrate --all/, doc);
+            assert.match(text, /logout --no-remote/, doc);
+        }
     });
 });

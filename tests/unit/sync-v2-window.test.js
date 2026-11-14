@@ -145,7 +145,7 @@ describe("resolveSyncWindow — explicit --from", () => {
 });
 
 describe("the `to` bound on a message partition", () => {
-    // Zalo Web sends each partition its own conversation's lastTs — a captured
+    // Each partition carries its own conversation's lastTs — a captured
     // run shows 30 distinct `to` values across 30 partitions — and reserves an
     // unbounded `to` for the conversation round, where the latest message is
     // not yet known. MAX_SAFE_INTEGER per partition asks the phone to scan to

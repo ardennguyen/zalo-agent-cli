@@ -23,13 +23,15 @@
  *     owns the socket alone; here it would write everything a second time.
  *  2. `getApi()` per call, never a captured api. A daemon that hits a
  *     duplicate-session close re-logs-in and builds a new api object, and a
- *     stage bound to the old one would tap a socket zca-js has already
+ *     stage bound to the old one would tap a socket the listener has already
  *     nulled. This is the same lesson `/send-attachments` learned when it
  *     captured the api instead of a getter.
  */
-import { SyncV2 } from "./sync-v2/index.js";
+import { SyncV2, resolveMaxResumes } from "./sync-v2/index.js";
 import { drainReactions, placeUnresolvedReactions } from "./sync-v2/reactions.js";
 import { fetchAndCacheHistory } from "./history-fetch.js";
+import { syncCloudIndex } from "./sync-v2/zcloud.js";
+import { getSyncState, setSyncState } from "./db.js";
 import { createStageLogger } from "./daemon-log.js";
 
 /**
@@ -120,18 +122,22 @@ function traceRunners(runners, { log, monitor }) {
     return Object.fromEntries(
         Object.entries(runners).map(([stage, run]) => [
             stage,
-            async (params = {}, onEvent = () => {}) => {
+            async (params = {}, onEvent = () => {}, signal) => {
                 const trace = createStageLogger({ stage, log, monitor });
                 trace.start(params);
                 try {
-                    const result = await run(params, (event) => {
-                        try {
-                            trace.event(event);
-                        } catch {
-                            /* a logging problem never reaches the stage */
-                        }
-                        onEvent(event);
-                    });
+                    const result = await run(
+                        params,
+                        (event) => {
+                            try {
+                                trace.event(event);
+                            } catch {
+                                /* a logging problem never reaches the stage */
+                            }
+                            onEvent(event);
+                        },
+                        signal,
+                    );
                     trace.finish(result);
                     return result;
                 } catch (error) {
@@ -149,7 +155,7 @@ function traceRunners(runners, { log, monitor }) {
  * Build the stage runners for `startDaemonChannel({ runners })`.
  *
  * @param {object} args
- * @param {() => object} args.getApi - resolves the daemon's CURRENT zca-js api
+ * @param {() => object} args.getApi - resolves the daemon's CURRENT session
  * @param {string} args.accountName - ownId; picks the account data dir
  * @param {(res: object) => void|Promise<void>} [args.onMessagesRestored] - optional hook after messages restore
  * @param {(name: string) => void|Promise<void>} [args.onSelfName] - optional hook when active account's profile name is refreshed
@@ -157,6 +163,7 @@ function traceRunners(runners, { log, monitor }) {
  *   phase, a periodic "still running" line and its result or failure (daemon.log); silent without it
  * @param {{takeMax: () => number}} [args.monitor] - event-loop monitor; its worst stall is added to the
  *   "still running" lines
+ * @param {typeof syncCloudIndex} [args.cloudWalk] - the cloud walker (tests)
  * @returns {Record<string, (params: object, onEvent: (e: object) => void) => Promise<object>>}
  */
 export function createSyncRunners({
@@ -166,6 +173,7 @@ export function createSyncRunners({
     onSelfName,
     log = () => {},
     monitor = null,
+    cloudWalk = syncCloudIndex,
 }) {
     /** The live api, or a refusal the CLI can print. */
     const liveApi = (what) => {
@@ -184,11 +192,13 @@ export function createSyncRunners({
          * sync request authorized by the owner reaches it.
          *
          * @param {{days?: number|null, from?: string|number, waitMs?: number,
-         *   shardSize?: number, waveSize?: number}} params
+         *   shardSize?: number, waveSize?: number, fullResync?: boolean}} params
          * @param {(e: {phase: string, detail?: string}) => void} onEvent
+         * @param {AbortSignal} [signal] - aborted by `POST /sync/cancel`: the restore keeps what arrived, releases
+         *   its sessions on the phone and returns `reason: "cancelled"`
          * @returns {Promise<object>} SyncV2.restore() result, as-is
          */
-        async messages(params = {}, onEvent = () => {}) {
+        async messages(params = {}, onEvent = () => {}, signal) {
             const api = liveApi("restore");
             // The api and socket the stage is on, kept current across reconnects.
             let current = { api, ws: api.listener?.ws ?? null };
@@ -198,11 +208,13 @@ export function createSyncRunners({
                 waitMs: Number(params.waitMs) || undefined,
                 shardSize: Number(params.shardSize) || undefined,
                 waveSize: Number(params.waveSize) || undefined,
+                fullResync: params.fullResync === true,
+                signal,
                 // See rule 1 in this file's header: the daemon is the tap.
                 liveStore: false,
                 // Explicit, not left to the default: a CLI that owns the
                 // socket runs one heartbeat across its whole window and turns
-                // this off, but a daemon has no such window -- zca-js pings on
+                // this off, but a daemon has no such window -- the listener pings on
                 // the server's own 180s interval, which is the entire width of
                 // the phone wait. So the restore keeps its own.
                 keepAlive: true,
@@ -217,9 +229,9 @@ export function createSyncRunners({
                 // re-requests the batches that never arrived. Before this, any
                 // lost socket (close 1006, which Zalo does not offer to retry) ended
                 // a long restore as partial and the next one asked the phone again.
-                // A long restore on a busy account can lose its socket more than once, so a daemon allows
-                // three resumes (the CLI's default is one); `params.maxResumes` overrides.
-                maxResumes: Number.isInteger(params.maxResumes) ? params.maxResumes : 3,
+                // How many reconnects a restore may spend is one rule for the CLI and a daemon: `resolveMaxResumes`
+                // (its default, three, since 2026-10-28; `params.maxResumes` overrides, capped).
+                maxResumes: resolveMaxResumes(params.maxResumes),
                 reconnect: async () => {
                     const back = await waitForDaemonSocket({
                         getApi,
@@ -316,6 +328,34 @@ export function createSyncRunners({
                 unresolvedLeft: (stats.unresolved?.length || 0) - placed,
                 socketAlive: socketAlive(api),
             };
+        },
+
+        /**
+         * One walk of the zCloud queue (`sync`'s cloud stage, `sync-cloud`), in this daemon (D31, ZP-09).
+         *
+         * The walk is REST, not socket, but it writes `cloud_items` and the `cloudCursor`, and this daemon walks the
+         * same queue on its own when the server sends cmd 621 (src/core/cloud-verify.js). Two walkers at once could
+         * write the cursor out of order, and a `--full` sweep could delete what the other had just recorded. Running
+         * it here, under the channel's stage lock that the cmd 621 walk also takes, makes them one at a time, with
+         * this process as the account's one writer.
+         *
+         * @param {{resume?: string, full?: boolean, pageSize?: number, maxPages?: number}} params - `resume` wins
+         *   over the saved place; `full` walks from the top and sweeps
+         * @param {(p: object) => void} onEvent - one `cloud-page` event per page
+         * @returns {Promise<object>} syncCloudIndex() stats
+         */
+        async cloud(params = {}, onEvent = () => {}) {
+            const api = getApi();
+            if (!api) throw new Error("this daemon has no session to walk the cloud queue with");
+            return cloudWalk({
+                api,
+                lastNoiseId: params.resume || getSyncState("cloudCursor") || "",
+                full: params.full === true,
+                pageSize: Number(params.pageSize) || undefined,
+                maxPages: Number(params.maxPages) || undefined,
+                onProgress: onEvent,
+                onPage: (p) => setSyncState("cloudCursor", p.cursor),
+            });
         },
     };
 

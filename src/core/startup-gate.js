@@ -16,6 +16,11 @@
  *
  * A slot is a file in `<config dir>/login-slots/` holding the owner's pid; a slot whose owner died, or that
  * has been held for `holdSec`, is reclaimed. Both settings take an `_<ownId>` form.
+ *
+ * The same mechanism caps **wakes** (on-demand presence, ./presence.js): a daemon whose parked socket wakes takes a
+ * connect slot (`<config dir>/connect-slots/`) until its first catch-up ends, at most `ZALO_CONNECT_SLOTS` (default 0,
+ * no cap; fleet samples 16) at once on the machine, held at most 60 s. A wake that waited `ZALO_CONNECT_SLOT_WAIT`
+ * seconds (default 120) goes ahead anyway.
  */
 
 import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, statSync, unlinkSync, writeSync } from "node:fs";
@@ -26,6 +31,9 @@ export const DEFAULT_SLOT_WAIT_SEC = 900;
 export const DEFAULT_SLOT_HOLD_SEC = 300;
 export const MAX_JITTER_SEC = 600;
 export const MAX_SLOTS = 64;
+/** A connect slot is held until the wake's first catch-up ends, and never longer than this. */
+export const CONNECT_SLOT_HOLD_SEC = 60;
+export const DEFAULT_CONNECT_WAIT_SEC = 120;
 
 const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -71,14 +79,47 @@ export function resolveStartupSettings({ env = process.env, ownId = null } = {})
 }
 
 /**
+ * The wake settings of one account (on-demand presence): `ZALO_CONNECT_SLOTS[_<ownId>]` (0-64, 0 = no cap) and
+ * `ZALO_CONNECT_SLOT_WAIT[_<ownId>]` (seconds). Shaped like {@link resolveStartupSettings}, with no jitter.
+ *
+ * @param {{ env?: NodeJS.ProcessEnv, ownId?: string|null }} [args]
+ * @returns {{ jitterSec: number, slots: number, waitSec: number, holdSec: number, warnings: string[] }}
+ */
+export function resolveConnectSettings({ env = process.env, ownId = null } = {}) {
+    const warnings = [];
+    const pick = (name) => {
+        const scoped = ownId ? env[`${name}_${ownId}`] : undefined;
+        const v = typeof scoped === "string" && scoped.trim() ? scoped : env[name];
+        return typeof v === "string" && v.trim() ? v.trim() : null;
+    };
+    const whole = (name, label, min, max, fallback) => {
+        const raw = pick(name);
+        if (raw === null) return fallback;
+        const n = Number(raw);
+        if (Number.isInteger(n) && n >= min && n <= max) return n;
+        warnings.push(`${name}="${raw}" is not a whole number from ${min} to ${max} (${label}); using ${fallback}`);
+        return fallback;
+    };
+    return {
+        jitterSec: 0,
+        slots: whole("ZALO_CONNECT_SLOTS", "0 means no cap", 0, MAX_SLOTS, 0),
+        waitSec: whole("ZALO_CONNECT_SLOT_WAIT", "seconds", 1, 3600, DEFAULT_CONNECT_WAIT_SEC),
+        holdSec: CONNECT_SLOT_HOLD_SEC,
+        warnings,
+    };
+}
+
+/**
  * @param {object} args
- * @param {string} args.configDir - Slots live in `<configDir>/login-slots/`, shared by every daemon on the machine
+ * @param {string} args.configDir - Slots live in `<configDir>/login-slots/` (or `connect-slots/`), shared by every
+ *   daemon on the machine
  * @param {string} args.ownId
  * @param {ReturnType<typeof resolveStartupSettings>} args.settings
  * @param {(line: string) => void} [args.log]
  * @param {() => number} [args.random]
  * @param {(ms: number) => Promise<void>} [args.sleep]
  * @param {() => number} [args.now]
+ * @param {"login"|"connect"} [args.kind] - what the slots cap: logins at start-up, or wakes (on-demand presence)
  * @returns {{ enter: () => Promise<{ jitteredMs: number, waitedMs: number, slot: number|null, timedOut: boolean }>, leave: () => void, held: () => number|null }}
  */
 export function createStartupGate({
@@ -89,8 +130,11 @@ export function createStartupGate({
     random = Math.random,
     sleep = defaultSleep,
     now = Date.now,
+    kind = "login",
 }) {
-    const dir = join(configDir, "login-slots");
+    const dir = join(configDir, kind === "connect" ? "connect-slots" : "login-slots");
+    const envName = kind === "connect" ? "ZALO_CONNECT_SLOTS" : "ZALO_LOGIN_SLOTS";
+    const going = kind === "connect" ? "connecting" : "logging in";
     let mine = null; // { file, text }
     let exitHook = false;
 
@@ -180,20 +224,20 @@ export function createStartupGate({
                 if (slot !== null) {
                     const waitedMs = now() - started;
                     if (announced)
-                        log(`got login slot ${slot + 1} of ${settings.slots} after ${(waitedMs / 1000).toFixed(1)}s`);
+                        log(`got ${kind} slot ${slot + 1} of ${settings.slots} after ${(waitedMs / 1000).toFixed(1)}s`);
                     return { jitteredMs, waitedMs, slot, timedOut: false };
                 }
                 const waitedMs = now() - started;
                 if (waitedMs >= settings.waitSec * 1000) {
                     log(
-                        `no login slot free after ${settings.waitSec}s (ZALO_LOGIN_SLOTS=${settings.slots}); logging in anyway: ` +
+                        `no ${kind} slot free after ${settings.waitSec}s (${envName}=${settings.slots}); ${going} anyway: ` +
                             "a stuck slot must not keep an account offline",
                     );
                     return { jitteredMs, waitedMs, slot: null, timedOut: true };
                 }
                 if (!announced) {
                     announced = true;
-                    log(`waiting for a login slot (ZALO_LOGIN_SLOTS=${settings.slots}): other daemons are logging in`);
+                    log(`waiting for a ${kind} slot (${envName}=${settings.slots}): other daemons are ${going}`);
                 }
                 await sleep(150 + Math.floor(random() * 350));
             }

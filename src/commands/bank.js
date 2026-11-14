@@ -7,10 +7,12 @@
  */
 
 import { getApi } from "../core/zalo-client.js";
-import { success, error, info, output } from "../utils/output.js";
+import { success, error, info, output, warning } from "../utils/output.js";
+import { allBankAccounts } from "../core/list-all.js";
 import { parseIntOption, parseIntAtLeast } from "../utils/parse-options.js";
 import { resolveBankBin, BIN_TO_DISPLAY } from "../utils/bank-helpers.js";
 import { findBankAccount, filterBanks } from "../core/bank-accounts.js";
+import { guardSubcommand } from "../core/confirm-guard.js";
 
 /**
  * A bank name or BIN as the BIN Zalo wants.
@@ -36,7 +38,10 @@ export function registerBankCommands(program) {
 
     bank.command("list")
         .description("List the banks Zalo supports (name, short name and BIN)")
-        .option("-q, --query <text>", "Only banks whose name, short name or BIN contains this text")
+        .option(
+            "-q, --query <text>",
+            "Only banks whose name (Vietnamese or English), short name, keyword or BIN contains this text",
+        )
         .action(async (opts) => {
             try {
                 const result = await getApi().getListBank();
@@ -52,14 +57,26 @@ export function registerBankCommands(program) {
 
     bank.command("accounts")
         .description("List your saved bank accounts")
-        .option("-p, --page <n>", "Page number (starts at 0)", parseIntAtLeast(0), 0)
-        .option("-l, --limit <n>", "Accounts per page", parseIntAtLeast(1), 20)
+        .option("-p, --page <n>", "Read only this page, from 0 (default: every page)", parseIntAtLeast(0))
+        .option(
+            "-l, --limit <n>",
+            "Accounts per page (with -l or -p one page is read, 20 a page by default)",
+            parseIntAtLeast(1),
+        )
         .action(async (opts) => {
             try {
-                const result = await getApi().getListBankAccount(opts.page, opts.limit);
+                let result;
+                if (opts.page === undefined && opts.limit === undefined) {
+                    // No page asked: every saved account, page by page (src/core/list-all.js).
+                    const { paging, ...all } = await allBankAccounts(getApi());
+                    result = all;
+                    if (paging.note) warning(paging.note);
+                } else {
+                    result = await getApi().getListBankAccount(opts.page ?? 0, opts.limit ?? 20);
+                }
                 output(result, program.opts().json, () => {
                     const accounts = result?.myBanks ?? [];
-                    info(`${accounts.length} account(s) on this page (total: ${result?.total ?? accounts.length})`);
+                    info(`${accounts.length} account(s) (total: ${result?.total ?? accounts.length})`);
                     for (const a of accounts) console.log(accountLine(a));
                     if (result?.hasMore) info("More accounts exist: use --page to see them.");
                 });
@@ -123,4 +140,6 @@ export function registerBankCommands(program) {
                 error(`Delete bank account failed: ${e.message}`);
             }
         });
+    // Asked about first, as Zalo does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    guardSubcommand(bank, "remove", "bank.remove", { target: (accountId) => ({ bankAccountId: accountId }) });
 }

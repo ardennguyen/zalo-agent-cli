@@ -21,8 +21,27 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR } from "./credentials.js";
-import { withFileLock, writeFileAtomic } from "../utils/atomic-file.js";
-import { COMMON_ENV_TEMPLATE, renderAccountEnv, renderCaddyfile, renderUnit } from "./fleet-templates.js";
+import { EXPIRY_FAIL_DAYS, EXPIRY_WARN_DAYS } from "./session-expiry.js";
+import { withFileLock, writeFileAtomic } from "../zalo/kernel/atomic-file.js";
+import {
+    BACKUP_TIMER_TEMPLATE,
+    CHECK_TIMER_TEMPLATE,
+    PURGE_TIMER_TEMPLATE,
+    renderAccountEnv,
+    accountPublicUrl,
+    renderBackupService,
+    renderCaddyfile,
+    renderCheckService,
+    renderCommonEnv,
+    renderCredentialsDropin,
+    renderHomeEnv,
+    renderLogrotate,
+    renderPolkitRule,
+    renderPurgeService,
+    renderStorageJson,
+    renderUnit,
+    renderZa,
+} from "./fleet-templates.js";
 
 export const DEFAULT_BASE_PORT = 3900;
 
@@ -106,30 +125,176 @@ export function assignPorts(ownIds, { basePort } = {}) {
     });
 }
 
+/**
+ * Free the ports of removed accounts (the fleet controller's `DELETE /accounts/<ownId>`). Other ports never move.
+ *
+ * @param {string[]} ownIds
+ * @returns {{released: string[]}}
+ */
+export function releasePorts(ownIds) {
+    if (!existsSync(fleetFile())) return { released: [] };
+    return withFileLock(`${fleetFile()}.lock`, () => {
+        const table = loadPortTable();
+        const released = ownIds.filter((id) => table.ports[id] !== undefined);
+        for (const id of released) delete table.ports[id];
+        if (released.length) {
+            writeFileAtomic(
+                fleetFile(),
+                JSON.stringify({ version: 1, basePort: table.basePort, ports: table.ports }, null, 2),
+                {
+                    mode: 0o644,
+                },
+            );
+        }
+        return { released };
+    });
+}
+
 /** The states `fleet status` reports, worst last. */
-export const STATES = Object.freeze(["ok", "degraded", "starting", "down", "unresponsive", "stopped"]);
+export const STATES = Object.freeze([
+    "ok",
+    "idle",
+    "degraded",
+    "starting",
+    "maintenance",
+    "relogin",
+    "yielded",
+    "kicked",
+    "signed_out",
+    "down",
+    "unresponsive",
+    "stopped",
+]);
+
+/** The socket states a daemon reports that are neither up nor merely down: each says why the socket is not up. */
+const HELD = new Set(["maintenance", "relogin", "kicked"]);
 
 /**
  * One word for an account.
  *
  *  - `stopped`: no daemon runs for it
+ *  - `kicked` with no daemon: it ended because another session took the account (its kick marker is there)
  *  - `unresponsive`: a daemon runs (its lock is held) but does not answer on its loopback channel
  *  - `down`: it answers, and its Zalo socket has been down at least `downForSec`
+ *  - `maintenance`: it answers, and it is waiting for Zalo to come back from maintenance (nothing to do)
+ *  - `relogin`: it answers, and Zalo refused its session, so it is logging in again (transient)
+ *  - `kicked`: it answers, and another session took the account, so it will not reconnect (see the log; restarting it
+ *    would only evict the other session in turn)
+ *  - `yielded`: it answers, and (on-demand) another session of the same login took the socket; it stays up and refuses
+ *    requests until a person confirms `presence resume`
+ *  - `signed_out`: it answers, and Zalo keeps refusing the saved login; it stays up and refuses requests until the
+ *    account is added again by QR
+ *  - `idle`: it answers, and its socket is parked by on-demand presence (it wakes on demand): never `down`
  *  - `starting`: it answers, and its socket is not up yet (or has not been down long enough to count)
  *  - `degraded`: the socket is up but it has warnings (a webhook backlog, dead letters, open gaps)
  *  - `ok`
  *
- * @param {{ running: boolean, health: object|null }} a - `health` is null when the daemon did not answer
+ * @param {{ running: boolean, health: object|null, kicked?: object|null }} a - `health` is null when the daemon did
+ *   not answer; `kicked` is the account's kick marker, if any
  * @param {{ downForSec?: number }} [o]
- * @returns {"ok"|"degraded"|"starting"|"down"|"unresponsive"|"stopped"}
+ * @returns {"ok"|"idle"|"degraded"|"starting"|"maintenance"|"relogin"|"yielded"|"kicked"|"signed_out"|"down"|"unresponsive"|"stopped"}
  */
-export function classifyAccount({ running, health }, { downForSec = 180 } = {}) {
-    if (!running) return "stopped";
+export function classifyAccount({ running, health, kicked = null }, { downForSec = 180 } = {}) {
+    if (!running) return kicked ? "kicked" : "stopped";
     if (!health) return "unresponsive";
     const socket = health.socket ?? {};
+    // The daemon says yielded / signed out in its socket state; its account state and presence block say it too.
+    const held = [socket.state, health.accountState?.state, health.presence?.state];
+    if (held.includes("yielded")) return "yielded";
+    if (held.some((s) => s === "signed-out" || s === "signed_out")) return "signed_out";
+    if (HELD.has(socket.state)) return socket.state;
+    if (socket.state === "idle") return "idle";
     if (socket.state === "down" && (socket.forSec ?? 0) >= downForSec) return "down";
     if (socket.state !== "up") return "starting";
     return health.warnings?.length ? "degraded" : "ok";
+}
+
+/** The states `fleet status --check` passes: the account serves, or wakes on demand. */
+export const CHECK_PASSES = Object.freeze(["ok", "idle", "degraded"]);
+
+/** What a person does about each state `fleet status --check` fails, one line each. */
+export const STATE_ADVICE = Object.freeze({
+    starting: "its socket is not up yet; if this stays, read the daemon log",
+    maintenance: "Zalo is in maintenance; the daemon reconnects by itself when it ends",
+    relogin: "Zalo refused the session and the daemon is logging in again; if this stays, read the daemon log",
+    yielded:
+        "another session of this login took the account; close it, then confirm `zalo-agent presence resume --yes` " +
+        "(requests are refused until then; a restart does not help)",
+    kicked:
+        "another session took the account and the daemon will not reconnect; close the other session, then start it " +
+        "again",
+    signed_out:
+        "Zalo keeps refusing the saved login (another browser or device took the web login); add the account again by " +
+        "QR (requests are refused until then; a restart does not help)",
+    down: "its Zalo socket has been down for a while; `fleet restart --unhealthy` restarts it",
+    unresponsive: "the daemon holds its lock but does not answer; `fleet restart --unhealthy` restarts it",
+    stopped: "no daemon runs for it; `fleet start` starts it",
+});
+
+/**
+ * The command that renews an account's login on a fleet host: a QR login as the service user (it keeps the device
+ * id, so the offline queue survives), then a restart of its daemon. A CRM uses the fleet controller's QR add instead.
+ *
+ * @param {string} accountId
+ * @returns {string}
+ */
+export function fleetReloginCommand(accountId) {
+    return `za --account ${accountId} login, then za fleet restart ${accountId} (or the fleet controller's QR add)`;
+}
+
+/**
+ * What an account's saved session says to `fleet status --check`: `fail` at {@link EXPIRY_FAIL_DAYS} days left or
+ * once ended, `warn` at {@link EXPIRY_WARN_DAYS}, else null; with the line to print.
+ *
+ * @param {{ accountId: string, session?: {expiresAt: string, daysLeft: number, expired: boolean}|null }} row
+ * @returns {{ level: "fail"|"warn", line: string }|null}
+ */
+export function sessionCheck(row) {
+    const s = row.session;
+    if (!s?.expiresAt) return null;
+    const date = s.expiresAt.slice(0, 10);
+    const how = fleetReloginCommand(row.accountId);
+    if (s.expired) {
+        return { level: "fail", line: `${row.accountId}: session ended on ${date} - log in again now: ${how}` };
+    }
+    if (s.daysLeft > EXPIRY_WARN_DAYS) return null;
+    return {
+        level: s.daysLeft <= EXPIRY_FAIL_DAYS ? "fail" : "warn",
+        line: `${row.accountId}: session ends ${date} (${s.daysLeft} day(s) left) - log in again by ${date}: ${how}`,
+    };
+}
+
+/**
+ * The lines `fleet status --check` prints for the accounts that fail it: one per account and cause, its state and
+ * what to do. A saved session with {@link EXPIRY_FAIL_DAYS} days or fewer left (or ended) fails too.
+ *
+ * @param {Array<{ accountId: string, state: string, session?: object|null }>} rows
+ * @returns {string[]}
+ */
+export function checkFailures(rows) {
+    const out = [];
+    for (const r of rows) {
+        if (!CHECK_PASSES.includes(r.state)) {
+            out.push(`${r.accountId}: ${r.state}${STATE_ADVICE[r.state] ? ` - ${STATE_ADVICE[r.state]}` : ""}`);
+        }
+        const s = sessionCheck(r);
+        if (s?.level === "fail") out.push(s.line);
+    }
+    return out;
+}
+
+/**
+ * The lines `fleet status --check` prints without failing: a saved session that ends within
+ * {@link EXPIRY_WARN_DAYS} days but more than {@link EXPIRY_FAIL_DAYS}.
+ *
+ * @param {Array<{ accountId: string, session?: object|null }>} rows
+ * @returns {string[]}
+ */
+export function checkWarnings(rows) {
+    return rows
+        .map(sessionCheck)
+        .filter((s) => s?.level === "warn")
+        .map((s) => s.line);
 }
 
 /** True for the states a restart can help: the account is not serving. */
@@ -165,13 +330,37 @@ function age(sec) {
 }
 
 /**
+ * The LOGIN ENDS cell: the days the saved login has left, `!` from {@link EXPIRY_WARN_DAYS} days, `ended` once over.
+ *
+ * @param {{daysLeft: number, expired: boolean}|null|undefined} session
+ * @returns {string}
+ */
+function sessionCell(session) {
+    if (!session) return "-";
+    if (session.expired) return "ended";
+    return `${session.daysLeft}d${session.daysLeft <= EXPIRY_WARN_DAYS ? "!" : ""}`;
+}
+
+/**
  * The table `fleet status` prints, one row per account.
  *
- * @param {Array<{ accountId: string, name?: string, port?: number|null, state: string, daemon: {running: boolean, pid: number|null}, health: object|null }>} rows
+ * @param {Array<{ accountId: string, name?: string, port?: number|null, state: string, daemon: {running: boolean, pid: number|null}, health: object|null, session?: object|null }>} rows
  * @returns {string[]} Lines
  */
 export function renderStatusTable(rows) {
-    const header = ["ACCOUNT", "NAME", "PORT", "STATE", "PID", "SOCKET", "LAST EVENT", "WEBHOOK", "GAPS", "MEM"];
+    const header = [
+        "ACCOUNT",
+        "NAME",
+        "PORT",
+        "STATE",
+        "PID",
+        "SOCKET",
+        "LAST EVENT",
+        "WEBHOOK",
+        "GAPS",
+        "MEM",
+        "LOGIN ENDS",
+    ];
     const body = rows.map((r) => {
         const h = r.health;
         const w = h?.webhook;
@@ -186,6 +375,7 @@ export function renderStatusTable(rows) {
             w ? `${w.pending}q ${w.dead}d` : h ? "off" : "-",
             h ? h.coverage.pendingGaps : "-",
             h ? `${Math.round(h.process.rssBytes / 1048576)}M` : "-",
+            sessionCell(r.session),
         ].map(String);
     });
     const widths = header.map((c, i) => Math.max(c.length, ...body.map((r) => r[i].length)));
@@ -198,16 +388,19 @@ export function renderStatusTable(rows) {
 }
 
 /**
- * Write the files that supervise a fleet: the systemd unit, env files (with a generated bearer token per
- * account), the port table, and optionally a Caddyfile. An existing file is never overwritten unless `force`;
- * an existing account env file keeps its token even then unless `rotateTokens`.
+ * Write the files that supervise a fleet: the systemd unit and its credential drop-in, the maintenance units
+ * (purge, health check, backup) and their timers, the env files (with a generated bearer token per account),
+ * the home `.env` and `storage.json`, the polkit rule, the `za` wrapper, a logrotate rule, the port table and,
+ * with a domain, a Caddyfile. An existing file is never overwritten unless `force`; an existing account env
+ * file keeps its token even then unless `rotateTokens`.
  *
  * @param {object} args
  * @param {string} args.outDir
  * @param {Array<{ ownId: string, port: number }>} args.accounts
- * @param {{ user?: string, home?: string, bin?: string, mediaDir?: string, etcDir?: string }} [args.paths] -
- *   for the unit
- * @param {string|null} [args.domain] - Also write a Caddyfile for this hostname
+ * @param {{ user?: string, home?: string, bin?: string, etcDir?: string, dataDir?: string, mediaDir?: string,
+ *   backupDir?: string }} [args.paths]
+ * @param {string|null} [args.domain] - Also write a Caddyfile for this hostname, and each account's public URL
+ * @param {"passphrase"|"systemd-creds"|"kms"|"none"} [args.provider] - The key provider to wire (passphrase)
  * @param {boolean} [args.force]
  * @param {boolean} [args.rotateTokens]
  * @param {() => string} [args.makeToken]
@@ -218,25 +411,40 @@ export function generateFleetFiles({
     accounts,
     paths = {},
     domain = null,
+    provider = "passphrase",
     force = false,
     rotateTokens = false,
     makeToken = () => randomBytes(32).toString("hex"),
 }) {
     const written = [];
     const kept = [];
-    const put = (rel, text, { secret = false, overwrite = force } = {}) => {
+    const put = (rel, text, { secret = false, overwrite = force, mode } = {}) => {
         const file = join(outDir, rel);
         if (existsSync(file) && !overwrite) {
             kept.push(rel);
             return false;
         }
-        writeFileAtomic(file, text, { mode: secret ? 0o600 : 0o644 });
+        writeFileAtomic(file, text, { mode: mode ?? (secret ? 0o600 : 0o644) });
         written.push(rel);
         return true;
     };
+    const o = { ...paths, provider };
 
-    put("zalo-mcp@.service", renderUnit(paths));
-    put("common.env", COMMON_ENV_TEMPLATE, { secret: true });
+    put("zalo-mcp@.service", renderUnit(o));
+    if (provider === "passphrase") put("credentials.conf", renderCredentialsDropin(o));
+    put("zalo-mcp-purge.service", renderPurgeService(o));
+    put("zalo-mcp-purge.timer", PURGE_TIMER_TEMPLATE);
+    put("zalo-fleet-check.service", renderCheckService(o));
+    put("zalo-fleet-check.timer", CHECK_TIMER_TEMPLATE);
+    put("zalo-backup.service", renderBackupService(o));
+    put("zalo-backup.timer", BACKUP_TIMER_TEMPLATE);
+    put("zalo-fleet-polkit.rules", renderPolkitRule(o));
+    put("za", renderZa(o), { mode: 0o755 });
+    put("zalo-policy-audit.logrotate", renderLogrotate(o));
+    put("common.env", renderCommonEnv({ proxied: Boolean(domain) }), { secret: true });
+    put("home.env", renderHomeEnv(o), { secret: true });
+    const storage = renderStorageJson(provider);
+    if (storage) put("storage.json", storage);
     for (const { ownId, port } of accounts) {
         const rel = join("accounts", `${ownId}.env`);
         const file = join(outDir, rel);
@@ -245,7 +453,11 @@ export function generateFleetFiles({
             kept.push(rel);
             continue;
         }
-        put(rel, renderAccountEnv({ ownId, port, token: makeToken() }), { secret: true, overwrite: true });
+        const publicUrl = domain ? accountPublicUrl(domain, ownId) : null;
+        put(rel, renderAccountEnv({ ownId, port, token: makeToken(), publicUrl, etcDir: paths.etcDir }), {
+            secret: true,
+            overwrite: true,
+        });
     }
     put("ports.json", JSON.stringify(Object.fromEntries(accounts.map((a) => [a.ownId, a.port])), null, 2) + "\n", {
         overwrite: true,

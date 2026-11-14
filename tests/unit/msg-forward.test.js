@@ -1,7 +1,7 @@
 /**
- * `msg forward` shipped calling zca-js with the wrong arity, so it threw
+ * `msg forward` shipped calling the previous engine with the wrong arity, so it threw
  * "Missing message content" on every invocation -- every message type, both
- * thread types -- before it ever reached the network. The zca-api-surface
+ * thread types -- before it ever reached the network. The api-surface
  * test did not catch it: `forwardMessage` exists, only the call shape was
  * wrong. These guards are about the shape.
  *
@@ -9,10 +9,10 @@
  * both returned a msgId with an empty `fail` array; photo, file, sticker and
  * link were each refused locally with no network call.
  *
- * Text no longer goes through zca-js's forwardMessage at all: it now carries
- * the reference Zalo Web sends, which forwardMessage cannot serialize
+ * Text no longer goes through the previous engine's forwardMessage at all: it now carries
+ * the reference Zalo expects, which forwardMessage cannot serialize
  * correctly (it hardcodes the decorLog's `st`), so it is a custom call in
- * src/core/forward.js. The guards that pinned forwardMessage's call shape --
+ * src/zalo/custom/forward.js. The guards that pinned forwardMessage's call shape --
  * and the one that insisted the reference be omitted -- are replaced by
  * tests/unit/msg-forward-reference.test.js, which asserts the decrypted
  * request itself: the message, the target list, the reference and decorLog.
@@ -40,8 +40,9 @@ function forwardBlock(src) {
 describe("msg forward reads the cache and dispatches by kind", () => {
     it("reads the message out of the local cache", () => {
         const block = forwardBlock(MSG_CODE);
-        assert.ok(/getMessageById\s*\(/.test(block), "the text to forward has to come from somewhere");
-        assert.ok(/import\s*\{[^}]*getMessageById[^}]*\}\s*from\s*"\.\.\/core\/db\.js"/.test(MSG_CODE));
+        // getMessageForAction: the cached row, checked against its row MAC (src/core/row-mac.js) before it is sent on.
+        assert.ok(/getMessageForAction\s*\(/.test(block), "the text to forward has to come from somewhere");
+        assert.ok(/import\s*\{[^}]*getMessageForAction[^}]*\}\s*from\s*"\.\.\/core\/db\.js"/.test(MSG_CODE));
     });
 
     it("dispatches on the row's classified type, not on typeof text", () => {
@@ -68,7 +69,7 @@ describe("msg forward reads the cache and dispatches by kind", () => {
         // A shared contact arrives classified as a link; only its action says
         // otherwise, so the dispatch has to read the action.
         assert.ok(/recommened\.user/.test(block), "a shared contact must route to sendCard, not sendLink");
-        // Location has no send API in zca-js, so it must refuse rather than
+        // Location has no send API in the session, so it must refuse rather than
         // pretend. The generic "no send path" branch covers it.
         assert.ok(/no send path reproduces it/.test(MSG_SRC), "unsupported kinds must say so");
     });

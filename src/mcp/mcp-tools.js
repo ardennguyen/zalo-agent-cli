@@ -1,32 +1,57 @@
 /**
  * MCP tool registrations for Zalo message access, sending, user lookup, and group productivity.
- * Registers 25 tools: zalo_get_messages, zalo_get_history, zalo_send_message, zalo_list_threads,
+ * Registers 36 tools: zalo_get_messages, zalo_get_history, zalo_send_message, zalo_list_threads,
  * zalo_search_threads, zalo_mark_read, zalo_view_media, zalo_react, zalo_undo, zalo_get_group_members,
  * zalo_list_conversations, zalo_coverage, zalo_sync, zalo_sync_status, zalo_search_messages,
  * zalo_lookup_user, zalo_forward_message, zalo_delete_message, zalo_reminder, zalo_note, zalo_poll,
- * zalo_wait_for_message, zalo_label, zalo_friend, zalo_group.
+ * zalo_wait_for_message, zalo_label, zalo_friend, zalo_group, zalo_read, zalo_write, and the action tools
+ * zalo_conversation, zalo_profile, zalo_auto_reply, zalo_quick_message, zalo_catalog, zalo_bank, zalo_cloud,
+ * zalo_sticker and zalo_link (their action tables are src/mcp/actions-*.js, run by src/mcp/action-tool.js), and
+ * zalo_official, which runs the official-API commands (src/mcp/official-tool.js).
+ * Every CLI command has an action here, or a reason it has none; tests/unit/mcp-cli-parity.test.js holds the map.
  *
  * A tool that mirrors a CLI command calls the same code the command does (src/core/cached-message.js,
  * forward.js, pin.js, group-members.js, recent-conversations.js, src/utils/my-documents.js, urgency.js),
  * so the two cannot drift apart.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { z } from "zod";
+import { officialMeta, officialTool } from "./official-tool.js";
 import { openFile } from "../utils/open-file.js";
 import {
     getMessages,
+    getMessagesInRange,
+    getAllMessagesInRange,
     getMessageById,
-    searchMessages,
+    getMessageForAction,
     getDisplayName,
+    getStoredName,
+    setContactName,
     getThreadType,
     getThreadNames,
     getConvState,
     getReadStates,
 } from "../core/db.js";
-import { downloadSyncedMedia } from "../core/sync-v2/media.js";
+import { searchPage } from "../core/search.js";
+import { parsePeriod } from "../utils/date-range.js";
+import { downloadSyncedMedia, DOWNLOADABLE_KINDS } from "../core/sync-v2/media.js";
+import { mediaPlainSize } from "../core/keystore/media-seal.js";
+import { scopeOfDir } from "../core/keystore/keyring.js";
+import { getAccountDir } from "../core/credentials.js";
+import {
+    chooseDelivery,
+    decryptToTempfile,
+    deliverCachedMedia,
+    inlineContent,
+    mediaInfo,
+    removeMediaTemp,
+} from "../core/media-deliver.js";
+import { ensureMediaServed } from "../core/media-route.js";
 import { describeZaloError } from "../core/sync-v2/board.js";
+import { boardPage, groupReminderPage } from "../zalo/api/boards.js";
+import { allAliases, allBoardItems, allReminders } from "../core/list-all.js";
 import { fetchAndCacheHistory } from "../core/history-fetch.js";
 import {
     cachedCliMsgId,
@@ -35,42 +60,90 @@ import {
     cachedMessageById,
     reactionCliMsgId,
     recallCliMsgId,
+    quotedReply,
+    cachedReplyTo,
+    resolveReplyTo,
 } from "../core/cached-message.js";
-import { buildForwardReference, sendForward, LOG_SRC_TYPE } from "../core/forward.js";
-import { pinMessage, unpinMessage, textPinParams } from "../core/pin.js";
+import {
+    buildForwardReference,
+    sendForward,
+    LOG_SRC_TYPE,
+    videoResendOptions,
+    voiceResendOptions,
+} from "../zalo/custom/forward.js";
+import { undoPayload } from "../zalo/custom/group-visibility.js";
+import { pinMessage, unpinMessage, textPinParams } from "../zalo/custom/pin.js";
 import { coverageReport } from "../core/coverage.js";
 import { groupMemberUids, fetchMemberNames } from "../core/group-members.js";
+import { getGroupInfoWatched, recordOwnExit, goneFields, goneGroupMap, sendRefusal } from "../core/group-exit.js";
+import { departureMessage, planLeave, runLeave } from "../core/group-departure.js";
+import { mutualGroupsOrError } from "../core/mutual-groups.js";
 import { recentConversations } from "../core/recent-conversations.js";
+import { callReadAll, describeReads, READ_NAMES, ReadUsageError } from "../zalo/reads.js";
+import "../core/local-reads.js";
+import { buildWrite, callWrite, describeWrites, WRITE_NAMES, WRITES } from "../zalo/writes.js";
 import { describeReadState, readOnZalo } from "../core/read-state.js";
-import { extractMessageText } from "../utils/extract-message-text.js";
-import { expandMentions, shiftStyles, ALL_MENTION_UID } from "../utils/mentions.js";
+import { extractMessageText } from "../zalo/format/extract-message-text.js";
+import { expandMentions, shiftStyles, ALL_MENTION_UID } from "../zalo/format/mentions.js";
 import { resolveSelfThread } from "../utils/my-documents.js";
 import { buildQuote, resolveQuoteSender } from "../utils/quote.js";
-import { urgencyLevel } from "../utils/urgency.js";
-import { splitMessage, sendParts } from "../utils/split-message.js";
+import { urgencyLevel } from "../zalo/format/urgency.js";
+import { splitMessage, sendParts } from "../zalo/format/split-message.js";
 import { hasLiteralNewline, LITERAL_NEWLINE_WARNING } from "../utils/literal-newline.js";
-import { markdownToZalo, resolveSendFormat } from "../utils/markdown.js";
-import { MAX_BATCH, MAX_SETTLE_MS, batchParams, waitResult } from "./wait-result.js";
+import { markdownToZalo, resolveSendFormat } from "../zalo/format/markdown.js";
+import { MAX_SETTLE_MS, batchParams, waitResult } from "./wait-result.js";
+import { SYNC_STAGES } from "./sync-jobs.js";
 import {
     describeFriendAddError,
+    describeFriendUndoError,
     extractErrorCode,
     friendStatusFrom,
     friendsFrom,
+    readSentRequests,
     receivedRequestsFrom,
     sentRequestsFrom,
 } from "../core/friend-requests.js";
+import { errorCodeOf } from "../zalo/errors.js";
 import {
-    CONFIRMED_ACTIONS,
     NOT_A_MEMBER_CODES,
     REMOVE_NOT_IN_GROUP,
     createdGroupFrom,
-    groupConfirmRequired,
     groupInfoFrom,
     memberChangeFrom,
 } from "../core/group-admin.js";
-import { resolveCurrentUserNames, withCurrentSenderNames } from "../core/current-user-names.js";
+import { gateMcp, removedLabels } from "../core/confirm-guard.js";
+import { getSecurePage } from "../core/secure-page.js";
+import { hiddenChatsFor, hiddenEventView, readThreadIds, withoutHidden } from "../core/hidden-chats.js";
 
-/** Repeat mode codes matching zca-js ReminderRepeatMode enum and src/commands/reminder.js. */
+/** The conversation ids a raw read names (moved to src/core/hidden-chats.js; `read run` uses it too). */
+export { readThreadIds } from "../core/hidden-chats.js";
+import { resolveHiddenChats, resolveMediaDelivery } from "../core/deploy-policy.js";
+import { resolveCurrentUserNames, withCurrentSenderNames } from "../core/current-user-names.js";
+import { aliasFor, noteAliasSet, personNameFields, senderNameFields } from "../core/contact-names.js";
+import { actionTool, confirmInput, dryRunInput, ticketInput } from "./action-tool.js";
+import { gateToolsByPresence } from "./tool-presence.js";
+import { BIN_TO_DISPLAY, generateQrTransferImage, qrTransferCaption, resolveBankBin } from "../utils/bank-helpers.js";
+import { CONVERSATION_ACTIONS, CONVERSATION_META } from "./actions-conversation.js";
+import { PROFILE_ACTIONS, PROFILE_META } from "./actions-profile.js";
+import {
+    AUTO_REPLY_ACTIONS,
+    AUTO_REPLY_META,
+    BANK_ACTIONS,
+    BANK_META,
+    CATALOG_ACTIONS,
+    CATALOG_META,
+    QUICK_MESSAGE_ACTIONS,
+    QUICK_MESSAGE_META,
+} from "./actions-business.js";
+import { CLOUD_ACTIONS, CLOUD_META, LINK_ACTIONS, LINK_META, STICKER_ACTIONS, STICKER_META } from "./actions-media.js";
+import {
+    FRIEND_EXTRA_ACTIONS,
+    FRIEND_EXTRA_INPUTS,
+    GROUP_EXTRA_ACTIONS,
+    GROUP_EXTRA_INPUTS,
+} from "./actions-social.js";
+
+/** Repeat mode codes matching Zalo's reminder repeat modes and src/commands/reminder.js. */
 const REMINDER_REPEAT_MODES = { none: 0, daily: 1, weekly: 2, monthly: 3 };
 const REMINDER_REPEAT_LABELS = { 0: "none", 1: "daily", 2: "weekly", 3: "monthly" };
 
@@ -99,7 +172,7 @@ function parseReminderTime(val) {
 /**
  * Build the source descriptor `buildForwardReference` expects from a cached message row.
  *
- * @param {object} api - logged-in zca-js API instance
+ * @param {object} api - logged-in session
  * @param {object} row - cached message row from zalo.db
  * @returns {Promise<object>}
  */
@@ -160,11 +233,12 @@ async function forwardSourceForMcp(api, row) {
  * Omitted means "work it out"; an explicit 0 or 1 is always obeyed.
  *
  * @param {string} threadId
- * @param {number} [explicit] - the caller's threadType, if they gave one
+ * @param {"dm"|"group"} [explicit] - the caller's threadType, if they gave one
  * @returns {number} THREAD_USER or THREAD_GROUP
  */
 function resolveThreadType(threadId, explicit) {
-    if (explicit !== undefined && explicit !== null) return Number(explicit);
+    if (explicit === "group") return THREAD_GROUP;
+    if (explicit === "dm") return THREAD_USER;
     try {
         return getThreadType(String(threadId)) === "group" ? THREAD_GROUP : THREAD_USER;
     } catch {
@@ -173,18 +247,61 @@ function resolveThreadType(threadId, explicit) {
     }
 }
 
-/** Thread type constants matching zca-js ThreadType enum */
+/** A group's conversation id in a label: `g` and the group id. */
+const LABEL_GROUP_ID = /^g\d+$/;
+
+/**
+ * A thread as a conversation label names it: `g<groupId>` for a group, the bare id for a user (Zalo's
+ * conversation ids). An id already given as `g<digits>` is kept.
+ *
+ * @param {string} threadId
+ * @param {"dm"|"group"} [explicit] - the caller's threadType, if they gave one
+ * @returns {string}
+ */
+function labelConversationId(threadId, explicit) {
+    const id = String(threadId);
+    if (LABEL_GROUP_ID.test(id)) return id;
+    return resolveThreadType(id, explicit) === THREAD_GROUP ? `g${id}` : id;
+}
+
+/** Thread type constants matching the engine's THREAD_TYPE (src/zalo/enums.js) */
 const THREAD_USER = 0;
 
 /** Thread type for groups — the only kind Zalo delivers mentions in. */
 const THREAD_GROUP = 1;
 
+/** What a reply calls a thread type: the same words an input takes. */
+const threadTypeName = (type) => (Number(type) === THREAD_GROUP ? "group" : "dm");
+
 /**
  * How many member ids `zalo_get_group_members` asks Zalo to name per request.
- * zca-js puts them in the request URL, and Zalo Web asks in bounded batches
+ * The session puts them in the request URL, and Zalo asks in bounded batches
  * too; 50 is the batch the group commands already use for `getGroupInfo`.
  */
 const MEMBER_NAME_BATCH = 50;
+
+/** The kinds of content zalo_send_message sends besides text; one per call. */
+const SEND_MODES = ["filePath/files", "link", "cardUserId", "sticker", "voiceUrl", "video", "bankCard", "qrTransfer"];
+
+/**
+ * Which of SEND_MODES a zalo_send_message call gives, by its input names.
+ *
+ * @param {object} val - the call's input
+ * @returns {string[]}
+ */
+function sendModes(val) {
+    const hasFile = Boolean(val.filePath || (Array.isArray(val.files) && val.files.length > 0));
+    return [
+        hasFile && "files",
+        val.link && "link",
+        val.cardUserId && "cardUserId",
+        val.sticker && "sticker",
+        val.voiceUrl && "voiceUrl",
+        val.video && "video",
+        val.bankCard && "bankCard",
+        val.qrTransfer && "qrTransfer",
+    ].filter(Boolean);
+}
 
 /** How a refusal tells an agent to supply a message's cliMsgId itself. */
 const CLI_MSG_ID_HINT = "the `cliMsgId` parameter (zalo_send_message returns it for a message you sent)";
@@ -224,9 +341,37 @@ const CLI_MSG_ID_HINT = "the `cliMsgId` parameter (zalo_send_message returns it 
  * @param {string} uid
  * @returns {string|null}
  */
+/**
+ * Record the name this account shows for a user (the nickname just set, or the profile name after a nickname was
+ * removed) in `contacts`, where `getDisplayName` reads first. Best effort, like cachedDisplayName: the MCP tests run
+ * without a db, and a name that fails to persist only costs the next lookup.
+ * @param {string} uid
+ * @param {string} name
+ */
+function rememberContactName(uid, name) {
+    try {
+        setContactName(uid, name);
+    } catch {
+        /* no db open in this process */
+    }
+}
+
 function cachedDisplayName(uid) {
     try {
         return getDisplayName(uid);
+    } catch {
+        return aliasFor(uid); // no db in this process: the owner's alias, when the daemon holds one
+    }
+}
+
+/**
+ * The name the cache holds for a user without the owner's alias (`db.getStoredName`), or null.
+ * @param {string} uid
+ * @returns {string|null}
+ */
+function cachedStoredName(uid) {
+    try {
+        return getStoredName(uid);
     } catch {
         return null; // no db in this process
     }
@@ -235,7 +380,7 @@ function cachedDisplayName(uid) {
 /**
  * This account's own uid, or "" when the session cannot say.
  *
- * @param {object} api - zca-js API instance
+ * @param {object} api - session object
  * @returns {string}
  */
 function ownIdOf(api) {
@@ -252,7 +397,7 @@ function ownIdOf(api) {
  * device -- for the tools that list conversations. Empty when the cache
  * cannot answer, so a listing never fails for want of it.
  *
- * @param {object} api - zca-js API instance
+ * @param {object} api - session object
  * @param {string[]} threadIds
  * @returns {Map<string, object>} threadId -> an entry of db.js getReadStates
  */
@@ -271,11 +416,11 @@ function readStatesOf(api, threadIds) {
  * `me`, or this account's own uid, means My Documents: a 1-1 conversation of
  * its own whose id is the session's `loginInfo.send2me_id`, never the own uid
  * (src/utils/my-documents.js, the same function `msg send me` calls). An
- * explicit `threadType: 1` is refused, as `msg send me -t 1` is.
+ * explicit `threadType: "group"` is refused, as `msg send me -t 1` is.
  *
- * @param {object} api - zca-js API instance
+ * @param {object} api - session object
  * @param {string} threadId - as the caller gave it
- * @param {number} [threadTypeIn] - the caller's threadType, if they gave one
+ * @param {"dm"|"group"} [threadTypeIn] - the caller's threadType, if they gave one
  * @returns {null|{threadId: string, notice: string}|{error: string}} null when it is not a self reference
  */
 function selfThread(api, threadId, threadTypeIn) {
@@ -288,7 +433,7 @@ function selfThread(api, threadId, threadTypeIn) {
     return resolveSelfThread(threadId, {
         ownId: ownId === null ? null : String(ownId),
         send2meId: () => api.getContext().loginInfo?.send2me_id,
-        groupRequested: Number(threadTypeIn) === THREAD_GROUP,
+        groupRequested: threadTypeIn === "group",
     });
 }
 
@@ -299,9 +444,9 @@ function selfThread(api, threadId, threadTypeIn) {
  * typed by {@link resolveThreadType}: the caller's explicit threadType, else
  * the cache's.
  *
- * @param {object} api - zca-js API instance
+ * @param {object} api - session object
  * @param {string} threadIdIn - as the caller gave it
- * @param {number} [threadTypeIn] - the caller's threadType, if they gave one
+ * @param {"dm"|"group"} [threadTypeIn] - the caller's threadType, if they gave one
  * @returns {{threadId: string, threadType: number, notice?: string}|{error: string}} `notice` only for My Documents
  */
 function actionThread(api, threadIdIn, threadTypeIn) {
@@ -330,13 +475,120 @@ function err(message) {
 }
 
 /**
+ * One cached message as zalo_get_history returns it.
+ * @param {object} m - a `messages` row
+ * @returns {object}
+ */
+function cachedHistoryRow(m) {
+    return {
+        msgId: m.msgId,
+        cliMsgId: cachedCliMsgId(m) ?? undefined,
+        threadId: m.threadId,
+        senderId: m.senderId || null,
+        senderName: m.senderName || null,
+        text: m.text,
+        timestamp: m.timestamp,
+        type: m.type,
+        mediaCached: m.localPath ? true : undefined,
+        hasAttachment: m.has_attachment ? true : undefined,
+        msgStatus: m.msgStatus ?? undefined,
+        replyTo: cachedReplyTo(m),
+    };
+}
+
+/** The largest sticker picture zalo_view_media fetches. */
+const STICKER_MAX_BYTES = 2 * 1024 * 1024;
+
+/**
+ * A sticker's picture, fetched for zalo_view_media and not kept: stickers are not downloaded with the messages. The
+ * URL comes from the live message, else from Zalo's sticker detail for the id the cached message names.
+ *
+ * @param {object} api
+ * @param {object|null} row - the cached message
+ * @param {object|null} buffered - the live message
+ * @param {(url: string, init: object) => Promise<Response>} [fetchImpl]
+ * @returns {Promise<{bytes: Buffer, mime: string} | {error: string}>}
+ */
+export async function stickerPicture(api, row, buffered, fetchImpl = (...a) => fetch(...a)) {
+    let url = buffered?.attachment?.url || null;
+    if (!url) {
+        let content = null;
+        try {
+            content = JSON.parse(row?.raw_data || "{}")?.content ?? null;
+        } catch {
+            /* no stored content */
+        }
+        const id = Number(content?.id);
+        if (!Number.isFinite(id) || id <= 0) return { error: "This sticker message does not say which sticker it is." };
+        try {
+            const [detail] = (await api.getStickersDetail([id])) ?? [];
+            url = detail?.stickerWebpUrl || detail?.stickerUrl || null;
+        } catch (e) {
+            return { error: `Zalo did not describe the sticker: ${e.message}` };
+        }
+        if (!url) return { error: "Zalo did not give a picture for this sticker." };
+    }
+    try {
+        const res = await fetchImpl(url, { signal: AbortSignal.timeout(15_000), redirect: "follow" });
+        const mime = String(res.headers.get("content-type") || "")
+            .split(";")[0]
+            .trim()
+            .toLowerCase();
+        if (!res.ok || !mime.startsWith("image/")) {
+            return { error: `The sticker's picture could not be fetched (HTTP ${res.status}).` };
+        }
+        const bytes = Buffer.from(await res.arrayBuffer());
+        if (bytes.length > STICKER_MAX_BYTES) return { error: "The sticker's picture is too large to show." };
+        return { bytes, mime };
+    } catch (e) {
+        return { error: `The sticker's picture could not be fetched: ${e.message}` };
+    }
+}
+
+/**
+ * A thread's cached messages between two times, oldest first: every one, or one page of `limit` (bug-reports #5).
+ *
+ * Cache only: Zalo's server serves nothing older than this login, so a date range is the cache's question.
+ *
+ * @param {string} threadId
+ * @param {{since: number|null, until: number|null, limit: number}} range - `limit` Infinity: every message in the period
+ * @param {object} [nameCache]
+ * @returns {object} tool payload
+ */
+function cacheHistoryRange(threadId, { since, until, limit }, nameCache) {
+    let rows;
+    let nextSince = null;
+    if (Number.isFinite(limit)) ({ rows, nextSince } = getMessagesInRange(String(threadId), { since, until, limit }));
+    else rows = getAllMessagesInRange(String(threadId), { since, until }).rows;
+    const messages = rows.map(cachedHistoryRow);
+    const info = nameCache?.get(String(threadId));
+    if (info) for (const m of messages) m.threadName = info.name;
+    return {
+        threadId: String(threadId),
+        source: "cache",
+        since,
+        until,
+        count: messages.length,
+        messages,
+        // Pass `nextSince` back as `since` (same `until`) for the next page.
+        hasMore: nextSince !== null,
+        nextSince,
+        ...(messages.length === 0 && {
+            note:
+                "Nothing cached for this conversation in this period. Zalo's server serves only messages since this " +
+                "login; older ones are restored with `zalo-agent sync` (the owner's phone confirms it).",
+        }),
+    };
+}
+
+/**
  * Read a thread's history out of the local cache.
  *
  * Returns null when the cache has nothing for the thread, which is the signal
  * to fall back to asking Zalo.
  *
  * @param {string} threadId
- * @param {number} limit
+ * @param {number} limit - Infinity: every cached message
  * @param {number} [before] - epoch ms; return messages older than this
  * @param {object} [nameCache]
  * @returns {object|null} tool payload, or null when the cache is empty/unopened
@@ -344,26 +596,13 @@ function err(message) {
 function cacheHistory(threadId, limit, before, nameCache) {
     let rows;
     try {
-        rows = getMessages(String(threadId), limit, before);
+        rows = getMessages(String(threadId), Number.isFinite(limit) ? limit : -1, before);
     } catch {
         return null; // no db open in this process — server path it is
     }
     if (!rows || rows.length === 0) return null;
 
-    const messages = rows
-        .map((m) => ({
-            msgId: m.msgId,
-            threadId: m.threadId,
-            senderId: m.senderId || null,
-            senderName: m.senderName || null,
-            text: m.text,
-            timestamp: m.timestamp,
-            type: m.type,
-            localPath: m.localPath || undefined,
-            hasAttachment: m.has_attachment ? true : undefined,
-            msgStatus: m.msgStatus ?? undefined,
-        }))
-        .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+    const messages = rows.map(cachedHistoryRow).sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
 
     const info = nameCache?.get(String(threadId));
     if (info) for (const m of messages) m.threadName = info.name;
@@ -375,14 +614,23 @@ function cacheHistory(threadId, limit, before, nameCache) {
         messages,
         // Oldest returned timestamp: pass it back as `before` for the next page.
         cursor: messages.length ? messages[0].timestamp : (before ?? null),
-        hasMore: rows.length >= limit,
+        hasMore: Number.isFinite(limit) && rows.length >= limit,
     };
 }
+
+/** What zalo_get_messages and zalo_wait_for_message say about the system events in their list. */
+const SYSTEM_EVENTS_NOTE =
+    "A system event arrives in the same list with `system: true` and `msgId` null, only to a read or wait that names no `threadId`; each has a `type` and a `text` to show a person. " +
+    "`account_state`: the account's connection state changed (`state` idle, connecting, connected, kicked, yielded, login_needed, signed_out or maintenance, `previous`, `detail`); yielded and signed_out refuse every call until a person acts, as `text` says; a park and the wake that ends it are not in the buffer. " +
+    "`group_gone`: the account left, was removed or blocked from, or saw the disbanding of the group in `threadId` (`reason`, `leftAt`, `mode` purge or keep, `purged` counts). " +
+    "`queue_overflow`: Zalo's offline queue overflowed and messages from `fromTs` to `toTs` were dropped (`queues`, `groups` repair counts, `pending`; when pending, `command` is the sync the owner runs, which taps the phone). " +
+    "`session_expiring`: the account's saved login ends by itself on `expiresAt` (`daysLeft`, `threshold` 14, 7, 3, 1 or 0 once `expired`); the owner renews it with a QR login (`command`), and once it ends every call is refused until then. " +
+    "`storage_quota`: this account's storage on the server is near or over its quota, or was purged, or is back within it (`level` warn, over, grace_ending, purged or ok; `usedBytes`, `limitBytes`, `purgeAt`); zalo_profile 'usage' reads the current usage. ";
 
 /**
  * Register all Zalo MCP tools on the server.
  * @param {import("@modelcontextprotocol/sdk/server/mcp.js").McpServer} server
- * @param {object} api - zca-js API instance
+ * @param {object} api - session object
  * @param {import("./message-buffer.js").MessageBuffer} buffer
  * @param {import("./thread-filter.js").ThreadFilter} filter
  * @param {object} config - MCP config
@@ -391,9 +639,23 @@ function cacheHistory(threadId, limit, before, nameCache) {
  * @param {ReturnType<import("../core/daemon-channel.js").createStageLock>} [stageLock] - the
  *   daemon's one-stage-at-a-time lock; a server-side history fetch takes it, as `listen`'s does
  * @param {object} [syncJobs] - the daemon's account-local sync job tracker
+ * @param {{presence?: object|null}} [extras] - `presence`: the daemon's on-demand presence
+ *   (src/core/daemon-presence.js); every tool goes through it by its class (./tool-presence.js)
  */
-export function registerTools(server, api, buffer, filter, config, nameCache, accountDir, stageLock, syncJobs) {
-    const maxPerPoll = config.limits?.maxMessagesPerPoll ?? 20;
+export function registerTools(
+    server,
+    api,
+    buffer,
+    filter,
+    config,
+    nameCache,
+    accountDir,
+    stageLock,
+    syncJobs,
+    extras = {},
+) {
+    // On-demand presence: refused while yielded or signed out, a hold per call, warming by the tool's class.
+    gateToolsByPresence(server, extras?.presence ?? null);
 
     // Several bots can share one listener, each with its own read cursor
     // (triage M7). A bot that names none reads as "default", as before.
@@ -408,6 +670,74 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "so one bot's zalo_mark_read does not hide messages from another. Omit it for a single bot.",
         );
 
+    // Every tool with an action Zalo asks about first takes `confirm` and `dryRun` (confirmInput, dryRunInput
+    // in action-tool.js), and settles it through gate() (src/core/confirm-guard.js) after its arguments are checked
+    // and before anything is sent.
+    // Over the stateless HTTP transport this server lives for one request (mcp-http-transport.js marks it), so
+    // "human" mode cannot ask there; the guard hands out a one-time approve page and the call is repeated with
+    // `ticket` (src/core/secure-page.js).
+    const gate = (key, target, { confirm, dryRun, ticket } = {}, extra, more = {}) =>
+        gateMcp(key, target, {
+            confirm,
+            dryRun,
+            ticket,
+            config,
+            accountId: ownIdOf(api),
+            server,
+            extra,
+            stateless: server?.statelessHttp === true,
+            // approval.secret: the approver password lives in the account folder, the PIN's hash in the hidden set.
+            accountDir: accountDir ?? null,
+            hidden: () => hiddenSet(),
+            ...more,
+        });
+
+    // Hidden chats (src/core/hidden-chats.js), shown by the deployment's hiddenChats policy (src/core/deploy-policy.js):
+    // `exclude` (default) leaves them out of every list, search, history and event; `contentless` turns an event in
+    // one into `{event, hidden: true}`; `include` shows them.
+    const hiddenSet = () => hiddenChatsFor(ownIdOf(api) ?? "", { stateDir: accountDir ?? null });
+    const hiddenMode = () => resolveHiddenChats({ config, accountId: ownIdOf(api) ?? undefined }).mode;
+    const hiddenIds = () => (hiddenMode() === "include" ? [] : [...hiddenSet().ids]);
+    const isHiddenThread = (id) =>
+        id !== undefined && id !== null && hiddenMode() !== "include" && hiddenSet().isHidden(id);
+    const eventsView = (list) => {
+        const set = hiddenSet();
+        const mode = hiddenMode();
+        return list
+            .map((m) => hiddenEventView(m, set, mode, { name: m?.type === "undo" ? "undo" : "message" }))
+            .filter(Boolean);
+    };
+    const HIDDEN_THREAD =
+        "That conversation is one of the account's hidden chats, which this server leaves out (hiddenChats policy). " +
+        "The account owner can unhide it, or the deployment can set hiddenChats to include.";
+
+    // What an action table's rows read (src/mcp/action-tool.js): the session, the guard, and the helpers that type
+    // a thread and name this account, so a row resolves a thread the way every other tool here does.
+    const toolCtx = {
+        api,
+        ok,
+        err,
+        gate,
+        ownId: () => ownIdOf(api),
+        threadType: resolveThreadType,
+        threadTypeName,
+        onSelfName: (name) => syncJobs?.onSelfName?.(name),
+        // The hidden-chat actions: the deployment's policy, the PIN page, and a live elicitation where there is one.
+        config,
+        server,
+        stateless: server?.statelessHttp === true,
+        hidden: () => hiddenSet(),
+        hiddenMode: () => hiddenMode(),
+        securePage: () => getSecurePage(),
+        threadName: (id) => nameCache?.get?.(String(id))?.name ?? null,
+        // zalo_profile 'usage': the media folder this server downloads into.
+        mediaRoot: config.media?.downloadDir ?? null,
+        // zalo_profile 'presence_resume': the daemon's presence (null under a server that runs none).
+        presence: extras?.presence ?? null,
+    };
+    const friendExtra = actionTool("zalo_friend", FRIEND_EXTRA_ACTIONS, toolCtx);
+    const groupExtra = actionTool("zalo_group", GROUP_EXTRA_ACTIONS, toolCtx);
+
     // --- zalo_get_messages ---
     server.registerTool(
         "zalo_get_messages",
@@ -416,8 +746,10 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             description:
                 "Read the new incoming Zalo messages (DMs and groups) from the live buffer, in order. It returns the messages this consumer has not yet marked read; when you have handled them, call zalo_mark_read with the reply's `cursor`. " +
                 "To continue exactly after the last reply, pass its `cursor` as `since`. To wait for the next message instead of polling, use zalo_wait_for_message. " +
-                "Each message has `msgId` (pass it as `msgId` or `quoteMsgId` to other tools; `id` is the same value, kept for older clients), `threadId`, `threadType` (dm or group), `senderId`, `senderDisplayName` (the current name: your alias, else the Zalo profile name, else the uid; `senderDisplayNameSource` says which), `senderName` (the name when the message was first seen), `text`, `timestamp` (epoch ms), `type`, `threadName` and `readOnZalo`. " +
-                "`readOnZalo` is true or false when the account owner has or has not read the message on Zalo (phone or Zalo Web), and null when that is unknown; zalo_mark_read does not change it. " +
+                "Each message has `msgId` (pass it as `msgId` or `quoteMsgId` to other tools), `threadId`, `threadType` (dm or group), `senderId`, `senderName` (the name to show: your alias for the sender when you set one, else the name the message carried), `senderAlias` (your alias, or null), `senderZaloName` (the name the message carried), `senderDisplayName` (the current name: your alias, else the phonebook name, else the Zalo name, else the display name, else the uid; `senderDisplayNameSource` says which: alias, phonebook, zalo, display or uid), `text`, `timestamp` (epoch ms), `type`, `threadName` and `readOnZalo`. " +
+                "`readOnZalo` is true or false when the account owner has or has not read the message on Zalo (on the phone or another Zalo app), and null when that is unknown; zalo_mark_read does not change it. " +
+                'A recall arrives in the same list with `type` "undo": its `msgId` is the recalled message (null when only its `cliMsgId` is known), its `text` is empty, and the earlier message is gone from the cache. ' +
+                SYSTEM_EVENTS_NOTE +
                 "Returns `{ messages, cursor, hasMore }`.",
             inputSchema: z.object({
                 threadId: z
@@ -436,17 +768,21 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .number()
                     .int()
                     .min(1)
-                    .max(100)
-                    .default(maxPerPoll)
-                    .describe("Most messages to return in one call (1 to 100)."),
+                    .optional()
+                    .describe("Most messages to return in one call. Omit it for every unread message buffered."),
                 consumer: consumerSchema,
             }),
         },
         async ({ threadId, since, limit, consumer }) => {
             try {
+                if (isHiddenThread(threadId)) return err(HIDDEN_THREAD);
                 // An explicit cursor is honored as given; 0 starts after what this consumer marked read.
                 const from = since > 0 ? since : buffer.readCursor(consumer);
                 const result = buffer.read(threadId, from, limit);
+                // A system event (account_state, group_gone, queue_overflow, session_expiring, storage_quota) is passed on as it is.
+                const order = result.messages;
+                const system = new Map(order.filter((m) => m?.system).map((m) => [m._cursor, m]));
+                result.messages = order.filter((m) => !m?.system);
                 // Enrich messages with thread name from cache
                 if (nameCache) {
                     for (const msg of result.messages) {
@@ -475,8 +811,13 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 };
                 result.messages = result.messages.map((msg) => ({
                     ...msg,
-                    readOnZalo: readOnZalo(msg.id, watermarkOf(String(msg.threadId))),
+                    readOnZalo: readOnZalo(msg.msgId, watermarkOf(String(msg.threadId))),
                 }));
+                if (system.size) {
+                    const byCursor = new Map(result.messages.map((m) => [m._cursor, m]));
+                    result.messages = order.map((m) => system.get(m._cursor) ?? byCursor.get(m._cursor));
+                }
+                result.messages = eventsView(result.messages);
                 return ok(result);
             } catch (e) {
                 console.error("[mcp-tools] zalo_get_messages error:", e.message);
@@ -491,12 +832,12 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         {
             title: "Send Zalo Message",
             description:
-                "Send a message to a Zalo conversation: text, files or images, a link preview card, or a contact card. Give `threadId` and one kind of content: `text`, `filePath` or `files`, `link`, or `cardUserId`. With files or a link, `text` is an optional caption. " +
-                'Text: use real line breaks, never the two characters backslash and n (Zalo shows those as typed). Markdown is converted to Zalo formatting by default; `format: "plain"` sends the text exactly as written. A text over 3000 bytes (a Chinese, Japanese, Korean, Thai or Hindi character is 3, a Cyrillic or Arabic one 2) is split into several messages at paragraph or sentence ends, as Zalo Web does, and the reply then lists every part (`splitInto`, `parts`). ' +
+                "Send a message to a Zalo conversation: text, files or images, a link preview card, a contact card, a sticker, a voice message or a video from a URL, a bank account card, or a VietQR transfer image. Give `threadId` and one kind of content: `text`, `filePath` or `files`, `link`, `cardUserId`, `sticker`, `voiceUrl`, `video`, `bankCard` or `qrTransfer`. With files, a link, a video or a QR transfer, `text` is an optional caption. " +
+                'Text: use real line breaks, never the two characters backslash and n (Zalo shows those as typed). Markdown is converted to Zalo formatting by default; `format: "plain"` sends the text exactly as written. A text over 3000 bytes (a Chinese, Japanese, Korean, Thai or Hindi character is 3, a Cyrillic or Arabic one 2) is split into several messages at paragraph or sentence ends, as Zalo does, and the reply then lists every part (`splitInto`, `parts`). ' +
                 "Mention in a group: put `@[userId]` in the text where the tag belongs (`@[-1]` is @All). Take the user id from a message's `senderId` (zalo_get_messages, zalo_get_history) or from zalo_get_group_members. It is sent as `@Their Name` and notifies that person; a user id the cache cannot name is tagged as the bare id and listed in `unresolvedMentions`. Mentions only work in groups. " +
                 "Reply to a message: pass its msgId as `quoteMsgId` (text messages only, and the message must be in the local cache). " +
                 '`urgency` marks the message Important or Urgent, as the apps do. `threadId: "me"` sends to the owner\'s My Documents. ' +
-                "Returns `{ success, msgId, cliMsgId, threadType }` (`messageId` is the same value as `msgId`, kept for older clients) and, when they apply, `parts` and `warnings`. Keep `msgId` and `cliMsgId` if you may need to react to or recall this message (zalo_react, zalo_undo).",
+                "Returns `{ success, msgId, cliMsgId, threadType }` and, when they apply, `parts` and `warnings`. Keep `msgId` and `cliMsgId` if you may need to react to or recall this message (zalo_react, zalo_undo).",
             inputSchema: z
                 .object({
                     threadId: z
@@ -509,7 +850,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         .min(1)
                         .optional()
                         .describe(
-                            "The message. Real line breaks only: never the two characters backslash and n. Markdown is converted unless `format` is 'plain'. Required unless `filePath`, `files`, `link` or `cardUserId` is given; with those it is the caption. `@[userId]` tokens become @-mentions (`@[-1]` is @All).",
+                            "The message. Real line breaks only: never the two characters backslash and n. Markdown is converted unless `format` is 'plain'. Required unless another kind of content is given; with files, a link, a video or a QR transfer it is the caption. `@[userId]` tokens become @-mentions (`@[-1]` is @All).",
                         ),
                     filePath: z
                         .string()
@@ -535,14 +876,77 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         .min(1)
                         .optional()
                         .describe("The user id whose contact card to share in this conversation."),
-                    threadType: z
-                        .number()
-                        .int()
-                        .min(0)
-                        .max(1)
+                    sticker: z
+                        .string()
+                        .min(1)
+                        .max(100)
                         .optional()
                         .describe(
-                            "0 = DM, 1 = group. Leave it out: the type stored for this thread is used. Pass it only to override that.",
+                            "A keyword: sends the first sticker Zalo finds for it (zalo_sticker 'search' lists them).",
+                        ),
+                    voiceUrl: z
+                        .string()
+                        .url()
+                        .optional()
+                        .describe("The URL of an audio file to send as a voice message (Zalo fetches it from there)."),
+                    video: z
+                        .object({
+                            source: z
+                                .string()
+                                .min(1)
+                                .describe(
+                                    "The video: an http(s) URL Zalo fetches, or a local file path on the machine this server runs on (uploaded)",
+                                ),
+                            thumbnail: z
+                                .string()
+                                .min(1)
+                                .describe("Its thumbnail: an image URL, or a local jpg/png/webp path (uploaded)"),
+                            durationMs: z.number().int().min(0).optional().describe("Its length in milliseconds"),
+                            width: z.number().int().min(1).optional().describe("Its width in pixels (default 1280)"),
+                            height: z.number().int().min(1).optional().describe("Its height in pixels (default 720)"),
+                        })
+                        .strict()
+                        .optional()
+                        .describe(
+                            "A video to send, from a URL or a local file, with its thumbnail. `text` is the caption.",
+                        ),
+                    bankCard: z
+                        .object({
+                            bank: z
+                                .string()
+                                .min(1)
+                                .describe("The bank: a short name such as vcb, ocb or bidv, or its BIN"),
+                            accountNumber: z.string().min(1).max(40).describe("The account number"),
+                            holderName: z.string().min(1).max(100).optional().describe("The account holder's name"),
+                        })
+                        .strict()
+                        .optional()
+                        .describe("A bank account card (số tài khoản) to send; zalo_bank 'banks' lists the banks."),
+                    qrTransfer: z
+                        .object({
+                            bank: z
+                                .string()
+                                .min(1)
+                                .describe("The bank: a short name such as vcb, ocb or bidv, or its BIN"),
+                            accountNumber: z.string().min(1).max(40).describe("The account number to pay into"),
+                            amount: z.number().int().min(1).optional().describe("The amount in VND"),
+                            content: z.string().max(50).optional().describe("The transfer note, at most 50 characters"),
+                            template: z
+                                .enum(["compact", "print", "qronly"])
+                                .optional()
+                                .describe("The QR image's style (default compact)"),
+                        })
+                        .strict()
+                        .optional()
+                        .describe(
+                            "A VietQR transfer image to generate and send. `text` replaces its default caption " +
+                                "(bank, account, amount and note).",
+                        ),
+                    threadType: z
+                        .enum(["dm", "group"])
+                        .optional()
+                        .describe(
+                            'The conversation type: "dm" or "group". Leave it out: the type stored for this thread is used. Pass it only to override that.',
                         ),
                     quoteMsgId: z
                         .string()
@@ -568,22 +972,19 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                                 "for an ordinary message",
                         ),
                 })
+                .strict()
                 .refine(
-                    (val) =>
-                        Boolean(
-                            val.text ||
-                            val.link ||
-                            val.cardUserId ||
-                            val.filePath ||
-                            (Array.isArray(val.files) && val.files.length > 0),
-                        ),
-                    "Provide at least one of text, filePath, files, link, or cardUserId",
+                    (val) => Boolean(val.text) || sendModes(val).length > 0,
+                    `Provide text, or one of ${SEND_MODES.join(", ")}`,
                 )
-                .refine((val) => {
-                    const hasFile = Boolean(val.filePath || (Array.isArray(val.files) && val.files.length > 0));
-                    const modes = [Boolean(val.link), Boolean(val.cardUserId), hasFile].filter(Boolean).length;
-                    return modes <= 1;
-                }, "Cannot combine link, cardUserId, and file attachments in a single call"),
+                .refine(
+                    (val) => sendModes(val).length <= 1,
+                    `Send one kind of content per call: ${SEND_MODES.join(", ")} cannot be combined`,
+                )
+                .refine(
+                    (val) => !(val.text && ["sticker", "voiceUrl", "bankCard"].includes(sendModes(val)[0])),
+                    "A sticker, a voice message or a bank card carries no text: send the text as its own message",
+                ),
         },
         async ({
             threadId: threadIdIn,
@@ -592,6 +993,11 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             files,
             link,
             cardUserId,
+            sticker,
+            voiceUrl,
+            video,
+            bankCard,
+            qrTransfer,
             threadType: threadTypeIn,
             quoteMsgId,
             urgency: urgencyIn,
@@ -605,7 +1011,118 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 return err(thread.error);
             }
             const { threadId, threadType } = thread;
+            // A group this account left or lost (src/core/group-exit.js): refused here, not at the server.
+            const goneRefusal = sendRefusal(threadId);
+            if (goneRefusal) return err(goneRefusal);
+            // The reply every non-text send shares: the new message's ids, as a text send reports them.
+            const sentReply = (kind, result, more = {}) => {
+                const msgId = result?.msgId ?? result?.message?.msgId ?? null;
+                const cliMsgId = result?.cliMsgId ?? result?.message?.cliMsgId ?? null;
+                return ok({
+                    success: true,
+                    kind,
+                    ...more,
+                    msgId: msgId === null ? null : String(msgId),
+                    ...(cliMsgId !== null && { cliMsgId: String(cliMsgId) }),
+                    threadType: threadTypeName(threadType),
+                    ...(thread.notice && { threadId, notice: thread.notice }),
+                });
+            };
             try {
+                // The kinds `msg sticker`, `send-voice`, `send-video`, `send-bank` and `send-qr-transfer` send,
+                // through the same session calls.
+                if (sticker) {
+                    const found = (await api.searchSticker(sticker))?.[0];
+                    if (!found) return err(`No sticker found for "${sticker}".`);
+                    const stickerObj = {
+                        id: found.sticker_id || found.stickerId || found.id,
+                        cateId: found.cate_id || found.cateId,
+                        type: found.type || 7,
+                    };
+                    return sentReply("sticker", await api.sendSticker(stickerObj, threadId, Number(threadType)), {
+                        stickerId: String(stickerObj.id),
+                    });
+                }
+                if (voiceUrl) {
+                    return sentReply("voice", await api.sendVoice({ voiceUrl, ttl: 0 }, threadId, Number(threadType)));
+                }
+                if (video) {
+                    // As `msg send-video`: a URL Zalo fetches, or a local file uploaded on this server's socket; a
+                    // thumbnail likewise.
+                    const isUrl = (v) => /^https?:\/\//i.test(v);
+                    const size = {
+                        duration: video.durationMs,
+                        width: video.width ?? 1280,
+                        height: video.height ?? 720,
+                    };
+                    if (isUrl(video.source) && isUrl(video.thumbnail)) {
+                        const result = await api.sendVideo(
+                            { videoUrl: video.source, thumbnailUrl: video.thumbnail, msg: text ?? "", ...size },
+                            threadId,
+                            Number(threadType),
+                        );
+                        return sentReply("video", result);
+                    }
+                    if (isUrl(video.source)) {
+                        return err(
+                            "A video sent from a URL takes a thumbnail URL too; a local thumbnail goes with a local video.",
+                        );
+                    }
+                    const file = resolve(video.source.trim());
+                    const thumb = isUrl(video.thumbnail) ? null : resolve(video.thumbnail.trim());
+                    const missing = [file, thumb].filter((p) => p && !existsSync(p));
+                    if (missing.length > 0) return err(`File not found: ${missing.join(", ")}`);
+                    const result = await api.sendVideoFile(
+                        {
+                            file,
+                            msg: text ?? "",
+                            ...(thumb ? { thumbnailFile: thumb } : { thumbnailUrl: video.thumbnail }),
+                            ...size,
+                        },
+                        threadId,
+                        Number(threadType),
+                    );
+                    return sentReply("video", result);
+                }
+                if (bankCard || qrTransfer) {
+                    const spec = bankCard || qrTransfer;
+                    const bin = resolveBankBin(spec.bank);
+                    if (!bin)
+                        return err(`Unknown bank: '${spec.bank}'. zalo_bank 'banks' lists the banks Zalo supports.`);
+                    if (bankCard) {
+                        const payload = { binBank: bin, numAccBank: bankCard.accountNumber };
+                        if (bankCard.holderName) payload.nameAccBank = bankCard.holderName;
+                        const result = await api.sendBankCard(payload, threadId, Number(threadType));
+                        return sentReply("bank_card", result, { bank: BIN_TO_DISPLAY[bin] || String(bin) });
+                    }
+                    const qrPath = await generateQrTransferImage(
+                        bin,
+                        qrTransfer.accountNumber,
+                        qrTransfer.amount,
+                        qrTransfer.content,
+                        qrTransfer.template ?? "compact",
+                    );
+                    if (!qrPath) return err("Could not generate the VietQR image; nothing was sent.");
+                    try {
+                        const caption = text || qrTransferCaption(bin, qrTransfer);
+                        const result = await api.sendMessage(
+                            { msg: caption, attachments: [qrPath] },
+                            threadId,
+                            Number(threadType),
+                        );
+                        const att = Array.isArray(result?.attachment) ? result.attachment[0] : result?.attachment;
+                        return sentReply("qr_transfer", result?.message ?? att ?? result, {
+                            bank: BIN_TO_DISPLAY[bin] || String(bin),
+                        });
+                    } finally {
+                        try {
+                            unlinkSync(qrPath);
+                        } catch {
+                            /* a temp file left behind is harmless */
+                        }
+                    }
+                }
+
                 if (cardUserId) {
                     const result = await api.sendCard({ userId: cardUserId }, threadId, Number(threadType));
                     const messageId = result?.msgId ?? result?.message?.msgId ?? null;
@@ -614,10 +1131,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         success: true,
                         kind: "card",
                         cardUserId,
-                        messageId,
                         msgId: messageId,
                         ...(cliMsgId !== null && { cliMsgId: String(cliMsgId) }),
-                        threadType,
+                        threadType: threadTypeName(threadType),
                         ...(thread.notice && { threadId, notice: thread.notice }),
                     });
                 }
@@ -631,10 +1147,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         success: true,
                         kind: "link",
                         link,
-                        messageId,
                         msgId: messageId,
                         ...(cliMsgId !== null && { cliMsgId: String(cliMsgId) }),
-                        threadType,
+                        threadType: threadTypeName(threadType),
                         ...(thread.notice && { threadId, notice: thread.notice }),
                     });
                 }
@@ -677,16 +1192,15 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         kind: "attachment",
                         files: absPaths,
                         sent,
-                        messageId,
                         msgId: messageId,
                         ...(cliMsgId !== null && { cliMsgId: String(cliMsgId) }),
-                        threadType,
+                        threadType: threadTypeName(threadType),
                         ...(thread.notice && { threadId, notice: thread.notice }),
                     });
                 }
 
                 if (!text) {
-                    return err("Provide text, filePath, files, link, or cardUserId.");
+                    return err(`Provide text, or one of ${SEND_MODES.join(", ")}.`);
                 }
 
                 const warnings = [];
@@ -712,12 +1226,12 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 const mentions = expanded.mentions;
                 const styles = shiftStyles(converted.styles, expanded.edits);
 
-                // zca-js drops mentions outside a group, so a DM send would
+                // The session drops mentions outside a group, so a DM send would
                 // quietly arrive with the names as plain text and nobody tagged.
                 if (mentions.length > 0 && Number(threadType) !== THREAD_GROUP) {
                     warnings.push(
                         "Mentions only apply to group messages. This was sent with threadType " +
-                            `${Number(threadType)}, so the names went out as plain text and nobody was tagged.`,
+                            `${threadTypeName(threadType)}, so the names went out as plain text and nobody was tagged.`,
                     );
                 }
 
@@ -728,12 +1242,13 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     // open reads as "not cached", whose message names the fix.
                     let row = null;
                     try {
-                        row = getMessageById(quoteMsgId);
+                        row = getMessageForAction(quoteMsgId);
                     } catch (e) {
+                        if (e?.code === "ROW_MAC") return err(e.message);
                         console.error("[mcp-tools] cache unavailable for quote:", e.message);
                     }
                     const built = buildQuote(row, { msgId: quoteMsgId, threadId });
-                    // Reported through err() rather than letting zca-js raise a
+                    // Reported through err() rather than letting the session raise a
                     // raw ZaloApiError: "stickers can't be quoted" and "not
                     // cached, fetch the thread" are different problems and the
                     // agent can act on both.
@@ -760,11 +1275,11 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 if (hasLiteralNewline(text)) warnings.push(LITERAL_NEWLINE_WARNING);
 
                 // 1 (important) or 2 (urgent), mapped exactly as `msg send
-                // --urgency` maps it; zca-js turns it into the `metaData:
-                // {urgency}` Zalo Web sends. "normal" is no urgency at all.
+                // --urgency` maps it; the session turns it into the `metaData:
+                // {urgency}` Zalo sends. "normal" is no urgency at all.
                 const urgency = urgencyIn ? urgencyLevel(urgencyIn) : null;
 
-                // Zalo refuses one oversized message (114 plain, 112 styled), so a long text goes out as Web sends
+                // Zalo refuses one oversized message (114 plain, 112 styled), so a long text goes out as Zalo sends
                 // it: split at 3000 bytes of text plus styles, in order, 300 ms apart. The quote and the urgency
                 // belong to the first part only.
                 const parts = splitMessage({ text: expanded.text, styles, mentions });
@@ -795,10 +1310,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 const cliMsgId = result?.message?.cliMsgId ?? result?.cliMsgId ?? null;
                 return ok({
                     success: true,
-                    messageId,
                     msgId: messageId,
                     ...(cliMsgId !== null && { cliMsgId: String(cliMsgId) }),
-                    threadType,
+                    threadType: threadTypeName(threadType),
                     // Only for `me`: the thread it really went to, which is
                     // what a later zalo_get_history names.
                     ...(thread.notice && { threadId, notice: thread.notice }),
@@ -815,7 +1329,6 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                             const partCli = r?.message?.cliMsgId ?? r?.cliMsgId ?? null;
                             return {
                                 msgId: partId,
-                                messageId: partId,
                                 ...(partCli !== null && { cliMsgId: String(partCli) }),
                             };
                         }),
@@ -848,7 +1361,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         async ({ type, consumer }) => {
             try {
                 // Unread is per consumer: after what this consumer marked read.
-                const stats = buffer.getStats(buffer.readCursor(consumer));
+                const stats = withoutHidden(buffer.getStats(buffer.readCursor(consumer)), hiddenSet(), hiddenMode());
                 const dmNames = await resolveCurrentUserNames(
                     api,
                     stats.filter((t) => buffer.getThreadType(t.threadId) === "dm").map((t) => t.threadId),
@@ -858,6 +1371,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     stats.map((t) => String(t.threadId)),
                 );
                 // Enrich each stat entry with threadType, thread name and read state
+                const gone = goneGroupMap();
                 const enriched = stats.map((t) => {
                     const threadType = buffer.getThreadType(t.threadId) ?? "unknown";
                     const cached = nameCache?.get(t.threadId);
@@ -867,6 +1381,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         name: dmNames.get(String(t.threadId))?.name ?? cached?.name ?? null,
                         ...(cached?.memberCount !== undefined && { memberCount: cached.memberCount }),
                         readState: describeReadState(reads.get(String(t.threadId))),
+                        // Left, removed, blocked or disbanded (src/core/group-exit.js); sends to it are refused.
+                        ...goneFields(gone.get(String(t.threadId)) ?? null),
                     };
                 });
                 const filtered = type === "all" ? enriched : enriched.filter((t) => t.threadType === type);
@@ -884,7 +1400,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         {
             title: "Search Zalo Threads",
             description:
-                "Find a conversation by name, to get its `threadId`. It is a fuzzy search that ignores case and Vietnamese accents, over the names this server knows (cached contacts and groups). To find a person by phone number or username instead, use zalo_lookup_user. " +
+                "Find a conversation by name, to get its `threadId`. It is a fuzzy search that ignores case and Vietnamese accents, over the names this server knows (cached contacts and groups); every match is returned unless you pass `limit`. To find a person by phone number or username instead, use zalo_lookup_user. " +
                 "Returns `{ results, total }`; use a result's `threadId` in zalo_send_message, zalo_get_history and the other tools.",
             inputSchema: z.object({
                 query: z.string().min(1).describe("Search keyword (fuzzy match, case-insensitive, accent-insensitive)"),
@@ -892,7 +1408,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .enum(["group", "dm", "all"])
                     .default("all")
                     .describe("Filter by thread type: 'dm', 'group', or 'all'"),
-                limit: z.number().int().min(1).max(50).default(10).describe("Max results to return"),
+                limit: z.number().int().min(1).optional().describe("Max results to return (omit for every match)"),
             }),
         },
         async ({ query, type, limit }) => {
@@ -901,7 +1417,13 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     return err("Thread name cache not initialized yet. Try again shortly.");
                 }
                 await nameCache.refreshUsers?.(api);
-                const results = nameCache.search(query, type, limit);
+                // Over-fetch by the hidden count, so a left-out conversation does not shorten the list.
+                const all = withoutHidden(
+                    nameCache.search(query, type, limit ? limit + hiddenIds().length : null),
+                    hiddenSet(),
+                    hiddenMode(),
+                );
+                const results = limit ? all.slice(0, limit) : all;
                 return ok({ results, total: results.length });
             } catch (e) {
                 console.error("[mcp-tools] zalo_search_threads error:", e.message);
@@ -945,31 +1467,35 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         {
             title: "Get Zalo Message History",
             description:
-                "Get the stored messages of one conversation (DM or group), for context older than the live buffer. It reads the local cache first (everything the listener and `zalo-agent sync` have saved, which can be the full history) and asks the Zalo server only when the cache has nothing for the thread. " +
-                "Page back with `before` (epoch ms: the `cursor` of the previous reply) or, on the server path, `lastMsgId` (the previous reply's `cursor`). Zalo's server serves only messages since this login: `filtered: true` in the reply means older ones exist that only `zalo-agent sync` can restore, and that needs the owner's phone. " +
-                "Each message has `msgId`, `senderId`, `senderDisplayName` (the current name: your alias, else the Zalo profile name, else the uid; `senderDisplayNameSource` says which), `senderName` (the name when first seen), `text`, `timestamp` and `type`. Reply: `{ threadId, threadType, count, messages, cursor, hasMore }`. " +
-                "Start with a small `limit` and page; a large one costs memory and time. To find messages by their text, use zalo_search_messages.",
+                "Get the stored messages of one conversation (DM or group), for context older than the live buffer. It reads the local cache first (everything the listener and `zalo-agent sync` have saved, which can be the full history) and asks the Zalo server only when the cache has nothing for the thread: a group's message store, paged back until it has nothing older. A DM has no server history (Zalo's own apps show 1-1 history from the device's own store), so for a DM only `scan` asks Zalo, by scanning the socket's old-message stream. " +
+                "Without `limit` the reply holds every message (all cached ones, or everything the group's store serves); pass `limit` to page, then page back with `before` (epoch ms: the `cursor` of the previous reply) or, on the server path, `lastMsgId` (the previous reply's `cursor`). Zalo's server serves only messages since this login: `filtered: true` in the reply means older ones exist that only `zalo-agent sync` can restore, and that needs the owner's phone. " +
+                "Each message has `msgId`, `senderId`, `senderName` (your alias for the sender when you set one, else the name the message carried), `senderAlias`, `senderZaloName` (the name the message carried), `senderDisplayName` (the current name: your alias, else the phonebook name, else the Zalo name, else the display name, else the uid; `senderDisplayNameSource` says which), `text`, `timestamp` and `type`. Reply: `{ threadId, threadType, count, messages, cursor, hasMore }`. " +
+                "For one period, pass `since` and/or `until` (epoch ms) or `last` (7d, 2w, 3m, 1y): the cached messages in it come oldest first, all of them, or `limit` per page with `hasMore` and `nextSince` (pass it back as `since`, same `until`) for the rest. Reply: `{ threadId, since, until, count, messages, hasMore, nextSince }`. It reads only the cache. " +
+                "A long conversation is a large reply; pass `limit` to page through it. To find messages by their text, use zalo_search_messages.",
             inputSchema: z.object({
                 threadId: z
                     .string()
                     .describe("The conversation: the other person's user id for a DM, the group id for a group."),
                 threadType: z
-                    .number()
-                    .int()
-                    .min(0)
-                    .max(1)
+                    .enum(["dm", "group"])
                     .optional()
                     .describe(
-                        "0 = DM, 1 = group. Leave it out: the type stored for this thread is used. " +
-                            "Pass it only to override that.",
+                        'The conversation type: "dm" or "group". Leave it out: the type stored for this thread is used. Pass it only to override that.',
                     ),
                 limit: z
                     .number()
                     .int()
                     .min(1)
-                    .max(200)
-                    .default(50)
-                    .describe("Most messages to return (1 to 200; default 50)."),
+                    .optional()
+                    .describe("Page size: the most messages to return. Leave it out for every message."),
+                scan: z
+                    .number()
+                    .int()
+                    .min(1)
+                    .optional()
+                    .describe(
+                        "Server path only, when the cache has nothing: also scan the socket's old-message stream, at most this many raw messages (a DM, or a group whose store failed). Off unless given.",
+                    ),
                 lastMsgId: z
                     .string()
                     .optional()
@@ -983,10 +1509,56 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .describe(
                         "Cache path: only messages older than this epoch-ms timestamp (the `cursor` of the previous reply), to page back.",
                     ),
+                since: z
+                    .number()
+                    .int()
+                    .nonnegative()
+                    .optional()
+                    .describe(
+                        "Only messages at or after this time (epoch ms), oldest first; or the `nextSince` of the previous reply.",
+                    ),
+                until: z
+                    .number()
+                    .int()
+                    .positive()
+                    .optional()
+                    .describe("Only messages at or before this time (epoch ms)."),
+                last: z
+                    .string()
+                    .optional()
+                    .describe("Only the last period, ending now: 7d, 2w, 3m, 1y or 12h (replaces `since`)."),
             }),
         },
-        async ({ threadId, threadType: threadTypeIn, limit, lastMsgId, before }) => {
+        async ({ threadId, threadType: threadTypeIn, limit: limitIn, scan, lastMsgId, before, since, until, last }) => {
+            if (isHiddenThread(threadId)) return err(HIDDEN_THREAD);
             const threadType = resolveThreadType(threadId, threadTypeIn);
+            // No limit: every message. A limit is a page.
+            const limit = limitIn ?? Infinity;
+            if (since !== undefined || until !== undefined || last !== undefined) {
+                if (before !== undefined || lastMsgId) {
+                    return err("Use either a period (`since`, `until`, `last`) or `before`/`lastMsgId`, not both.");
+                }
+                let from;
+                try {
+                    from = last !== undefined ? parsePeriod(last) : (since ?? null);
+                } catch (e) {
+                    return err(e.message);
+                }
+                const to = until ?? null;
+                if (from !== null && to !== null && from > to) return err("`since` is after `until`.");
+                try {
+                    const page = cacheHistoryRange(threadId, { since: from, until: to, limit }, nameCache);
+                    page.threadType = threadType === THREAD_USER ? "dm" : "group";
+                    page.messages = await withCurrentSenderNames(
+                        api,
+                        page.messages,
+                        threadType === THREAD_USER ? [threadId] : [],
+                    );
+                    return ok(page);
+                } catch (e) {
+                    return err(`The local cache could not be read: ${e.message}`);
+                }
+            }
             try {
                 // The cache is the better source and usually the only one that
                 // answers: Zalo returns an empty set for the socket history
@@ -1021,7 +1593,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 let fetched;
                 try {
                     fetched = await fetchAndCacheHistory(api, threadId, threadType, {
-                        limit,
+                        limit: Number.isFinite(limit) ? limit : null,
+                        // The socket scan is opt-in, as `msg history --scan`.
+                        ...(scan && { scanLimit: scan }),
                         fromMsgId: lastMsgId || null,
                     });
                 } finally {
@@ -1034,12 +1608,14 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     const isText = typeof rawContent === "string";
                     return {
                         msgId: d.msgId,
+                        cliMsgId: d.cliMsgId ? String(d.cliMsgId) : undefined,
                         threadId: f.threadId,
                         senderId: d.uidFrom || null,
-                        senderName: d.dName || null,
+                        ...senderNameFields(d.uidFrom, d.dName),
                         text: isText ? rawContent : extractMessageText(rawContent, d.msgType),
                         timestamp: d.ts ? Number(d.ts) : null,
                         type: isText ? "text" : d.msgType || "attachment",
+                        replyTo: resolveReplyTo(quotedReply(d.quote), f.threadId),
                     };
                 });
 
@@ -1070,14 +1646,21 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     cursor,
                     hasMore: Boolean(fetched.more) || (fetched.source === "socket" && allMessages.length >= limit),
                     filtered: fetched.filtered === true,
-                    ...(fetched.filtered || allMessages.length === 0
+                    ...(fetched.source === "none" && threadType === THREAD_USER
                         ? {
                               note:
-                                  "Zalo serves a conversation's messages only since this login; older ones are " +
-                                  "withheld. `zalo-agent sync` restores them from the owner's phone (it asks for a " +
-                                  "tap), and zalo_get_history then reads them from the cache.",
+                                  "Nothing is cached for this conversation, and Zalo keeps no server history for a " +
+                                  "1-1 conversation. `scan` asks the socket's old-message stream; `zalo-agent sync` " +
+                                  "restores from the owner's phone (it asks for a tap).",
                           }
-                        : {}),
+                        : fetched.filtered || allMessages.length === 0
+                          ? {
+                                note:
+                                    "Zalo serves a conversation's messages only since this login; older ones are " +
+                                    "withheld. `zalo-agent sync` restores them from the owner's phone (it asks for a " +
+                                    "tap), and zalo_get_history then reads them from the cache.",
+                            }
+                          : {}),
                 });
             } catch (e) {
                 console.error("[mcp-tools] zalo_get_history error:", e.message);
@@ -1088,29 +1671,40 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
 
     // --- zalo_view_media ---
     const mediaConfig = config.media || {};
+    /** The account the cached media is sealed for (its folder holds the keyring). */
+    const mediaScope = () => scopeOfDir(accountDir || getAccountDir(String(ownIdOf(api) ?? "")));
     server.registerTool(
         "zalo_view_media",
         {
             title: "View Zalo Media",
             description:
-                "Get a received photo, voice message, video or file as a local file, and by default open it with the viewer of the machine this server runs on. Media is downloaded when a message arrives; if the file is not on disk yet it is downloaded first. " +
-                "Give the message's `msgId`. Returns `{ success, path, mediaType }`: `path` is where the file is on the server's machine. Pass `open: false` when you only need the path (for example on a remote or headless server).",
+                "Get a received photo, sticker, voice message, video or file. The cached file is encrypted; it reaches you one of three ways (`deliver`): " +
+                '"inline" (the picture or voice itself, as image or audio content, up to about 5 MB), "link" (`url`, a link to this server that works for 10 minutes; ' +
+                'it may need the same Authorization as this server), or "tempfile" (`path`, a private decrypted copy on the machine this server runs on, deleted at `expiresAt`; only for a client on that machine). ' +
+                "By default pictures and voice come inline and videos and files as a link, as the server is configured. Media not downloaded yet is downloaded first. " +
+                "Returns `{ success, msgId, mediaType, delivery, mimeType, size }` plus `url`/`path` and `expiresAt`, and `notes` when the delivery differs from the one asked for.",
             inputSchema: z.object({
                 msgId: z
                     .string()
                     .describe(
-                        "msgId of a message that has a photo, voice message, video or file (from zalo_get_messages, zalo_wait_for_message or zalo_get_history).",
+                        "msgId of a message that has a photo, sticker, voice message, video or file (from zalo_get_messages, zalo_wait_for_message or zalo_get_history).",
                     ),
                 threadId: z.string().optional().describe("Only look in this conversation. Omit to search all of them."),
+                deliver: z
+                    .enum(["inline", "link", "tempfile"])
+                    .optional()
+                    .describe(
+                        'How to get it: "inline", "link" or "tempfile". Omit for the server\'s default for this kind of media. The server may forbid a mode (media.allowDeliver).',
+                    ),
                 open: z
                     .boolean()
-                    .default(mediaConfig.autoOpen ?? true)
+                    .optional()
                     .describe(
-                        "Also open the file with the viewer of the machine this server runs on. Pass false when you only need the path.",
+                        "Also open it with the viewer of the machine this server runs on (a local stdio server only; it delivers a tempfile). Omit for the server's default (media.autoOpen).",
                     ),
             }),
         },
-        async ({ msgId, threadId, open }) => {
+        async ({ msgId, threadId, deliver, open }) => {
             try {
                 // The cached row is authoritative: it records where a fetched
                 // file actually landed, so a message that arrived before this
@@ -1118,12 +1712,64 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 // fallback for a thread id.
                 let row = null;
                 try {
-                    row = getMessageById(msgId);
+                    row = getMessageForAction(msgId);
                 } catch (e) {
+                    if (e?.code === "ROW_MAC") return err(e.message);
                     console.error("[mcp-tools] cache unavailable:", e.message);
                 }
-                const buffered = buffer.read(threadId, 0, 9999).messages.find((m) => m.id === msgId) || null;
+                const buffered = buffer.read(threadId, 0).messages.find((m) => m.msgId === msgId) || null;
                 if (!row && !buffered) return err(`Message ${msgId} not found in cache or buffer`);
+                const kind = String(row?.type || buffered?.type || "");
+                const msgThread = row?.threadId ?? buffered?.threadId ?? threadId ?? null;
+                // A hidden chat's media is left out like its messages: no inline content, no link, no copy.
+                if (isHiddenThread(msgThread)) return err(HIDDEN_THREAD);
+
+                const accountId = String(ownIdOf(api) ?? "");
+                const policy = resolveMediaDelivery({ config, accountId: accountId || undefined });
+                const stdio = server?.statelessHttp !== true;
+                const choose = (size, mime) =>
+                    chooseDelivery({
+                        kind,
+                        size,
+                        mime,
+                        requested: deliver ?? null,
+                        open,
+                        policy,
+                        stdio,
+                        clientLoopback: server?.clientLoopback === true,
+                    });
+
+                // A sticker is not downloaded with the messages: its picture is fetched now, shown inline and not kept.
+                if (kind === "sticker" && !row?.localPath) {
+                    const sticker = await stickerPicture(api, row, buffered);
+                    if (sticker.error) return err(sticker.error);
+                    const pick = choose(sticker.bytes.length, sticker.mime);
+                    if (pick.error) return err(pick.error);
+                    if (pick.mode !== "inline") {
+                        return err(
+                            "A sticker is not stored on this server, so it can only be sent inline" +
+                                (pick.notes.length ? ` (${pick.notes.join("; ")})` : "") +
+                                ".",
+                        );
+                    }
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: JSON.stringify({
+                                    success: true,
+                                    msgId,
+                                    mediaType: kind,
+                                    delivery: "inline",
+                                    mimeType: sticker.mime,
+                                    size: sticker.bytes.length,
+                                }),
+                            },
+                            inlineContent(sticker.bytes, kind, sticker.mime),
+                        ],
+                    };
+                }
+
                 if (row && !row.has_attachment && !buffered?.attachment?.url) {
                     return err(`Message ${msgId} has no media attachment`);
                 }
@@ -1131,13 +1777,15 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 let localPath = row?.localPath || null;
                 if (!localPath) {
                     // Same downloader as the CLI, so the file lands in the one
-                    // per-conversation folder every other command reads from.
+                    // per-conversation folder every other command reads from. It is asked for this message by
+                    // id: a scan of the thread's newest pending attachments could leave an older one out.
                     const stats = await downloadSyncedMedia({
                         api,
                         accountDir,
-                        threadId: String(row?.threadId || buffered?.threadId || threadId || ""),
-                        limit: 50,
-                        concurrency: 2,
+                        threadId: String(msgThread || ""),
+                        msgIds: [String(row?.msgId ?? msgId)],
+                        limit: 1,
+                        concurrency: 1,
                         mediaRoot: process.env.ZALO_MEDIA_DIR || mediaConfig.downloadDir || undefined,
                     });
                     localPath = getMessageById(msgId)?.localPath || null;
@@ -1152,9 +1800,42 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     }
                 }
 
-                if (open) openFile(localPath);
-
-                return ok({ success: true, path: localPath, mediaType: row?.type || buffered?.type || null });
+                // The cached file stays sealed (keystore/media-seal.js): it is delivered inline, as a link served from
+                // the sealed file, or as a private decrypted copy (src/core/media-deliver.js).
+                const info = mediaInfo(localPath);
+                const pick = choose(info.size, info.mime);
+                if (pick.error) return err(pick.error);
+                const out = await deliverCachedMedia({
+                    mode: pick.mode,
+                    file: localPath,
+                    scope: mediaScope(),
+                    msgId: row?.msgId ?? msgId,
+                    threadId: msgThread,
+                    accountId,
+                    info,
+                    policy,
+                    ensureServed: ensureMediaServed,
+                });
+                if (pick.open && out.path) openFile(out.path);
+                const reply = {
+                    success: true,
+                    msgId,
+                    mediaType: kind || null,
+                    delivery: out.mode,
+                    mimeType: out.mimeType,
+                    size: out.size,
+                    ...(out.url ? { url: out.url, auth: out.auth } : {}),
+                    ...(out.path ? { path: out.path, opened: pick.open } : {}),
+                    ...(out.expiresAt ? { expiresAt: new Date(out.expiresAt).toISOString() } : {}),
+                    ...(pick.notes.length ? { notes: pick.notes } : {}),
+                };
+                if (out.mode !== "inline") return ok(reply);
+                return {
+                    content: [
+                        { type: "text", text: JSON.stringify(reply) },
+                        inlineContent(out.bytes, kind, out.mimeType),
+                    ],
+                };
             } catch (e) {
                 console.error("[mcp-tools] zalo_view_media error:", e.message);
                 return err(e.message);
@@ -1164,14 +1845,10 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
 
     // The threadType parameter of the message actions, worded as the send's is.
     const threadTypeSchema = z
-        .number()
-        .int()
-        .min(0)
-        .max(1)
+        .enum(["dm", "group"])
         .optional()
         .describe(
-            "0 = DM, 1 = group. Leave it out: the type stored for this thread is used. " +
-                "Pass it only to override that.",
+            'The conversation type: "dm" or "group". Leave it out: the type stored for this thread is used. Pass it only to override that.',
         );
     const cliMsgIdSchema = z
         .string()
@@ -1238,7 +1915,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     msgId,
                     cliMsgId: target.cliMsgId,
                     threadId,
-                    threadType,
+                    threadType: threadTypeName(threadType),
                     ...(thread.notice && { notice: thread.notice }),
                 });
             } catch (e) {
@@ -1254,7 +1931,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         {
             title: "Recall a Zalo Message",
             description:
-                'Recall (unsend) one of your own messages for everyone in the conversation, as the apps\' "Thu hồi" does. Zalo accepts a recall only for a while after the message was sent. ' +
+                'Recall (unsend) one of your own messages for everyone in the conversation, as the apps\' "Thu hồi" does. Zalo accepts a recall only for a while after the message was sent. It cannot be undone, so it is asked about first (`confirm`, `dryRun`). ' +
                 "Give the message's `msgId` (from the zalo_send_message reply, or from zalo_get_history) and its `cliMsgId` (also in the send reply; read from the local cache when you leave it out); with neither, nothing is sent. To remove a message from your own view only, or someone else's message in a group as an admin, use zalo_delete_message. `threadId` may be `me` for My Documents.",
             inputSchema: z.object({
                 msgId: z
@@ -1271,9 +1948,12 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     ),
                 threadType: threadTypeSchema,
                 cliMsgId: cliMsgIdSchema,
+                confirm: confirmInput("the recall"),
+                ticket: ticketInput(),
+                dryRun: dryRunInput("the recall"),
             }),
         },
-        async ({ msgId, threadId: threadIdIn, threadType: threadTypeIn, cliMsgId }) => {
+        async ({ msgId, threadId: threadIdIn, threadType: threadTypeIn, cliMsgId, confirm, dryRun, ticket }, extra) => {
             const thread = actionThread(api, threadIdIn, threadTypeIn);
             if (thread.error) {
                 console.error("[mcp-tools] zalo_undo refused:", thread.error);
@@ -1287,13 +1967,30 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     console.error("[mcp-tools] zalo_undo refused:", target.error);
                     return err(target.error);
                 }
-                await api.undo({ msgId, cliMsgId: target.cliMsgId }, threadId, Number(threadType));
+                const held = await gate(
+                    "msg.undo",
+                    { msgId, threadId, cliMsgId: target.cliMsgId },
+                    { confirm, dryRun, ticket },
+                    extra,
+                );
+                if (held) return held;
+                // A group recall carries the group's own visibility, from the thread cache or Zalo, as `msg undo`.
+                const payload = await undoPayload(
+                    api,
+                    { msgId, cliMsgId: target.cliMsgId },
+                    threadId,
+                    Number(threadType),
+                    {
+                        cache: nameCache,
+                    },
+                );
+                await api.undo(payload, threadId, Number(threadType));
                 return ok({
                     success: true,
                     msgId,
                     cliMsgId: target.cliMsgId,
                     threadId,
-                    threadType,
+                    threadType: threadTypeName(threadType),
                     ...(thread.notice && { notice: thread.notice }),
                 });
             } catch (e) {
@@ -1309,7 +2006,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         {
             title: "List Zalo Group Members",
             description:
-                "List the members of a group: each member's `userId` (`uid` is the same value, kept for older clients) and `displayName` (from the cache, or from Zalo for members the cache cannot name), and `totalMember`, Zalo's own count (it can be larger than the members listed). Use a `userId` as `@[userId]` in zalo_send_message to mention that member.",
+                "List the members of a group: each member's `userId`, `displayName` (your alias for them when you set one, else their name from the cache, or from Zalo for members the cache cannot name), `alias` and `zaloName`, and `totalMember`, Zalo's own count (it can be larger than the members listed). Use a `userId` as `@[userId]` in zalo_send_message to mention that member.",
             inputSchema: z.object({
                 groupId: z
                     .string()
@@ -1330,12 +2027,13 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 // The cache first, as a mention is named; one batched lookup
                 // (the one `msg send` uses) for the members it cannot name.
                 // Nothing is written back: zalo.db has three writers.
+                // `names` holds the name each member goes by on Zalo; the owner's alias is applied below.
                 const names = new Map();
                 const unnamed = [];
                 for (const uid of group.uids) {
-                    const name = cachedDisplayName(uid);
+                    const name = cachedStoredName(uid);
                     if (name) names.set(uid, name);
-                    else unnamed.push(uid);
+                    else if (!aliasFor(uid)) unnamed.push(uid);
                 }
                 const warnings = [];
                 if (unnamed.length > 0) {
@@ -1348,7 +2046,12 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 }
                 for (const w of warnings) console.error("[mcp-tools] zalo_get_group_members warning:", w);
 
-                const members = group.uids.map((uid) => ({ userId: uid, uid, displayName: names.get(uid) ?? null }));
+                // `displayName` alias first, as Zalo's member list shows them; `alias` and `zaloName` beside it.
+                const members = group.uids.map((uid) => {
+                    const alias = aliasFor(uid);
+                    const zaloName = names.get(uid) ?? null;
+                    return { userId: uid, displayName: alias ?? zaloName, alias, zaloName };
+                });
                 return ok({
                     groupId,
                     name: group.name,
@@ -1371,18 +2074,18 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             title: "List Recent Zalo Conversations",
             description:
                 "List the conversations this account was most recently active in, newest first, from the local cache, to get a `threadId` or to see what is current. Unlike zalo_list_threads it is not limited to messages that arrived since this server started. " +
-                "Each has its thread id, type, name and last activity, plus `readState`: how far the account owner has read it on Zalo (on any device), meaning the newest message read, how many cached messages from others came after it, and whether it is marked unread (null when unknown). `limit` is per type: with `type` 'all' that is up to `limit` DMs and `limit` groups.",
+                "Each has its `threadId`, `threadType`, `name` and last activity, plus `readState`: how far the account owner has read it on Zalo (on any device), meaning the newest message read, how many cached messages from others came after it, and whether it is marked unread (null when unknown). Every cached conversation is returned unless you pass `limit`, which is per type: with `type` 'all' that is up to `limit` DMs and `limit` groups.",
             inputSchema: z.object({
                 type: z
                     .enum(["group", "dm", "all"])
                     .default("all")
                     .describe("Filter by thread type: 'dm', 'group', or 'all'"),
-                limit: z.number().int().min(1).max(200).default(20).describe("Max conversations of each type"),
+                limit: z.number().int().min(1).optional().describe("Max conversations of each type (omit for all)"),
             }),
         },
         async ({ type, limit }) => {
             try {
-                const threads = recentConversations(limit, type);
+                const threads = recentConversations(limit, type, { excludeThreadIds: hiddenIds() });
                 const dmNames = await resolveCurrentUserNames(
                     api,
                     threads.filter((t) => t.type !== "group").map((t) => String(t.threadId)),
@@ -1396,8 +2099,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     const ts = Number(t.lastUpdate) || null;
                     return {
                         threadId: String(t.threadId),
-                        type: isGroup ? "group" : "dm",
-                        threadType: isGroup ? THREAD_GROUP : THREAD_USER,
+                        threadType: isGroup ? "group" : "dm",
                         name:
                             dmNames.get(String(t.threadId))?.name ||
                             t.name ||
@@ -1406,6 +2108,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         lastActivity: ts,
                         lastActivityAt: ts ? new Date(ts).toISOString() : null,
                         readState: describeReadState(reads.get(String(t.threadId))),
+                        // A group this account left or lost, kept by groups.onLeave "keep" (src/core/group-exit.js).
+                        ...(t.gone && { gone: true, leftAt: t.leftAt, goneReason: t.goneReason }),
                     };
                 });
                 return ok({
@@ -1450,7 +2154,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         {
             title: "Request Zalo Sync",
             description:
-                "OWNER ONLY: call it only when the owner explicitly asks. Start a restore of messages (or of the reaction backlog) on this server's existing Zalo connection. The `messages` stage makes the owner's phone ask for a confirmation, which the owner must tap. " +
+                "OWNER ONLY: call it only when the owner explicitly asks. Start a restore of messages, or another sync stage (the reaction backlog, the zCloud index, attachment downloads, group boards), on this server's existing Zalo connection. The `messages` stage makes the owner's phone ask for a confirmation, which the owner must tap; the other stages do not. " +
                 "It returns a job at once: poll zalo_sync_status every few seconds. Reuse the same `requestId` and arguments when retrying, so a retry does not start a second sync. It updates the local cache, not Zalo itself. `messages` restores every conversation in the window; it is not per conversation, and it downloads no media, boards, cloud index or conversation state.",
             inputSchema: z
                 .object({
@@ -1463,10 +2167,10 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                             "Unique request key; reuse the same key and arguments after a timeout to avoid duplicate sync.",
                         ),
                     stage: z
-                        .enum(["messages", "reactions"])
+                        .enum(SYNC_STAGES)
                         .default("messages")
                         .describe(
-                            "`messages` restores chat history from the owner's phone (the phone asks for a confirmation); `reactions` drains Zalo's backlog of reactions (no phone tap).",
+                            "`messages` restores chat history from the owner's phone (the phone asks for a confirmation); `reactions` drains Zalo's backlog of reactions; `cloud` walks the zCloud index (zalo_cloud reads it); `media` downloads the attachments a restore recorded; `boards` stores notes, pinned messages, polls and reminders. Only `messages` taps the phone.",
                         ),
                     days: z
                         .number()
@@ -1474,7 +2178,34 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         .min(1)
                         .max(36500)
                         .optional()
-                        .describe("Restore the last N days; omit both days and from for full phone history."),
+                        .describe(
+                            "Messages: restore the last N days (omit both days and from for full phone history). Media: only attachments from the last N days (default: the window the last restore covered).",
+                        ),
+                    threadId: z
+                        .string()
+                        .min(1)
+                        .optional()
+                        .describe("Media and boards only: just this conversation (default: all cached ones)."),
+                    kinds: z
+                        .array(z.enum([...DOWNLOADABLE_KINDS]))
+                        .min(1)
+                        .optional()
+                        .describe("Media only: just these kinds of attachment (default: all)."),
+                    limit: z
+                        .number()
+                        .int()
+                        .min(1)
+                        .max(10000)
+                        .optional()
+                        .describe(
+                            "Media: download at most this many files (the rest wait for the next run). Boards: visit at most this many threads, most recent first (default: every thread).",
+                        ),
+                    full: z
+                        .boolean()
+                        .optional()
+                        .describe(
+                            "Cloud only: walk from the top and drop every indexed item no page lists (corrects a stale index).",
+                        ),
                     from: z
                         .string()
                         .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -1495,20 +2226,48 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         .boolean()
                         .optional()
                         .describe("Reactions only: apply observed removals; defaults to true."),
+                    fullResync: z
+                        .boolean()
+                        .optional()
+                        .describe(
+                            "Messages only: ask the phone for every conversation in full, ignoring what earlier runs " +
+                                "settled. A long run; use it when the cache looks incomplete, not by default.",
+                        ),
+                    shardSize: z
+                        .number()
+                        .int()
+                        .min(1)
+                        .max(30)
+                        .optional()
+                        .describe(
+                            "Messages only: conversations per batch (1 to 30, default 30). Fewer means more, smaller " +
+                                "batches: the first comes back sooner and less is lost if the connection drops.",
+                        ),
                 })
                 .strict()
                 .refine(
                     (value) => !(value.days !== undefined && value.from !== undefined),
                     "Choose days or from, not both",
                 )
-                .refine(
-                    (value) => value.stage !== "reactions" || (value.days === undefined && value.from === undefined),
-                    "Reactions sync has no date window",
-                )
-                .refine(
-                    (value) => value.stage !== "messages" || value.applyRemovals === undefined,
-                    "applyRemovals is reactions-only",
-                ),
+                .refine((value) => {
+                    // Each option belongs to the stages named in its description; any other stage refuses it.
+                    const only = {
+                        days: ["messages", "media"],
+                        from: ["messages"],
+                        waitMs: ["messages", "reactions"],
+                        applyRemovals: ["reactions"],
+                        fullResync: ["messages"],
+                        shardSize: ["messages"],
+                        threadId: ["media", "boards"],
+                        kinds: ["media"],
+                        limit: ["media", "boards"],
+                        full: ["cloud"],
+                    };
+                    const stage = value.stage ?? "messages";
+                    return Object.entries(only).every(
+                        ([k, stages]) => value[k] === undefined || stages.includes(stage),
+                    );
+                }, "An option was given for a stage it does not apply to: each option's description names its stages"),
             annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
         },
         async (args) => {
@@ -1554,10 +2313,16 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         {
             title: "Search Zalo Messages",
             description:
-                "Search the text of messages in the local cache (`zalo.db`), across all conversations or one. No network call. It is a case-insensitive substring match. " +
-                "Narrow it with `threadId`, `senderId`, `since` or `until` (epoch ms). Results are newest first.",
+                "Search the text of messages in the local cache, across all conversations or one. No network call. Accents and case are ignored, as in Zalo's own search ('duoc' finds 'được'; set `accents` to 'exact' to require them). " +
+                "Narrow it with `threadId`, `senderId`, `since` / `until` (epoch ms) or `last` (7d, 2w, 3m, 1y), and `types` (text, photo, video, file, link, sticker...; files and links match on their titles). Results are newest first, every hit unless you pass `limit`; with a `limit`, pass the reply's `nextCursor` back as `cursor` for the next page. " +
+                "Each message carries a `snippet` (70 characters before the match, 30 after, with its position); `context` adds that many messages around each hit. `counts` gives the matches by type, and `coverage` says how far back the cache reaches and which `sync` command extends it.",
             inputSchema: z.object({
-                query: z.string().min(1).describe("Case-insensitive text substring to search for in cached messages"),
+                query: z
+                    .string()
+                    .min(1)
+                    .describe(
+                        "Text to search for in cached messages (cut to 100 characters; accents and case ignored)",
+                    ),
                 threadId: z
                     .string()
                     .min(1)
@@ -1580,21 +2345,64 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .positive()
                     .optional()
                     .describe("Only messages with timestamp <= this epoch-ms value"),
+                last: z
+                    .string()
+                    .regex(/^\d{1,4}\s*[hdwmyHDWMY]$/)
+                    .optional()
+                    .describe("Only the last period: 7d, 2w, 3m, 1y (replaces `since`)"),
+                types: z
+                    .array(z.string().min(1))
+                    .max(12)
+                    .optional()
+                    .describe("Only these message types, e.g. ['file','link']; 'media' means photo and video"),
+                accents: z
+                    .enum(["fold", "exact"])
+                    .default("fold")
+                    .describe(
+                        "fold (default): accents and case ignored; exact: accents must match, case still does not",
+                    ),
                 limit: z
                     .number()
                     .int()
                     .min(1)
-                    .max(200)
-                    .default(50)
-                    .describe("Max matching messages to return (default 50, max 200)"),
+                    .optional()
+                    .describe("Max matching messages per page (omit for every hit, in one page)"),
+                cursor: z.string().min(1).optional().describe("The nextCursor of the previous page, unchanged"),
+                context: z
+                    .number()
+                    .int()
+                    .min(0)
+                    .max(10)
+                    .default(0)
+                    .describe("Messages to show before and after each hit (default 0, max 10)"),
             }),
             annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
         },
-        async ({ query, threadId, senderId, since, until, limit }) => {
+        async ({ query, threadId, senderId, since, until, last, types, accents, limit, cursor, context }) => {
             try {
-                const rows = searchMessages({ query, threadId, senderId, since, until, limit });
+                const page = searchPage({
+                    query,
+                    accents,
+                    threadId,
+                    senderId,
+                    since: last ? parsePeriod(last) : since,
+                    until,
+                    types,
+                    limit,
+                    cursor,
+                    context,
+                    excludeThreadIds: hiddenIds(),
+                });
                 const threadNames = getThreadNames();
-                const messages = rows.map((r) => {
+                const lite = (m) => ({
+                    msgId: m.msgId,
+                    senderId: m.senderId,
+                    ...senderNameFields(m.senderId, m.senderName),
+                    text: m.text,
+                    timestamp: m.timestamp,
+                    type: m.type,
+                });
+                const messages = page.hits.map(({ row: r, snippet, context: around }) => {
                     let cliMsgId = null;
                     try {
                         cliMsgId = cachedCliMsgId(r);
@@ -1608,15 +2416,29 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         threadName:
                             threadNames.get(String(r.threadId))?.name ?? nameCache?.get(r.threadId)?.name ?? null,
                         senderId: r.senderId,
-                        senderName: r.senderDisplayName || r.senderName || null,
+                        // Alias first (src/core/contact-names.js); `senderZaloName` is the name the message carried.
+                        ...senderNameFields(r.senderId, r.senderName),
                         text: r.text,
+                        snippet,
                         timestamp: r.timestamp,
                         type: r.type,
                         hasAttachment: Boolean(r.has_attachment),
-                        localPath: r.localPath || null,
+                        mediaCached: Boolean(r.localPath),
+                        replyTo: cachedReplyTo(r),
+                        ...(around && { context: { before: around.before.map(lite), after: around.after.map(lite) } }),
                     };
                 });
-                return ok({ query, count: messages.length, messages });
+                return ok({
+                    query: page.query,
+                    accents: page.accents,
+                    ...(page.truncatedKeyword && { truncatedKeyword: true }),
+                    count: messages.length,
+                    hasMore: page.hasMore,
+                    nextCursor: page.nextCursor,
+                    ...(page.counts && { counts: page.counts }),
+                    coverage: page.coverage,
+                    messages,
+                });
             } catch (e) {
                 console.error("[mcp-tools] zalo_search_messages error:", e.message);
                 return err(e.message);
@@ -1630,7 +2452,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         {
             title: "Lookup Zalo User",
             description:
-                "Look up a Zalo user by phone number (`phone`), username (`username`) or user id (`userId`), or read this logged-in account's own profile (`self: true`). Use it to find someone's `userId`, which is also the `threadId` of your 1-1 conversation with them, before sending a message or a contact card.",
+                "Look up a Zalo user by phone number (`phone`), username (`username`) or user id (`userId`), or read this logged-in account's own profile (`self: true`). Use it to find someone's `userId`, which is also the `threadId` of your 1-1 conversation with them, before sending a message or a contact card. " +
+                "A found user's reply also has `mutualGroups`: `{count, groups: [{groupId, name}]}`, the groups you share with them as Zalo shows on a profile (friends and strangers alike; groups in hidden chats are left out unless hidden chats are included), or `{error}` when that read failed.",
             inputSchema: z
                 .object({
                     self: z
@@ -1670,28 +2493,38 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         profile: p,
                     });
                 }
+                // The groups shared with a found user, as Zalo shows on a profile (src/core/mutual-groups.js).
+                const shared = (id) =>
+                    mutualGroupsOrError(api, id, {
+                        ownId: ownIdOf(api) || null,
+                        hidden: hiddenMode() === "include" ? null : hiddenSet(),
+                    });
                 if (phone) {
                     const phoneNumber = phone;
                     const user = await api.findUser(phoneNumber);
+                    const found = user?.uid || user?.userId || null;
                     return ok({
                         mode: "phone",
                         query: phoneNumber,
                         userId: user?.uid || user?.userId || null,
-                        displayName: user?.display_name || user?.zalo_name || null,
-                        zaloName: user?.zalo_name || null,
+                        // Alias first, as Zalo shows the person to this account (src/core/contact-names.js).
+                        ...personNameFields(user?.uid || user?.userId, user),
                         avatar: user?.avatar || null,
+                        mutualGroups: await shared(found),
                         user: user || null,
                     });
                 }
                 if (username) {
                     const user = await api.findUserByUsername(username);
+                    const found = user?.uid || user?.userId || null;
                     return ok({
                         mode: "username",
                         query: username,
                         userId: user?.uid || user?.userId || null,
-                        displayName: user?.display_name || user?.zalo_name || null,
-                        zaloName: user?.zalo_name || null,
+                        // Alias first, as Zalo shows the person to this account (src/core/contact-names.js).
+                        ...personNameFields(user?.uid || user?.userId, user),
                         avatar: user?.avatar || null,
+                        mutualGroups: await shared(found),
                         user: user || null,
                     });
                 }
@@ -1700,9 +2533,11 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 return ok({
                     mode: "userId",
                     userId,
-                    displayName: changed?.displayName || changed?.zaloName || cachedDisplayName(userId) || null,
-                    zaloName: changed?.zaloName || null,
+                    // Alias first, as Zalo shows the person to this account (src/core/contact-names.js).
+                    ...personNameFields(userId, changed),
+                    displayName: personNameFields(userId, changed).displayName ?? (cachedDisplayName(userId) || null),
                     avatar: changed?.avatar || null,
+                    mutualGroups: await shared(userId),
                     profile: changed || info || null,
                 });
             } catch (e) {
@@ -1729,12 +2564,11 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .min(1)
                     .describe("Destination thread ID (`me` or your own uid resolves to My Documents)"),
                 threadType: z
-                    .number()
-                    .int()
-                    .min(0)
-                    .max(1)
+                    .enum(["dm", "group"])
                     .optional()
-                    .describe("Destination thread type: 0=DM(User), 1=Group. Inferred from cache when omitted."),
+                    .describe(
+                        'The destination conversation type: "dm" or "group". Inferred from the cache when omitted.',
+                    ),
             }),
         },
         async ({ msgId, threadId: threadIdIn, threadType: threadTypeIn }) => {
@@ -1747,9 +2581,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             try {
                 let row = null;
                 try {
-                    row = getMessageById(msgId);
+                    row = getMessageForAction(msgId);
                 } catch (e) {
-                    return err(`Local cache unavailable (${e.message}).`);
+                    return err(e?.code === "ROW_MAC" ? e.message : `Local cache unavailable (${e.message}).`);
                 }
                 if (!row) {
                     return err(
@@ -1771,11 +2605,20 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                             `Message ${msgId} is "${row.type}" but its media is not downloaded locally. Call zalo_view_media with msgId="${msgId}" first.`,
                         );
                     }
-                    return api.sendMessage(
-                        { msg: "", attachments: [resolve(row.localPath)] },
-                        threadId,
-                        Number(threadType),
-                    );
+                    // Sealed on disk: the upload gets a private decrypted copy for the send only (media-deliver.js).
+                    const copy = decryptToTempfile(resolve(row.localPath), mediaScope(), {
+                        msgId: row.msgId,
+                        ttlMs: 0,
+                    });
+                    try {
+                        return await api.sendMessage(
+                            { msg: "", attachments: [copy.path] },
+                            threadId,
+                            Number(threadType),
+                        );
+                    } finally {
+                        removeMediaTemp(copy);
+                    }
                 };
 
                 const forwarders = {
@@ -1788,26 +2631,14 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                             Number(threadType),
                         ),
                     link: async () => api.sendLink({ link: c?.href }, threadId, Number(threadType)),
-                    video: async () => {
-                        let p = {};
-                        try {
-                            p = typeof c?.params === "string" ? JSON.parse(c.params) : (c?.params ?? {});
-                        } catch {
-                            /* default geometry */
-                        }
-                        return api.sendVideo(
-                            {
-                                videoUrl: c?.href,
-                                thumbnailUrl: c?.thumb || "",
-                                duration: Number(p.duration) || 0,
-                                width: Number(p.video_width || p.video_original_width) || 1280,
-                                height: Number(p.video_height || p.video_original_height) || 720,
-                            },
+                    // As `msg forward`: a size the cache knows spares the HEAD, and one still needed is bounded.
+                    video: async () =>
+                        api.sendVideo(
+                            videoResendOptions(c, mediaPlainSize(row.localPath)),
                             threadId,
                             Number(threadType),
-                        );
-                    },
-                    voice: async () => api.sendVoice({ voiceUrl: c?.href }, threadId, Number(threadType)),
+                        ),
+                    voice: async () => api.sendVoice(voiceResendOptions(c), threadId, Number(threadType)),
                     photo: resendLocal,
                     file: resendLocal,
                     gif: resendLocal,
@@ -1825,7 +2656,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         success: true,
                         kind,
                         threadId,
-                        threadType,
+                        threadType: threadTypeName(threadType),
                         ...(thread.notice && { notice: thread.notice }),
                         result: res,
                     });
@@ -1861,7 +2692,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     success: true,
                     kind: "text",
                     threadId,
-                    threadType,
+                    threadType: threadTypeName(threadType),
                     ...(thread.notice && { notice: thread.notice }),
                     sent,
                 });
@@ -1878,7 +2709,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         {
             title: "Delete Zalo Message",
             description:
-                "Delete a message from your own view only (`everyone: false`, the default), or, as a group admin, delete someone else's message for everyone in the group (`everyone: true`). To recall your own message for both sides, use zalo_undo. `cliMsgId` and `uidFrom` are read from the local cache when you leave them out.",
+                "Delete a message from your own view only (`everyone: false`, the default), or, as a group admin, delete someone else's message for everyone in the group (`everyone: true`). To recall your own message for both sides, use zalo_undo. `cliMsgId` and `uidFrom` are read from the local cache when you leave them out. A delete cannot be undone, so it is asked about first (`confirm`, `dryRun`).",
             inputSchema: z.object({
                 msgId: z
                     .string()
@@ -1889,12 +2720,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .min(1)
                     .describe("The conversation the message is in: the user id for a DM, the group id for a group."),
                 threadType: z
-                    .number()
-                    .int()
-                    .min(0)
-                    .max(1)
+                    .enum(["dm", "group"])
                     .optional()
-                    .describe("Thread type: 0=DM(User), 1=Group. Inferred from cache when omitted."),
+                    .describe('The conversation type: "dm" or "group". Inferred from the cache when omitted.'),
                 cliMsgId: z
                     .string()
                     .min(1)
@@ -1911,16 +2739,25 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .boolean()
                     .default(false)
                     .describe("Set true to delete someone else's message for everyone in a group (admin/owner)"),
+                confirm: confirmInput("the delete"),
+                ticket: ticketInput(),
+                dryRun: dryRunInput("the delete"),
             }),
         },
-        async ({
-            msgId,
-            threadId: threadIdIn,
-            threadType: threadTypeIn,
-            cliMsgId: cliMsgIdIn,
-            senderId: senderIdIn,
-            everyone,
-        }) => {
+        async (
+            {
+                msgId,
+                threadId: threadIdIn,
+                threadType: threadTypeIn,
+                cliMsgId: cliMsgIdIn,
+                senderId: senderIdIn,
+                everyone,
+                confirm,
+                dryRun,
+                ticket,
+            },
+            extra,
+        ) => {
             const thread = actionThread(api, threadIdIn, threadTypeIn);
             if (thread.error) {
                 console.error("[mcp-tools] zalo_delete_message refused:", thread.error);
@@ -1947,13 +2784,20 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     type: Number(threadType),
                 };
                 const onlyMe = Boolean(everyone) === false;
+                const held = await gate(
+                    "msg.delete",
+                    { msgId, threadId, cliMsgId: String(cliMsgId), senderId: String(uidFrom), everyone: !onlyMe },
+                    { confirm, dryRun, ticket },
+                    extra,
+                );
+                if (held) return held;
                 const result = await api.deleteMessage(dest, onlyMe);
                 return ok({
                     success: true,
                     msgId,
                     cliMsgId: String(cliMsgId),
                     threadId,
-                    threadType,
+                    threadType: threadTypeName(threadType),
                     everyone: Boolean(everyone),
                     ...(thread.notice && { notice: thread.notice }),
                     result,
@@ -1974,19 +2818,16 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "Create, list, inspect, view responses, edit, or remove reminders in a Zalo DM or group thread. " +
                 "Actions: 'create' (requires threadId, title), 'list' (requires threadId), 'info' (requires reminderId, group only), " +
                 "'responses' (requires reminderId, group only), 'edit' (requires reminderId, threadId, title), " +
-                "'remove' (requires reminderId, threadId).",
+                "'remove' (requires reminderId, threadId; it cannot be undone, so it is asked about first: `confirm`, `dryRun`).",
             inputSchema: z.object({
                 action: z
                     .enum(["create", "list", "info", "responses", "edit", "remove"])
                     .describe("Reminder operation to perform"),
                 threadId: z.string().min(1).optional().describe("Thread ID (required for create, list, edit, remove)"),
                 threadType: z
-                    .number()
-                    .int()
-                    .min(0)
-                    .max(1)
+                    .enum(["dm", "group"])
                     .optional()
-                    .describe("Thread type: 0=DM(User), 1=Group. Inferred from cache when omitted."),
+                    .describe('The conversation type: "dm" or "group". Inferred from the cache when omitted.'),
                 reminderId: z
                     .string()
                     .min(1)
@@ -2004,28 +2845,44 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .enum(["none", "daily", "weekly", "monthly"])
                     .optional()
                     .describe("Repeat schedule: 'none', 'daily', 'weekly', or 'monthly'"),
-                page: z.number().int().min(1).default(1).describe("Page number for 'list' (default 1)"),
+                page: z
+                    .number()
+                    .int()
+                    .min(1)
+                    .optional()
+                    .describe("Only this page for 'list' (omit both page and count for every reminder)"),
                 count: z
                     .number()
                     .int()
                     .min(1)
                     .max(100)
-                    .default(20)
-                    .describe("Max items per page for 'list' (default 20)"),
+                    .optional()
+                    .describe(
+                        "Reminders per page for 'list' (one page is read when page or count is given; 20 a page)",
+                    ),
+                confirm: confirmInput("'remove'"),
+                ticket: ticketInput(),
+                dryRun: dryRunInput("'remove'"),
             }),
         },
-        async ({
-            action,
-            threadId: threadIdIn,
-            threadType: threadTypeIn,
-            reminderId,
-            title,
-            time,
-            emoji,
-            repeat,
-            page,
-            count,
-        }) => {
+        async (
+            {
+                action,
+                threadId: threadIdIn,
+                threadType: threadTypeIn,
+                reminderId,
+                title,
+                time,
+                emoji,
+                repeat,
+                page,
+                count,
+                confirm,
+                dryRun,
+                ticket,
+            },
+            extra,
+        ) => {
             try {
                 if (action === "info") {
                     if (!reminderId) return err("reminderId is required for action='info'.");
@@ -2060,7 +2917,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         action,
                         success: true,
                         threadId,
-                        threadType,
+                        threadType: threadTypeName(threadType),
                         reminderId: result?.reminderId ?? result?.id ?? null,
                         startTime,
                         repeat: REMINDER_REPEAT_LABELS[repeatMode],
@@ -2070,13 +2927,37 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
 
                 if (action === "list") {
                     let result = null;
+                    let note = null;
                     try {
-                        result = await api.getListReminder({ page, count }, threadId, Number(threadType));
+                        if (page === undefined && count === undefined) {
+                            // No page asked: every page, one request at a time (src/core/list-all.js).
+                            const all = await allReminders(api, threadId, Number(threadType));
+                            result = all.reminders;
+                            note = all.paging.note;
+                        } else {
+                            // A group's page 2 and later carry the cursor of the page before, as Zalo pages them;
+                            // a DM's have none (Zalo always sends 0 there) and go by page number.
+                            result =
+                                Number(threadType) === THREAD_GROUP
+                                    ? await groupReminderPage(api, threadId, page ?? 1, count ?? 20)
+                                    : await api.getListReminder(
+                                          { page: page ?? 1, count: count ?? 20 },
+                                          threadId,
+                                          Number(threadType),
+                                      );
+                        }
                     } catch {
                         result = null;
                     }
                     const reminders = Array.isArray(result) ? result : [];
-                    return ok({ action, threadId, threadType, count: reminders.length, reminders });
+                    return ok({
+                        action,
+                        threadId,
+                        threadType: threadTypeName(threadType),
+                        count: reminders.length,
+                        reminders,
+                        ...(note && { note }),
+                    });
                 }
 
                 if (action === "edit") {
@@ -2097,13 +2978,34 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         editOpts.repeat = REMINDER_REPEAT_MODES[repeat];
                     }
                     const result = await api.editReminder(editOpts, threadId, Number(threadType));
-                    return ok({ action, success: true, reminderId, threadId, threadType, result });
+                    return ok({
+                        action,
+                        success: true,
+                        reminderId,
+                        threadId,
+                        threadType: threadTypeName(threadType),
+                        result,
+                    });
                 }
 
                 if (action === "remove") {
                     if (!reminderId) return err("reminderId is required for action='remove'.");
+                    const held = await gate(
+                        "reminder.remove",
+                        { reminderId, threadId },
+                        { confirm, dryRun, ticket },
+                        extra,
+                    );
+                    if (held) return held;
                     const result = await api.removeReminder(reminderId, threadId, Number(threadType));
-                    return ok({ action, success: true, reminderId, threadId, threadType, result });
+                    return ok({
+                        action,
+                        success: true,
+                        reminderId,
+                        threadId,
+                        threadType: threadTypeName(threadType),
+                        result,
+                    });
                 }
 
                 return err(`Unsupported reminder action: ${action}`);
@@ -2123,7 +3025,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "Create or edit group notes, list group board items (notes, pinned messages, polls), or pin/unpin " +
                 "a cached text message at the top of a conversation. " +
                 "Actions: 'create' (requires groupId, title), 'edit' (requires groupId, noteId, title), " +
-                "'list' (requires groupId), 'pin_message' (requires msgId; threadId optional if cached), " +
+                "'list' (requires groupId; every board item unless page or count is given), 'pin_message' (requires msgId; threadId optional if cached), " +
                 "'unpin_message' (requires msgId; threadId optional if cached).",
             inputSchema: z.object({
                 action: z
@@ -2142,13 +3044,10 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         "Thread ID for 'pin_message' / 'unpin_message' (defaults to the message's cached threadId)",
                     ),
                 threadType: z
-                    .number()
-                    .int()
-                    .min(0)
-                    .max(1)
+                    .enum(["dm", "group"])
                     .optional()
                     .describe(
-                        "Thread type for 'pin_message' / 'unpin_message': 0=DM(User), 1=Group. Inferred from cache when omitted.",
+                        "The conversation type for 'pin_message' / 'unpin_message': \"dm\" or \"group\". Inferred from the cache when omitted.",
                     ),
                 noteId: z
                     .string()
@@ -2167,8 +3066,19 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .describe(
                         "msgId of a cached text message to pin or unpin (required for 'pin_message' and 'unpin_message').",
                     ),
-                page: z.number().int().min(1).default(1).describe("Page number for 'list' (default 1)"),
-                count: z.number().int().min(1).max(100).default(20).describe("Items per page for 'list' (default 20)"),
+                page: z
+                    .number()
+                    .int()
+                    .min(1)
+                    .optional()
+                    .describe("Only this page for 'list' (omit both page and count for every board item)"),
+                count: z
+                    .number()
+                    .int()
+                    .min(1)
+                    .max(100)
+                    .optional()
+                    .describe("Items per page for 'list' (one page is read when page or count is given; 20 a page)"),
             }),
         },
         async ({
@@ -2204,7 +3114,19 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
 
                 if (action === "list") {
                     if (!groupId) return err("groupId is required for action='list'.");
-                    const result = await api.getListBoard({ page, count }, groupId);
+                    if (page === undefined && count === undefined) {
+                        // No page asked: every page, one request at a time (src/core/list-all.js).
+                        const all = await allBoardItems(api, groupId);
+                        return ok({
+                            action,
+                            groupId,
+                            items: all.items,
+                            count: all.items.length,
+                            ...(all.paging.note && { note: all.paging.note }),
+                        });
+                    }
+                    // Page 2 and later carry the cursor of the page before, as Zalo pages the board.
+                    const result = await boardPage(api, groupId, page ?? 1, count ?? 20);
                     return ok({
                         action,
                         groupId,
@@ -2217,8 +3139,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     if (!msgId) return err("msgId is required for action='pin_message'.");
                     let row = null;
                     try {
-                        row = getMessageById(msgId);
-                    } catch {
+                        row = getMessageForAction(msgId);
+                    } catch (e) {
+                        if (e?.code === "ROW_MAC") return err(e.message);
                         row = null;
                     }
                     if (!row) {
@@ -2259,8 +3182,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     if (!msgId) return err("msgId is required for action='unpin_message'.");
                     let row = null;
                     try {
-                        row = getMessageById(msgId);
-                    } catch {
+                        row = getMessageForAction(msgId);
+                    } catch (e) {
+                        if (e?.code === "ROW_MAC") return err(e.message);
                         row = null;
                     }
                     const targetThread = threadIdIn || groupId;
@@ -2299,7 +3223,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "Create, inspect, vote, unvote, add options, lock, or share a poll in a Zalo group. " +
                 "Actions: 'create' (requires groupId, question, options with >=2 items), 'info' (requires pollId), " +
                 "'vote' (requires pollId, optionIds), 'unvote' (requires pollId), " +
-                "'add_options' (requires pollId, options), 'lock' (requires pollId), 'share' (requires pollId).",
+                "'add_options' (requires pollId, options), 'lock' (requires pollId; closing a poll cannot be undone, so it is " +
+                "asked about first: `confirm`, `dryRun`), 'share' (requires pollId).",
             inputSchema: z.object({
                 action: z
                     .enum(["create", "info", "vote", "unvote", "add_options", "lock", "share"])
@@ -2341,22 +3266,31 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .boolean()
                     .default(false)
                     .describe("Also cast your vote for the newly added options ('add_options' only)"),
+                confirm: confirmInput("'lock'"),
+                ticket: ticketInput(),
+                dryRun: dryRunInput("'lock'"),
             }),
         },
-        async ({
-            action,
-            groupId,
-            pollId,
-            question,
-            options,
-            optionIds,
-            multi,
-            allowAddOptions,
-            anonymous,
-            hidePreview,
-            expireMinutes,
-            voteNewOptions,
-        }) => {
+        async (
+            {
+                action,
+                groupId,
+                pollId,
+                question,
+                options,
+                optionIds,
+                multi,
+                allowAddOptions,
+                anonymous,
+                hidePreview,
+                expireMinutes,
+                voteNewOptions,
+                confirm,
+                dryRun,
+                ticket,
+            },
+            extra,
+        ) => {
             try {
                 if (action === "create") {
                     if (!groupId) return err("groupId is required for action='create'.");
@@ -2424,6 +3358,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 }
 
                 if (action === "lock") {
+                    const held = await gate("poll.lock", { pollId: numericPollId }, { confirm, dryRun, ticket }, extra);
+                    if (held) return held;
                     const result = await api.lockPoll(numericPollId);
                     return ok({ action, success: true, pollId: numericPollId, result });
                 }
@@ -2448,7 +3384,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             title: "Wait for Incoming Zalo Message",
             description:
                 'Wait for the next incoming message, without polling. It returns at once when a buffered message newer than `since` is already waiting; otherwise it waits up to `timeoutSec` seconds (default 55, max 300) and then returns `status: "timeout"` with no message. Call it in a loop to listen, and call zalo_mark_read with the `cursor` when a message is handled. ' +
-                "`limit` (default 1, max 100) returns up to that many buffered messages in one call, in order, in `messages` (`message` is the first, `cursor` is the last, so `since: cursor` continues where the batch ended; `hasMore` says more are already waiting); `settleMs` waits that long after the first message for the rest of a burst. A message's `id` is its msgId. Mirrors GET /events/wait for remote HTTPS/OAuth2 MCP clients.",
+                "It returns every message already waiting, in order, in `messages` (`message` is the first, `cursor` is the last, so `since: cursor` continues where the batch ended); `limit` caps how many (then `hasMore` says more are already waiting); `settleMs` waits that long after the first message for the rest of a burst. A message's `id` is its msgId. " +
+                SYSTEM_EVENTS_NOTE +
+                "Mirrors GET /events/wait for remote HTTPS/OAuth2 MCP clients.",
             inputSchema: z.object({
                 threadId: z
                     .string()
@@ -2475,9 +3413,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .number()
                     .int()
                     .min(1)
-                    .max(MAX_BATCH)
-                    .default(1)
-                    .describe(`Most messages to return in one call (default 1, max ${MAX_BATCH})`),
+                    .optional()
+                    .describe("Most messages to return in one call (omit for every message already waiting)"),
                 settleMs: z
                     .number()
                     .int()
@@ -2489,7 +3426,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     ),
             }),
         },
-        async ({ threadId, since, timeoutSec = 55, limit = 1, settleMs = 0 }) => {
+        async ({ threadId, since, timeoutSec = 55, limit, settleMs = 0 }) => {
             try {
                 if (typeof buffer?.waitForMessages !== "function") {
                     return err("Live message buffer does not support waitForMessages in this context.");
@@ -2497,22 +3434,27 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 const cleanThreadId = typeof threadId === "string" && threadId.trim() ? threadId.trim() : null;
                 const clampedSec = Math.max(1, Math.min(300, Number(timeoutSec) || 55));
                 const batch = batchParams({ limit, settleMs });
-                const { messages, hasMore } = await buffer.waitForMessages({
+                if (isHiddenThread(cleanThreadId)) return err(HIDDEN_THREAD);
+                const waited = await buffer.waitForMessages({
                     threadId: cleanThreadId,
                     since: typeof since === "number" && Number.isFinite(since) ? since : undefined,
                     timeoutMs: clampedSec * 1000,
                     ...batch,
                 });
+                const messages = eventsView(waited.messages);
+                const hasMore = waited.hasMore;
                 return ok(
                     waitResult({
                         messages,
                         hasMore,
                         cursorWhenEmpty: Math.max(
+                            Number(waited.messages.at(-1)?._cursor) || 0,
                             typeof since === "number" && Number.isFinite(since) ? since : 0,
                             Number(buffer._globalCursor) || 0,
                             typeof buffer.readCursor === "function" ? buffer.readCursor() : 0,
                         ),
                         decorate: (msg) => {
+                            if (msg.hidden || msg.system) return msg;
                             const tid = String(msg.threadId || "");
                             let threadName = nameCache?.get(tid)?.name || null;
                             if (!threadName && tid) {
@@ -2543,7 +3485,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "Actions: 'list' (returns all labels with their IDs, text, colors, conversations array, and version), " +
                 "'assign' (adds threadId or threadIds to a label identified by labelId or labelText), " +
                 "'unassign' (removes threadId or threadIds from a label identified by labelId or labelText), " +
-                "'update' (raw update with full labelData array and version, matching 'label update').",
+                "'update' (raw update with full labelData array and version, matching 'label update'; the list " +
+                "replaces the current one, so a label left out of it is deleted: that is asked about first, " +
+                "`confirm`, `dryRun`).",
             inputSchema: z.object({
                 action: z
                     .enum(["list", "assign", "unassign", "update"])
@@ -2569,6 +3513,12 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .array(z.string().min(1))
                     .optional()
                     .describe("Multiple thread IDs to assign or unassign in one call"),
+                threadType: z
+                    .enum(["dm", "group"])
+                    .optional()
+                    .describe(
+                        'The type of every threadId/threadIds given: "dm" or "group". Leave it out: the type stored for each thread is used. A label stores a group as "g<groupId>".',
+                    ),
                 labelData: z
                     .array(z.any())
                     .optional()
@@ -2578,9 +3528,27 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .int()
                     .optional()
                     .describe("Label version integer from action='list' (required for raw action='update')"),
+                confirm: confirmInput("an 'update' that removes labels"),
+                ticket: ticketInput(),
+                dryRun: dryRunInput("'update'"),
             }),
         },
-        async ({ action, labelId, labelText, threadId, threadIds, labelData, version }) => {
+        async (
+            {
+                action,
+                labelId,
+                labelText,
+                threadId,
+                threadIds,
+                threadType: threadTypeIn,
+                labelData,
+                version,
+                confirm,
+                dryRun,
+                ticket,
+            },
+            extra,
+        ) => {
             try {
                 if (action === "list") {
                     const res = await api.getLabels();
@@ -2596,6 +3564,16 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     if (!Array.isArray(labelData) || typeof version !== "number" || !Number.isFinite(version)) {
                         return err("labelData (array) and version (number) are required for action='update'.");
                     }
+                    // Only a label dropped from the list is asked about; knowing which takes the current list.
+                    const removed = removedLabels((await api.getLabels())?.labelData, labelData);
+                    const held = await gate(
+                        "label.update",
+                        { removedLabels: removed, version: Number(version) },
+                        { confirm, dryRun, ticket },
+                        extra,
+                        { applies: removed.length > 0 },
+                    );
+                    if (held) return held;
                     const updated = await api.updateLabels({
                         labelData,
                         version: Number(version),
@@ -2647,15 +3625,24 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         );
                     }
 
-                    const targetSet = new Set(targets);
+                    // A label names a group as "g<groupId>" and a user by the bare id (spec-actions 9): a bare
+                    // group id would be stored as a user conversation. Unassign drops both forms, so it also
+                    // clears a bare group id an earlier version stored (a user id is never a group's).
+                    const convIds = targets.map((t) => labelConversationId(t, threadTypeIn));
+                    const dropped = new Set(
+                        convIds.flatMap((c) => {
+                            const bare = LABEL_GROUP_ID.test(c) ? c.slice(1) : c;
+                            return [bare, `g${bare}`];
+                        }),
+                    );
                     let updatedConvList = [];
                     const nextLabelData = list.map((lbl) => {
                         if (Number(lbl.id) !== Number(matched.id)) return lbl;
                         const existing = Array.isArray(lbl.conversations) ? lbl.conversations.map(String) : [];
                         const nextConvs =
                             action === "assign"
-                                ? [...new Set([...existing, ...targets])]
-                                : existing.filter((c) => !targetSet.has(String(c)));
+                                ? [...new Set([...existing, ...convIds])]
+                                : existing.filter((c) => !dropped.has(String(c)));
                         updatedConvList = nextConvs;
                         return { ...lbl, conversations: nextConvs };
                     });
@@ -2690,43 +3677,85 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         {
             title: "Manage Zalo Friends and Friend Requests",
             description:
-                "Check, list and answer friend requests, and list friends. Actions: " +
+                "Friends and friend requests: check, list and answer requests, list, remove and block friends. Actions: " +
                 "'status' (the relationship with userId: is_friend, and is_requested / is_requesting, Zalo's two flags " +
                 "for a request pending between you and them; to tell which direction a request goes, use the two lists), " +
                 "'sent_requests' (requests you sent that are still pending), " +
                 "'received_requests' (requests others sent you, newest first, with their message), " +
                 "'send' (friend request to userId, with an optional message), " +
-                "'accept' / 'reject' (the request from userId), " +
-                "'undo' (cancel the request you sent to userId), " +
-                "'list' (your friends, most recently active first, capped by limit). " +
+                "'accept' / 'reject' (the request from userId; 'reject' is asked about first), " +
+                "'undo' (cancel the request you sent to userId; asked about first: `confirm`, `dryRun`), " +
+                "'list' (your friends, most recently active first: all of them unless limit is given), " +
+                "'alias' (set the nickname this account shows for userId to `alias`; an empty alias removes it; " +
+                "the nickname is what `senderDisplayName` and `@[userId]` mentions then use), " +
+                "'alias_list' (the nicknames set on this account: all of them unless limit is given), " +
+                "'online' (friends online now: dead in practice, Zalo answers 404 and Zalo's own apps discard it too), " +
+                "'close' (close friends), 'last_online' (when userId was last seen, with hiddenBy \"you\" or \"them\" " +
+                "when hidden; nothing is asked when this account hides its own status, unless `askAnyway`; " +
+                "`cached` reads the listener's presence cache instead), " +
+                "'remove' (unfriend userId), 'block' / 'unblock' (userId), 'block_feed' (hide userId's posts from the " +
+                "feed; `unblock: true` shows them again), 'find_phones' (users by `phones`), 'qr' (the QR code URL of " +
+                "each of userIds), 'common_groups' (the groups you share with each of userIds), 'biz' (userId's " +
+                "business account details). 'reject', 'undo', 'remove' and 'block' are asked about first: " +
+                "`confirm`, `dryRun`. " +
                 "userId is the numeric Zalo id (zalo_lookup_user finds one from a phone number). " +
                 "Zalo restricts accounts that send many friend requests, so send sparingly.",
-            inputSchema: z.object({
-                action: z
-                    .enum(["status", "sent_requests", "received_requests", "send", "accept", "reject", "undo", "list"])
-                    .describe("Friend operation to perform"),
-                userId: z
-                    .string()
-                    .min(1)
-                    .optional()
-                    .describe("Numeric Zalo user id (required for status, send, accept, reject and undo)"),
-                message: z
-                    .string()
-                    .optional()
-                    .describe("Message sent with the friend request (only for 'send'; default: none)"),
-                limit: z
-                    .number()
-                    .int()
-                    .min(1)
-                    .max(1000)
-                    .optional()
-                    .describe(
-                        "Most friends to return for 'list' (default 200; the reply says how many there are in all)",
-                    ),
-            }),
+            inputSchema: z
+                .object({
+                    action: z
+                        .enum([
+                            "status",
+                            "sent_requests",
+                            "received_requests",
+                            "send",
+                            "accept",
+                            "reject",
+                            "undo",
+                            "list",
+                            "alias",
+                            "alias_list",
+                            ...Object.keys(FRIEND_EXTRA_ACTIONS),
+                        ])
+                        .describe("Friend operation to perform"),
+                    userId: z
+                        .string()
+                        .min(1)
+                        .optional()
+                        .describe(
+                            "Numeric Zalo user id (required for status, send, accept, reject, undo, alias, remove, block, " +
+                                "unblock, last_online, biz and block_feed)",
+                        ),
+                    message: z
+                        .string()
+                        .optional()
+                        .describe("Message sent with the friend request (only for 'send'; default: none)"),
+                    alias: z
+                        .string()
+                        .max(200)
+                        .optional()
+                        .describe(
+                            "Only for 'alias': the nickname to show for userId; an empty string removes the nickname",
+                        ),
+                    limit: z
+                        .number()
+                        .int()
+                        .min(1)
+                        .optional()
+                        .describe(
+                            "Most entries to return for 'list' and 'alias_list' (omit for all); 'list' says how many there are in all",
+                        ),
+                    ...FRIEND_EXTRA_INPUTS,
+                    confirm: confirmInput("'reject', 'undo', 'remove' and 'block'"),
+                    ticket: ticketInput(),
+                    dryRun: dryRunInput("'reject', 'undo', 'remove' and 'block'"),
+                })
+                .strict(),
         },
-        async ({ action, userId, message, limit }) => {
-            const needsUser = ["status", "send", "accept", "reject", "undo"].includes(action);
+        async (args, extra) => {
+            // The actions added with the action tools run through the shared runner (src/mcp/action-tool.js).
+            if (Object.hasOwn(FRIEND_EXTRA_ACTIONS, args.action)) return friendExtra(args, extra);
+            const { action, userId, message, limit, alias, confirm, dryRun, ticket } = args;
+            const needsUser = ["status", "send", "accept", "reject", "undo", "alias"].includes(action);
             const target = userId === undefined ? "" : String(userId).trim();
             if (needsUser) {
                 if (!target) return err(`userId is required for action='${action}'.`);
@@ -2736,19 +3765,18 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     );
                 }
             }
+            if (action === "reject" || action === "undo") {
+                const key = action === "reject" ? "friend.reject" : "friend.undoRequest";
+                const held = await gate(key, { userId: target }, { confirm, dryRun, ticket }, extra);
+                if (held) return held;
+            }
             try {
                 switch (action) {
                     case "status":
                         return ok({ action, ...friendStatusFrom(await api.getFriendRequestStatus(target), target) });
                     case "sent_requests": {
-                        let res = null;
-                        try {
-                            res = await api.getSentFriendRequest();
-                        } catch (e) {
-                            // Zalo answers code 112 when there are none, which is an empty list, not a failure.
-                            if (!/\b112\b/.test(String(e?.message))) throw e;
-                        }
-                        const requests = sentRequestsFrom(res);
+                        // Zalo's "none sent" (112) is an empty list, not a failure.
+                        const requests = sentRequestsFrom(await readSentRequests(api));
                         return ok({ action, count: requests.length, requests });
                     }
                     case "received_requests": {
@@ -2768,17 +3796,66 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         await api.undoFriendRequest(target);
                         return ok({ action, success: true, userId: target });
                     case "list": {
-                        const { total, friends } = friendsFrom(await api.getAllFriends(), limit ?? 200);
+                        const { total, friends } = friendsFrom(await api.getAllFriends(), limit);
                         return ok({ action, total, count: friends.length, truncated: friends.length < total, friends });
+                    }
+                    case "alias": {
+                        const nick = alias === undefined ? "" : String(alias).trim();
+                        if (nick) {
+                            // The same call as the CLI's `friend alias` (the session takes the alias first).
+                            await api.changeFriendAlias(nick, target);
+                            // `contacts.name` is what senderDisplayName and mentions read (db.getDisplayName);
+                            // the nickname is the name Zalo will show from now on, so it is written there at once.
+                            rememberContactName(target, nick);
+                            noteAliasSet(target, nick);
+                            return ok({ action, success: true, userId: target, alias: nick });
+                        }
+                        await api.removeFriendAlias(target);
+                        noteAliasSet(target, null);
+                        // Without the nickname the contact is shown by their profile name again; fetch it so the
+                        // cached name does not stay the removed nickname. Best effort: the removal already stuck.
+                        try {
+                            const info = await api.getUserInfo(target);
+                            const p = info?.changed_profiles?.[target] || info?.unchanged_profiles?.[target] || null;
+                            const shown = p?.displayName || p?.zaloName || null;
+                            if (shown) rememberContactName(target, shown);
+                        } catch (e) {
+                            console.error(`[mcp-tools] zalo_friend alias: profile name not refreshed: ${e.message}`);
+                        }
+                        return ok({ action, success: true, userId: target, alias: null });
+                    }
+                    case "alias_list": {
+                        // No limit: every page, as Zalo pages its alias list (src/core/list-all.js); a limit is
+                        // one page of that size.
+                        let items;
+                        let note = null;
+                        if (limit === undefined) {
+                            const all = await allAliases(api);
+                            items = all.items;
+                            note = all.paging.note;
+                        } else {
+                            const res = await api.getAliasList(limit, 1);
+                            items = Array.isArray(res?.items) ? res.items : [];
+                        }
+                        const aliases = items
+                            .filter((i) => i && i.userId !== undefined && i.userId !== null)
+                            .map((i) => ({ userId: String(i.userId), alias: i.alias ?? null }));
+                        return ok({ action, count: aliases.length, aliases, ...(note && { note }) });
                     }
                     default:
                         return err(`Unsupported friend action: ${action}`);
                 }
             } catch (e) {
                 console.error("[mcp-tools] zalo_friend error:", e.message);
-                // 'send' keeps the CLI's wording for Zalo's refusal codes (already friends, blocked, ...).
+                // 'send' and 'undo' keep the CLI's wording for Zalo's refusal codes (already friends, blocked,
+                // too many requests taken back, ...), read from the error's code.
+                const code = errorCodeOf(e);
                 const known =
-                    action === "send" ? describeFriendAddError(e.code ?? extractErrorCode(e.message), target) : null;
+                    action === "send"
+                        ? describeFriendAddError(code, target)
+                        : action === "undo"
+                          ? describeFriendUndoError(code, target)
+                          : null;
                 return err(known || e.message);
             }
         },
@@ -2797,48 +3874,101 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "'create' (a new group named `name` with the members in userIds), " +
                 "'add_members' (add userIds to the group), " +
                 "'remove_member' (remove the one member userId from the group), " +
-                "'leave' (leave the group; `silent` hides the usual notice from ordinary members; the owner still sees it). " +
+                "'leave' (only this account leaves; `silent` hides the usual notice from ordinary members, the owner " +
+                "still sees it; the owner of a group with other members must give `newOwner` (a member's userId: " +
+                "ownership is handed over first, as Zalo does) or `randomOwner: true` (Zalo picks a member)), " +
+                "'rename' (set the group's name to `name`; every member sees the change), " +
+                "'avatar' (set the group's avatar from a local image, `filePath`), " +
+                "'add_admin' / 'remove_admin' (userIds), 'transfer_owner' (to userId), " +
+                "'block_member' / 'unblock_member' (userIds; a blocked member cannot rejoin), 'blocked' (the blocked " +
+                "members), 'settings' (change `settings`; the rest keep their values), 'upgrade_community', " +
+                "'disperse' (owner only: disband the group, deleting it for every member), 'pending' / 'approve' / " +
+                "'reject_member' (join requests, " +
+                "admins only), 'enable_link' / 'disable_link' / 'link_info' (the invite link), 'link_preview' / " +
+                "'join' (a group by its invite `link`), 'invite_boxes' (invitations you received), 'invite_info' / " +
+                "'join_invite' (one of them, by groupId), 'delete_invite' (groupIds), 'invite_to' (invite userId to " +
+                "groupIds), 'members_info' (profiles of userIds). " +
                 "groupId is the group's thread id (zalo_search_threads or zalo_list_conversations finds it); " +
                 "user ids are numeric Zalo ids (zalo_lookup_user finds one from a phone number). " +
-                "'leave' and 'remove_member' cannot be undone from here, so they need confirm: true (a plain " +
-                "parameter, no prompt; a deployment can turn the check off with groupConfirm: false in " +
-                "mcp-config.json or ZALO_MCP_GROUP_CONFIRM=0). Zalo can refuse some members " +
+                "'leave', 'remove_member', 'remove_admin', 'transfer_owner', 'block_member', 'disperse', " +
+                "'disable_link', and 'settings' when it turns join approval off, are asked about first: " +
+                "`confirm` and `dryRun`, as the deployment's confirmMode decides. Zalo can refuse some members " +
                 "of a create or add_members: the reply lists the members it did and did not take.",
-            inputSchema: z.object({
-                action: z
-                    .enum(["leave", "info", "create", "add_members", "remove_member"])
-                    .describe("Group operation to perform"),
-                groupId: z
-                    .string()
-                    .min(1)
-                    .optional()
-                    .describe("The group's id (required for leave, info, add_members and remove_member)"),
-                name: z.string().optional().describe("The new group's name (required for 'create')"),
-                userIds: z
-                    .array(z.string().min(1))
-                    .min(1)
-                    .max(100)
-                    .optional()
-                    .describe("Numeric Zalo user ids (required for 'create' and 'add_members')"),
-                userId: z.string().min(1).optional().describe("Numeric Zalo user id (required for 'remove_member')"),
-                silent: z
-                    .boolean()
-                    .optional()
-                    .describe(
-                        "Only for 'leave': hide the usual notice from ordinary members; the owner still sees it (default false)",
-                    ),
-                confirm: z
-                    .boolean()
-                    .optional()
-                    .describe(
-                        "Must be true for 'leave' and 'remove_member', which cannot be undone from here " +
-                            "(ignored when the deployment has switched the check off)",
-                    ),
-            }),
+            inputSchema: z
+                .object({
+                    action: z
+                        .enum([
+                            "leave",
+                            "info",
+                            "create",
+                            "add_members",
+                            "remove_member",
+                            "rename",
+                            ...Object.keys(GROUP_EXTRA_ACTIONS),
+                        ])
+                        .describe("Group operation to perform"),
+                    groupId: z
+                        .string()
+                        .min(1)
+                        .optional()
+                        .describe(
+                            "The group's id (required for every action except create, link_preview, join, invite_boxes, " +
+                                "delete_invite, invite_to and members_info)",
+                        ),
+                    name: z
+                        .string()
+                        .optional()
+                        .describe("The group's name: the new group's for 'create', the name to set for 'rename'"),
+                    userIds: z
+                        .array(z.string().min(1))
+                        .min(1)
+                        .max(100)
+                        .optional()
+                        .describe(
+                            "Numeric Zalo user ids (required for 'create', 'add_members', 'add_admin', 'remove_admin', " +
+                                "'block_member', 'unblock_member', 'approve', 'reject_member' and 'members_info')",
+                        ),
+                    userId: z
+                        .string()
+                        .min(1)
+                        .optional()
+                        .describe(
+                            "Numeric Zalo user id (required for 'remove_member', 'transfer_owner' and 'invite_to')",
+                        ),
+                    silent: z
+                        .boolean()
+                        .optional()
+                        .describe(
+                            "Only for 'leave': hide the usual notice from ordinary members; the owner still sees it (default false)",
+                        ),
+                    newOwner: z
+                        .string()
+                        .min(1)
+                        .optional()
+                        .describe(
+                            "Only for 'leave' by the group's owner: the member (numeric user id) who owns the group next; " +
+                                "ownership is handed over, then the account leaves",
+                        ),
+                    randomOwner: z
+                        .boolean()
+                        .optional()
+                        .describe(
+                            "Only for 'leave' by the group's owner: leave and let Zalo give ownership to a random member",
+                        ),
+                    ...GROUP_EXTRA_INPUTS,
+                    confirm: confirmInput("the actions asked about first (listed above)"),
+                    ticket: ticketInput(),
+                    dryRun: dryRunInput("the actions asked about first (listed above)"),
+                })
+                .strict(),
         },
-        async ({ action, groupId, name, userIds, userId, silent, confirm }) => {
+        async (args, extra) => {
+            // The actions added with the action tools run through the shared runner (src/mcp/action-tool.js).
+            if (Object.hasOwn(GROUP_EXTRA_ACTIONS, args.action)) return groupExtra(args, extra);
+            const { action, groupId, name, userIds, userId, silent, newOwner, randomOwner, confirm, dryRun, ticket } =
+                args;
             const gid = groupId === undefined ? "" : String(groupId).trim();
-            if (["leave", "info", "add_members", "remove_member"].includes(action)) {
+            if (["leave", "info", "add_members", "remove_member", "rename"].includes(action)) {
                 if (!gid) return err(`groupId is required for action='${action}'.`);
                 if (!/^\d{1,30}$/.test(gid)) {
                     return err(
@@ -2868,22 +3998,54 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 }
             }
             const groupName = name === undefined ? "" : String(name).trim();
-            if (action === "create" && !groupName) return err("name is required for action='create'.");
+            if ((action === "create" || action === "rename") && !groupName) {
+                return err(`name is required for action='${action}'.`);
+            }
+
+            if ((newOwner !== undefined || randomOwner !== undefined) && action !== "leave") {
+                return err("newOwner and randomOwner are only for action='leave'.");
+            }
+            // A leave is read first: the owner's leave without a successor, or a successor who is not a member, is
+            // refused before the guard and before anything is sent (src/core/group-departure.js).
+            let leavePlan = null;
+            if (action === "leave") {
+                try {
+                    leavePlan = await planLeave(api, {
+                        groupId: gid,
+                        ownId: ownIdOf(api) || null,
+                        newOwner,
+                        randomOwner: randomOwner === true,
+                    });
+                } catch (e) {
+                    return err(departureMessage(e, "mcp"));
+                }
+            }
 
             // After validation, before Zalo: a refused call changes nothing and says exactly how to retry.
-            if (CONFIRMED_ACTIONS.includes(action) && confirm !== true && groupConfirmRequired({ config })) {
-                const what = action === "leave" ? `leave group ${gid}` : `remove ${target} from group ${gid}`;
-                return err(
-                    `Not done: this would ${what}, which cannot be undone from here. Repeat the call with ` +
-                        "confirm: true to proceed. (An automatic or headless deployment can turn this check off " +
-                        "with groupConfirm: false in mcp-config.json, or ZALO_MCP_GROUP_CONFIRM=0 in the environment.)",
+            if (action === "leave" || action === "remove_member") {
+                const held = await gate(
+                    action === "leave" ? "group.leave" : "group.removeMember",
+                    action === "leave"
+                        ? {
+                              groupId: gid,
+                              silent: silent === true,
+                              newOwner: leavePlan.newOwner,
+                              randomOwner: leavePlan.handOver === "random",
+                          }
+                        : { groupId: gid, userIds: [target] },
+                    { confirm, dryRun, ticket },
+                    extra,
                 );
+                if (held) return held;
             }
 
             try {
                 switch (action) {
                     case "info": {
-                        const info = groupInfoFrom(await api.getGroupInfo([gid]), gid);
+                        const info = groupInfoFrom(
+                            await getGroupInfoWatched(api, ownIdOf(api) || null, [String(gid)]),
+                            gid,
+                        );
                         if (!info) {
                             return err(
                                 `Zalo's answer does not include group ${gid}: this account is not in it, or it is not ` +
@@ -2932,16 +4094,26 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         }
                         return ok({ action, success: true, groupId: gid, userId: target });
                     }
+                    case "rename": {
+                        // The same call as the CLI's `group rename` (the session takes the name first).
+                        await api.changeGroupName(groupName, gid);
+                        return ok({ action, success: true, groupId: gid, name: groupName });
+                    }
                     case "leave": {
                         const quiet = silent === true;
-                        const res = await api.leaveGroup(gid, quiet);
+                        const res = await runLeave(api, leavePlan, { silent: quiet });
                         const memberError = Array.isArray(res?.memberError) ? res.memberError : [];
+                        // As Zalo does on the API's success: the group's local history goes now (or is kept flagged,
+                        // groups.onLeave), whether or not a listener sees the echo.
+                        const exit = await recordOwnExit({ ownId: ownIdOf(api), groupId: gid, reason: "leave" });
                         return ok({
                             action,
                             success: true,
                             groupId: gid,
                             silent: quiet,
+                            ...(res.handOver && { ownership: res.handOver, newOwner: res.newOwner }),
                             ...(memberError.length > 0 && { memberError }),
+                            ...exit,
                         });
                     }
                     default:
@@ -2962,6 +4134,136 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         `Zalo says ${target} is not in group ${gid} ("${e.message}", code ${REMOVE_NOT_IN_GROUP}).`,
                     );
                 }
+                return err(e.message);
+            }
+        },
+    );
+
+    // --- The action tools: one per area, each action the call its CLI command makes (src/mcp/actions-*.js) ---
+    server.registerTool(
+        "zalo_conversation",
+        CONVERSATION_META,
+        actionTool("zalo_conversation", CONVERSATION_ACTIONS, toolCtx),
+    );
+    server.registerTool("zalo_profile", PROFILE_META, actionTool("zalo_profile", PROFILE_ACTIONS, toolCtx));
+    server.registerTool("zalo_auto_reply", AUTO_REPLY_META, actionTool("zalo_auto_reply", AUTO_REPLY_ACTIONS, toolCtx));
+    server.registerTool(
+        "zalo_quick_message",
+        QUICK_MESSAGE_META,
+        actionTool("zalo_quick_message", QUICK_MESSAGE_ACTIONS, toolCtx),
+    );
+    server.registerTool("zalo_catalog", CATALOG_META, actionTool("zalo_catalog", CATALOG_ACTIONS, toolCtx));
+    server.registerTool("zalo_bank", BANK_META, actionTool("zalo_bank", BANK_ACTIONS, toolCtx));
+    server.registerTool("zalo_cloud", CLOUD_META, actionTool("zalo_cloud", CLOUD_ACTIONS, toolCtx));
+    server.registerTool("zalo_sticker", STICKER_META, actionTool("zalo_sticker", STICKER_ACTIONS, toolCtx));
+    server.registerTool("zalo_link", LINK_META, actionTool("zalo_link", LINK_ACTIONS, toolCtx));
+
+    // --- zalo_official: the oa / zbs / social commands, run as the CLI runs them (./official-tool.js) ---
+    server.registerTool("zalo_official", officialMeta(), officialTool(toolCtx));
+
+    // --- zalo_read ---
+    server.registerTool(
+        "zalo_read",
+        {
+            title: "Read From Zalo's API",
+            description:
+                "Ask Zalo one of the read-only endpoints Zalo calls that no other tool covers: the sticker and GIF " +
+                "catalogs and GIF search, a profile's rank and extra fields, the block list, the nickname list, the " +
+                "search history Zalo keeps, delivery and seen status, the group quota and the account's role in a " +
+                "group, friend profile checks, the emoji statuses of friends, the server's client settings, and " +
+                "more. Omit `name` to list every read with what it takes and whether a live account has answered it; " +
+                "give `name` and `args` to run one. It only reads: nothing here sends, marks, changes or removes " +
+                "anything. `args` is an object named by the read's own argument list (ids are strings).",
+            inputSchema: z.object({
+                name: z
+                    .enum(READ_NAMES)
+                    .optional()
+                    .describe("The read to run (omit to list them all, with their arguments)"),
+                args: z
+                    .record(z.string(), z.any())
+                    .optional()
+                    .describe('The read\'s arguments by name, e.g. {"id": "123"} for profile-rank'),
+            }),
+            annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+        },
+        async ({ name, args }) => {
+            if (!name) return ok({ reads: describeReads() });
+            // A read about one conversation names it in its args; a hidden one is left out like everywhere else.
+            if (readThreadIds(args).some(isHiddenThread)) return err(HIDDEN_THREAD);
+            try {
+                // A paged read with no page chosen is read to its end (READ_PAGERS in src/zalo/reads.js).
+                const { data, paging } = await callReadAll(api, name, args || {});
+                return ok({ name, data: data ?? null, ...(paging?.note && { note: paging.note }) });
+            } catch (e) {
+                if (!(e instanceof ReadUsageError)) console.error("[mcp-tools] zalo_read error:", e.message);
+                return err(e.message);
+            }
+        },
+    );
+
+    // --- zalo_write ---
+    server.registerTool(
+        "zalo_write",
+        {
+            title: "Change Something Through Zalo's API",
+            description:
+                "Make one of the state-changing calls Zalo makes that no other tool covers: reminder RSVP, creating " +
+                "or changing a group note or reminder with a repeat rule, pinning and unpinning board items, removing a " +
+                "topic, recalling several messages at once, suggested-friend cleanup, blocking an " +
+                "Official Account, removing one account from several groups, the search history. Omit `name` to list " +
+                "every write with what it touches (`risk`: private, visible to others, or destructive), what it takes, " +
+                "whether a live success was seen (`verified`) and, if not, why (`note`). EVERY write changes " +
+                'something, so a real call is asked about first, even where the deployment\'s confirmMode is "off" ' +
+                '(`confirm: true`; in "human" mode the server asks the user), and `dryRun: true` ' +
+                "returns the request that would be sent without sending anything: use it first, and try an unverified " +
+                "write on something disposable. Enum-like arguments take Zalo's own names or numbers (`list` " +
+                "shows them). `args` is an object named by the write's own argument list (ids are strings).",
+            inputSchema: z.object({
+                name: z
+                    .enum(WRITE_NAMES)
+                    .optional()
+                    .describe("The write to make (omit to list them all, with their arguments and risk)"),
+                args: z
+                    .record(z.string(), z.any())
+                    .optional()
+                    .describe('The write\'s arguments by name, e.g. {"groupId": "123", "topicId": "45"}'),
+                dryRun: z
+                    .boolean()
+                    .optional()
+                    .describe("Return the request that would be sent, with its body decrypted, and send nothing"),
+                confirm: confirmInput("a real call (not needed with dryRun)"),
+                ticket: ticketInput(),
+            }),
+            annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+        },
+        async ({ name, args, dryRun, confirm, ticket }, extra) => {
+            if (!name) return ok({ writes: describeWrites() });
+            // Arguments first, as for every guarded action: a call missing one is refused as the typo it is, before
+            // anyone is asked to confirm a request that could not be sent. Building the request sends nothing; a
+            // failure that is not about the arguments is left to the call itself.
+            try {
+                buildWrite(api, name, args || {});
+            } catch (e) {
+                if (e instanceof ReadUsageError) return err(e.message);
+            }
+            // dryRun is the write's own: it returns the request itself, so only a real call is gated. A raw
+            // endpoint runner stays gated even in confirmMode "off".
+            if (!dryRun) {
+                const def = WRITES[name];
+                const held = await gate(
+                    "write.run",
+                    { name, risk: def?.risk, verified: def?.verified, args: args || {} },
+                    { confirm, ticket },
+                    extra,
+                    { always: true },
+                );
+                if (held) return held;
+            }
+            try {
+                const data = await callWrite(api, name, args || {}, { dryRun: dryRun === true });
+                return ok(dryRun ? data : { name, data: data ?? null });
+            } catch (e) {
+                if (!(e instanceof ReadUsageError)) console.error("[mcp-tools] zalo_write error:", e.message);
                 return err(e.message);
             }
         },

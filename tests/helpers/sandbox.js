@@ -10,7 +10,7 @@
  * ESM evaluates dependencies in the order their `import` declarations
  * appear, so a test file that puts
  *
- *     import { SANDBOX_HOME } from "../helpers/sandbox.js";
+ *     import { SANDBOX_HOME } from "./sandbox.js";
  *
  * above its `import ... from "../../src/core/..."` lines is guaranteed to
  * get a redirected CONFIG_DIR. `assertSandboxed()` exists to make a

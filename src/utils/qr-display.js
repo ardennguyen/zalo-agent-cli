@@ -9,8 +9,10 @@
  * Display methods:
  * 1. iTerm2/Kitty/WezTerm inline image (renders PNG directly in terminal)
  * 2. Save PNG to config dir
- * 3. Base64 data URL (for IDE/agent preview)
- * 4. File path with platform-specific open hint
+ * 3. File path with platform-specific open hint (and the loopback page, from the login)
+ *
+ * The base64 data URL is in the --json event only (for agents). Printed to a terminal it was a screenful of text
+ * nobody could use.
  */
 
 import { resolve } from "path";
@@ -18,6 +20,7 @@ import { writeFileSync, mkdirSync } from "fs";
 import { platform } from "os";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { info } from "./output.js";
+import { noteQrLayer } from "./qr-http-server.js";
 
 /** Get platform-specific command to open a file. */
 function getOpenCommand() {
@@ -32,13 +35,16 @@ function getOpenCommand() {
 }
 
 /**
- * Display QR code from a zca-js login QR event.
- * Synchronous — safe to call from zca-js callback.
+ * Display QR code from a login QR event.
+ * Synchronous — safe to call from the login's callback.
  * In JSON mode (--json), outputs structured event for AI agents.
- * @param {object} event - zca-js QR callback event
+ * @param {object} event - QR login callback event
  */
 export function displayQR(event) {
     const imageB64 = event.data?.image || "";
+    // An account with a trusted device scans a second QR after the first: say which one this is.
+    const layer = event.data?.layer === 2 ? 2 : 1;
+    noteQrLayer(layer);
     const jsonMode = process.env.ZALO_JSON_MODE === "1";
     const qrPath = getQRPath();
 
@@ -50,7 +56,7 @@ export function displayQR(event) {
         } catch {}
     }
 
-    // Also fire-and-forget the zca-js built-in save
+    // Also fire-and-forget the login's own save
     if (event.actions?.saveToFile) {
         event.actions.saveToFile(qrPath).catch(() => {});
     }
@@ -61,6 +67,7 @@ export function displayQR(event) {
             console.log(
                 JSON.stringify({
                     event: "qr",
+                    layer,
                     image: imageB64,
                     file: qrPath,
                     dataUrl: `data:image/png;base64,${imageB64}`,
@@ -77,10 +84,9 @@ export function displayQR(event) {
         process.stdout.write(`\x1b]1337;File=inline=1;width=30;preserveAspectRatio=1:${b64ForTerm}\x07\n`);
 
         const openCmd = getOpenCommand();
+        if (layer === 2) info("This account asks to confirm this device: scan this new QR code once more.");
         info(`QR image saved: ${qrPath}`);
         info(`To open: ${openCmd} "${qrPath}"`);
-        info("Copy this URL and paste in any browser to view QR:");
-        console.log(`data:image/png;base64,${imageB64}`);
     }
 }
 

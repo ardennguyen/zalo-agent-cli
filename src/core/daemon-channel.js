@@ -2,7 +2,7 @@
  * A loopback channel to the running daemon, so only one WebSocket is ever open.
  *
  * Zalo permits ONE web session per account. Sending a non-inline attachment
- * needs a socket: zca-js's uploadAttachment() parks the send in
+ * needs a socket: the upload parks the send in
  * ctx.uploadCallbacks and only apis/listen.js can settle it, when the
  * upload-complete control frame arrives. So `msg send-file` opened its own
  * listener -- and if a `listen` or `mcp` daemon was already running, Zalo
@@ -88,8 +88,11 @@ const CHANNEL_FILE = "daemon-channel.json";
 const LOCK_FILE = "daemon.lock";
 const LOG_FILE = "daemon.log";
 
-/** Sync stages a daemon will run on its own socket, as `POST /sync/<stage>`. */
-const SYNC_ROUTE = /^\/sync\/(messages|reactions|history)$/;
+/**
+ * Sync stages a daemon will run on its own socket, as `POST /sync/<stage>`. `cloud` is REST, not socket: it runs here so
+ * that it never walks the cloud queue beside the daemon's own cmd 621 walk (both hold the stage lock).
+ */
+const SYNC_ROUTE = /^\/sync\/(messages|reactions|history|cloud)$/;
 
 /**
  * Keepalive cadence on a running stage.
@@ -273,7 +276,7 @@ function readJsonBody(req, reply) {
  * Serve the channel for as long as the daemon runs.
  *
  * @param {object} args
- * @param {() => object} args.getApi - resolves the daemon's CURRENT zca-js api.
+ * @param {() => object} args.getApi - resolves the daemon's CURRENT session.
  *   A function, not the object: on a duplicate-session close the daemon
  *   re-logs-in and builds a new api, and an upload parked in the old one's
  *   ctx.uploadCallbacks can never be settled -- the send would hang forever.
@@ -299,6 +302,18 @@ function readJsonBody(req, reply) {
  *   read-cursor callback invoked by `POST /mark-read` (`zalo-agent mcp mark-read`).
  * @param {() => object} [args.onStatus] - health snapshot returned by `POST /status`
  *   (`listen --status`, `mcp start --status`; see ./daemon-health.js).
+ * @param {(params: {msgId: string}) => Promise<object>} [args.onMediaLink] - a media link to one cached file, issued
+ *   by this daemon (`POST /media-link`, `msg media --deliver link`); the body lives in ./media-deliver.js.
+ * @param {(params: object) => object|Promise<object>} [args.onPolicy] - a policy change from `policy set|unset`
+ *   (`POST /policy`), applied in this daemon so the change counts at once; the body lives in ./policy-store.js.
+ * @param {(params: object) => object|Promise<object>} [args.onPurge] - a quota/retention purge from `db purge`
+ *   (`POST /purge`), run by this daemon, the account's one writer; the body lives in ./storage-quota.js.
+ * @param {(params: {action: "status"|"wake"|"park"|"resume"}) => object|Promise<object>} [args.onPresence] -
+ *   on-demand presence (`presence status|wake|park|resume`, the fleet controller's relay; `POST /presence`). Without
+ *   it the route answers 503 and the CLI says the socket stays connected.
+ * @param {(o: {kind: string, cls: "socket"|"wait"}) => Promise<{release: () => void}>} [args.presenceGate] - the
+ *   daemon's presence door (src/core/daemon-presence.js `admit`): an upload, a sync stage and a wait each hold the
+ *   socket for their duration; a refusal (`code` YIELDED, SIGNED_OUT or WARMING) is answered with that code
  * @returns {Promise<{port: number, stop: () => void}>}
  */
 export function startDaemonChannel({
@@ -311,8 +326,36 @@ export function startDaemonChannel({
     onWait = null,
     onMarkRead = null,
     onStatus = null,
+    onMediaLink = null,
+    onPolicy = null,
+    onPurge = null,
+    onPresence = null,
+    presenceGate = null,
 }) {
     const token = randomBytes(24).toString("hex");
+
+    /**
+     * Through the daemon's presence first (on-demand: this request holds the socket); null when refused, after the
+     * refusal was answered with `status`.
+     */
+    const admitted = async (cls, reply, status) => {
+        if (typeof presenceGate !== "function") return { release: () => {} };
+        try {
+            return await presenceGate({ kind: "channel", cls });
+        } catch (e) {
+            if (!e?.code) throw e;
+            reply(status, {
+                ok: false,
+                error: e.message,
+                code: e.code,
+                ...(e.state ? { state: e.state } : {}),
+                ...(e.retryAfterSec !== undefined ? { retryAfterSec: e.retryAfterSec } : {}),
+            });
+            return null;
+        }
+    };
+    // The stage that is running, and the controller its runner was given: `POST /sync/cancel` aborts it.
+    let activeStage = null;
 
     // One stage at a time on this socket. Two stages sharing it is measured to
     // break the restore: running the reaction drain beside it lost the socket
@@ -330,19 +373,32 @@ export function startDaemonChannel({
         const paths = Array.isArray(body.paths) ? body.paths.map(String) : [];
         if (!paths.length || !body.threadId) return reply(400, { error: "paths and threadId are required" });
 
+        const ticket = await admitted("socket", reply, 200);
+        if (!ticket) return;
         try {
-            onLog?.(`upload on behalf of a sender: ${paths.length} file(s)`);
+            // A video send (`msg send-video` with a local file) names its options under `video`; the reply says
+            // `video: true`, so a sender can tell this daemon from one that would send the file as a file.
+            const video = body.video && typeof body.video === "object" ? body.video : null;
+            onLog?.(`upload on behalf of a sender: ${paths.length} file(s)${video ? " as a video" : ""}`);
             // Resolved per request, so a reconnect since startup does not
             // park the upload in a dead api's callback table.
-            const result = await getApi().sendMessage(
-                { msg: body.caption || "", attachments: paths },
-                String(body.threadId),
-                Number(body.type) || 0,
-            );
-            reply(200, { ok: true, result });
+            const result = video
+                ? await getApi().sendVideoFile(
+                      { ...video, file: paths[0], msg: body.caption || "" },
+                      String(body.threadId),
+                      Number(body.type) || 0,
+                  )
+                : await getApi().sendMessage(
+                      { msg: body.caption || "", attachments: paths },
+                      String(body.threadId),
+                      Number(body.type) || 0,
+                  );
+            reply(200, { ok: true, result, ...(video ? { video: true } : {}) });
         } catch (e) {
             // The sender decides what to do about it; the daemon stays up.
             reply(200, { ok: false, error: e?.message || String(e) });
+        } finally {
+            ticket.release();
         }
     };
 
@@ -354,8 +410,11 @@ export function startDaemonChannel({
         if (typeof run !== "function") {
             return reply(503, { error: `this daemon does not run the ${stage} stage` });
         }
+        const ticket = await admitted("socket", reply, 503);
+        if (!ticket) return;
         const release = lock.tryAcquire(stage);
         if (!release) {
+            ticket.release();
             const busy = lock.current() || {};
             return reply(409, {
                 error: `a ${busy.stage} sync is already running on this daemon`,
@@ -385,6 +444,11 @@ export function startDaemonChannel({
         // writing real messages into zalo.db and still holds the socket, so
         // stopping half way would lose work and free the guard while the
         // socket is busy. We only stop writing to a response nobody reads.
+        // A client that ASKS (`POST /sync/cancel`, from its Ctrl+C) does abort it:
+        // the runner puts its own house in order (a restore keeps what arrived and
+        // releases its sessions on the phone) and ends with a `cancelled` result.
+        const controller = new AbortController();
+        activeStage = { stage, controller };
         res.on("close", () => {
             gone = true;
             clearInterval(ping);
@@ -393,7 +457,7 @@ export function startDaemonChannel({
         onLog?.(`running the ${stage} sync stage on this daemon's socket`);
         try {
             const params = body.params && typeof body.params === "object" ? body.params : {};
-            const result = await run(params, (event) => write({ t: "event", event }));
+            const result = await run(params, (event) => write({ t: "event", event }), controller.signal);
             write({ t: "done", result });
             onLog?.(`the ${stage} sync stage finished`);
         } catch (e) {
@@ -401,13 +465,25 @@ export function startDaemonChannel({
             onLog?.(`the ${stage} sync stage failed: ${e?.message || String(e)}`);
         } finally {
             clearInterval(ping);
+            if (activeStage?.controller === controller) activeStage = null;
             release();
+            ticket.release();
             try {
                 res.end();
             } catch {
                 /* the client already went away */
             }
         }
+    };
+
+    /** Ask the running stage to stop the way a Ctrl+C at the daemon's own terminal would (`/sync/cancel`). */
+    const serveCancel = (body, reply) => {
+        if (!tokenMatches(body.token, token)) return reply(403, { error: "bad token" });
+        const running = activeStage;
+        if (!running) return reply(200, { ok: true, stage: null });
+        onLog?.(`cancel requested for the ${running.stage} sync stage`);
+        running.controller.abort();
+        return reply(200, { ok: true, stage: running.stage });
     };
 
     /** Trigger a graceful shutdown over the loopback channel (`--stop`). */
@@ -435,6 +511,8 @@ export function startDaemonChannel({
                 error: "this daemon does not have an MCP message buffer (run `zalo-agent mcp start` instead of `listen`)",
             });
         }
+        const ticket = await admitted("wait", reply, 200);
+        if (!ticket) return;
         const ac = new AbortController();
         res.on("close", () => ac.abort());
         try {
@@ -442,6 +520,8 @@ export function startDaemonChannel({
             if (!res.writableEnded) reply(200, { ok: true, ...result });
         } catch (e) {
             if (!res.writableEnded) reply(200, { ok: false, error: e?.message || String(e) });
+        } finally {
+            ticket.release();
         }
     };
 
@@ -472,6 +552,36 @@ export function startDaemonChannel({
         }
     };
 
+    /** A media link from this daemon, which serves it while it runs (`msg media --deliver link`). */
+    const serveMediaLink = async (body, reply) => {
+        if (!tokenMatches(body.token, token)) return reply(403, { error: "bad token" });
+        if (typeof onMediaLink !== "function") return reply(503, { error: "this daemon does not serve media links" });
+        if (!body.msgId) return reply(400, { error: "msgId is required" });
+        try {
+            reply(200, { ok: true, ...(await onMediaLink({ msgId: String(body.msgId) })) });
+        } catch (e) {
+            reply(200, { ok: false, error: e?.message || String(e) });
+        }
+    };
+
+    /** A request answered by one daemon-side function (`/policy`, `/purge`): its result, or `{ok:false, error}`. */
+    const serveCall = async (fn, name, body, reply) => {
+        if (!tokenMatches(body.token, token)) return reply(403, { error: "bad token" });
+        if (typeof fn !== "function") return reply(503, { error: `this daemon does not take ${name} requests` });
+        try {
+            const params = { ...body };
+            delete params.token;
+            reply(200, { ok: true, ...(await fn(params)) });
+        } catch (e) {
+            reply(200, {
+                ok: false,
+                error: e?.message || String(e),
+                ...(e?.code ? { code: e.code } : {}),
+                ...(e?.details || {}),
+            });
+        }
+    };
+
     const server = http.createServer(async (req, res) => {
         const reply = (code, body) => {
             res.writeHead(code, { "content-type": "application/json" });
@@ -483,9 +593,14 @@ export function startDaemonChannel({
         if (
             req.url !== "/send-attachments" &&
             req.url !== "/stop" &&
+            req.url !== "/sync/cancel" &&
             req.url !== "/wait" &&
             req.url !== "/mark-read" &&
             req.url !== "/status" &&
+            req.url !== "/media-link" &&
+            req.url !== "/policy" &&
+            req.url !== "/purge" &&
+            req.url !== "/presence" &&
             !stage
         ) {
             return reply(404, { error: "not found" });
@@ -494,9 +609,14 @@ export function startDaemonChannel({
         const body = await readJsonBody(req, reply);
         if (!body) return; // already answered, or the request went away
         if (req.url === "/stop") return serveStop(body, reply);
+        if (req.url === "/sync/cancel") return serveCancel(body, reply);
         if (req.url === "/wait") return serveWait(body, res, reply);
         if (req.url === "/mark-read") return serveMarkRead(body, reply);
         if (req.url === "/status") return serveStatus(body, reply);
+        if (req.url === "/media-link") return serveMediaLink(body, reply);
+        if (req.url === "/policy") return serveCall(onPolicy, "policy", body, reply);
+        if (req.url === "/purge") return serveCall(onPurge, "purge", body, reply);
+        if (req.url === "/presence") return serveCall(onPresence, "presence", body, reply);
         return stage ? serveStage(stage, body, res, reply) : serveAttachments(body, reply);
     });
 
@@ -547,8 +667,10 @@ export function startDaemonChannel({
  * Ask the running daemon to perform an attachment send.
  *
  * @param {string} accountDir
- * @param {{paths: string[], threadId: string, type: number, caption?: string, timeoutMs?: number}} req
- * @returns {Promise<{ok: boolean, result?: object, error?: string}|null>} null when no daemon is running
+ * @param {{paths: string[], threadId: string, type: number, caption?: string, timeoutMs?: number,
+ *   video?: object}} req - `video`: send `paths[0]` as a video message with these options (`sendVideoFile`)
+ * @returns {Promise<{ok: boolean, result?: object, error?: string, video?: boolean}|null>} null when no daemon is
+ *   running; `video` true when the daemon sent a video as a video
  */
 export function sendViaDaemon(accountDir, req) {
     const chan = getDaemonChannel(accountDir);
@@ -560,6 +682,7 @@ export function sendViaDaemon(accountDir, req) {
         threadId: String(req.threadId),
         type: Number(req.type) || 0,
         caption: req.caption || "",
+        ...(req.video ? { video: req.video } : {}),
     });
 
     return new Promise((resolve) => {
@@ -599,6 +722,51 @@ export function sendViaDaemon(accountDir, req) {
 }
 
 /**
+ * Ask the running daemon to stop the sync stage it is running (the CLI's Ctrl+C while a stage runs on a daemon's
+ * socket). The stage's own `syncViaDaemon` stream then ends with the runner's `cancelled` result.
+ *
+ * @param {string} accountDir
+ * @param {{timeoutMs?: number}} [opts]
+ * @returns {Promise<{ok: boolean, stage?: string|null, error?: string}|null>} null when no daemon is running
+ */
+export function cancelViaDaemon(accountDir, { timeoutMs = 10_000 } = {}) {
+    const chan = getDaemonChannel(accountDir);
+    if (!chan) return Promise.resolve(null);
+    const payload = JSON.stringify({ token: chan.token });
+    return new Promise((resolve) => {
+        const r = http.request(
+            {
+                host: "127.0.0.1",
+                port: chan.port,
+                path: "/sync/cancel",
+                method: "POST",
+                headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload) },
+                timeout: timeoutMs,
+                agent: false,
+            },
+            (res) => {
+                let raw = "";
+                res.setEncoding("utf8");
+                res.on("data", (c) => (raw += c));
+                res.on("end", () => {
+                    try {
+                        resolve(JSON.parse(raw));
+                    } catch {
+                        resolve(null);
+                    }
+                });
+            },
+        );
+        r.on("timeout", () => {
+            r.destroy();
+            resolve(null);
+        });
+        r.on("error", () => resolve(null));
+        r.end(payload);
+    });
+}
+
+/**
  * Ask the running daemon to run one sync stage on its socket.
  *
  * The null/non-null split is the opposite of what sendViaDaemon needs, and the
@@ -616,7 +784,7 @@ export function sendViaDaemon(accountDir, req) {
  *
  * @param {string} accountDir
  * @param {object} req
- * @param {"messages"|"reactions"} req.stage
+ * @param {"messages"|"reactions"|"history"|"cloud"} req.stage
  * @param {object} [req.params] - stage options, passed through to the runner
  * @param {(event: object) => void} [req.onEvent] - one call per progress callback
  * @param {number} [req.idleTimeoutMs=90000] - give up after this long with no
@@ -693,6 +861,9 @@ export function syncViaDaemon(accountDir, { stage, params = {}, onEvent, idleTim
                             error: body.error || `the daemon refused the request (HTTP ${res.statusCode})`,
                             busyStage: body.stage,
                             busySince: body.startedAt,
+                            // On-demand presence: YIELDED, SIGNED_OUT or WARMING (retry after retryAfterSec).
+                            ...(body.code ? { code: body.code } : {}),
+                            ...(body.retryAfterSec !== undefined ? { retryAfterSec: body.retryAfterSec } : {}),
                         });
                     });
                     return;
@@ -1357,6 +1528,116 @@ export function statusViaDaemon(accountDir) {
                             ? { ok: true, health: body.health }
                             : { ok: false, error: body.error || `HTTP ${res.statusCode}` },
                     );
+                });
+            },
+        );
+        r.on("timeout", () => {
+            r.destroy();
+            resolve({ ok: false, error: "timeout waiting for the daemon" });
+        });
+        r.on("error", (e) => resolve({ ok: false, error: e?.message || String(e) }));
+        r.end(payload);
+    });
+}
+
+/**
+ * Ask the running daemon for a media link to one cached file (`msg media --deliver link`): the daemon serves the
+ * link while it runs, so a CLI process that exits can still hand one out.
+ *
+ * @param {string} accountDir
+ * @param {{msgId: string, timeoutMs?: number}} req
+ * @returns {Promise<{ok: boolean, url?: string, expiresAt?: number, auth?: string, mimeType?: string, size?: number,
+ *   error?: string}|null>} null when no daemon channel is published
+ */
+export function mediaLinkViaDaemon(accountDir, { msgId, timeoutMs = 15_000 }) {
+    const chan = getDaemonChannel(accountDir);
+    if (!chan) return Promise.resolve(null);
+    const payload = JSON.stringify({ token: chan.token, msgId });
+    return new Promise((resolve) => {
+        const r = http.request(
+            {
+                host: "127.0.0.1",
+                port: chan.port,
+                path: "/media-link",
+                method: "POST",
+                headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload) },
+                timeout: timeoutMs,
+                agent: false,
+            },
+            (res) => {
+                let raw = "";
+                res.setEncoding("utf8");
+                res.on("data", (c) => (raw += c));
+                res.on("end", () => {
+                    let body = {};
+                    try {
+                        body = JSON.parse(raw);
+                    } catch {
+                        /* non-JSON response */
+                    }
+                    if (res.statusCode === 200 && body.ok) {
+                        const { url, expiresAt, auth, mimeType, size } = body;
+                        return resolve({ ok: true, url, expiresAt, auth, mimeType, size });
+                    }
+                    // A daemon from before this request answers 404: say what to do rather than "not found".
+                    const error =
+                        res.statusCode === 404
+                            ? "the running daemon is too old to hand out media links; restart it"
+                            : body.error || `HTTP ${res.statusCode}`;
+                    resolve({ ok: false, error });
+                });
+            },
+        );
+        r.on("timeout", () => {
+            r.destroy();
+            resolve({ ok: false, error: "timeout waiting for the daemon" });
+        });
+        r.on("error", (e) => resolve({ ok: false, error: e?.message || String(e) }));
+        r.end(payload);
+    });
+}
+
+/**
+ * Send one request to the running daemon's channel and return its JSON answer (`/policy`, `/purge`).
+ *
+ * @param {string} accountDir
+ * @param {string} path - e.g. "/policy"
+ * @param {object} params
+ * @param {{timeoutMs?: number}} [opts]
+ * @returns {Promise<{ok: boolean, error?: string}&object|null>} null when no daemon channel is published
+ */
+export function callViaDaemon(accountDir, path, params, { timeoutMs = 30_000 } = {}) {
+    const chan = getDaemonChannel(accountDir);
+    if (!chan) return Promise.resolve(null);
+    const payload = JSON.stringify({ ...params, token: chan.token });
+    return new Promise((resolve) => {
+        const r = http.request(
+            {
+                host: "127.0.0.1",
+                port: chan.port,
+                path,
+                method: "POST",
+                headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload) },
+                timeout: timeoutMs,
+                agent: false,
+            },
+            (res) => {
+                let raw = "";
+                res.setEncoding("utf8");
+                res.on("data", (c) => (raw += c));
+                res.on("end", () => {
+                    let body = {};
+                    try {
+                        body = JSON.parse(raw);
+                    } catch {
+                        /* non-JSON response */
+                    }
+                    if (res.statusCode === 200) return resolve(body.ok ? body : { ...body, ok: false });
+                    const error =
+                        res.statusCode === 404
+                            ? `the running daemon is too old to take ${path} requests; restart it`
+                            : body.error || `HTTP ${res.statusCode}`;
+                    resolve({ ok: false, error });
                 });
             },
         );

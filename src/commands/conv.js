@@ -3,29 +3,45 @@
  * mute, unmute, read, unread, delete.
  */
 
-import { MuteAction } from "zca-js";
+import { MUTE_ACTION } from "../zalo/enums.js";
 import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output, warning } from "../utils/output.js";
 import { getActive } from "../core/accounts.js";
 import { getAccountDbPath } from "../core/credentials.js";
-import { initDb, getMessages, getReadStates, markThreadGone, getOrphanThreads, forgetThread } from "../core/db.js";
+import { initDb, getMessages, getReadStates, markThreadGone, getOrphanThreads, getThreadNames } from "../core/db.js";
 import { recentConversations } from "../core/recent-conversations.js";
 import { describeReadState, readStateLabel } from "../core/read-state.js";
-import { pruneDownloadedMedia } from "../core/sync-v2/media.js";
-import { markConversationRead, zaloPost } from "../core/receipts.js";
+import { pinnedConversations } from "../core/sync-v2/conv-state.js";
+import { markConversationRead, unreadMarkAnchor } from "../core/receipts.js";
+import {
+    AUTO_DELETE_TTLS,
+    SEEN_ANCHOR_SCAN_DEPTH,
+    forgetConversation,
+    newestMessageAnchor as newestAnchorFromSources,
+    setConversationArchived,
+    setConversationPinned,
+} from "../core/conversation-actions.js";
 import { readUserAliases, currentUserName } from "../core/current-user-names.js";
+import { guardSubcommand } from "../core/confirm-guard.js";
+import { setBlockSharing } from "../core/block-sharing.js";
+import { parseOnOff } from "../utils/cli-args.js";
+import { parseIntAtLeast } from "../utils/parse-options.js";
+import { withoutHidden } from "../core/hidden-chats.js";
+import { changeHiddenPin, readHidden, resetHiddenPinAndDelete } from "../core/hidden-chat-actions.js";
+import {
+    addHiddenOptions,
+    exitPinRequired,
+    hiddenAccess,
+    hiddenSetForCli,
+    readPin,
+    readPinLines,
+    unlockOrExit,
+} from "../utils/hidden-access.js";
 
 /**
- * Find the newest message in a thread and return the anchor triple
- * `deleteChat` needs.
- *
- * Groups expose a REST history endpoint; DMs do not, so the caller has to
- * supply the ids by hand there. Both paths are best-effort: Zalo's history
- * APIs lag live traffic, so the "newest" message found may not be the true
- * newest (see agent/work/transfer-sync-v2/NOTES.md § Ordering).
- *
- * Opens the account's zalo.db whichever source answers, because the caller
- * writes to it next.
+ * The anchor `conv delete` deletes backwards from (src/core/conversation-actions.js), with this account's cache
+ * opened first: the group store may not answer, and `conv delete` flags the thread in the cache (markThreadGone)
+ * straight after.
  *
  * @param {object} api
  * @param {string} threadId
@@ -33,173 +49,37 @@ import { readUserAliases, currentUserName } from "../core/current-user-names.js"
  * @returns {Promise<{ownerId: string, cliMsgId: string, globalMsgId: string}|null>}
  */
 async function newestMessageAnchor(api, threadId, type) {
-    // Open the cache before either source runs. Source 2 reads it, and
-    // `conv delete` flags the thread in it (markThreadGone) straight after --
-    // which only ever worked because source 1 always failed and source 2
-    // opened the cache on the way.
-    let cacheOpen = false;
     try {
         const activeAcc = getActive();
-        if (activeAcc) {
-            initDb(getAccountDbPath(activeAcc.ownId));
-            cacheOpen = true;
-        }
+        if (activeAcc) initDb(getAccountDbPath(activeAcc.ownId));
     } catch {
-        // No cache on this machine; source 1 can still answer.
+        // No cache on this machine; the group store can still answer.
     }
-
-    // Source 1: Zalo's cloud-message store, the group history Zalo Web reads
-    // (src/core/group-history.js). zca-js's getGroupChatHistory asked
-    // /api/group/history, which Zalo answers with 404 -- and this used to read
-    // its answer as an array, a shape it never had.
-    if (type === 1) {
-        try {
-            // Loaded on demand: only the group path needs it.
-            const { getGroupHistory } = await import("../core/group-history.js");
-            const history = await getGroupHistory(api, threadId, 1);
-            const last = history.groupMsgs[0]?.data;
-            const anchor = toAnchor(last?.uidFrom ?? last?.ownerId, last?.cliMsgId, last?.msgId ?? last?.globalMsgId);
-            if (anchor) return anchor;
-        } catch {
-            // Store unreachable, or no group_cloud_message host — fall through to the local cache.
-        }
-    }
-
-    // Source 2: the local SQLite cache. Anything `listen`, `sync` or a prior
-    // `msg history` wrote is here, and rows carry the raw payload, which is
-    // where cliMsgId lives.
-    //
-    // Scan BACKWARDS rather than trusting the newest row, because not every
-    // writer stores a usable payload. `listen` and the `msg history` socket
-    // backfill persist the full frame (cliMsgId, uidFrom, …); the sync-v2
-    // restore persists a minimal shape with no cliMsgId at all. A thread
-    // whose newest rows came from sync-v2 therefore has a newest row that
-    // cannot anchor anything, while older rows can — measured on a live
-    // account as 10 usable rows out of 294 for a group, and 0 out of 43 for
-    // a DM that had never been history-fetched. Reading only row 1 turned
-    // that into "Could not determine the last message", and made the group
-    // path succeed or fail on the luck of which writer touched it last.
-    //
-    // Deleting backwards from a slightly older anchor leaves the newest few
-    // messages in place, which is the same staleness `msg history` already
-    // has (see agent/work/transfer-sync-v2/NOTES.md § Ordering) and is far
-    // better than refusing outright.
-    if (!cacheOpen) return null;
-    try {
-        for (const row of getMessages(threadId, ANCHOR_SCAN_DEPTH)) {
-            let raw = {};
-            try {
-                raw = JSON.parse(row.raw_data || "{}");
-            } catch {
-                continue; // unparseable payload — try an older row
-            }
-            const data = raw.data ?? raw;
-            const anchor = toAnchor(row.senderId ?? data.uidFrom, data.cliMsgId, row.msgId ?? data.msgId);
-            if (anchor) return anchor;
-        }
-        return null;
-    } catch {
-        return null;
-    }
+    return newestAnchorFromSources(api, threadId, type);
 }
 
 /**
- * How many cached rows to inspect before giving up on finding an anchor.
- * Deep enough to see past a run of sync-v2 rows, shallow enough that the
- * lookup stays a single cheap query.
+ * The newest cached message of a thread, as `addUnreadMark` names it, or null when the cache has none (or there is
+ * no cache on this machine). Never throws: the mark is still sent without it.
+ *
+ * @param {string} threadId
+ * @returns {{cliMsgId: string, fromUid: string}|null}
  */
-/** How far back to look for an incoming message to anchor a seen event on. */
-const SEEN_ANCHOR_SCAN_DEPTH = 50;
-
-const ANCHOR_SCAN_DEPTH = 200;
-
-/** Build the deleteChat anchor triple, or null when any part is missing. */
-function toAnchor(ownerId, cliMsgId, globalMsgId) {
-    if (!ownerId || !cliMsgId || !globalMsgId) return null;
-    return { ownerId: String(ownerId), cliMsgId: String(cliMsgId), globalMsgId: String(globalMsgId) };
+function newestMessageForUnreadMark(threadId) {
+    try {
+        const activeAcc = getActive();
+        if (!activeAcc) return null;
+        initDb(getAccountDbPath(activeAcc.ownId));
+        return unreadMarkAnchor(getMessages(String(threadId), SEEN_ANCHOR_SCAN_DEPTH), { ownId: activeAcc.ownId });
+    } catch {
+        return null;
+    }
 }
 
 /** `-t` as 0 (user) or 1 (group), or null for anything else. */
 function threadTypeOf(value) {
     const t = Number(value);
     return t === 0 || t === 1 ? t : null;
-}
-
-/**
- * Pin or unpin one conversation, exactly as Zalo Web does.
- *
- * `POST {conversation}/api/pinconvers/updatev2` with
- * `{actionType: 1 pin | 2 unpin, conversations: ["g<id>" | "u<id>"], tab: 0}`
- * -- captured for a group and a DM, both directions. zca-js's
- * setPinnedConversations sends the same minus `tab`, so it is not used.
- *
- * @param {object} api - logged-in zca-js api
- * @param {{threadId: string, type: 0|1, pinned: boolean}} opts
- * @returns {Promise<object>}
- */
-async function setConversationPinned(api, { threadId, type, pinned }) {
-    const conversation = `${type === 1 ? "g" : "u"}${threadId}`;
-    const response = await zaloPost(api, {
-        url: `${api.zpwServiceMap.conversation[0]}/api/pinconvers/updatev2`,
-        params: () => ({ actionType: pinned ? 1 : 2, conversations: [conversation], tab: 0 }),
-    });
-    return { threadId: String(threadId), type, pinned, conversation, response };
-}
-
-/**
- * Move one conversation to Zalo's "Other" tab (archive) or back to Focused.
- *
- * `POST {label}/api/archivedchat/update` with
- * `{ids: [{id, type: 1 group | 0 user}], version, actionType: 0 to Other | 1 back, imei}`.
- *
- * `version` is the one decision here. zca-js's updateArchivedChatList sends
- * `Date.now()`. Zalo Web sends the SERVER's version: each captured update
- * carried exactly the `version` the previous response returned, and the first
- * carried the one the web had stored from the server -- 25 days older than the
- * clock. Its archived-chat manager (module FEfs in the web API bundle) keeps
- * that value, refreshes it from `archivedchat/list` at start-up and from every
- * update response, and refetches the list when an answer flags it stale. A CLI
- * run is a fresh client every time, so it does what the web does at start-up:
- * read the list (zca-js's getArchivedChatList, the same GET a fresh web
- * session makes) and send the version found there. With no version, nothing
- * is sent.
- *
- * @param {object} api - logged-in zca-js api
- * @param {{threadId: string, type: 0|1, archived: boolean}} opts
- * @returns {Promise<object>}
- */
-async function setConversationArchived(api, { threadId, type, archived }) {
-    let listed;
-    try {
-        listed = await api.getArchivedChatList();
-    } catch (e) {
-        throw new Error(`Could not read Zalo's archived-chat version, so nothing was sent: ${e.message}`);
-    }
-    const v = listed?.version;
-    const version = typeof v === "number" ? v : /^\d+$/.test(String(v ?? "")) ? Number(v) : NaN;
-    if (!Number.isFinite(version)) {
-        throw new Error(
-            `Zalo's archived-chat list carried no usable version (${JSON.stringify(v)}), so nothing was sent.`,
-        );
-    }
-    const response = await zaloPost(api, {
-        url: `${api.zpwServiceMap.label[0]}/api/archivedchat/update`,
-        params: (ctx) => ({
-            ids: [{ id: String(threadId), type: type === 1 ? 1 : 0 }],
-            version,
-            actionType: archived ? 0 : 1,
-            imei: ctx.imei,
-        }),
-    });
-    return {
-        threadId: String(threadId),
-        type,
-        archived,
-        previousVersion: version,
-        version: response?.version ?? null,
-        needResync: Boolean(response?.needResync),
-        response,
-    };
 }
 
 /**
@@ -217,18 +97,33 @@ export function registerConvCommands(program, deps = {}) {
 
     conv.command("recent")
         .description("List recent conversations with thread_id (friends + groups)")
-        .option("-n, --limit <n>", "Max results per type", "20")
+        .option("-n, --limit <n>", "Max results per type (default: all)", parseIntAtLeast(1))
         .option("--friends-only", "Show only friend conversations")
         .option("--groups-only", "Show only group conversations")
+        .option(
+            "--include-hidden",
+            "Show hidden conversations too: asks for the hidden-chat PIN (never pass it on the command line)",
+        )
+        .option("--pin-stdin", "Read the hidden-chat PIN from standard input instead of a prompt")
         .action(async (opts) => {
             const jsonMode = program.opts().json;
-            const limit = Number(opts.limit);
+            // No -n means every conversation; -n caps each type.
+            const limit = opts.limit ?? null;
+            const cap = (list) => (limit ? list.slice(0, limit) : list);
 
             const activeAcc = getActive();
             if (!activeAcc) {
                 error("No active account. Please login first.");
                 process.exit(1);
             }
+            // Hidden chats are left out, as Zalo lists them, unless --include-hidden and the PIN.
+            let liveApi = null;
+            try {
+                liveApi = getApi();
+            } catch {
+                /* cache only: the hidden-id mirror still applies */
+            }
+            const hidden = await hiddenAccess(opts, { ownId: activeAcc.ownId, api: liveApi, json: jsonMode });
 
             try {
                 initDb(getAccountDbPath(activeAcc.ownId));
@@ -244,6 +139,7 @@ export function registerConvCommands(program, deps = {}) {
                 const localThreads = recentConversations(
                     limit,
                     opts.friendsOnly ? "dm" : opts.groupsOnly ? "group" : "all",
+                    { excludeThreadIds: hidden.ids },
                 );
 
                 if (localThreads && localThreads.length > 0) {
@@ -262,6 +158,8 @@ export function registerConvCommands(program, deps = {}) {
                         typeFlag: t.type === "group" ? 1 : 0,
                         lastActive: t.lastUpdate ? new Date(t.lastUpdate).toLocaleString() : "?",
                         readState: describeReadState(reads.get(String(t.threadId))),
+                        // A group this account left or lost, kept by groups.onLeave "keep" (src/core/group-exit.js).
+                        ...(t.gone && { gone: true, leftAt: t.leftAt, goneReason: t.goneReason }),
                     }));
 
                     output(conversations, jsonMode, () => {
@@ -272,7 +170,8 @@ export function registerConvCommands(program, deps = {}) {
                         for (const c of conversations) {
                             const id = c.threadId.padEnd(22);
                             const read = readStateLabel(c.readState).padEnd(18);
-                            console.log(`  ${id}  ${c.type.padEnd(12)}  ${read}  ${c.name}`);
+                            const gone = c.gone ? `  [gone: ${c.goneReason}]` : "";
+                            console.log(`  ${id}  ${c.type.padEnd(12)}  ${read}  ${c.name}${gone}`);
                         }
                         console.log();
                         info("Use thread_id with messaging commands:");
@@ -295,10 +194,9 @@ export function registerConvCommands(program, deps = {}) {
                 if (!opts.groupsOnly) {
                     const friends = await api.getAllFriends();
                     const list = Array.isArray(friends) ? friends : [];
-                    const sorted = list
-                        .filter((f) => f.lastActionTime > 0)
-                        .sort((a, b) => b.lastActionTime - a.lastActionTime)
-                        .slice(0, limit);
+                    const sorted = cap(
+                        list.filter((f) => f.lastActionTime > 0).sort((a, b) => b.lastActionTime - a.lastActionTime),
+                    );
                     const aliases = sorted.length > 0 ? await readUserAliases(api) : new Map();
                     for (const f of sorted) {
                         const resolved = currentUserName(f.userId, f, aliases);
@@ -325,7 +223,7 @@ export function registerConvCommands(program, deps = {}) {
                     if (groupIds.length > 0) {
                         const batchSize = 50;
                         const batches = [];
-                        const limitedIds = groupIds.slice(0, limit); // cap to limit BEFORE batching
+                        const limitedIds = cap(groupIds); // cap to limit BEFORE batching
                         for (let i = 0; i < limitedIds.length; i += batchSize) {
                             batches.push(limitedIds.slice(i, i + batchSize));
                         }
@@ -349,6 +247,9 @@ export function registerConvCommands(program, deps = {}) {
                     }
                 }
 
+                const shown = withoutHidden(conversations, hidden.set, hidden.mode);
+                conversations.length = 0;
+                conversations.push(...shown);
                 output(conversations, program.opts().json, () => {
                     if (conversations.length === 0) {
                         error("No conversations found.");
@@ -377,8 +278,18 @@ export function registerConvCommands(program, deps = {}) {
         .description("List pinned conversations")
         .action(async () => {
             try {
-                const result = await getApi().getPinConversations();
-                output(result, program.opts().json);
+                const result = await zaloApi().getPinConversations();
+                // Zalo's `m1` entry is not a conversation; Zalo skips it (spec-actions 7.3), as the pin sync does.
+                // A hidden chat is left out, as Zalo's list leaves it out (`u<id>`/`g<id>` entries).
+                const active = getActive();
+                const hidden = active ? await hiddenSetForCli(active.ownId, zaloApi(), { preferMirror: true }) : null;
+                const conversations = withoutHidden(
+                    pinnedConversations(result?.conversations),
+                    hidden,
+                    "exclude",
+                    (c) => c,
+                );
+                output({ ...result, conversations }, program.opts().json);
             } catch (e) {
                 error(e.message);
             }
@@ -411,16 +322,36 @@ export function registerConvCommands(program, deps = {}) {
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .action((threadId, opts) => pinAction(threadId, opts, false));
 
-    conv.command("archived")
-        .description("List archived conversations")
-        .action(async () => {
-            try {
-                const result = await getApi().getArchivedChatList();
-                output(result, program.opts().json);
-            } catch (e) {
-                error(e.message);
-            }
-        });
+    /**
+     * What `conv archived` / `conv muted` show of hidden chats: left out, unless --include-hidden and the PIN.
+     *
+     * @param {object} opts - the command's options
+     * @returns {Promise<(list: object[], idOf: (item: object) => unknown) => object[]>}
+     */
+    async function hiddenFilter(opts) {
+        const active = getActive();
+        if (!active) return (list) => list;
+        const hidden = await hiddenAccess(opts, { ownId: active.ownId, api: zaloApi(), json: program.opts().json });
+        return (list, idOf) => withoutHidden(list, hidden.set, hidden.mode, idOf);
+    }
+
+    addHiddenOptions(
+        conv
+            .command("archived")
+            .description("List archived conversations (hidden chats are left out unless --include-hidden)"),
+    ).action(async (opts) => {
+        try {
+            const result = await zaloApi().getArchivedChatList();
+            // Zalo's answer: `{items: [{id, type}], version}`.
+            const shown = await hiddenFilter(opts);
+            output(
+                Array.isArray(result?.items) ? { ...result, items: shown(result.items, (i) => i?.id) } : result,
+                program.opts().json,
+            );
+        } catch (e) {
+            error(e.message);
+        }
+    });
 
     /** `conv archive` / `conv unarchive`. */
     async function archiveAction(threadId, opts, archived) {
@@ -465,7 +396,7 @@ export function registerConvCommands(program, deps = {}) {
         .option("-d, --duration <secs>", "Duration in seconds (-1 = forever)", "-1")
         .action(async (threadId, opts) => {
             try {
-                // zca-js is setMute(params, threadID, type) -- the options
+                // The session's signature is setMute(params, threadID, type) -- the options
                 // object comes FIRST. This used to pass (threadId, type,
                 // duration) positionally, so `params` got the thread id
                 // string, `threadID` got 0 or 1, and the request went out
@@ -473,7 +404,7 @@ export function registerConvCommands(program, deps = {}) {
                 // time: `conv mute` had never once worked. Same defect, and
                 // the same shape, as the `msg delete` arity bug.
                 const result = await getApi().setMute(
-                    { duration: Number(opts.duration), action: MuteAction.MUTE },
+                    { duration: Number(opts.duration), action: MUTE_ACTION.MUTE },
                     threadId,
                     Number(opts.type),
                 );
@@ -489,9 +420,9 @@ export function registerConvCommands(program, deps = {}) {
         .action(async (threadId, opts) => {
             try {
                 // Same arity bug as `mute` above. Unmute is an ACTION, not a
-                // duration of 0 -- zca-js derives the duration itself once
+                // duration of 0 -- the session derives the duration itself once
                 // action is UNMUTE.
-                const result = await getApi().setMute({ action: MuteAction.UNMUTE }, threadId, Number(opts.type));
+                const result = await getApi().setMute({ action: MUTE_ACTION.UNMUTE }, threadId, Number(opts.type));
                 output(result, program.opts().json, () => success("Conversation unmuted"));
             } catch (e) {
                 error(e.message);
@@ -500,19 +431,19 @@ export function registerConvCommands(program, deps = {}) {
 
     conv.command("read <threadId>")
         .description(
-            "Mark a conversation as read, both ways Zalo Web does: clear its manual unread mark (undoing " +
-                "`conv unread`), and send a seen receipt for the newest incoming message in the local cache — " +
-                "Zalo marks a MESSAGE seen, not a thread.",
+            'Mark a conversation as read, as Zalo\'s "Mark as read" does: a seen receipt for every cached ' +
+                "incoming message newer than your read position (up to 50), a reaction-seen receipt when a reaction " +
+                'is unread, and removing the manual unread mark when it is set. The sender sees "Seen" unless your ' +
+                "seen status is hidden (profile set seen-status 0)",
         )
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
+        .option(
+            "--mark-only",
+            "Only remove the manual unread mark (the red dot): Zalo's real unread count stays and nothing is marked seen",
+        )
         .action(async (threadId, opts) => {
-            // History, so it is not repeated: this used to hand zca-js's
-            // sendSeenEvent the bare threadId -- the request reached Zalo with no
-            // thread id in it -- and, once that was fixed, still went out with
-            // st/at/cmd/ts all -1 (zca-js cannot send real values), no imei on a
-            // DM, and no removeUnreadMark at all, so it could not undo
-            // `conv unread`. Both requests are now built in src/core/receipts.js
-            // to match a capture of the real Zalo Web client.
+            // Both surfaces call src/core/receipts.js markConversationRead and answer its JSON (zalo_conversation
+            // `read`). The requests are built to match what Zalo sends.
             //
             // process.exit stays outside the try blocks: inside one, a throwing
             // exit would be caught and reported as an API error.
@@ -530,20 +461,27 @@ export function registerConvCommands(program, deps = {}) {
             let result;
             try {
                 initDb(getAccountDbPath(activeAcc.ownId));
-                const rows = getMessages(String(threadId), SEEN_ANCHOR_SCAN_DEPTH);
-                result = await markConversationRead(zaloApi(), { threadId, type, ownId: activeAcc.ownId, rows });
+                result = await markConversationRead(zaloApi(), {
+                    threadId,
+                    type,
+                    ownId: activeAcc.ownId,
+                    markOnly: Boolean(opts.markOnly),
+                });
             } catch (e) {
                 error(e.message);
                 return;
             }
 
+            if (!result.success && program.opts().json) process.exitCode = 1;
             output(result, program.opts().json, () => {
-                if (result.unreadMark.ok) success("Cleared the manual unread mark");
-                else error(`Could not clear the manual unread mark: ${result.unreadMark.error}`);
+                const mark = result.unreadMark;
+                if (mark.removed) success("Removed the manual unread mark");
+                else if (mark.error) error(`Could not clear the manual unread mark: ${mark.error}`);
+                else if (mark.wasSet === false) info("No manual unread mark was set");
 
                 const seen = result.seen;
-                if (seen.ok) {
-                    success(`Sent a seen receipt for message ${seen.msgId}`);
+                if (seen?.sent) {
+                    success(`Marked ${seen.sent} message(s) seen (${seen.msgIds.join(", ")})`);
                     if (seen.guessed.length) {
                         warning(
                             `${seen.guessed.join(", ")} came from a fallback, not the message's own frame: the ` +
@@ -551,22 +489,29 @@ export function registerConvCommands(program, deps = {}) {
                                 "st=3 and at=5 are a guess).",
                         );
                     }
-                } else if (seen.refused === "no-anchor") {
+                } else if (seen?.refused === "no-cache") {
                     error(seen.error);
-                    info("Zalo marks a MESSAGE as seen, not a thread, so there is nothing to anchor the event to.");
-                    info("The cache is written by `listen` and by `sync` only. Run one of them first:");
+                    info("Zalo marks a MESSAGE as seen, not a thread. Run one of these first:");
                     info(`  zalo-agent sync --from ${new Date(Date.now() - 7 * 864e5).toISOString().slice(0, 10)}`);
-                } else if (seen.refused === "noised-sender") {
+                    info("  zalo-agent listen");
+                } else if (seen?.refused === "noised-sender") {
                     error(seen.error);
-                    info("A message the listener receives carries its real sender id. Keep `listen` or `mcp start`");
-                    info("running, and run `conv read` again once a new message has arrived in this conversation.");
-                } else {
-                    error(`Seen receipt for message ${seen.msgId} failed: ${seen.error}`);
+                    info("Keep `listen` or `mcp start` running, and run `conv read` again once a new message arrives.");
+                } else if (seen?.error) {
+                    error(seen.error);
                 }
+                if (seen?.skipped?.e2ee) {
+                    info(
+                        `${seen.skipped.e2ee} end-to-end encrypted message(s) left out: this client cannot mark those.`,
+                    );
+                }
+                if (result.reactions?.sent) success("Marked the conversation's reactions seen");
+                else if (result.reactions?.error) error(`Reaction-seen receipt failed: ${result.reactions.error}`);
+                if (result.note) info(result.note);
             });
             // A refused seen receipt is the command not doing what it says, so it
             // keeps the exit code the cold-cache refusal always had.
-            if (result.seen.refused) process.exit(1);
+            if (result.seen?.refused) process.exit(1);
         });
 
     conv.command("unread <threadId>")
@@ -574,72 +519,259 @@ export function registerConvCommands(program, deps = {}) {
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .action(async (threadId, opts) => {
             try {
-                // zca-js names this addUnreadMark (paired with removeUnreadMark
+                // The session names this addUnreadMark (paired with removeUnreadMark
                 // and getUnreadMark). There has never been a markAsUnread, so
                 // every invocation died on "is not a function" before reaching
                 // the network -- which no test caught, because reaching the
                 // network is exactly what the offline suite cannot do.
-                const result = await getApi().addUnreadMark(threadId, Number(opts.type));
+                //
+                // Zalo pins the mark to the conversation's newest message
+                // (its cliMsgId and sender), so the cache is read for it; with
+                // none cached Zalo's "-1" goes out instead.
+                const last = newestMessageForUnreadMark(threadId);
+                const result = await zaloApi().addUnreadMark(threadId, Number(opts.type), last);
                 output(result, program.opts().json, () => success("Marked as unread"));
             } catch (e) {
                 error(e.message);
             }
         });
 
-    conv.command("hidden")
-        .description("List hidden conversations")
-        .action(async () => {
-            try {
-                const result = await getApi().getHiddenConversations();
-                output(result, program.opts().json);
-            } catch (e) {
-                error(`Get hidden conversations failed: ${e.message}`);
-            }
+    /** The active account, or exit 1. */
+    const activeOrExit = () => {
+        const acc = getActive();
+        if (!acc) {
+            error("No active account. Please login first.");
+            process.exit(1);
+        }
+        return acc;
+    };
+
+    addHiddenOptions(
+        conv
+            .command("hidden")
+            .description(
+                "List hidden conversations: asks for the hidden-chat PIN first, as Zalo does (without it, " +
+                    "only how many there are and whether a PIN is set)",
+            ),
+        { include: false },
+    ).action(async (opts) => {
+        const json = program.opts().json;
+        const acc = activeOrExit();
+        let listed;
+        const set = await hiddenSetForCli(acc.ownId, null);
+        try {
+            listed = await readHidden(zaloApi(), set);
+        } catch (e) {
+            error(`Get hidden conversations failed: ${e.message}`);
+            return;
+        }
+        if (!listed.hasPin) {
+            output({ count: listed.count, hasPin: false, threads: [] }, json, () =>
+                info("No hidden-chat PIN is set; nothing is hidden."),
+            );
+            return;
+        }
+        // With a PIN set it is checked even when nothing is hidden: a wrong PIN is refused (exit 1, counted toward
+        // the lockout) whatever the list holds, as Zalo asks it before showing the list.
+        await unlockOrExit(set, {
+            pinStdin: Boolean(opts.pinStdin),
+            json,
+            extra: { count: listed.count, hasPin: true },
         });
+        let names = new Map();
+        try {
+            initDb(getAccountDbPath(acc.ownId));
+            names = getThreadNames();
+        } catch {
+            /* no cache: ids only */
+        }
+        const threads = listed.threads.map((t) => ({
+            threadId: t.threadId,
+            threadType: t.isGroup === null ? null : t.isGroup ? "group" : "dm",
+            name: names.get(String(t.threadId))?.name ?? null,
+        }));
+        output({ count: threads.length, hasPin: true, threads }, json, () => {
+            if (!threads.length) {
+                info("No hidden conversations.");
+                return;
+            }
+            info(`${threads.length} hidden conversation(s):`);
+            for (const t of threads)
+                console.log(`  ${t.threadId.padEnd(22)}  ${(t.threadType ?? "?").padEnd(6)}  ${t.name ?? ""}`);
+        });
+    });
 
     conv.command("hide <threadIds...>")
-        .description("Hide conversation(s)")
+        .description("Hide conversation(s) behind the hidden-chat PIN (a PIN must be set first: `conv hidden-pin`)")
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .action(async (threadIds, opts) => {
+            const acc = activeOrExit();
             try {
-                const result = await getApi().setHiddenConversations(true, threadIds, Number(opts.type));
+                const set = await hiddenSetForCli(acc.ownId, null);
+                await set.refresh(zaloApi());
+                // Zalo asks for a PIN before the first hide: a hidden chat with no PIN is hidden from nobody.
+                if (!set.hasPin) {
+                    error("No hidden-chat PIN is set: set one with `zalo-agent conv hidden-pin` first, then hide.");
+                    process.exit(1);
+                }
+                const result = await zaloApi().setHiddenConversations(true, threadIds, Number(opts.type));
+                for (const id of threadIds) set.ids.add(String(id));
                 output(result, program.opts().json, () => success(`Hidden ${threadIds.length} conversation(s)`));
             } catch (e) {
                 error(`Hide failed: ${e.message}`);
             }
         });
 
-    conv.command("unhide <threadIds...>")
-        .description("Unhide conversation(s)")
-        .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
-        .action(async (threadIds, opts) => {
-            try {
-                const result = await getApi().setHiddenConversations(false, threadIds, Number(opts.type));
-                output(result, program.opts().json, () => success(`Unhidden ${threadIds.length} conversation(s)`));
-            } catch (e) {
-                error(`Unhide failed: ${e.message}`);
-            }
-        });
+    addHiddenOptions(
+        conv
+            .command("unhide <threadIds...>")
+            .description("Unhide conversation(s): asks for the hidden-chat PIN, as opening a hidden chat does")
+            .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0"),
+        { include: false },
+    ).action(async (threadIds, opts) => {
+        const json = program.opts().json;
+        const acc = activeOrExit();
+        const set = await hiddenSetForCli(acc.ownId, null);
+        try {
+            await set.refresh(zaloApi());
+        } catch (e) {
+            error(`Unhide failed: ${e.message}`);
+            return;
+        }
+        await unlockOrExit(set, { pinStdin: Boolean(opts.pinStdin), json });
+        try {
+            const result = await zaloApi().setHiddenConversations(false, threadIds, Number(opts.type));
+            for (const id of threadIds) set.ids.delete(String(id));
+            output(result, json, () => success(`Unhidden ${threadIds.length} conversation(s)`));
+        } catch (e) {
+            error(`Unhide failed: ${e.message}`);
+        }
+    });
 
-    conv.command("hidden-pin <pin>")
-        .description("Set or update PIN for hidden conversations (4 digits)")
-        .action(async (pin) => {
-            try {
-                const result = await getApi().updateHiddenConversPin(pin);
-                output(result, program.opts().json, () => success("Hidden conversation PIN updated"));
-            } catch (e) {
-                error(`Update PIN failed: ${e.message}`);
-            }
-        });
+    const hiddenPin = conv
+        .command("hidden-pin [removed]")
+        .description(
+            "Set or change the hidden-chat PIN: asks for the current PIN (when one is set), then the new one twice. " +
+                "The PIN is never a command-line argument; --pin-stdin reads the same answers, one per line",
+        )
+        .option("--pin-stdin", "Read the PINs from standard input, one per line (current, if set; new; new again)");
+    // The 2.x form `conv hidden-pin 1234` put the PIN in the shell history and the process list: refused before any
+    // login (src/index.js runs this preflight), with how to do it now.
+    hiddenPin.zaloPreflight = (command, { json }) => {
+        if (command.args.length === 0) return;
+        const why =
+            "Not done: `conv hidden-pin` no longer takes the PIN as an argument (it would land in your shell " +
+            "history and the process list). Run `zalo-agent conv hidden-pin` and type it at the prompt, or pipe " +
+            "it with --pin-stdin.";
+        if (json) console.log(JSON.stringify({ error: why, pinArgumentRemoved: true }, null, 2));
+        else error(why);
+        process.exit(1);
+    };
+    hiddenPin.action(async (_removed, opts) => {
+        const json = program.opts().json;
+        const acc = activeOrExit();
+        const set = await hiddenSetForCli(acc.ownId, null);
+        try {
+            await set.refresh(zaloApi());
+        } catch (e) {
+            error(`Update PIN failed: ${e.message}`);
+            return;
+        }
+        const lines = opts.pinStdin ? await readPinLines() : null;
+        const ask = async (prompt) => {
+            const v = await readPin({ pinStdin: Boolean(opts.pinStdin), prompt, lines });
+            if (v === null) exitPinRequired(json, { hasPin: set.hasPin });
+            return v;
+        };
+        let typed;
+        try {
+            typed = {
+                pin: set.hasPin ? await ask("Current hidden-chat PIN: ") : undefined,
+                newPin: await ask("New PIN (4 digits): "),
+                newPin2: await ask("New PIN again: "),
+            };
+        } catch (e) {
+            error(`Could not read the PIN: ${e.message}`);
+            process.exit(1);
+        }
+        let r;
+        try {
+            r = await changeHiddenPin(zaloApi(), set, typed);
+        } catch (e) {
+            error(`Update PIN failed: ${e.message}`);
+            return;
+        } finally {
+            typed = null;
+        }
+        if (!r.ok) {
+            error(r.message);
+            process.exit(1);
+        }
+        output({ success: true, changed: true, hadPin: r.hadPin }, json, () =>
+            success(r.hadPin ? "Hidden-chat PIN changed" : "Hidden-chat PIN set"),
+        );
+    });
 
     conv.command("hidden-pin-reset")
-        .description("Reset hidden conversations PIN")
+        .description(
+            "Remove the hidden-chat PIN (no PIN needed) and, as Zalo does, delete every hidden conversation's " +
+                "history for this account; each deletion is reported",
+        )
         .action(async () => {
+            const acc = activeOrExit();
             try {
-                const result = await getApi().resetHiddenConversPin();
-                output(result, program.opts().json, () => success("Hidden conversation PIN reset"));
+                initDb(getAccountDbPath(acc.ownId));
+            } catch {
+                /* no cache: the group store can still anchor a group's delete */
+            }
+            try {
+                const set = await hiddenSetForCli(acc.ownId, null);
+                const r = await resetHiddenPinAndDelete(zaloApi(), set);
+                const failed = r.conversations.filter((c) => !c.deleted);
+                if (failed.length && program.opts().json) process.exitCode = 1;
+                output(
+                    {
+                        ...(failed.length && { error: `${failed.length} hidden conversation(s) could not be deleted` }),
+                        success: failed.length === 0,
+                        ...r,
+                    },
+                    program.opts().json,
+                    () => {
+                        success("Hidden-chat PIN removed");
+                        for (const c of r.conversations) {
+                            if (c.deleted) success(`Deleted hidden conversation ${c.threadId} (${c.threadType})`);
+                            else error(`Could not delete hidden conversation ${c.threadId}: ${c.error}`);
+                        }
+                        if (!r.conversations.length) info("There were no hidden conversations to delete.");
+                    },
+                );
             } catch (e) {
                 error(`Reset PIN failed: ${e.message}`);
+            }
+        });
+
+    conv.command("block-sharing <threadId> <state>")
+        .description(
+            "Turn block sharing on or off for one conversation (on|off): Zalo's setting that stops its messages " +
+                "being forwarded or saved. Needs a zBusiness Max account. " +
+                "`read run blocksharing-list` lists the conversations that have it",
+        )
+        .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
+        .action(async (threadId, state, opts) => {
+            try {
+                const type = threadTypeOf(opts.type);
+                if (type === null) throw new Error(`Invalid --type "${opts.type}": use 0 (user) or 1 (group).`);
+                // The same reply as zalo_conversation `block_sharing` (src/core/block-sharing.js).
+                const result = await setBlockSharing(zaloApi(), {
+                    threadId,
+                    type,
+                    enabled: parseOnOff(state, "block-sharing"),
+                });
+                output(result, program.opts().json, () =>
+                    success(`Block sharing ${result.blockSharing ? "on" : "off"} for ${threadId}`),
+                );
+            } catch (e) {
+                error(`Block sharing failed: ${e.message}`);
             }
         });
 
@@ -659,8 +791,7 @@ export function registerConvCommands(program, deps = {}) {
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .action(async (threadId, ttl, opts) => {
             try {
-                const ttlMap = { off: 0, "1d": 86400000, "7d": 604800000, "14d": 1209600000 };
-                const ttlValue = ttlMap[ttl];
+                const ttlValue = AUTO_DELETE_TTLS[ttl];
                 if (ttlValue === undefined) {
                     error(`Invalid TTL "${ttl}". Valid: off, 1d, 7d, 14d`);
                     return;
@@ -683,7 +814,7 @@ export function registerConvCommands(program, deps = {}) {
                 const api = getApi();
                 const type = Number(opts.type);
 
-                // zca-js exposes deleteChat(lastMessage, threadId, type) — NOT
+                // The session exposes deleteChat(lastMessage, threadId, type) — NOT
                 // deleteConversation(), which this used to call and which does
                 // not exist, so `conv delete` failed on every invocation with
                 // "getApi(...).deleteConversation is not a function".
@@ -760,12 +891,21 @@ export function registerConvCommands(program, deps = {}) {
                 ? getOrphanThreads().map((t) => ({ threadId: String(t.threadId), name: t.name, ...t }))
                 : [{ threadId: String(threadId), name: "" }];
 
+            const jsonMode = program.opts().json;
+            const note = "Nothing was sent to Zalo; only this machine's copy was removed.";
             if (!targets.length) {
-                success("No orphaned conversations — nothing to forget.");
+                output({ success: true, forgotten: 0, messages: 0, files: 0, note }, jsonMode, () =>
+                    success("No orphaned conversations — nothing to forget."),
+                );
                 process.exit(0);
             }
 
             if (opts.dryRun) {
+                // The same preview `zalo_conversation forget` gives with dryRun.
+                if (jsonMode) {
+                    output({ dryRun: true, conversations: targets }, jsonMode);
+                    process.exit(0);
+                }
                 info(`Would forget ${targets.length} conversation(s):`);
                 // Every one of them: a preview that stops at a page does not
                 // show what the real run is about to remove.
@@ -774,51 +914,94 @@ export function registerConvCommands(program, deps = {}) {
                         `  ${t.threadId}${t.name ? ` (${t.name})` : ""}${t.messages ? ` — ${t.messages} message(s), ${t.files || 0} file(s)` : ""}`,
                     );
                 }
-                info("Re-run without --dry-run to remove them. This does not contact Zalo.");
+                info("Re-run with --yes instead of --dry-run to remove them. This does not contact Zalo.");
                 process.exit(0);
             }
 
             let removed = 0;
             let files = 0;
+            const errors = [];
             for (const t of targets) {
-                // Files first: forgetThread drops the rows that point at them,
-                // and a deleted row would leave its media stranded on disk.
-                try {
-                    const pruned = await pruneDownloadedMedia({ all: true, threadId: t.threadId });
-                    files += pruned.deleted;
-                } catch (e) {
-                    warning(`Media cleanup failed for ${t.threadId}: ${e.message}`);
-                }
-                try {
-                    const counts = forgetThread(t.threadId);
-                    removed += counts.messages || 0;
-                } catch (e) {
-                    error(`Failed to forget ${t.threadId}: ${e.message}`);
-                }
+                // Media first, then rows (src/core/conversation-actions.js); each failure is reported, not fatal.
+                const gone = await forgetConversation(t.threadId);
+                files += gone.files;
+                removed += gone.messages;
+                for (const e of gone.errors) errors.push({ threadId: t.threadId, ...e });
+            }
+            // The reply `zalo_conversation forget` gives (src/mcp/actions-conversation.js).
+            const result = {
+                success: errors.length === 0,
+                forgotten: targets.length,
+                messages: removed,
+                files,
+                ...(errors.length > 0 && { errors }),
+                note,
+            };
+            // A media cleanup failure is a warning; a conversation whose rows stayed is a failure.
+            const failed = errors.find((e) => e.what !== "media");
+            if (jsonMode) {
+                if (failed) process.exitCode = 1;
+                output(
+                    failed ? { error: `Failed to forget ${failed.threadId}: ${failed.message}`, ...result } : result,
+                    jsonMode,
+                );
+                process.exit();
+            }
+            for (const e of errors) {
+                if (e.what === "media") warning(`Media cleanup failed for ${e.threadId}: ${e.message}`);
+                else error(`Failed to forget ${e.threadId}: ${e.message}`);
             }
             success(
                 `Forgot ${targets.length} conversation(s): ${removed} message(s) and ${files} file(s) removed locally.`,
             );
             info("Nothing was sent to Zalo; this only cleared the local cache.");
-            process.exit(0);
+            // 1 when any conversation failed to forget (error() set it), else 0.
+            process.exit();
         });
 
-    conv.command("muted")
-        .description("List the conversations and groups you have muted")
-        .action(async () => {
-            try {
-                const result = await getApi().getMute();
-                output(result, program.opts().json, () => {
-                    for (const [label, entries] of [
-                        ["chat", result?.chatEntries ?? []],
-                        ["group", result?.groupChatEntries ?? []],
-                    ]) {
-                        info(`${entries.length} muted ${label}(s)`);
-                        for (const m of entries) console.log(`  ${m.id}  mode=${m.muteMode}  duration=${m.duration}`);
-                    }
-                });
-            } catch (e) {
-                error(`Get muted conversations failed: ${e.message}`);
-            }
-        });
+    addHiddenOptions(
+        conv
+            .command("muted")
+            .description(
+                "List the conversations and groups you have muted (hidden chats are left out unless --include-hidden)",
+            ),
+    ).action(async (opts) => {
+        try {
+            const raw = await zaloApi().getMute();
+            // Zalo's answer: `{chatEntries: [{id, ...}], groupChatEntries: [{id, ...}]}`.
+            const shown = await hiddenFilter(opts);
+            const result =
+                raw && typeof raw === "object"
+                    ? {
+                          ...raw,
+                          ...(Array.isArray(raw.chatEntries) && {
+                              chatEntries: shown(raw.chatEntries, (m) => m?.id),
+                          }),
+                          ...(Array.isArray(raw.groupChatEntries) && {
+                              groupChatEntries: shown(raw.groupChatEntries, (m) => m?.id),
+                          }),
+                      }
+                    : raw;
+            output(result, program.opts().json, () => {
+                for (const [label, entries] of [
+                    ["chat", result?.chatEntries ?? []],
+                    ["group", result?.groupChatEntries ?? []],
+                ]) {
+                    info(`${entries.length} muted ${label}(s)`);
+                    for (const m of entries) console.log(`  ${m.id}  mode=${m.muteMode}  duration=${m.duration}`);
+                }
+            });
+        } catch (e) {
+            error(`Get muted conversations failed: ${e.message}`);
+        }
+    });
+    // Asked about first, as Zalo does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    guardSubcommand(conv, "delete", "conv.delete", { target: (threadId) => ({ threadId }) });
+    guardSubcommand(conv, "hidden-pin-reset", "conv.hiddenPinReset", { target: () => ({}) });
+    guardSubcommand(conv, "unhide", "conv.unhide", { target: (threadIds) => ({ threadIds }) });
+    // `forget` keeps its own --dry-run, which lists what would go.
+    guardSubcommand(conv, "forget", "conv.forget", {
+        target: (threadId, opts) => ({ threadId: threadId ?? null, orphans: Boolean(opts.orphans) }),
+        ownDryRun: true,
+    });
 }

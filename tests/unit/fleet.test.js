@@ -18,9 +18,16 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
+import { EXPIRY_FAIL_DAYS, EXPIRY_WARN_DAYS } from "../../src/core/session-expiry.js";
 import {
     FleetError,
+    CHECK_PASSES,
+    STATES,
+    STATE_ADVICE,
     assignPorts,
+    checkFailures,
+    checkWarnings,
+    sessionCheck,
     classifyAccount,
     fleetFile,
     generateFleetFiles,
@@ -30,12 +37,29 @@ import {
     renderStatusTable,
 } from "../../src/core/fleet.js";
 import {
+    BACKUP_TIMER_TEMPLATE,
+    CHECK_TIMER_TEMPLATE,
     COMMON_ENV_TEMPLATE,
     FLEET_DEFAULTS,
+    KEYED_UNITS,
+    PURGE_SERVICE_TEMPLATE,
+    PURGE_TIMER_TEMPLATE,
     UNIT_TEMPLATE,
+    renderBackupService,
     renderCaddyfile,
+    renderCheckService,
+    renderCredentialsDropin,
+    renderHomeEnv,
+    renderLogrotate,
+    renderPolkitRule,
+    renderPurgeService,
+    renderStorageJson,
     renderUnit,
+    renderZa,
 } from "../../src/core/fleet-templates.js";
+import { parseEnv } from "node:util";
+import { resolvePublicUrl, resolveTrustedProxies } from "../../src/core/deploy-policy.js";
+import { PROVIDER_NAMES } from "../../src/core/keystore/config.js";
 
 before(() => {
     assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR);
@@ -122,6 +146,20 @@ describe("classifyAccount", () => {
     const up = (extra = {}) => ({ socket: { state: "up", forSec: 3600 }, warnings: [], ...extra });
     it("stopped, unresponsive, down, starting, degraded, ok", () => {
         assert.equal(classifyAccount({ running: false, health: null }), "stopped");
+        assert.equal(
+            classifyAccount({ running: false, health: null, kicked: { via: "frame-3000", at: 1 } }),
+            "kicked",
+            "a daemon that a kick ended is not merely stopped",
+        );
+        assert.equal(
+            classifyAccount({
+                running: true,
+                health: { socket: { state: "up" } },
+                kicked: { via: "frame-3000", at: 1 },
+            }),
+            "ok",
+            "a stale marker never overrides a running daemon",
+        );
         assert.equal(classifyAccount({ running: true, health: null }), "unresponsive");
         assert.equal(
             classifyAccount({ running: true, health: { socket: { state: "down", forSec: 400 }, warnings: [] } }),
@@ -138,6 +176,137 @@ describe("classifyAccount", () => {
         );
         assert.equal(classifyAccount({ running: true, health: up({ warnings: ["webhook backlog"] }) }), "degraded");
         assert.equal(classifyAccount({ running: true, health: up() }), "ok");
+    });
+
+    it("says why a socket is not up when the daemon says so: maintenance, a login being redone, another session", () => {
+        for (const state of ["maintenance", "relogin", "kicked"]) {
+            assert.equal(
+                classifyAccount({ running: true, health: { socket: { state, forSec: 5 }, warnings: [] } }),
+                state,
+                `a daemon in the ${state} state is not just starting`,
+            );
+        }
+        // A hold wins over how long it has lasted: a maintenance of three hours is still maintenance, not down.
+        assert.equal(
+            classifyAccount({
+                running: true,
+                health: { socket: { state: "maintenance", forSec: 10_800 }, warnings: [] },
+            }),
+            "maintenance",
+        );
+    });
+
+    it("lists every state it can say, worst last, and restarts only what a restart can mend", () => {
+        assert.deepEqual(
+            [...STATES],
+            [
+                "ok",
+                "idle",
+                "degraded",
+                "starting",
+                "maintenance",
+                "relogin",
+                "yielded",
+                "kicked",
+                "signed_out",
+                "down",
+                "unresponsive",
+                "stopped",
+            ],
+        );
+        // kicked is deliberate: a restart would take the account back from the session that took it.
+        assert.deepEqual(["idle", "maintenance", "relogin", "kicked"].map(needsRestart), [false, false, false, false]);
+        // So are yielded and signed out: a person confirms the resume, or adds the account again by QR.
+        assert.deepEqual(["yielded", "signed_out"].map(needsRestart), [false, false]);
+    });
+
+    it("names a yielded or signed-out daemon instead of calling it starting", () => {
+        const h = (state, extra = {}) => ({ socket: { state, forSec: 5_000 }, warnings: [], ...extra });
+        assert.equal(classifyAccount({ running: true, health: h("yielded") }), "yielded");
+        assert.equal(classifyAccount({ running: true, health: h("signed-out") }), "signed_out");
+        // A long yield or sign-out is not "down": the daemon says why its socket is not up.
+        assert.equal(classifyAccount({ running: true, health: h("yielded") }, { downForSec: 60 }), "yielded");
+        // The account state and the presence block say it too (a daemon whose socket line lags behind).
+        assert.equal(
+            classifyAccount({ running: true, health: h("down", { accountState: { state: "signed_out" } }) }),
+            "signed_out",
+        );
+        assert.equal(
+            classifyAccount({ running: true, health: h("idle", { presence: { state: "yielded" } }) }),
+            "yielded",
+        );
+    });
+
+    it("--check fails yielded and signed_out with what to do, and passes only ok, idle and degraded", () => {
+        assert.deepEqual([...CHECK_PASSES], ["ok", "idle", "degraded"]);
+        for (const s of STATES.filter((x) => !CHECK_PASSES.includes(x))) assert.ok(STATE_ADVICE[s], `advice for ${s}`);
+        const lines = checkFailures([
+            { accountId: "501", state: "ok" },
+            { accountId: "502", state: "yielded" },
+            { accountId: "503", state: "signed_out" },
+            { accountId: "504", state: "idle" },
+        ]);
+        assert.equal(lines.length, 2);
+        assert.match(lines[0], /^502: yielded - .*presence resume --yes/);
+        assert.match(lines[1], /^503: signed_out - .*again by QR/);
+        assert.match(lines.join(" "), /a restart does not help/);
+    });
+
+    describe("the saved session's end", () => {
+        const at = (daysLeft, expired = false) => ({
+            expiresAt: "2026-12-01T00:00:00.000Z",
+            daysLeft,
+            expired,
+        });
+
+        it("fails --check at 7 days left, with the date and the command, on an account that is otherwise ok", () => {
+            const rows = [{ accountId: "601", state: "ok", session: at(7) }];
+            const lines = checkFailures(rows);
+            assert.equal(lines.length, 1);
+            assert.match(lines[0], /^601: session ends 2026-12-01 \(7 day\(s\) left\) - log in again by 2026-12-01: /);
+            assert.match(lines[0], /za --account 601 login, then za fleet restart 601/);
+            assert.deepEqual(checkWarnings(rows), [], "a failure is not also a warning");
+        });
+
+        it("passes at 10 days left with a warning, and says nothing with weeks left or no readable session", () => {
+            const rows = [{ accountId: "602", state: "ok", session: at(10) }];
+            assert.deepEqual(checkFailures(rows), []);
+            const warnings = checkWarnings(rows);
+            assert.equal(warnings.length, 1);
+            assert.match(warnings[0], /^602: session ends 2026-12-01 \(10 day\(s\) left\) - log in again by/);
+            for (const session of [at(EXPIRY_WARN_DAYS + 1), null, undefined]) {
+                const quiet = [{ accountId: "603", state: "ok", session }];
+                assert.deepEqual([...checkFailures(quiet), ...checkWarnings(quiet)], []);
+            }
+            assert.equal(sessionCheck({ accountId: "6", session: at(EXPIRY_WARN_DAYS) }).level, "warn");
+            assert.equal(sessionCheck({ accountId: "6", session: at(EXPIRY_FAIL_DAYS + 1) }).level, "warn");
+            assert.equal(sessionCheck({ accountId: "6", session: at(EXPIRY_FAIL_DAYS) }).level, "fail");
+        });
+
+        it("fails an ended session, and a failing state and an ending session are two lines", () => {
+            const lines = checkFailures([{ accountId: "604", state: "signed_out", session: at(-2, true) }]);
+            assert.equal(lines.length, 2);
+            assert.match(lines[0], /^604: signed_out - /);
+            assert.match(lines[1], /^604: session ended on 2026-12-01 - log in again now: za --account 604 login/);
+        });
+
+        it("shows the days left in the table, marked from 14 days, and `ended`", () => {
+            const row = (session) =>
+                renderStatusTable([
+                    {
+                        accountId: "1",
+                        name: "",
+                        port: null,
+                        state: "ok",
+                        daemon: { running: false },
+                        health: null,
+                        session,
+                    },
+                ])[1];
+            assert.match(row(at(45)), /\s45d$/);
+            assert.match(row(at(10)), /\s10d!$/);
+            assert.match(row(at(-1, true)), /\sended$/);
+        });
     });
 
     it("how long a socket may be down is the caller's to choose", () => {
@@ -224,9 +393,12 @@ describe("renderStatusTable", () => {
             },
         ]);
         assert.equal(lines.length, 3);
-        assert.match(lines[0], /^ACCOUNT\s+NAME\s+PORT\s+STATE\s+PID\s+SOCKET\s+LAST EVENT\s+WEBHOOK\s+GAPS\s+MEM$/);
-        assert.match(lines[1], /^1001\s+Shop A\s+3901\s+degraded\s+4242\s+up 2\.0h\s+42s\s+3q 1d\s+1\s+100M$/);
-        assert.match(lines[2], /^1002\s+3902\s+stopped\s+-\s+-\s+-\s+-\s+-\s+-$/);
+        assert.match(
+            lines[0],
+            /^ACCOUNT\s+NAME\s+PORT\s+STATE\s+PID\s+SOCKET\s+LAST EVENT\s+WEBHOOK\s+GAPS\s+MEM\s+LOGIN ENDS$/,
+        );
+        assert.match(lines[1], /^1001\s+Shop A\s+3901\s+degraded\s+4242\s+up 2\.0h\s+42s\s+3q 1d\s+1\s+100M\s+-$/);
+        assert.match(lines[2], /^1002\s+3902\s+stopped\s+-\s+-\s+-\s+-\s+-\s+-\s+-$/);
         const widths = new Set(
             lines.map((l) => (l.indexOf("STATE") >= 0 ? l.indexOf("STATE") : -1)).filter((i) => i >= 0),
         );
@@ -269,7 +441,7 @@ describe("the files fleet generate writes", () => {
             (a) => /^ZALO_MCP_AUTH_TOKEN=(.+)$/m.exec(readFileSync(join(out, "accounts", `${a.ownId}.env`), "utf8"))[1],
         );
 
-    it("writes the unit, the common env, one env file per account and the port table", () => {
+    it("writes the units, timers, drop-in, env files, provider file, wrapper, rules and the port table", () => {
         const r = generateFleetFiles({ outDir: out, accounts });
         assert.deepEqual(
             r.written.sort(),
@@ -277,10 +449,28 @@ describe("the files fleet generate writes", () => {
                 join("accounts", "1001.env"),
                 join("accounts", "1002.env"),
                 "common.env",
+                "credentials.conf",
+                "home.env",
                 "ports.json",
+                "storage.json",
+                "za",
+                "zalo-backup.service",
+                "zalo-backup.timer",
+                "zalo-fleet-check.service",
+                "zalo-fleet-check.timer",
+                "zalo-fleet-polkit.rules",
                 "zalo-mcp@.service",
+                "zalo-mcp-purge.service",
+                "zalo-mcp-purge.timer",
+                "zalo-policy-audit.logrotate",
             ].sort(),
         );
+        assert.match(
+            readFileSync(join(out, "zalo-mcp-purge.service"), "utf8"),
+            /^ExecStart=\/usr\/bin\/zalo-agent fleet purge --yes$/m,
+            "the timer's run is confirmed: a unit has no terminal to ask on",
+        );
+        assert.match(readFileSync(join(out, "zalo-mcp-purge.timer"), "utf8"), /^OnCalendar=hourly$/m);
         assert.deepEqual(r.kept, []);
         assert.deepEqual(JSON.parse(readFileSync(join(out, "ports.json"), "utf8")), { 1001: 3901, 1002: 3902 });
         const env = readFileSync(join(out, "accounts", "1001.env"), "utf8");
@@ -295,8 +485,9 @@ describe("the files fleet generate writes", () => {
         assert.match(b, /^[0-9a-f]{64}$/);
         assert.notEqual(a, b);
         if (process.platform !== "win32") {
-            for (const f of ["accounts/1001.env", "accounts/1002.env", "common.env"])
+            for (const f of ["accounts/1001.env", "accounts/1002.env", "common.env", "home.env"])
                 assert.equal(statSync(join(out, f)).mode & 0o777, 0o600, f);
+            assert.equal(statSync(join(out, "za")).mode & 0o777, 0o755, "za is a program");
         }
         const everything =
             JSON.stringify(r) +
@@ -311,7 +502,7 @@ describe("the files fleet generate writes", () => {
         writeFileSync(join(out, "common.env"), "mine\n");
         const second = generateFleetFiles({ outDir: out, accounts });
         assert.deepEqual(second.written, ["ports.json"], "only the port table, which is derived");
-        assert.equal(second.kept.length, 4);
+        assert.equal(second.kept.length, 16, "every file but the port table: 14 machine files, two account envs");
         assert.equal(readFileSync(join(out, "common.env"), "utf8"), "mine\n");
         const forced = generateFleetFiles({ outDir: out, accounts, force: true });
         assert.ok(forced.written.includes("common.env"));
@@ -339,10 +530,118 @@ describe("the files fleet generate writes", () => {
             );
         }
         assert.equal(
-            (caddy.match(/@internal path \/metrics \/status/g) || []).length,
+            (
+                caddy.match(
+                    /@internal path \/metrics \/status \/zalo\/admin \/zalo\/admin\/\*\n\t\trespond @internal 404/g,
+                ) || []
+            ).length,
             2,
-            "each account's /metrics and /status stay inside",
+            "each account's /metrics, /status and admin API stay inside",
         );
+    });
+
+    // G1: the data a daemon writes must be writable under its sandbox, and the CLI run by hand must find it.
+    it("every path the env files set is under the units' ReadWritePaths, and only the home .env sets one", () => {
+        const rwOf = (text) => /^ReadWritePaths=(.+)$/m.exec(text)[1].split(" ");
+        const pathsIn = (text) =>
+            Object.entries(parseEnv(text))
+                .filter(([k]) => /_DIR$/.test(k))
+                .map(([, v]) => v);
+        for (const paths of [{}, { dataDir: "/srv/zalo/accounts", mediaDir: "/srv/zalo/media" }]) {
+            const dir = mkdtempSync(join(tmpdir(), "zalo-fleet-rw-"));
+            try {
+                generateFleetFiles({ outDir: dir, accounts, paths });
+                const read = (f) => readFileSync(join(dir, f), "utf8");
+                assert.deepEqual(
+                    pathsIn(read("common.env")),
+                    [],
+                    "common.env sets no machine path (the CLI never reads it)",
+                );
+                const home = pathsIn(read("home.env"));
+                assert.equal(home.length, paths.dataDir ? 2 : 0);
+                for (const unit of ["zalo-mcp@.service", "zalo-mcp-purge.service", "zalo-backup.service"]) {
+                    const rw = rwOf(read(unit));
+                    assert.ok(rw.includes("/home/zalo/.zalo-agent-cli"), `${unit}: the config dir`);
+                    for (const p of home)
+                        assert.ok(
+                            rw.some((w) => p === w || p.startsWith(`${w}/`)),
+                            `${unit}: ${p} is writable`,
+                        );
+                }
+                assert.ok(rwOf(read("zalo-backup.service")).includes("/var/backups/zalo"));
+                if (paths.dataDir) {
+                    assert.match(read("zalo-backup.service"), /for d in \/srv\/zalo\/accounts\/\*\//);
+                }
+            } finally {
+                rmSync(dir, { recursive: true, force: true });
+            }
+        }
+    });
+
+    // G2: a stock Ubuntu VPS has no default provider; the generated set wires the passphrase through systemd.
+    it("the passphrase provider is wired end to end: storage.json, the drop-in for every keyed unit, and za", () => {
+        generateFleetFiles({ outDir: out, accounts, paths: { etcDir: "/opt/zalo/etc" } });
+        const storage = JSON.parse(readFileSync(join(out, "storage.json"), "utf8"));
+        assert.equal(storage.provider, "passphrase");
+        assert.equal(storage.passphrase, undefined, "no file: the provider reads $CREDENTIALS_DIRECTORY itself");
+        const line = "LoadCredentialEncrypted=zalo-storage-passphrase:/opt/zalo/etc/storage-passphrase.cred";
+        assert.match(readFileSync(join(out, "credentials.conf"), "utf8"), new RegExp(`^\\[Service\\]\\n${line}$`, "m"));
+        assert.ok(readFileSync(join(out, "za"), "utf8").includes(`--property=${line} `));
+        assert.deepEqual(KEYED_UNITS, ["zalo-mcp@.service", "zalo-mcp-purge.service", "zalo-backup.service"]);
+        assert.ok(
+            !readFileSync(join(out, "zalo-mcp@.service"), "utf8").includes("LoadCredential"),
+            "a drop-in, not the unit",
+        );
+    });
+
+    it("another provider gets its storage.json and no credential; none leaves both to the operator", () => {
+        for (const provider of ["systemd-creds", "kms", "none"]) {
+            const dir = mkdtempSync(join(tmpdir(), "zalo-fleet-prov-"));
+            try {
+                const r = generateFleetFiles({ outDir: dir, accounts, provider });
+                assert.ok(!r.written.includes("credentials.conf"), provider);
+                assert.doesNotMatch(
+                    readFileSync(join(dir, "za"), "utf8"),
+                    /LoadCredential|storage passphrase/,
+                    provider,
+                );
+                if (provider === "none") assert.ok(!r.written.includes("storage.json"));
+                else assert.equal(JSON.parse(readFileSync(join(dir, "storage.json"), "utf8")).provider, provider);
+            } finally {
+                rmSync(dir, { recursive: true, force: true });
+            }
+        }
+        // The systemd-creds variant must run as the service user: only with --user (systemd 256 or later).
+        assert.equal(JSON.parse(renderStorageJson("systemd-creds")).systemdCreds.user, true);
+        for (const p of ["passphrase", "systemd-creds", "kms"])
+            assert.ok(PROVIDER_NAMES.includes(JSON.parse(renderStorageJson(p)).provider));
+    });
+
+    // G4: behind the path-prefix proxy, each account's links must come back through its own block.
+    it("--domain gives each account its public URL under its prefix, and common.env trusts the local proxy", () => {
+        generateFleetFiles({ outDir: out, accounts, domain: "zalo.example.com" });
+        for (const a of accounts) {
+            const env = parseEnv(readFileSync(join(out, "accounts", `${a.ownId}.env`), "utf8"));
+            assert.deepEqual(
+                resolvePublicUrl({ env, config: {}, aliases: false }).publicUrl,
+                `https://zalo.example.com/a/${a.ownId}`,
+            );
+        }
+        const common = parseEnv(readFileSync(join(out, "common.env"), "utf8"));
+        assert.deepEqual(resolveTrustedProxies({ config: {}, env: common }), ["127.0.0.1"]);
+        assert.equal(common.ZALO_FLEET_SUPERVISOR, "systemd");
+        const caddy = readFileSync(join(out, "Caddyfile"), "utf8");
+        assert.match(caddy, /handle \/zalo\/qr\/\* \{\s*reverse_proxy 127\.0\.0\.1:18927/);
+
+        const plain = mkdtempSync(join(tmpdir(), "zalo-fleet-plain-"));
+        try {
+            generateFleetFiles({ outDir: plain, accounts });
+            const env = parseEnv(readFileSync(join(plain, "accounts", "1001.env"), "utf8"));
+            assert.equal(env.ZALO_MCP_PUBLIC_URL, undefined, "no proxy: no public URL");
+            assert.equal(parseEnv(readFileSync(join(plain, "common.env"), "utf8")).ZALO_MCP_TRUSTED_PROXIES, undefined);
+        } finally {
+            rmSync(plain, { recursive: true, force: true });
+        }
     });
 
     it("the unit takes the caller's user, home and binary, and nothing of the default is left behind", () => {
@@ -356,8 +655,24 @@ describe("the files fleet generate writes", () => {
         assert.match(unit, /^Group=bot$/m);
         assert.match(unit, /^WorkingDirectory=\/srv\/bot$/m);
         assert.match(unit, /^ExecStart=\/opt\/zalo\/bin\/zalo-agent mcp start --account %i$/m);
-        assert.match(unit, /^ReadWritePaths=\/srv\/bot\/\.zalo-agent-cli /m);
+        assert.match(unit, /^ReadWritePaths=\/srv\/bot\/\.zalo-agent-cli$/m);
         assert.doesNotMatch(unit, /\/home\/zalo|User=zalo|\/usr\/bin\/zalo-agent /);
+        const purge = readFileSync(join(out, "zalo-mcp-purge.service"), "utf8");
+        assert.match(purge, /^User=bot$/m);
+        assert.match(purge, /^ExecStart=\/opt\/zalo\/bin\/zalo-agent fleet purge --yes$/m);
+        assert.match(purge, /^ReadWritePaths=\/srv\/bot\/\.zalo-agent-cli$/m);
+        assert.doesNotMatch(purge, /\/home\/zalo|User=zalo|\/usr\/bin\/zalo-agent |  zalo  /);
+        for (const f of [
+            "zalo-fleet-check.service",
+            "zalo-backup.service",
+            "za",
+            "zalo-fleet-polkit.rules",
+            "zalo-policy-audit.logrotate",
+            "home.env",
+        ]) {
+            const text = readFileSync(join(out, f), "utf8");
+            assert.doesNotMatch(text, /\/home\/zalo|User=zalo|\/usr\/bin\/zalo-agent |"zalo"| zalo zalo|as zalo\b/, f);
+        }
     });
 });
 
@@ -368,6 +683,27 @@ describe("the embedded templates are the documented samples", () => {
         assert.equal(FLEET_DEFAULTS.user, "zalo");
     });
     it("the common env file", () => assert.equal(COMMON_ENV_TEMPLATE, sample("systemd", "common.env")));
+    it("the purge service and its timer", () => {
+        assert.equal(renderPurgeService(), sample("systemd", "zalo-mcp-purge.service"));
+        assert.equal(PURGE_SERVICE_TEMPLATE, sample("systemd", "zalo-mcp-purge.service"));
+        assert.equal(PURGE_TIMER_TEMPLATE, sample("systemd", "zalo-mcp-purge.timer"));
+    });
+    it("the credential drop-in, the check and backup units and timers, the polkit rule, za, home.env, logrotate", () => {
+        assert.equal(renderCredentialsDropin(), sample("systemd", "credentials.conf"));
+        assert.equal(renderCheckService(), sample("systemd", "zalo-fleet-check.service"));
+        assert.equal(CHECK_TIMER_TEMPLATE, sample("systemd", "zalo-fleet-check.timer"));
+        assert.equal(renderBackupService(), sample("systemd", "zalo-backup.service"));
+        assert.equal(BACKUP_TIMER_TEMPLATE, sample("systemd", "zalo-backup.timer"));
+        assert.equal(renderPolkitRule(), sample("systemd", "zalo-fleet-polkit.rules"));
+        assert.equal(renderZa(), sample("systemd", "za"));
+        assert.equal(renderHomeEnv(), sample("systemd", "home.env"));
+        assert.equal(renderLogrotate(), sample("systemd", "zalo-policy-audit.logrotate"));
+    });
+    it("the provider files", () => {
+        assert.equal(renderStorageJson("passphrase"), sample("storage", "linux-vps-passphrase.json"));
+        assert.equal(renderStorageJson("systemd-creds"), sample("storage", "linux-server.json"));
+        assert.equal(renderStorageJson("kms"), sample("storage", "saas-kms.json"));
+    });
     it("the multi-account Caddyfile", () => {
         assert.equal(
             renderCaddyfile({

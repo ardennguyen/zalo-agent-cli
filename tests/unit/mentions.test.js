@@ -24,7 +24,7 @@ import {
     shiftStyles,
     ALL_MENTION_UID,
     ALL_MENTION_LABEL,
-} from "../../src/utils/mentions.js";
+} from "../../src/zalo/format/mentions.js";
 import { buildQuote } from "../../src/utils/quote.js";
 
 const UID_A = "1000000000000000001";
@@ -132,7 +132,7 @@ describe("expandMentions — uid handling", () => {
 });
 
 describe("expandMentions — total mention length stays sendable", () => {
-    it("never exceeds the message length (zca-js rejects that outright)", () => {
+    it("never exceeds the message length (the previous engine rejects that outright)", () => {
         const { text, mentions } = expandMentions(`@[${UID_A}] @[${UID_B}] @[-1]`, resolve);
         const total = mentions.reduce((n, m) => n + m.len, 0);
         assert.ok(total <= text.length, `${total} mention chars in a ${text.length}-char message`);
@@ -217,7 +217,7 @@ function liveRow(over = {}) {
 }
 
 describe("buildQuote", () => {
-    it("rebuilds the payload zca-js needs", () => {
+    it("rebuilds the payload the send needs", () => {
         const { quote, error } = buildQuote(liveRow());
         assert.equal(error, undefined);
         assert.deepEqual(quote, {

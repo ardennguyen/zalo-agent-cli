@@ -1,19 +1,18 @@
 /**
- * Seen and delivered receipts must leave this CLI exactly as Zalo Web sends them.
+ * Seen and delivered receipts must leave this CLI exactly as Zalo expects them.
  *
- * Ground truth is a capture of the real Zalo Web client (build
- * 826674fb31d2af1b2b59, zpw_ver 691), decrypted request by request. The
+ * Ground truth is a capture (zpw_ver 691), decrypted request by request. The
  * templates below are those captured plaintexts, copied verbatim with the ids
  * replaced by placeholders; each names the capture row it came from.
  *
- * zca-js has builders for both receipts and neither can produce these
+ * The previous engine had builders for both receipts and neither could produce these
  * requests: `sendSeenEvent.js:43-46` and `sendDeliveredEvent.js:38-41` compute
  * `msg.st || 0 === msg.st ? 0 : -1`, which parses as
  * `(msg.st || (0 === msg.st)) ? 0 : -1` and can only ever yield 0 or -1; a DM
- * seen omits `imei`; and zca-js rewrites an own message's `uidFrom` "0" to the
- * account uid, where the web sends "0". Hence src/core/receipts.js.
+ * seen omits `imei`; and the listener rewrites an own message's `uidFrom` "0" to the
+ * account uid, where Zalo expects "0". Hence src/zalo/receipts.js.
  *
- * Everything runs through zca-js's own HTTP seam (`ctx.options.polyfill`):
+ * Everything runs through the session's HTTP seam (`ctx.options.polyfill`):
  * the real apiFactory, the real AES, a fake transport that decrypts each
  * request with a throwaway key. No socket, no session, no network.
  */
@@ -21,19 +20,15 @@ import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, mock } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
-import { GroupMessage, UserMessage } from "zca-js";
+import { GroupMessage, UserMessage } from "../../src/zalo/listener/models.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import {
     sendSeenReceipt,
     sendDeliveredReceipt,
     liveReceiptTarget,
     createDeliveredReceipts,
-} from "../../src/core/receipts.js";
-
-const require = createRequire(import.meta.url);
-const zcaUtils = require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
+} from "../../src/zalo/receipts.js";
+import { openSession, sealSession } from "../../src/zalo/kernel/cipher.js";
 
 /** Obviously-fake 16-byte AES key and imei. Never a real session secret (AGENTS.md §12). */
 const SECRET_KEY = Buffer.from("0123456789abcdef").toString("base64");
@@ -53,7 +48,7 @@ const HOSTS = {
 };
 
 /**
- * A Zalo api stand-in: the real zca-js apiFactory runs against it, and every
+ * A Zalo api stand-in: the session's bound helpers run against it, and every
  * request it makes is recorded decrypted.
  *
  * @param {object} [opts]
@@ -75,7 +70,7 @@ function harness({ respond = () => ({ status: 0 }) } = {}) {
                 const u = new URL(url);
                 const enc =
                     init.body instanceof URLSearchParams ? init.body.get("params") : u.searchParams.get("params");
-                const plain = enc ? zcaUtils.decodeAES(SECRET_KEY, enc) : null;
+                const plain = enc ? openSession(SECRET_KEY, enc) : null;
                 const rec = {
                     method: init.method || "GET",
                     origin: u.origin,
@@ -92,10 +87,7 @@ function harness({ respond = () => ({ status: 0 }) } = {}) {
                     : {
                           error_code: 0,
                           error_message: "Successful.",
-                          data: zcaUtils.encodeAES(
-                              SECRET_KEY,
-                              JSON.stringify({ error_code: 0, error_message: "", data }),
-                          ),
+                          data: sealSession(SECRET_KEY, JSON.stringify({ error_code: 0, error_message: "", data })),
                       };
                 return new Response(JSON.stringify(body), {
                     status: 200,
@@ -121,22 +113,22 @@ function fill(template, values) {
 
 // ---- Captured plaintexts (ids replaced by <placeholders>) --------------------
 
-/** group.A1 row 3: the web acknowledging its own group text. */
+/** group.A1 row 3: acknowledging this account's own group text. */
 const GROUP_DELIVERED_OWN_ECHO = String.raw`{"msgInfos":"{\"seen\":0,\"data\":[{\"cmi\":\"<cmi>\",\"gmi\":\"<gmi>\",\"si\":\"0\",\"di\":\"<grid>\",\"mt\":\"webchat\",\"st\":3,\"at\":5,\"cmd\":521,\"ts\":\"<ts>\"}],\"grid\":\"<grid>\"}","imei":"<imei>"}`;
 
-/** dm.D13_reminder row 2: the web acknowledging a DM from the peer. No imei. */
+/** dm.D13_reminder row 2: acknowledging a DM from the peer. No imei. */
 const DM_DELIVERED_INCOMING = String.raw`{"msgInfos":"{\"seen\":0,\"data\":[{\"cmi\":\"<cmi>\",\"gmi\":\"<gmi>\",\"si\":\"<peer>\",\"di\":\"0\",\"mt\":\"webchat\",\"st\":3,\"at\":9,\"cmd\":501,\"ts\":\"<ts>\"}]}"}`;
 
-/** dm.D13_reminder row 3: the web acknowledging its own DM card. */
+/** dm.D13_reminder row 3: acknowledging this account's own DM card. */
 const DM_DELIVERED_OWN_ECHO = String.raw`{"msgInfos":"{\"seen\":0,\"data\":[{\"cmi\":\"<cmi>\",\"gmi\":\"<gmi>\",\"si\":\"0\",\"di\":\"<peer>\",\"mt\":\"chat.ecard\",\"st\":3,\"at\":0,\"cmd\":501,\"ts\":\"<ts>\"}]}"}`;
 
 /** group.A13_create_reminder row 2: group seenv2. */
 const GROUP_SEEN = String.raw`{"msgInfos":"{\"data\":[{\"cmi\":\"<cmi>\",\"gmi\":\"<gmi>\",\"si\":\"0\",\"di\":\"<grid>\",\"mt\":\"chat.ecard\",\"st\":3,\"at\":0,\"cmd\":521,\"ts\":\"<ts>\"}],\"grid\":\"<grid>\"}","imei":"<imei>"}`;
 
-/** dm.D13_reminder row 1: DM seenv2 -- senderId, and an imei zca-js leaves out. */
+/** dm.D13_reminder row 1: DM seenv2 -- senderId, and an imei the previous engine leaves out. */
 const DM_SEEN = String.raw`{"msgInfos":"{\"data\":[{\"cmi\":\"<cmi>\",\"gmi\":\"<gmi>\",\"si\":\"<peer>\",\"di\":\"0\",\"mt\":\"webchat\",\"st\":3,\"at\":9,\"cmd\":501,\"ts\":\"<ts>\"}],\"senderId\":\"<peer>\"}","imei":"<imei>"}`;
 
-// ---- Socket frames, as zca-js hands them to the listener ---------------------
+// ---- Socket frames, as the socket hands them to the listener ---------------------
 
 /** A 501/521 row shaped like live/socket.L1_group_echo.json and socket.L4_dm_echo.json. */
 function frame(over = {}) {
@@ -200,7 +192,7 @@ describe("seenv2 — what `conv read` puts on the wire", () => {
         assert.equal(rec.method, "POST");
         assert.equal(rec.origin, HOSTS.group);
         assert.equal(rec.path, "/api/group/seenv2");
-        assert.equal(rec.query.nretry, "0", "the web sends seenv2 with nretry=0");
+        assert.equal(rec.query.nretry, "0", "seenv2 goes with nretry=0");
         assert.equal(
             rec.plain,
             fill(GROUP_SEEN, {
@@ -228,7 +220,7 @@ describe("seenv2 — what `conv read` puts on the wire", () => {
                     st: 3,
                     at: 9,
                     cmd: 501,
-                    ts: 1700000000301, // a number in, the web's string out
+                    ts: 1700000000301, // a number in, a string out
                 },
             ],
         });
@@ -254,8 +246,8 @@ describe("seenv2 — what `conv read` puts on the wire", () => {
     });
 });
 
-describe("deliveredv2 — built from the frame zca-js hands the listener", () => {
-    /** Send one delivered receipt for a zca-js message the way the listener does. */
+describe("deliveredv2 — built from the frame the socket hands the listener", () => {
+    /** Send one delivered receipt for a listener message the way the listener does. */
     async function deliver(msg) {
         const { api, sent } = harness();
         const target = liveReceiptTarget(msg);
@@ -270,7 +262,7 @@ describe("deliveredv2 — built from the frame zca-js hands the listener", () =>
         assert.equal(rec.method, "POST");
         assert.equal(rec.origin, HOSTS.group);
         assert.equal(rec.path, "/api/group/deliveredv2");
-        assert.equal(rec.query.nretry, undefined, "the web sends deliveredv2 without nretry");
+        assert.equal(rec.query.nretry, undefined, "deliveredv2 goes without nretry");
         assert.equal(
             rec.plain,
             fill(GROUP_DELIVERED_OWN_ECHO, {
@@ -330,7 +322,7 @@ describe("deliveredv2 — built from the frame zca-js hands the listener", () =>
         assert.equal(JSON.parse(rec.params.msgInfos).grid, GRID);
     });
 
-    it("a field the frame lacks goes out as -1, as the web's own builder sends it", async () => {
+    it("a field the frame lacks goes out as -1", async () => {
         const msg = groupEcho();
         delete msg.data.st;
         delete msg.data.at;
@@ -339,16 +331,16 @@ describe("deliveredv2 — built from the frame zca-js hands the listener", () =>
         assert.deepEqual({ st: e.st, at: e.at, cmd: e.cmd }, { st: -1, at: -1, cmd: -1 });
     });
 
-    it("st/at/cmd reach the wire as given, which zca-js's builder cannot do", async () => {
+    it("st/at/cmd reach the wire as given, which the previous engine's builder cannot do", async () => {
         const [e] = entries(await deliver(groupEcho({ st: 5, at: 9 })));
         assert.deepEqual({ st: e.st, at: e.at, cmd: e.cmd }, { st: 5, at: 9, cmd: 521 });
     });
 });
 
 describe("liveReceiptTarget — which live messages get a receipt", () => {
-    it("skips the removal frames Zalo Web does not acknowledge", () => {
-        // The web's message reducer routes chat.delete and chat.undo rows to
-        // their own handlers and never into the delivered batch.
+    it("skips the removal frames Zalo does not acknowledge", () => {
+        // chat.delete and chat.undo rows have their own handling and never
+        // go into the delivered batch.
         assert.equal(liveReceiptTarget(dmEcho({ msgType: "chat.delete", content: [{}] })), null);
         assert.equal(liveReceiptTarget(groupEcho({ msgType: "chat.undo" })), null);
     });
@@ -385,7 +377,7 @@ describe("createDeliveredReceipts — the listener's automatic receipts", () => 
             sent.map((r) => r.path),
             ["/api/group/deliveredv2", "/api/message/deliveredv2"],
         );
-        assert.equal(entries(sent[0])[0].si, "0", "our own echo is acknowledged, as the web does");
+        assert.equal(entries(sent[0])[0].si, "0", "our own echo is acknowledged");
         assert.equal(entries(sent[1])[0].si, PEER);
     });
 

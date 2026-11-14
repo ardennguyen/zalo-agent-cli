@@ -115,9 +115,9 @@ describe("mcp webhook", () => {
 
     it("purge deletes dead events for good, one or all, and never a queued one", async () => {
         seed();
-        assert.equal((await runJson("purge", "4")).deleted, 1);
-        assert.equal((await runJson("purge", "1")).deleted, 0, "event 1 is queued, not dead");
-        assert.equal((await runJson("purge")).deleted, 1);
+        assert.equal((await runJson("purge", "4", "--yes")).deleted, 1);
+        assert.equal((await runJson("purge", "1", "--yes")).deleted, 0, "event 1 is queued, not dead");
+        assert.equal((await runJson("purge", "--yes")).deleted, 1);
         const s = (await runJson("status")).outbox;
         assert.deepEqual([s.pending, s.dead], [2, 0]);
     });

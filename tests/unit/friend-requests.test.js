@@ -6,14 +6,19 @@
  * feature. These pin it, the timestamp-unit handling (not yet measured on a
  * live account) and the error wording shared with `friend add`.
  */
+import "../helpers/sandbox.js"; // first: the name helpers now reach the account db (src/core/contact-names.js)
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
     RECEIVED_FRIEND_REQUEST,
+    NO_SENT_REQUESTS,
     describeFriendAddError,
+    describeFriendUndoError,
     extractErrorCode,
+    friendAddFailure,
     friendStatusFrom,
     friendsFrom,
+    readSentRequests,
     receivedRequestsFrom,
     sentRequestsFrom,
     toIso,
@@ -71,8 +76,15 @@ describe("sentRequestsFrom", () => {
             u2: { displayName: "D" },
         });
         assert.deepEqual(out, [
-            { userId: "u1", displayName: "Z", message: "hello", requestedAt: "2026-09-21T14:13:20.000Z" },
-            { userId: "u2", displayName: "D", message: "", requestedAt: null },
+            {
+                userId: "u1",
+                displayName: "Z",
+                alias: null,
+                zaloName: "Z",
+                message: "hello",
+                requestedAt: "2026-09-21T14:13:20.000Z",
+            },
+            { userId: "u2", displayName: "D", alias: null, zaloName: "D", message: "", requestedAt: null },
         ]);
         assert.deepEqual(sentRequestsFrom(null), []);
     });
@@ -116,13 +128,13 @@ describe("friendStatusFrom and friendsFrom", () => {
 });
 
 describe("error wording shared with `friend add`", () => {
-    it("extracts the numeric code from a zca-js message", () => {
+    it("extracts the numeric code from an error message", () => {
         assert.equal(extractErrorCode("Zalo said no (225)"), 225);
         assert.equal(extractErrorCode("bad id (-1)"), -1);
         assert.equal(extractErrorCode("no code here"), null);
     });
 
-    it("keeps the CLI's original wording and names the codes Zalo Web itself names", () => {
+    it("keeps the CLI's original wording and names the codes Zalo itself names", () => {
         assert.match(describeFriendAddError(225, "9"), /Already friends with 9/);
         assert.match(describeFriendAddError("215", "9"), /blocked you/);
         assert.match(describeFriendAddError(222, "9"), /friend accept 9/);
@@ -130,5 +142,40 @@ describe("error wording shared with `friend add`", () => {
         for (const code of [221, 223, 224]) assert.ok(describeFriendAddError(code, "9"), `code ${code}`);
         assert.equal(describeFriendAddError(999, "9"), undefined, "an unknown code is left for the caller to report");
         assert.equal(describeFriendAddError(null, "9"), undefined);
+    });
+
+    it("friend add's failure line names a code only when the error has one", () => {
+        // Red if the line is built as `(code ${code})` whatever the error: a network error printed "(code null)".
+        assert.equal(friendAddFailure(new Error("fetch failed"), "9"), "Friend request failed: fetch failed");
+        const coded = Object.assign(new Error("odd"), { code: 999 });
+        assert.equal(friendAddFailure(coded, "9"), "Friend request failed (code 999): odd");
+        assert.match(friendAddFailure(Object.assign(new Error("x"), { code: 225 }), "9"), /Already friends with 9/);
+    });
+});
+
+describe("undo wording and the sent-requests read", () => {
+    it("names Zalo's 301 (too many requests taken back) and leaves other codes to the caller", () => {
+        assert.match(describeFriendUndoError(301, "9"), /request to 9: too many requests were taken back/);
+        assert.match(describeFriendUndoError("301", "9"), /24 hours/);
+        assert.equal(describeFriendUndoError(999, "9"), undefined);
+        assert.equal(describeFriendUndoError(null, "9"), undefined);
+    });
+
+    it("reads Zalo's 'none sent' as {}, by the error's code, never by its text", async () => {
+        const api = (answer) => ({
+            getSentFriendRequest: async () => {
+                if (answer instanceof Error) throw answer;
+                return answer;
+            },
+        });
+        assert.equal(NO_SENT_REQUESTS, 112);
+        assert.deepEqual(await readSentRequests(api({})), {});
+        assert.deepEqual(await readSentRequests(api(null)), {});
+        assert.deepEqual(await readSentRequests(api(Object.assign(new Error("x"), { code: 112 }))), {});
+        assert.deepEqual(await readSentRequests(api(Object.assign(new Error("x"), { code: "112" }))), {});
+        await assert.rejects(readSentRequests(api(new Error("Zalo error (112)"))), /Zalo error \(112\)/);
+        await assert.rejects(readSentRequests(api(Object.assign(new Error("other"), { code: 500 }))), /other/);
+        const one = { 1: { userId: "1" } };
+        assert.deepEqual(await readSentRequests(api(one)), one);
     });
 });

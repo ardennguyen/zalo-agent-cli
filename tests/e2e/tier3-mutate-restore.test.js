@@ -106,7 +106,7 @@ describe("tier 3 · DM conversation toggles", { skip: skip || (T?.dm ? false : "
         const failures = [];
         for (const [args, label] of [
             [["conv", "unmute", "-t", "0", T.dm.threadId], "unmute"],
-            [["conv", "unhide", "-t", "0", T.dm.threadId], "unhide"],
+            [["conv", "unhide", "--yes", "-t", "0", T.dm.threadId], "unhide"],
             [["conv", "auto-delete", "-t", "0", T.dm.threadId, "off"], "auto-delete off"],
             [["conv", "read", "-t", "0", T.dm.threadId], "read"],
         ]) {
@@ -144,7 +144,7 @@ describe("tier 3 · DM conversation toggles", { skip: skip || (T?.dm ? false : "
         });
         if (!hidden.ok) return; // no PIN on this account — nothing to unhide
         await sleep(400);
-        await ok(["conv", "unhide", "-t", "0", T.dm.threadId], "dm unhide");
+        await ok(["conv", "unhide", "--yes", "-t", "0", T.dm.threadId], "dm unhide");
     });
 
     it("sets a DM auto-delete TTL and turns it back off", async () => {
@@ -161,13 +161,26 @@ describe("tier 3 · read / unread", { skip }, () => {
         await runCli(["conv", "read", "-t", "1", T.group.threadId], live(T));
     });
 
-    it("marks the group read, then unread, then read again", async () => {
+    it("marks the group read, then unread, then read again", async (t) => {
         assertDisposable(T.group.threadId, "conv read/unread");
-        await ok(["conv", "read", "-t", "1", T.group.threadId], "read");
+        // `conv read` anchors its seen receipt on an incoming message among the
+        // thread's newest cached rows. Tier 2 fills the disposable group with
+        // our own sends, and only another member can post an incoming one, so
+        // that refusal is the group's state, not a failure. The unread mark is
+        // still cleared and must say so; the DM test covers the seen receipt.
+        const read = async (label) => {
+            const r = await ok(["conv", "read", "-t", "1", T.group.threadId], label, {
+                allowError: /No incoming message for this conversation is in the local cache/,
+            });
+            if (!r.refused) return;
+            assert.match(r.raw.stdout, /Cleared the manual unread mark/, `${label} did not clear the unread mark`);
+            t.diagnostic(`${label}: no incoming message among the group's newest cached rows; unread mark only`);
+        };
+        await read("read");
         await sleep(400);
         await ok(["conv", "unread", "-t", "1", T.group.threadId], "unread");
         await sleep(400);
-        await ok(["conv", "read", "-t", "1", T.group.threadId], "read again");
+        await read("read again");
     });
 });
 
@@ -176,7 +189,7 @@ describe("tier 3 · hide / unhide", { skip }, () => {
 
     after(async () => {
         if (!g.run || !hidden) return;
-        await runCli(["conv", "unhide", "-t", "1", T.group.threadId], live(T));
+        await runCli(["conv", "unhide", "--yes", "-t", "1", T.group.threadId], live(T));
     });
 
     it("hides and unhides the disposable group", async () => {
@@ -189,7 +202,7 @@ describe("tier 3 · hide / unhide", { skip }, () => {
         if (hasSuccess(r.stdout)) {
             hidden = true;
             await sleep(500);
-            const back = await runCli(["conv", "unhide", "-t", "1", T.group.threadId], live(T));
+            const back = await runCli(["conv", "unhide", "--yes", "-t", "1", T.group.threadId], live(T));
             assert.ok(hasSuccess(back.stdout), back.stdout.slice(0, 300));
             hidden = false;
         }
@@ -315,7 +328,7 @@ describe("tier 3 · group rename", { skip }, () => {
 
     // REGRESSION GUARD — rename used to fail every single time.
     //
-    // group.js called changeGroupName(groupId, name) but zca-js declares
+    // group.js called changeGroupName(groupId, name) but the previous engine declares
     // changeGroupName(name, groupId) — the arguments were swapped, so Zalo
     // got the group id as the new name and rejected the call with
     // "Tham số không hợp lệ". (changeGroupAvatar(source, groupId) right
@@ -369,6 +382,7 @@ describe("tier 3 · group settings", { skip }, () => {
             [
                 "group",
                 "settings",
+                "--yes",
                 T.group.threadId,
                 flag(priorSettings.lockCreatePoll, "lock-poll"),
                 flag(priorSettings.lockCreatePost, "lock-post"),
@@ -380,17 +394,23 @@ describe("tier 3 · group settings", { skip }, () => {
         assert.equal(errorLineOf(r.stdout), null, `group settings not restored: ${errorLineOf(r.stdout)}`);
     });
 
-    it("toggles a setting on and back off", async () => {
+    it("toggles a setting away from its current value and back", async () => {
         assertDisposable(T.group.threadId, "group settings");
-        await ok(["group", "settings", T.group.threadId, "--sign-admin"], "sign-admin on");
+        // Flip from what the group has: asking for the value it already holds
+        // is answered "Nothing to change", which is right, not a success.
+        assert.ok(priorSettings, "could not read the group's settings first");
+        const flip = priorSettings.signAdminMsg
+            ? ["--no-sign-admin", "--sign-admin"]
+            : ["--sign-admin", "--no-sign-admin"];
+        await ok(["group", "settings", "--yes", T.group.threadId, flip[0]], `${flip[0]} (away from current)`);
         await sleep(600);
-        await ok(["group", "settings", T.group.threadId, "--no-sign-admin"], "sign-admin off");
+        await ok(["group", "settings", "--yes", T.group.threadId, flip[1]], `${flip[1]} (back)`);
     });
 
     it("accepts the negated form of each documented flag", async () => {
         assertDisposable(T.group.threadId, "group settings");
         const r = await runCli(
-            ["group", "settings", T.group.threadId, "--no-lock-poll", "--no-lock-post", "--no-block-name"],
+            ["group", "settings", "--yes", T.group.threadId, "--no-lock-poll", "--no-lock-post", "--no-block-name"],
             live(T, { timeout: 120_000 }),
         );
         assert.doesNotMatch(r.all, /at Command\.|Unhandled|unknown option/i, r.all.slice(0, 300));
@@ -408,7 +428,7 @@ describe("tier 3 · group invite link", { skip }, () => {
 
     after(async () => {
         if (!g.run || !enabled) return;
-        const off = await runCli(["group", "disable-link", T.group.threadId], live(T, { timeout: 120_000 }));
+        const off = await runCli(["group", "disable-link", "--yes", T.group.threadId], live(T, { timeout: 120_000 }));
         assert.equal(errorLineOf(off.stdout), null, `invite link left ENABLED on the group: ${off.all.slice(0, 300)}`);
     });
 
@@ -423,7 +443,7 @@ describe("tier 3 · group invite link", { skip }, () => {
         const info = await retryRead(() => runJson(["group", "link-info", T.group.threadId], live(T)));
         assert.equal(info.ok, true, info.error);
 
-        await ok(["group", "disable-link", T.group.threadId], "disable-link");
+        await ok(["group", "disable-link", "--yes", T.group.threadId], "disable-link");
         enabled = false;
     });
 });
@@ -478,7 +498,7 @@ describe("tier 3 · message history and local cache", { skip }, () => {
             assert.equal(r.ok, true, r.error);
             assert.equal(String(r.data.threadId), T.dm.threadId);
             // "dm", not "user": the CLI reports the thread type in its own
-            // vocabulary, which does not mirror zca-js's ThreadType.User.
+            // vocabulary, which does not mirror the previous engine's ThreadType.User.
             assert.equal(r.data.threadType, "dm");
             assert.ok(Array.isArray(r.data.messages));
         },
@@ -496,7 +516,7 @@ describe("tier 3 · message history and local cache", { skip }, () => {
             const dbPath = join(T.home, ".zalo-agent-cli", "accounts", T.accountOwnId, "zalo.db");
             if (!existsSync(dbPath)) return;
 
-            const { default: Database } = await import("better-sqlite3");
+            const { default: Database } = await import("../../src/core/sqlite.js");
             const db = new Database(dbPath, { readonly: true });
             let withCli = 0;
             try {
@@ -540,20 +560,24 @@ describe("tier 3 · polls (vote lifecycle)", { skip }, () => {
         const info = await runJson(["poll", "info", pollId], live(T));
         assert.equal(info.ok, true, info.error);
 
-        const optionId =
-            (info.data?.options || [])[0]?.votedMemberIds !== undefined ? String(info.data.options[0].id ?? 0) : null;
+        // A poll detail names its options by `option_id` (spec-boards 6). The
+        // old guard read `votedMemberIds`, which no reply carries, so the vote
+        // and unvote were skipped on every run.
+        const optionId = info.data?.options?.[0]?.option_id;
+        assert.ok(
+            optionId !== undefined && optionId !== null,
+            `no option_id in ${JSON.stringify(info.data?.options).slice(0, 200)}`,
+        );
 
         // vote / unvote / lock were crash-only asserted, so all three could
         // fail on every invocation and stay green. Demand success.
-        if (optionId !== null) {
-            await ok(["poll", "vote", pollId, optionId], "poll vote");
-            await sleep(600);
-            await ok(["poll", "unvote", pollId], "poll unvote");
-        }
+        await ok(["poll", "vote", pollId, String(optionId)], "poll vote");
+        await sleep(600);
+        await ok(["poll", "unvote", pollId], "poll unvote");
 
         // Locking is the reversible end-state for a poll — there is no
         // `poll delete`, so a locked poll is as closed as it gets.
-        await ok(["poll", "lock", pollId], "poll lock");
+        await ok(["poll", "lock", "--yes", pollId], "poll lock");
     });
 
     // `poll add-option` and `poll share` sit between an existing create and
@@ -578,7 +602,7 @@ describe("tier 3 · polls (vote lifecycle)", { skip }, () => {
         assert.ok(names.includes("Three"), `added option missing from ${JSON.stringify(names)}`);
 
         await ok(["poll", "share", pollId], "poll share");
-        await ok(["poll", "lock", pollId], "poll lock");
+        await ok(["poll", "lock", "--yes", pollId], "poll lock");
     });
 });
 describe("tier 3 · local cache and the --no-cache flag", { skip }, () => {
@@ -665,11 +689,10 @@ describe("tier 3 · local cache and the --no-cache flag", { skip }, () => {
 // invocation here would wake the owner's phone and block on a human tapping
 // "ĐỒNG BỘ NGAY" -- in a tier that runs under plain ZALO_TEST_LIVE=1.
 // --socket opens a WebSocket and asks the server for recent history
-// (cmd 510/511), which is what the real
-// Zalo Web client does — see agent/work/transfer-sync-v2/NOTES.md § Mobile sync. It is still gated
+// (cmd 510/511) — see agent/work/transfer-sync-v2/NOTES.md § Mobile sync. It is still gated
 // as a live test for a different reason: Zalo permits ONE web session per
-// account, so running it will close a `listen` daemon or a browser Zalo Web
-// session on the same account.
+// account, so running it will close a `listen` daemon or Zalo in a browser
+// on the same account.
 //
 // The rest of the surface (flag parsing, the no-account guard) is covered
 // offline in tests/cli/, and the backfill itself is unit-tested against a fake
@@ -750,7 +773,7 @@ describe("tier 3 · create/mutate/delete lifecycles", { skip }, () => {
                 "catalog update-product",
             );
         } finally {
-            await runCli(["catalog", "delete", catId], live(T, { timeout: 120_000 }));
+            await runCli(["catalog", "delete", "--yes", catId], live(T, { timeout: 120_000 }));
         }
     });
 
@@ -776,7 +799,10 @@ describe("tier 3 · create/mutate/delete lifecycles", { skip }, () => {
                 "reminder edit",
             );
         } finally {
-            await runCli(["reminder", "remove", "-t", "1", id, T.group.threadId], live(T, { timeout: 120_000 }));
+            await runCli(
+                ["reminder", "remove", "--yes", "-t", "1", id, T.group.threadId],
+                live(T, { timeout: 120_000 }),
+            );
         }
     });
 
@@ -788,7 +814,7 @@ describe("tier 3 · create/mutate/delete lifecycles", { skip }, () => {
             try {
                 if (id) await ok(["quick-msg", "update", id, kw, "[e2e] lifecycle qm edited"], "quick-msg update");
             } finally {
-                if (id) await runCli(["quick-msg", "remove", id], live(T));
+                if (id) await runCli(["quick-msg", "remove", "--yes", id], live(T));
             }
         }
 
@@ -805,7 +831,7 @@ describe("tier 3 · create/mutate/delete lifecycles", { skip }, () => {
                     "auto-reply update",
                 );
         } finally {
-            if (rid) await runCli(["auto-reply", "delete", rid], live(T));
+            if (rid) await runCli(["auto-reply", "delete", "--yes", rid], live(T));
         }
     });
 });

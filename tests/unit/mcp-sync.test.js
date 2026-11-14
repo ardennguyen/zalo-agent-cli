@@ -199,9 +199,25 @@ it("reaction jobs forward removal control and need no phone restore", async () =
     assert.equal(payload(await api.call("zalo_sync_status", { jobId: start.jobId })).result.placed, 2);
 });
 
+it("a messages job forwards fullResync and shardSize to the runner", async () => {
+    const f = fixture();
+    const api = tools(f.jobs);
+    payload(await api.call("zalo_sync", { requestId: "full-1", fullResync: true, shardSize: 10 }));
+    await tick();
+    assert.deepEqual(f.calls, [{ fullResync: true, shardSize: 10 }]);
+    f.finish({});
+    await tick();
+});
+
 for (const invalid of [
     {},
     { requestId: "" },
+    { requestId: "a", shardSize: 0 },
+    { requestId: "a", shardSize: 31 },
+    { requestId: "a", shardSize: 1.5 },
+    { requestId: "a", fullResync: "yes" },
+    { requestId: "a", stage: "reactions", fullResync: true },
+    { requestId: "a", stage: "reactions", shardSize: 5 },
     { requestId: "a", days: 0 },
     { requestId: "a", days: 1, from: "2026-10-01" },
     { requestId: "a", from: "2026-02-30" },
@@ -259,7 +275,23 @@ it("shared runners resolve the current API after reconnect and never acquire a s
     assert.equal(seen[1].params.keepAlive, true);
     // A reconnect that only waits for the daemon's own recovery (daemon-sync.js): it never opens a socket itself.
     assert.equal(typeof seen[1].params.reconnect, "function");
-    assert.equal(seen[1].params.maxResumes, 3, "a daemon allows more resumes than the CLI's one");
+    assert.equal(seen[1].params.maxResumes, 3, "a daemon names its three resumes itself");
+});
+
+it("the messages runner hands the cancel signal of the channel to the restore", async (t) => {
+    const seen = [];
+    const restore = mock.method(SyncV2.prototype, "restore", async function (params) {
+        seen.push(params.signal);
+        return { reason: "cancelled" };
+    });
+    t.after(() => restore.mock.restore());
+    const runners = createSyncRunners({
+        getApi: () => ({ listener: { ws: { readyState: 1 } } }),
+        accountName: "101",
+    });
+    const controller = new AbortController();
+    await runners.messages({}, () => {}, controller.signal);
+    assert.equal(seen[0], controller.signal, "a cancel from the CLI must reach the restore, or Ctrl+C stops nothing");
 });
 
 it("SDK tools/call validates refinements and tracks async work across separate calls", async (t) => {

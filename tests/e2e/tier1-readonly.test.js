@@ -106,9 +106,9 @@ describe("tier 1 · friends", { skip }, () => {
     });
 
     // KNOWN DEFECT (upstream) — see agent/work/transfer-sync-v2/NOTES.md § Known issues.
-    // Zalo answers this endpoint with HTTP 404; zca-js is calling a route
+    // Zalo answers this endpoint with HTTP 404; the session is calling a route
     // that no longer exists. The CLI surface is fine — the API is gone.
-    it("friend online returns a list", { todo: "Zalo returns HTTP 404 — retired endpoint in zca-js" }, async () => {
+    it("friend online returns a list", { todo: "Zalo returns HTTP 404 — retired endpoint" }, async () => {
         const r = await runJson(["friend", "online"], live(T, { timeout: 120_000 }));
         assert.equal(r.ok, true, r.error);
     });
@@ -119,7 +119,7 @@ describe("tier 1 · friends", { skip }, () => {
         assert.match(r.error, /404/);
     });
 
-    it("friend close lists close friends", { todo: "Zalo returns HTTP 404 — retired endpoint in zca-js" }, async () => {
+    it("friend close lists close friends", { todo: "Zalo returns HTTP 404 — retired endpoint" }, async () => {
         const r = await runJson(["friend", "close"], live(T, { timeout: 120_000 }));
         assert.equal(r.ok, true, r.error);
     });

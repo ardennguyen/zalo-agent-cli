@@ -5,27 +5,8 @@
 import { getApi } from "../core/zalo-client.js";
 import { success, error, output } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
-
-/** One year in milliseconds — the default window for an open-ended rule. */
-const DEFAULT_WINDOW_MS = 365 * 24 * 60 * 60 * 1000;
-
-/**
- * Resolve the {startTime, endTime} window for an auto-reply rule.
- *
- * These used to default to 0/0, which Zalo rejects outright with
- * "Tham số không hợp lệ" — so `auto-reply create` could never succeed on
- * its defaults. Zalo treats the pair as a real active window, so an unset
- * start means "from now" and an unset end means "no foreseeable end",
- * expressed as a far-future timestamp rather than 0.
- *
- * @param {{start?: number, end?: number}} opts
- * @returns {{startTime: number, endTime: number}}
- */
-function activeWindow(opts) {
-    const startTime = Number.isFinite(opts.start) && opts.start > 0 ? opts.start : Date.now();
-    const endTime = Number.isFinite(opts.end) && opts.end > 0 ? opts.end : startTime + DEFAULT_WINDOW_MS;
-    return { startTime, endTime };
-}
+import { guardSubcommand } from "../core/confirm-guard.js";
+import { activeWindow } from "../core/auto-reply.js";
 
 export function registerAutoReplyCommands(program) {
     const ar = program.command("auto-reply").description("Manage auto-reply messages");
@@ -47,8 +28,8 @@ export function registerAutoReplyCommands(program) {
         .option("--no-enable", "Create disabled")
         .option("--start <ms>", "Start time (epoch ms; default: now)", parseIntOption)
         .option("--end <ms>", "End time (epoch ms; default: one year out)", parseIntOption)
-        .option("--scope <n>", "Scope: 0=all, 1=friends, 2=strangers", parseIntOption, 0)
-        .option("--uids <ids...>", "Specific user IDs to auto-reply to")
+        .option("--scope <n>", "Scope: 0=all, 1=friends, 2=strangers, 3 (carries --uids)", parseIntOption, 0)
+        .option("--uids <ids...>", "The people a rule answers: sent with --scope 2 or 3 only")
         .action(async (content, opts) => {
             try {
                 const payload = {
@@ -71,8 +52,8 @@ export function registerAutoReplyCommands(program) {
         .option("--no-enable", "Disable the rule")
         .option("--start <ms>", "Start time (epoch ms; default: now)", parseIntOption)
         .option("--end <ms>", "End time (epoch ms; default: one year out)", parseIntOption)
-        .option("--scope <n>", "Scope: 0=all, 1=friends, 2=strangers", parseIntOption, 0)
-        .option("--uids <ids...>", "Specific user IDs")
+        .option("--scope <n>", "Scope: 0=all, 1=friends, 2=strangers, 3 (carries --uids)", parseIntOption, 0)
+        .option("--uids <ids...>", "The people a rule answers: sent with --scope 2 or 3 only")
         .action(async (id, content, opts) => {
             try {
                 const payload = {
@@ -100,4 +81,6 @@ export function registerAutoReplyCommands(program) {
                 error(`Delete auto-reply failed: ${e.message}`);
             }
         });
+    // Asked about first, as Zalo does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    guardSubcommand(ar, "delete", "autoReply.delete", { target: (id) => ({ autoReplyId: id }) });
 }

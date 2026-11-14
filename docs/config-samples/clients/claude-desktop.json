@@ -1,0 +1,12 @@
+{
+    "mcpServers": {
+        "zalo": {
+            "command": "zalo-agent",
+            "args": ["mcp", "start", "--account", "1000000000000000001"]
+        },
+        "zalo-second": {
+            "command": "zalo-agent",
+            "args": ["mcp", "start", "--account", "1000000000000000002"]
+        }
+    }
+}

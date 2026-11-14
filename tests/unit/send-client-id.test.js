@@ -1,12 +1,12 @@
 /**
  * `msg send` must report the cliMsgId Zalo actually received.
  *
- * zca-js stamps `params.clientId = Date.now()` inside `handleMessage()`, right
- * before the AES encrypt and the POST, and upstream returns only `{msgId}`.
- * `src/commands/msg.js` used to take its own `Date.now()` reading before the
- * call and print that — a different number by however long the encrypt and the
- * round trip took. Usually 0-2ms off, never guaranteed equal, and an id that is
- * off by one millisecond is simply the wrong id.
+ * The send stamps `params.clientId` from the session's client-id source right
+ * before the encrypt and the POST, and hands the same value back as
+ * `cliMsgId`. `src/commands/msg.js` used to take its own `Date.now()` reading
+ * before the call and print that -- a different number by however long the
+ * encrypt and the round trip took. Usually 0-2ms off, never guaranteed equal,
+ * and an id that is off by one millisecond is simply the wrong id.
  *
  * That mattered in three places, all of which key on the value:
  *
@@ -18,13 +18,14 @@
  *   · `msg undo` / `msg delete` refuse outright without one, which is how an
  *     image or a file could be sent and then not be cleanable.
  *
- * `patches/zca-js+2.2.0.patch` now hands the clientId back on the response, and
- * these tests hold that patch to its claim by decrypting the request body and
- * comparing the reported id against the one that went on the wire. A zca-js
- * bump that drops the patch fails here rather than silently reviving the guess.
+ * These tests decrypt the request body and compare the reported id against the
+ * one that went on the wire, end to end through the session object
+ * (src/zalo/api.js). Every other send method, and the attachment sends, are
+ * held to the same thing case by case in tests/unit/wire-messages.test.js and
+ * tests/unit/wire-upload.test.js.
  *
- * Pure protocol plumbing: `ctx.options.polyfill` is zca-js's own HTTP seam, so
- * the real `sendMessage` runs with no socket, no session and no filesystem.
+ * Pure protocol plumbing: `ctx.options.polyfill` is the session's HTTP seam,
+ * so the real `sendMessage` runs with no socket, no session and no filesystem.
  */
 
 import { describe, it } from "node:test";
@@ -32,9 +33,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { sendMessageFactory } from "../../node_modules/zca-js/dist/apis/sendMessage.js";
-import { encodeAES, decodeAES } from "../../node_modules/zca-js/dist/utils.js";
-import { ThreadType } from "../../node_modules/zca-js/dist/models/Enum.js";
+import { createApi } from "../../src/zalo/api.js";
+import { THREAD_TYPE } from "../../src/zalo/enums.js";
+import { openSession, sealSession } from "../../src/zalo/kernel/cipher.js";
 
 /** Obviously-fake 16-byte AES key. Never a real session secret — see AGENTS.md §12. */
 const SECRET_KEY = Buffer.from("0123456789abcdef").toString("base64");
@@ -42,73 +43,52 @@ const SECRET_KEY = Buffer.from("0123456789abcdef").toString("base64");
 const THREAD_USER = "9000000000000000001";
 const THREAD_GROUP = "9000000000000000002";
 
-/** An `others` upload result, the shape `handleAttachment` reads. Touches no file. */
-const UPLOADED_FILE = {
-    fileType: "others",
-    fileId: 1,
-    checksum: "deadbeef",
-    fileName: "ghi-chu.txt",
-    totalSize: 12,
-    clientFileId: "555",
-    fileUrl: "https://tt-files-test.invalid/ghi-chu.txt",
-};
-
 /**
  * A response shaped like Zalo's: outer JSON envelope, AES-encrypted payload.
  *
- * @param {object} data - what `resolveResponse` should hand back
- * @returns {object} a minimal Response stand-in
+ * @param {object} data - what the session's reply decoding should hand back
+ * @returns {Response}
  */
 function zaloOk(data) {
-    const payload = encodeAES(SECRET_KEY, JSON.stringify({ error_code: 0, error_message: "Successful.", data }));
-    return {
-        ok: true,
+    const payload = sealSession(SECRET_KEY, JSON.stringify({ error_code: 0, error_message: "Successful.", data }));
+    return new Response(JSON.stringify({ error_code: 0, error_message: "Successful.", data: payload }), {
         status: 200,
-        headers: { get: () => null },
-        json: async () => ({ error_code: 0, error_message: "Successful.", data: payload }),
-    };
+        headers: { "content-type": "application/json" },
+    });
 }
 
 /**
- * A `sendMessage` bound to a fake transport that records every decrypted request.
+ * A `sendMessage` on a fake transport that records every decrypted request.
  *
  * @param {object} [opts]
  * @param {number} [opts.msgId] - msgId the fake Zalo assigns
- * @param {number} [opts.delayMs] - stall before responding, to separate the clock
- *   reading inside `handleMessage` from one taken after the call returns
- * @param {Function} [opts.uploadAttachment] - stub for `api.uploadAttachment`
+ * @param {number} [opts.delayMs] - stall before responding, to separate the id
+ *   minted before the POST from a clock reading taken after the call returns
  * @returns {{send: Function, sent: object[]}} the API function and the request log
  */
-function harness({ msgId = 424242, delayMs = 0, uploadAttachment } = {}) {
+function harness({ msgId = 424242, delayMs = 0 } = {}) {
     const sent = [];
     const ctx = {
         secretKey: SECRET_KEY,
         imei: "test-imei-0000",
         userAgent: "zalo-agent-cli-offline-test",
+        language: "vi",
         API_VERSION: 651,
         API_TYPE: 30,
         options: {
             logging: false,
-            agent: undefined,
             async polyfill(url, options) {
                 const body = options?.body;
                 const params = body instanceof URLSearchParams ? body.get("params") : null;
-                sent.push({ url, params: params ? JSON.parse(decodeAES(SECRET_KEY, params)) : null });
+                sent.push({ url: String(url), params: params ? JSON.parse(openSession(SECRET_KEY, params)) : null });
                 if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
                 return zaloOk({ msgId });
             },
         },
-        settings: { features: { sharefile: { max_file: 100, max_size_share_file_v3: 1024 } } },
     };
-    const api = {
-        zpwServiceMap: {
-            chat: ["https://tt-chat-test.invalid"],
-            group: ["https://tt-group-test.invalid"],
-            file: ["https://tt-files-test.invalid"],
-        },
-        uploadAttachment,
-    };
-    return { send: sendMessageFactory(ctx, api), sent };
+    const serviceMap = { chat: ["https://tt-chat-test.invalid"], group: ["https://tt-group-test.invalid"] };
+    const api = createApi(ctx, serviceMap, [], { createListener: () => null });
+    return { send: api.sendMessage, sent };
 }
 
 /**
@@ -126,21 +106,21 @@ function textRequest(sent) {
 describe("sendMessage reports the clientId it put on the wire", () => {
     it("a DM's reported cliMsgId is the wire clientId, exactly", async () => {
         const { send, sent } = harness();
-        const result = await send("xin chào", THREAD_USER, ThreadType.User);
+        const result = await send("xin chào", THREAD_USER, THREAD_TYPE.USER);
 
         const wire = textRequest(sent).params;
-        assert.ok(wire.clientId, "zca-js must still send a clientId");
+        assert.ok(wire.clientId, "the send must carry a clientId");
         assert.equal(
             result.message.cliMsgId,
             String(wire.clientId),
             "the reported cliMsgId must be the clientId Zalo received",
         );
-        assert.equal(result.message.msgId, 424242, "the rest of the response is untouched");
+        assert.equal(String(result.message.msgId), "424242", "the rest of the response is untouched");
     });
 
     it("a group send reports it too", async () => {
         const { send, sent } = harness();
-        const result = await send("chào cả nhà", THREAD_GROUP, ThreadType.Group);
+        const result = await send("chào cả nhà", THREAD_GROUP, THREAD_TYPE.GROUP);
 
         const req = textRequest(sent);
         assert.equal(req.params.grid, THREAD_GROUP, "sanity: this really is the group path");
@@ -167,7 +147,7 @@ describe("sendMessage reports the clientId it put on the wire", () => {
                 },
             },
             THREAD_USER,
-            ThreadType.User,
+            THREAD_TYPE.USER,
         );
 
         const req = textRequest(sent);
@@ -176,68 +156,16 @@ describe("sendMessage reports the clientId it put on the wire", () => {
         assert.equal(result.message.cliMsgId, String(req.params.clientId));
     });
 
-    it("the reported id is the captured one, not a fresh clock reading", async () => {
-        // The defect in one assertion. zca-js reads the clock before the POST,
-        // so anything that re-reads it afterwards lands later by the round-trip
-        // time. Stalling the fake transport makes that gap unmistakable.
+    it("the reported id is the one minted before the POST, not a fresh clock reading", async () => {
+        // The defect in one assertion. The id is minted before the POST, so
+        // anything that re-reads the clock afterwards lands later by the
+        // round-trip time. Stalling the fake transport makes that gap
+        // unmistakable.
         const { send } = harness({ delayMs: 120 });
-        const result = await send("chậm", THREAD_USER, ThreadType.User);
+        const result = await send("chậm", THREAD_USER, THREAD_TYPE.USER);
 
         const drift = Date.now() - Number(result.message.cliMsgId);
         assert.ok(drift >= 100, `expected the id to predate the response by the stall, drift was ${drift}ms`);
-    });
-
-    it("text sent alongside a file still reports the text message's clientId", async () => {
-        // A caption that cannot ride on the attachment goes out as its own
-        // message first, through a second call site in zca-js. Same guarantee.
-        const { send, sent } = harness({ uploadAttachment: async () => [UPLOADED_FILE] });
-        const result = await send({ msg: "kèm tệp", attachments: ["ghi-chu.txt"] }, THREAD_USER, ThreadType.User);
-
-        assert.equal(sent.length, 2, "one request for the text, one for the file");
-        assert.equal(result.message.cliMsgId, String(textRequest(sent).params.clientId));
-    });
-
-    it("stamps the attachment responses too", async () => {
-        // The case that made this necessary: a lone image or file. `canBeDesc`
-        // folds the caption into the attachment, so `responses.message` is
-        // null and — before the patch reached this path — the send returned no
-        // cliMsgId anywhere. `msg undo` and `msg delete` both refuse without
-        // one, so tier 4 could not clean up the attachments it had just sent.
-        const { send, sent } = harness({ uploadAttachment: async () => [UPLOADED_FILE] });
-        const result = await send({ msg: "", attachments: ["ghi-chu.txt"] }, THREAD_USER, ThreadType.User);
-
-        assert.equal(result.message, null, "sanity: the caption folded into the attachment");
-        assert.equal(result.attachment.length, 1);
-
-        const wire = sent.find((r) => r.params && "clientId" in r.params && !("message" in r.params));
-        assert.ok(wire, "the attachment request must carry a clientId");
-        assert.equal(
-            result.attachment[0].cliMsgId,
-            String(wire.params.clientId),
-            "the reported cliMsgId must be the clientId Zalo received",
-        );
-    });
-
-    it("pairs each attachment with its own clientId, not the first one", async () => {
-        // The stamping zips `send()`'s results against its inputs by index.
-        // That is only sound because `send()` is a Promise.all over the array
-        // it was handed. Two files with distinct ids catch a regression that
-        // reorders or flattens them — and catch an off-by-one that would
-        // silently label file 2 with file 1's id, which recalls the wrong
-        // message.
-        const uploads = [
-            { ...UPLOADED_FILE, fileName: "mot.txt", clientFileId: "111" },
-            { ...UPLOADED_FILE, fileName: "hai.txt", clientFileId: "222" },
-        ];
-        const { send } = harness({ uploadAttachment: async () => uploads });
-        const result = await send({ msg: "", attachments: ["mot.txt", "hai.txt"] }, THREAD_USER, ThreadType.User);
-
-        assert.equal(result.attachment.length, 2);
-        assert.deepEqual(
-            result.attachment.map((a) => a.cliMsgId),
-            ["111", "222"],
-            "each response carries the clientId of its own upload, in order",
-        );
     });
 });
 
@@ -267,7 +195,7 @@ describe("msg send never fabricates a cliMsgId", () => {
         assert.doesNotMatch(
             body,
             /Date\.now\(\)/,
-            "reading the clock here is the defect: it is a different number from the one zca-js sent",
+            "reading the clock here is the defect: it is a different number from the one the send put on the wire",
         );
     });
 
@@ -309,11 +237,11 @@ describe("msg forward reports ids its own undo can use", () => {
     }
 
     it("pairs each forwarded msgId with a cliMsgId", () => {
-        // zca-js mints ONE clientId for the whole call and echoes it per
-        // target as `clientId`, while the patch reports it at the top level
-        // as `cliMsgId`. Neither spot alone gives a caller the pair that
-        // `msg undo` needs, so tier 4 recorded the forwarded message with a
-        // null id and could not recall it.
+        // A forward mints ONE clientId for the whole call and Zalo echoes it
+        // per target as `clientId`, while the send reports it at the top
+        // level as `cliMsgId`. Neither spot alone gives a caller the pair
+        // that `msg undo` needs, so tier 4 once recorded the forwarded
+        // message with a null id and could not recall it.
         const body = forwardAction();
         assert.match(body, /const sent = /, "forward must build a `sent` array");
         assert.match(body, /x\.clientId \?\? shared/, "each target falls back to the shared id");

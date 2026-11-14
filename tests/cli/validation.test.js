@@ -17,7 +17,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { runCli, errorLineOf } from "../helpers/cli.js";
 
-const opts = { home: SANDBOX_HOME, timeout: 30_000 };
+// Per-spawn timeout: ZALO_TEST_CLI_TIMEOUT_MS when set (a loaded box), 30 s otherwise, as tests/cli/cli.test.js.
+const opts = { home: SANDBOX_HOME, timeout: Number(process.env.ZALO_TEST_CLI_TIMEOUT_MS) || 30_000 };
 const TID = "1234567890123456789";
 
 describe("bank resolution guards", () => {
@@ -78,18 +79,18 @@ describe("msg undo requires a cliMsgId", () => {
     it("refuses without --cli-msg-id when the cache cannot supply one, and says where to get one", async () => {
         // The sandboxed cache is empty, so the lookup `msg undo` now shares
         // with `msg delete` finds nothing and the guard still fires.
-        const { all } = await runCli(["msg", "undo", "9999", TID], opts);
+        const { all } = await runCli(["msg", "undo", "9999", TID, "--yes"], opts);
         assert.match(all, /cliMsgId is required to recall a message/);
         assert.match(all, /not in the local cache/);
         assert.match(all, /listen --json/);
-        // `send --json` is no longer offered: zca-js never returns the
+        // `send --json` is no longer offered: the previous engine never returns the
         // clientId it stamped, so the value send printed was a second
         // Date.now() that matched only by luck.
         assert.doesNotMatch(all, /send --json/);
     });
 
     it("gets past the guard when --cli-msg-id is supplied", async () => {
-        const { all } = await runCli(["msg", "undo", "9999", TID, "-c", "1700000000000"], opts);
+        const { all } = await runCli(["msg", "undo", "9999", TID, "-c", "1700000000000", "--yes"], opts);
         assert.doesNotMatch(all, /cliMsgId is required/);
         assert.match(all, /Not logged in/);
     });
@@ -97,7 +98,7 @@ describe("msg undo requires a cliMsgId", () => {
 
 describe("conv read needs a message to anchor the seen event on", () => {
     // `sendSeenEvent(messages, type)` takes a message DESCRIPTOR. `conv read`
-    // used to pass the bare threadId string: truthy, so zca-js wrapped it in an
+    // used to pass the bare threadId string: truthy, so the previous engine wrapped it in an
     // array, read `.uidFrom` off a string (undefined), compared
     // `undefined !== undefined` so did NOT throw, and dropped every id field in
     // JSON.stringify. The request reached Zalo as
@@ -205,7 +206,7 @@ describe("no-active-account guards", () => {
 
 describe("logout on a clean machine", () => {
     it("succeeds, and never claims credentials were kept", async () => {
-        const { all } = await runCli(["logout"], opts);
+        const { all } = await runCli(["logout", "--yes"], opts);
         assert.match(all, /Logged out/);
         // `logout` deletes the saved credentials since 2026-09-30: with them
         // kept, the next command logged straight back in (measured live).
@@ -214,7 +215,7 @@ describe("logout on a clean machine", () => {
     });
 
     it("--purge with nothing to purge still reports success rather than throwing", async () => {
-        const r = await runCli(["logout", "--purge"], opts);
+        const r = await runCli(["logout", "--purge", "--yes"], opts);
         assert.equal(r.code, 0);
         assert.doesNotMatch(r.all, /Error|stack/i);
     });
@@ -248,7 +249,7 @@ describe("--json stdout contract", () => {
             ["--json", "status"],
             ["--json", "msg", "send-bank", TID, "1", "-b", "notabank"],
             ["--json", "whoami"],
-            ["--json", "logout"],
+            ["--json", "logout", "--yes"],
         ]) {
             const r = await runCli(args, opts);
             assert.doesNotMatch(r.stdout, /[✓✗●⚠]/, `\`${args.join(" ")}\` leaked a human marker to stdout`);
@@ -260,7 +261,7 @@ describe("--json stdout contract", () => {
         for (const args of [
             ["--json", "msg", "send-qr-transfer", TID, "1", "-b", "nope"],
             ["--json", "conv", "auto-delete", TID, "3d"],
-            ["--json", "msg", "undo", "9999", TID],
+            ["--json", "msg", "undo", "9999", TID, "--yes"],
             ["--json", "whoami"],
         ]) {
             const r = await runCli(args, opts);
@@ -275,13 +276,14 @@ describe("--json stdout contract", () => {
         assert.throws(() => JSON.parse(r.stdout.trim()));
     });
 
-    // Still open — see agent/work/transfer-sync-v2/NOTES.md § Known issues #2. Exit codes are a
-    // separate contract from output shape, and changing them would break
-    // scripts that check `$?` today. A --json consumer detects failure via
-    // the `.error` key instead.
-    it("CHARACTERIZATION: a validation failure still exits 0", async () => {
-        const r = await runCli(["msg", "send-bank", TID, "1", "-b", "notabank"], opts);
-        assert.equal(r.code, 0, "exit codes remain issue #2; use .error in --json mode");
+    // Until 3.0.0 this exited 0 (pinned here as a characterization test): a script could not tell from `$?`
+    // that nothing was sent. error() now sets exit code 1 (src/utils/output.js), in both modes.
+    it("a validation failure exits 1, in both modes", async () => {
+        const human = await runCli(["msg", "send-bank", TID, "1", "-b", "notabank"], opts);
+        assert.equal(human.code, 1, human.all);
+        const json = await runCli(["--json", "msg", "send-bank", TID, "1", "-b", "notabank"], opts);
+        assert.equal(json.code, 1, json.all);
+        assert.equal(JSON.parse(json.stdout).error, "Unknown bank: 'notabank'");
     });
 });
 
@@ -392,7 +394,7 @@ describe("msg send --quote guards", () => {
 
 describe("msg send mention guards", () => {
     it("warns that mentions are dropped outside a group", async () => {
-        // zca-js filters mentions for ThreadType.User, so a `-t 0` send would
+        // The session drops mentions in a 1-1 conversation, so a `-t 0` send would
         // otherwise arrive with the names as plain text and nobody tagged.
         const r = await runCli(["msg", "send", TID, "hello @[-1]", "-t", "0"], opts);
         assert.match(r.all, /Mentions only apply to group messages/);

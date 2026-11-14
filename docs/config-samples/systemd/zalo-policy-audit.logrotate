@@ -1,0 +1,15 @@
+# /etc/logrotate.d/zalo-policy-audit
+# policy-audit.log gets one JSON line per policy change or refusal (keys and revisions, never a value)
+# and is never rotated by the engine. Weekly, a year kept; copytruncate, because the daemons keep it
+# open for appending.
+#   sudo install -m 644 zalo-policy-audit.logrotate /etc/logrotate.d/zalo-policy-audit
+/home/zalo/.zalo-agent-cli/policy-audit.log {
+    su zalo zalo
+    weekly
+    rotate 52
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}

@@ -254,4 +254,14 @@ describe("the advised command actually resolves the gap", () => {
         const win = resolveSyncWindow(undefined, now, advice.sinceDate);
         assert.equal(recordRestoreSuccess(win, { resolveGaps: true, now }).resolvedGaps, 1);
     });
+
+    it("recordGap() writes nothing to stdout, which `listen --json` keeps for events", (t) => {
+        // Live 2026-11-07: the startup gap's log line was the first line of a
+        // `listen --json` stream, so a consumer parsing each line as JSON broke.
+        const out = t.mock.method(console, "log", () => {});
+        const err = t.mock.method(console, "error", () => {});
+        assert.ok(manager.recordGap(Date.now() - HOUR, Date.now(), "startup-gap"));
+        assert.equal(out.mock.callCount(), 0);
+        assert.match(String(err.mock.calls[0].arguments[0]), /Recorded coverage gap/);
+    });
 });

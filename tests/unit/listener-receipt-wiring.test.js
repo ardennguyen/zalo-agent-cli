@@ -22,7 +22,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as acorn from "acorn";
-import { walkAst } from "../helpers/zca-call-sites.js";
+import { walkAst } from "../helpers/api-call-sites.js";
 
 const SRC = join(import.meta.dirname, "..", "..", "src", "commands");
 
@@ -60,8 +60,8 @@ for (const { file, attachFn } of LISTENERS) {
     describe(`${file} wires delivered receipts through the shared path`, () => {
         const { ast } = load(file);
 
-        it("imports createDeliveredReceipts from src/core/receipts.js", () => {
-            const imp = all(ast, (n) => n.type === "ImportDeclaration" && n.source.value === "../core/receipts.js");
+        it("imports createDeliveredReceipts from src/zalo/receipts.js", () => {
+            const imp = all(ast, (n) => n.type === "ImportDeclaration" && n.source.value === "../zalo/receipts.js");
             const names = imp.flatMap((d) => d.specifiers.map((s) => s.imported?.name));
             assert.ok(names.includes("createDeliveredReceipts"), `${file} must use the shared receipter`);
         });

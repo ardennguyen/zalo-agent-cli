@@ -12,7 +12,8 @@
  * the active account's first, and `mcp start` opened it at start-up.
  */
 
-import { getMessageById } from "./db.js";
+import { findMessageByClientId, getMessageForAction } from "./db.js";
+import { senderNameFields } from "./contact-names.js";
 
 /**
  * `raw_data` as an object, whatever shape its writer used.
@@ -48,7 +49,7 @@ export function cachedCliMsgId(row) {
  * The message's text as it was sent.
  *
  * The listener trims the `text` column; the payload keeps the original string,
- * which is what Zalo Web forwards and pins.
+ * which is what a forward or a pin carries.
  *
  * @param {object} row - a `messages` row
  * @returns {string}
@@ -56,6 +57,73 @@ export function cachedCliMsgId(row) {
 export function cachedText(row) {
     const content = parseRawData(row?.raw_data).content;
     return typeof content === "string" && content.length > 0 ? content : row?.text || "";
+}
+
+/** A Zalo user id is all digits; a synced row's author can be an opaque noised id, which no tool takes. */
+const USER_ID = /^\d+$/;
+
+/**
+ * What a reply quotes, in the reply shape every MCP message carries as `replyTo`, from the quote Zalo puts on
+ * the message (the `quote` of a live event; the same object a restore keeps). Null when there is no quote or
+ * it names no message.
+ *
+ * @param {object|null|undefined} quote
+ * @returns {{msgId: string|null, cliMsgId: string|null, senderId: string|null, senderName: string|null,
+ *   senderAlias: string|null, senderZaloName: string|null, text: string, timestamp: number|null, hasAttachment: boolean}|null}
+ */
+export function quotedReply(quote) {
+    if (!quote || typeof quote !== "object") return null;
+    const id = (v) => (v === undefined || v === null || v === "" || Number(v) === 0 ? null : String(v));
+    const msgId = id(quote.globalMsgId);
+    const cliMsgId = id(quote.cliMsgId);
+    if (!msgId && !cliMsgId) return null;
+    const owner = id(quote.ownerId);
+    const senderId = owner && USER_ID.test(owner) ? owner : null;
+    const attach = typeof quote.attach === "string" ? quote.attach.trim() : quote.attach;
+    return {
+        msgId,
+        cliMsgId,
+        senderId,
+        // The quoted author as Zalo shows them: it renames the quote's `fromD` at render with the owner's alias
+        // (src/core/contact-names.js). `senderZaloName` keeps the name the quote carried.
+        ...senderNameFields(senderId, typeof quote.fromD === "string" && quote.fromD ? quote.fromD : null),
+        text: typeof quote.msg === "string" ? quote.msg : "",
+        timestamp: Number(quote.ts) || null,
+        hasAttachment: Boolean(attach) && attach !== "{}",
+    };
+}
+
+/**
+ * What a cached row replies to (see `quotedReply`), read from the payload the listener or a restore stored.
+ *
+ * @param {object} row - a `messages` row
+ * @returns {ReturnType<typeof quotedReply>}
+ */
+export function cachedReplyTo(row) {
+    return resolveReplyTo(quotedReply(parseRawData(row?.raw_data).quote), row?.threadId);
+}
+
+/**
+ * Fill in `replyTo.msgId` from the cache when the quote named the message only by its client id.
+ *
+ * A reply sent from the phone quotes with `globalMsgId: "0"` and the quoted message's `cliMsgId` (seen live
+ * 2026-11-06), so without this `replyTo.msgId` was null and nothing tied the reply to the message it answers. Left
+ * as it is when the message is not cached, or no database is open in this process.
+ *
+ * @param {ReturnType<typeof quotedReply>} replyTo
+ * @param {string|number|null} [threadId] - the reply's thread, where the quoted message is
+ * @param {{find?: Function}} [o] - the client-id lookup, `findMessageByClientId` by default
+ * @returns {ReturnType<typeof quotedReply>}
+ */
+export function resolveReplyTo(replyTo, threadId = null, { find = findMessageByClientId } = {}) {
+    if (!replyTo || replyTo.msgId || !replyTo.cliMsgId) return replyTo;
+    try {
+        const row = find(replyTo.cliMsgId, threadId);
+        if (row?.msgId) return { ...replyTo, msgId: String(row.msgId) };
+    } catch {
+        /* no database open here */
+    }
+    return replyTo;
 }
 
 /**
@@ -73,7 +141,8 @@ export function cachedText(row) {
  * A direct lookup by msgId, checked against the thread. This used to scan the
  * thread's newest 200 rows, so anything older was reported as uncached.
  *
- * Never throws.
+ * Throws only when the cached row fails its integrity check (`RowIntegrityError`, code ROW_MAC; src/core/row-mac.js):
+ * an action must not take its ids from a row someone changed. Otherwise never throws.
  *
  * @param {string} threadId
  * @param {string} msgId
@@ -81,7 +150,7 @@ export function cachedText(row) {
  */
 export function cachedMessageById(threadId, msgId) {
     try {
-        const row = getMessageById(msgId);
+        const row = getMessageForAction(msgId);
         // msgIds are account-wide: a row from another conversation must not
         // lend its ids to an action aimed at this one.
         if (!row || (row.threadId && String(row.threadId) !== String(threadId))) return null;
@@ -90,7 +159,8 @@ export function cachedMessageById(threadId, msgId) {
         const cliMsgId = cachedCliMsgId(row);
         const uidFrom = row.senderId ?? data.uidFrom;
         return cliMsgId ? { cliMsgId, uidFrom: uidFrom ? String(uidFrom) : null } : null;
-    } catch {
+    } catch (e) {
+        if (e?.code === "ROW_MAC") throw e;
         return null; // no db open in this process
     }
 }
@@ -168,13 +238,13 @@ export function isNumericUid(id) {
 /**
  * The sender's real numeric uid.
  *
- * A listener row already holds it (zca-js rewrites the own "0" to the uid). A
+ * A listener row already holds it (the listener rewrites the own "0" to the uid). A
  * row the mobile sync restored holds a noised id instead, which Zalo will not
  * accept in a pin or a forward reference; it decodes through the same
  * /api/gid/decrypt the sync path uses for conversation ids. gid.js is imported
  * lazily so the common path pays nothing for it.
  *
- * @param {object} api - a logged-in zca-js API (only used for a noised id)
+ * @param {object} api - a logged-in session (only used for a noised id)
  * @param {string|null} senderId - the row's senderId
  * @param {string|null} ownId - this account's uid
  * @returns {Promise<{uid: string}|{error: string}>}
@@ -186,7 +256,7 @@ export async function resolveSenderUid(api, senderId, ownId) {
     if (!id) return { error: "its sender is not in the cache" };
 
     try {
-        const { resolveNonFriendDms } = await import("./sync-v2/gid.js");
+        const { resolveNonFriendDms } = await import("../zalo/custom/gid.js");
         const hit = (await resolveNonFriendDms(api, [id])).get(id);
         if (hit?.id && isNumericUid(hit.id)) return { uid: String(hit.id) };
     } catch {

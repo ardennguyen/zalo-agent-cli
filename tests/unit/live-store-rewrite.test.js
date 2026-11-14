@@ -8,6 +8,8 @@
  * tests pin the listener's side so that adding one cannot quietly change the
  * other. Each assertion is current behavior, pinned so a change is deliberate.
  */
+// The cache is encrypted under a keyring the key layer makes: the sandbox gives it its offline test provider.
+import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -21,7 +23,9 @@ import {
     markMessageRecalled,
 } from "../../src/core/db.js";
 import { storeLiveMessage } from "../../src/core/live-store.js";
+import { CONFIG_DIR } from "../../src/core/credentials.js";
 
+assertSandboxed(CONFIG_DIR);
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-live-rewrite-"));
 const opened = [];
 let n = 0;

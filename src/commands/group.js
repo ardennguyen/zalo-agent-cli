@@ -5,11 +5,56 @@
 
 import { resolve } from "path";
 import { getApi } from "../core/zalo-client.js";
-import { getInviteBoxInfo } from "../core/group-invite.js";
-import { getGroupHistory } from "../core/group-history.js";
+import { getInviteBoxInfo } from "../zalo/custom/group-invite.js";
+import { getGroupHistory } from "../zalo/custom/group-history.js";
 import { groupMemberUids } from "../core/group-members.js";
+import { allGroupBlocked, groupLinkInfoAll, inviteInfoAll } from "../core/list-all.js";
+import { aliasFirst, ensureAliases, nameFor, senderNameFields } from "../core/contact-names.js";
 import { success, error, info, warning, output } from "../utils/output.js";
 import { parseIntOption, parseIntAtLeast } from "../utils/parse-options.js";
+import { gateCli, guardSubcommand } from "../core/confirm-guard.js";
+import { departureMessage, planDisperse, planLeave, runDisperse, runLeave } from "../core/group-departure.js";
+import { getGroupInfoWatched, recordOwnExit, describeGroupGone } from "../core/group-exit.js";
+import { initDb } from "../core/db.js";
+import { getActive } from "../core/accounts.js";
+import { getAccountDbPath } from "../core/credentials.js";
+
+/**
+ * Open the active account's cache, for a group exit to be recorded in (src/core/group-exit.js). The account id, or
+ * null when there is no account or no cache here.
+ *
+ * @returns {string|null}
+ */
+function openActiveCache() {
+    try {
+        const acc = getActive();
+        if (!acc) return null;
+        initDb(getAccountDbPath(acc.ownId));
+        return String(acc.ownId);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Our own leave or disperse went through: record the group's exit here (purge, or keep flagged: groups.onLeave),
+ * as Zalo does on the API's success. A listener need not be running.
+ *
+ * @param {string} groupId
+ * @param {"leave"|"disbanded"} reason
+ * @returns {Promise<{localHistory: object}>}
+ */
+async function ownExit(groupId, reason) {
+    const ownId = openActiveCache();
+    if (!ownId) return { localHistory: { error: "no local cache for this account: nothing to remove" } };
+    return recordOwnExit({ ownId, groupId, reason });
+}
+
+/** The line a person reads about what happened to the group's local history. */
+function localHistoryLine(groupId, reason, h) {
+    if (h?.error) return `Local history: ${h.error}`;
+    return describeGroupGone({ threadId: groupId, reason, mode: h.mode, purged: h.purged });
+}
 
 export function registerGroupCommands(program) {
     const group = program.command("group").description("Manage groups");
@@ -25,7 +70,7 @@ export function registerGroupCommands(program) {
                 const groupIds = Object.keys(groupsResult?.gridVerMap || {});
 
                 if (groupIds.length === 0) {
-                    info("No groups found.");
+                    output([], program.opts().json, () => info("No groups found."));
                     return;
                 }
 
@@ -107,7 +152,11 @@ export function registerGroupCommands(program) {
         .description("Show group details")
         .action(async (groupId) => {
             try {
-                const result = await getApi().getGroupInfo(groupId);
+                // getGroupInfo takes a list of group ids, as Zalo's getmg-v2 does.
+                const raw = await getGroupInfoWatched(getApi(), openActiveCache(), [String(groupId)]);
+                // Members named alias first, as Zalo's member list shows them (src/core/contact-names.js).
+                await ensureAliases(getApi());
+                const result = withMemberNames(raw);
                 output(result, program.opts().json);
             } catch (e) {
                 error(e.message);
@@ -116,16 +165,19 @@ export function registerGroupCommands(program) {
 
     group
         .command("history <groupId>")
-        .description("Get group chat history (recent messages)")
-        .option("-n, --count <n>", "Number of messages to fetch", "20")
+        .description("Get group chat history (the messages Zalo's group store serves, newest first)")
+        .option("-n, --count <n>", "Number of messages to fetch (default: every message the store serves)")
         .action(async (groupId, opts) => {
             try {
-                const count = parseIntAtLeast(1)(opts.count);
+                // No -n: every page the store serves; getGroupHistory stops where the store says it ends, at a
+                // cursor that stops moving older, or at the filter point (src/zalo/custom/group-history.js).
+                const count = opts.count === undefined ? Number.MAX_SAFE_INTEGER : parseIntAtLeast(1)(opts.count);
                 // Zalo's cloud-message store (/api/cm/getrecentv2), which is
-                // what Zalo Web reads. zca-js's getGroupChatHistory asks
+                // what Zalo reads. The previous engine's getGroupChatHistory asked
                 // /api/group/history, which Zalo answers with 404.
                 const result = await getGroupHistory(getApi(), groupId, count);
                 const msgs = result?.groupMsgs || [];
+                if (msgs.length) await ensureAliases(getApi());
 
                 // Normalize messages into clean, storage-friendly JSON
                 const normalized = msgs.map((m) => {
@@ -136,6 +188,8 @@ export function registerGroupCommands(program) {
                         msgId: d.msgId,
                         cliMsgId: d.cliMsgId,
                         fromUid: d.uidFrom,
+                        // Alias first, as Zalo shows the sender (src/core/contact-names.js).
+                        ...senderNameFields(d.uidFrom, d.dName),
                         groupId: d.idTo,
                         msgType: d.msgType,
                         content: typeof content === "string" ? content : content,
@@ -180,7 +234,7 @@ export function registerGroupCommands(program) {
                         const dir = m.isSelf ? "→" : "←";
                         const text =
                             typeof m.content === "string" ? m.content.slice(0, 80) : `[${m.msgType || "attachment"}]`;
-                        console.log(`  ${time} ${dir} ${m.fromUid}: ${text}`);
+                        console.log(`  ${time} ${dir} ${m.senderName || m.fromUid}: ${text}`);
                     }
                 });
             } catch (e) {
@@ -195,6 +249,7 @@ export function registerGroupCommands(program) {
             try {
                 // Shared with zalo_get_group_members (src/core/group-members.js):
                 // the uids come out of memVerList, since memberIds is always [].
+                openActiveCache(); // a disbanded group found here is recorded (src/core/group-exit.js)
                 const { uids: memberUids, totalMember } = await groupMemberUids(getApi(), groupId);
                 output(memberUids, program.opts().json, () => {
                     if (memberUids.length === 0) {
@@ -202,7 +257,8 @@ export function registerGroupCommands(program) {
                         return;
                     }
                     info(`${totalMember} member(s):`);
-                    memberUids.forEach((uid) => console.log(`  ${uid}`));
+                    // The owner's alias beside each uid, when one is set (no request).
+                    memberUids.forEach((uid) => console.log(`  ${uid}${nameFor(uid) ? `  ${nameFor(uid)}` : ""}`));
                 });
             } catch (e) {
                 error(e.message);
@@ -238,7 +294,7 @@ export function registerGroupCommands(program) {
         .description("Rename a group")
         .action(async (groupId, name) => {
             try {
-                // zca-js declares changeGroupName(name, groupId) — name
+                // The session declares changeGroupName(name, groupId) — name
                 // FIRST. Passing (groupId, name) handed Zalo the group id as
                 // the new name and the name as the group id, so every rename
                 // failed with "Tham số không hợp lệ". Note changeGroupAvatar
@@ -336,14 +392,49 @@ export function registerGroupCommands(program) {
 
     group
         .command("leave <groupId>")
-        .description("Leave a group")
+        .description(
+            "Leave a group (only you leave; `group disperse` deletes it for everyone). The owner of a group with " +
+                "other members must name the next owner (--new-owner) or let Zalo pick one (--random-owner)",
+        )
         .option("-s, --silent", "Leave without the usual notice to ordinary members (the owner still sees it)")
+        .option("--new-owner <userId>", "You own the group: hand it to this member first, then leave (as Zalo does)")
+        .option("--random-owner", "You own the group: leave and let Zalo give ownership to a random member")
         .action(async (groupId, opts) => {
+            const json = program.opts().json;
             try {
-                const result = await getApi().leaveGroup(groupId, Boolean(opts.silent));
-                output(result, program.opts().json, () => success("Left group"));
+                const api = getApi();
+                // Read first: an owner's leave without a successor, or a successor who is not a member, is refused
+                // before anything is asked or sent (src/core/group-departure.js).
+                const plan = await planLeave(api, {
+                    groupId,
+                    ownId: api.getOwnId?.() ?? null,
+                    newOwner: opts.newOwner,
+                    randomOwner: Boolean(opts.randomOwner),
+                });
+                gateCli(
+                    "group.leave",
+                    {
+                        groupId,
+                        silent: Boolean(opts.silent),
+                        newOwner: plan.newOwner,
+                        randomOwner: plan.handOver === "random",
+                    },
+                    opts,
+                    { json },
+                );
+                const result = await runLeave(api, plan, { silent: Boolean(opts.silent) });
+                const exit = await ownExit(groupId, "leave");
+                output({ ...result, groupId, ...exit }, json, () => {
+                    if (plan.handOver === "chosen") success(`${plan.newOwner} now owns the group`);
+                    success(
+                        plan.handOver === "random"
+                            ? "Left group; Zalo gives ownership to a random member"
+                            : "Left group",
+                    );
+                    info(localHistoryLine(groupId, "leave", exit.localHistory));
+                });
             } catch (e) {
-                error(e.message);
+                error(departureMessage(e, "cli"));
             }
         });
 
@@ -352,9 +443,9 @@ export function registerGroupCommands(program) {
         .description("Join a group via invite link")
         .action(async (link) => {
             try {
-                // zca-js calls this joinGroupLink. There is no joinGroup, so
+                // The session calls this joinGroupLink. There is no joinGroup, so
                 // the command failed on "is not a function" before any network
-                // call -- found by tests/unit/zca-api-surface.test.js.
+                // call -- the kind of defect tests/unit/api-surface.test.js finds.
                 const result = await getApi().joinGroupLink(link);
                 output(result, program.opts().json, () => success("Joined group"));
             } catch (e) {
@@ -367,7 +458,19 @@ export function registerGroupCommands(program) {
         .description("Get detailed info for group members by user IDs")
         .action(async (userIds) => {
             try {
-                const result = await getApi().getGroupMembersInfo(userIds);
+                const raw = await getApi().getGroupMembersInfo(userIds);
+                await ensureAliases(getApi());
+                const result = raw?.profiles
+                    ? {
+                          ...raw,
+                          profiles: Object.fromEntries(
+                              Object.entries(raw.profiles).map(([key, p]) => [
+                                  key,
+                                  aliasFirst(p, String(key).replace(/_0$/, "")),
+                              ]),
+                          ),
+                      }
+                    : raw;
                 output(result, program.opts().json, () => {
                     const profiles = result?.profiles || {};
                     const entries = Object.entries(profiles);
@@ -405,16 +508,22 @@ export function registerGroupCommands(program) {
         .action(async (groupId, opts) => {
             // Zalo stores the whole setting object on every update, so this
             // reads the current one and sends back everything the user did not
-            // name, unchanged. See src/core/group-settings.js for why, and for
-            // what Zalo Web sends.
+            // name, unchanged. See src/zalo/custom/group-settings.js for why, and
+            // for what Zalo sends.
             try {
-                const { NOTHING_TO_CHANGE, settingChangesFromOptions, applyGroupSettingChanges } =
-                    await import("../core/group-settings.js");
+                const { settingChangesFromOptions } = await import("../core/group-settings.js");
+                const { NOTHING_TO_CHANGE, applyGroupSettingChanges } =
+                    await import("../zalo/custom/group-settings.js");
                 const changes = settingChangesFromOptions(opts);
                 // Refused before the session is touched: there is nothing to send.
                 if (Object.keys(changes).length === 0) throw new Error(NOTHING_TO_CHANGE);
                 const outcome = await applyGroupSettingChanges(getApi(), groupId, changes);
-                output(outcome, program.opts().json, () => {
+                // A setting Zalo did not apply fails the command (below), so its JSON leads with the error.
+                const notApplied = Object.keys(outcome.notApplied ?? {});
+                const failed = notApplied.length
+                    ? { error: `Zalo did not apply ${notApplied.join(", ")} to group ${groupId}` }
+                    : {};
+                output({ ...failed, ...outcome }, program.opts().json, () => {
                     const onOff = (v) => (Number(v) ? "on" : "off");
                     if (!outcome.sent) {
                         const already = Object.entries(outcome.unchanged).map(
@@ -441,7 +550,7 @@ export function registerGroupCommands(program) {
                         info("Could not read the group back to confirm the result.");
                     }
                 });
-                if (Object.keys(outcome.notApplied ?? {}).length) process.exitCode = 1;
+                if (notApplied.length) process.exitCode = 1;
             } catch (e) {
                 error(`Update settings failed: ${e.message}`);
                 process.exitCode = 1;
@@ -453,7 +562,9 @@ export function registerGroupCommands(program) {
         .description("List pending group member requests (admin only)")
         .action(async (groupId) => {
             try {
-                const result = await getApi().getPendingGroupMembers(groupId);
+                const raw = await getApi().getPendingGroupMembers(groupId);
+                if (raw?.users?.length) await ensureAliases(getApi());
+                const result = Array.isArray(raw?.users) ? { ...raw, users: raw.users.map((u) => withDpn(u)) } : raw;
                 output(result, program.opts().json, () => {
                     const users = result?.users || [];
                     info(`${users.length} pending member(s)`);
@@ -542,11 +653,30 @@ export function registerGroupCommands(program) {
     group
         .command("blocked <groupId>")
         .description("List blocked members in a group")
-        .option("-c, --count <n>", "Items per page", parseIntOption, 50)
-        .option("-p, --page <n>", "Page number", parseIntOption, 1)
+        .option(
+            "-c, --count <n>",
+            "Items per page (with -c or -p one page is read, 50 a page by default)",
+            parseIntOption,
+        )
+        .option("-p, --page <n>", "Read only this page (default: every page)", parseIntOption)
         .action(async (groupId, opts) => {
             try {
-                const result = await getApi().getGroupBlockedMember({ page: opts.page, count: opts.count }, groupId);
+                let raw;
+                if (opts.page === undefined && opts.count === undefined) {
+                    // No page asked: every page, as Zalo reads them (src/core/list-all.js).
+                    const { paging, ...all } = await allGroupBlocked(getApi(), groupId);
+                    raw = all;
+                    if (paging.note) warning(paging.note);
+                } else {
+                    raw = await getApi().getGroupBlockedMember(
+                        { page: opts.page ?? 1, count: opts.count ?? 50 },
+                        groupId,
+                    );
+                }
+                if (raw?.blocked_members?.length) await ensureAliases(getApi());
+                const result = Array.isArray(raw?.blocked_members)
+                    ? { ...raw, blocked_members: raw.blocked_members.map((m) => aliasFirst(m)) }
+                    : raw;
                 output(result, program.opts().json, () => {
                     const members = result?.blocked_members || [];
                     info(`${members.length} blocked member(s)`);
@@ -591,7 +721,16 @@ export function registerGroupCommands(program) {
         .description("List pending group invitations received")
         .action(async () => {
             try {
-                const result = await getApi().getGroupInviteBoxList();
+                const raw = await getApi().getGroupInviteBoxList();
+                if (raw?.invitations?.length) await ensureAliases(getApi());
+                const result = Array.isArray(raw?.invitations)
+                    ? {
+                          ...raw,
+                          invitations: raw.invitations.map((inv) =>
+                              inv?.inviterInfo ? { ...inv, inviterInfo: aliasFirst(inv.inviterInfo) } : inv,
+                          ),
+                      }
+                    : raw;
                 output(result, program.opts().json, () => {
                     const invites = result?.invitations || [];
                     info(`${invites.length} invitation(s) (total: ${result?.total || 0})`);
@@ -647,11 +786,22 @@ export function registerGroupCommands(program) {
 
     group
         .command("disperse <groupId>")
-        .description("Disperse (disband) a group permanently — WARNING: irreversible!")
-        .action(async (groupId) => {
+        .description(
+            "Disband a group for every member (owner only) — WARNING: irreversible! To leave just yourself, use `group leave`",
+        )
+        .action(async (groupId, opts) => {
+            const json = program.opts().json;
             try {
-                const result = await getApi().disperseGroup(groupId);
-                output(result, program.opts().json, () => success(`Group ${groupId} dispersed`));
+                const api = getApi();
+                // Only the owner can: anyone else is refused before anything is asked or sent.
+                const plan = await planDisperse(api, { groupId, ownId: api.getOwnId?.() ?? null });
+                gateCli("group.disperse", { groupId, others: plan.others }, opts, { json });
+                const result = await runDisperse(api, plan);
+                const exit = await ownExit(groupId, "disbanded");
+                output({ ...(result ?? {}), ...exit }, program.opts().json, () => {
+                    success(`Group ${groupId} dispersed`);
+                    info(localHistoryLine(groupId, "disbanded", exit.localHistory));
+                });
             } catch (e) {
                 error(`Disperse group failed: ${e.message}`);
             }
@@ -660,10 +810,18 @@ export function registerGroupCommands(program) {
     group
         .command("link-preview <link>")
         .description("Show a group's details from its invite link, before joining (does not join)")
-        .option("-p, --member-page <n>", "Member page to show", parseIntAtLeast(1), 1)
+        .option("-p, --member-page <n>", "Only this member page (default: every member page)", parseIntAtLeast(1))
         .action(async (link, opts) => {
             try {
-                const result = await getApi().getGroupLinkInfo({ link, memberPage: opts.memberPage });
+                let result;
+                if (opts.memberPage !== undefined) {
+                    result = await getApi().getGroupLinkInfo({ link, memberPage: opts.memberPage });
+                } else {
+                    // No member page asked: every one, as Zalo reads a link preview (src/core/list-all.js).
+                    const { paging, ...all } = await groupLinkInfoAll(getApi(), link);
+                    result = all;
+                    if (paging.note) warning(paging.note);
+                }
                 output(result, program.opts().json);
             } catch (e) {
                 error(`Group link preview failed: ${e.message}`);
@@ -675,19 +833,74 @@ export function registerGroupCommands(program) {
         .description(
             'Show a pending group invitation: the group, who invited you and when it expires (see "invite-boxes")',
         )
-        .option("--member-page <n>", "Member page to show", parseIntAtLeast(1), 1)
-        .option("--member-count <n>", "Members per page", parseIntAtLeast(1), 10)
+        .option("--member-page <n>", "Only this member page (default: every member page)", parseIntAtLeast(1))
+        .option("--member-count <n>", "Members per request", parseIntAtLeast(1), 10)
         .action(async (groupId, opts) => {
             try {
-                // zca-js's own call throws when the group has no topic; see core/group-invite.js.
-                const result = await getInviteBoxInfo(getApi(), {
-                    groupId,
-                    mpage: opts.memberPage,
-                    mcount: opts.memberCount,
-                });
+                // The previous engine's call threw when the group has no topic; see zalo/custom/group-invite.js.
+                const page = (mpage) => getInviteBoxInfo(getApi(), { groupId, mpage, mcount: opts.memberCount });
+                let result;
+                if (opts.memberPage !== undefined) result = await page(opts.memberPage);
+                else {
+                    // No member page asked: every one (src/core/list-all.js).
+                    const { paging, ...all } = await inviteInfoAll(page, opts.memberCount);
+                    result = all;
+                    if (paging.note) warning(paging.note);
+                }
                 output(result, program.opts().json);
             } catch (e) {
                 error(`Group invite info failed: ${e.message}`);
             }
         });
+
+    // The actions Zalo asks about first: each needs --yes, and --dry-run says what it would do (src/core/confirm-guard.js).
+    // leave and disperse read the group first, then settle the guard themselves (gateCli above).
+    guardSubcommand(group, "leave", "group.leave", { target: () => ({}), deferred: true });
+    guardSubcommand(group, "remove-member", "group.removeMember", {
+        target: (groupId, userIds) => ({ groupId, userIds }),
+    });
+    guardSubcommand(group, "remove-admin", "group.removeAdmin", {
+        target: (groupId, userIds) => ({ groupId, userIds }),
+    });
+    guardSubcommand(group, "transfer-owner", "group.transferOwner", {
+        target: (groupId, userId) => ({ groupId, userId }),
+    });
+    guardSubcommand(group, "block-member", "group.blockMember", {
+        target: (groupId, userIds) => ({ groupId, userIds }),
+    });
+    guardSubcommand(group, "disable-link", "group.disableLink", { target: (groupId) => ({ groupId }) });
+    guardSubcommand(group, "disperse", "group.disperse", { target: () => ({}), deferred: true });
+    // Only turning membership approval off is asked about; every other setting goes ahead as before.
+    guardSubcommand(group, "settings", "group.settings", {
+        target: (groupId, opts) => ({ groupId, approvalOff: opts.joinAppr === false }),
+        when: (target) => target.approvalOff,
+    });
+}
+
+/**
+ * A `getGroupInfo` answer with each group's `currentMems` named alias first (src/core/contact-names.js).
+ *
+ * @param {object} res
+ * @returns {object}
+ */
+function withMemberNames(res) {
+    const map = res?.gridInfoMap;
+    if (!map || typeof map !== "object") return res;
+    const out = {};
+    for (const [gid, g] of Object.entries(map)) {
+        out[gid] = Array.isArray(g?.currentMems) ? { ...g, currentMems: g.currentMems.map((m) => aliasFirst(m)) } : g;
+    }
+    return { ...res, gridInfoMap: out };
+}
+
+/**
+ * A pending member (`{uid, dpn}`) with `dpn` alias first, `alias` and `zaloName` beside it.
+ *
+ * @param {object} u
+ * @returns {object}
+ */
+function withDpn(u) {
+    if (!u || typeof u !== "object") return u;
+    const named = aliasFirst({ uid: u.uid, displayName: u.dpn ?? null });
+    return { ...u, dpn: named.displayName ?? u.dpn ?? null, alias: named.alias, zaloName: named.zaloName };
 }

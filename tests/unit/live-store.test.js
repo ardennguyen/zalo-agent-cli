@@ -1,11 +1,13 @@
 /**
  * src/core/live-store.js — the one place live socket events become rows.
  *
- * `listen` and a running mobile sync both funnel through this, because Zalo Web
+ * `listen` and a running mobile sync both funnel through this, because a session
  * does not freeze while a sync runs: messages keep arriving on the same socket
  * and keep being stored. A sync that ignored them left a hole exactly where it
  * promised completeness.
  */
+// The cache is encrypted under a keyring the key layer makes: the sandbox gives it its offline test provider.
+import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
@@ -43,7 +45,9 @@ import {
     storeReceipts,
     storeGroupEventRow,
 } from "../../src/core/live-store.js";
+import { CONFIG_DIR } from "../../src/core/credentials.js";
 
+assertSandboxed(CONFIG_DIR);
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-live-test-"));
 const opened = [];
 let n = 0;
@@ -85,7 +89,7 @@ describe("storeLiveMessage", () => {
         assert.equal(row.has_attachment, 0);
     });
 
-    it("stores a photo as `photo`, not as zca-js's `chat.photo`", () => {
+    it("stores a photo as `photo`, not as the previous engine's `chat.photo`", () => {
         storeLiveMessage(
             liveMsg({}, { msgType: "chat.photo", content: { href: "https://photo-stal-3.zdn.vn/a/b.jpg" } }),
         );
@@ -96,7 +100,7 @@ describe("storeLiveMessage", () => {
 
     it("does NOT copy the live status field into the Sync2 msgStatus column", () => {
         // These are two different enums. The live `status` is undocumented
-        // (zca-js declares only `status: number`) and arrived as 1 -- which the
+        // (the previous engine declares only `status: number`) and arrived as 1 -- which the
         // column defines as "failed" -- on the owner's own successfully-sent
         // messages. Delivery state comes from the mobile sync and from the
         // delivered/seen receipt events, which storeReceipts applies.
@@ -410,7 +414,7 @@ describe("board-stale flag lifecycle", () => {
  *
  * Zalo delivers them on two different channels and names the target in two
  * different places. The previous implementation read the target from the top
- * level of the undo payload, where zca-js puts the NOTIFICATION's own id
+ * level of the undo payload, where the listener puts the NOTIFICATION's own id
  * (models/Undo.d.ts: TUndo has no globalMsgId, TUndoContent does), so every
  * live recall updated zero rows while reporting success -- and a delete-for-me
  * was inserted as a brand-new message row. These pin the real shapes.
@@ -419,7 +423,7 @@ describe("removal — recall for everyone", () => {
     const victim = () =>
         storeLiveMessage(liveMsg({}, { msgId: "m1", cliMsgId: 4242, msgType: "webchat", content: "secret" }));
 
-    // The shape zca-js actually emits: target inside content.
+    // The shape the listener actually emits: target inside content.
     const undoEvent = (over = {}) => ({
         threadId: "t1",
         isSelf: true,
@@ -521,7 +525,7 @@ describe("removal — recall for everyone", () => {
 });
 
 describe("removal — delete for me only", () => {
-    // Real captured shape: content is an ARRAY, which is why zca-js routes it
+    // Real captured shape: content is an ARRAY, which is why the listener routes it
     // to the message channel rather than to undo.
     const deleteEvent = (entry) => ({
         threadId: "t1",
@@ -923,7 +927,7 @@ describe("reaction results are observable", () => {
 });
 
 describe("a retrieved reaction (cmd 610/611) reaches the same writer", () => {
-    // zca-js parses `content` for a live reaction (cmd 612) and does NOT for a
+    // the listener parses `content` for a live reaction (cmd 612) and does NOT for a
     // retrieved one — it hands the raw JSON string through to the
     // `old_reactions` event. One writer has to take both forms or a historical
     // import silently stores nothing.

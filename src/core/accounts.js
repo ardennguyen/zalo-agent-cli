@@ -3,7 +3,7 @@
  * Maps each account to its own proxy (1:1) and tracks active account.
  *
  * A fleet of daemons and the `account` / `login` commands share this one file, so it is written the
- * way a shared file must be (src/utils/atomic-file.js):
+ * way a shared file must be (src/zalo/kernel/atomic-file.js):
  *  - every change is read-modify-write under a lock file (`accounts.json.lock`), so two writers no
  *    longer lose each other's change;
  *  - every write is a temp file renamed over the target, so a reader never sees a half-written
@@ -18,7 +18,8 @@ import { readFileSync, existsSync, mkdirSync, rmSync, renameSync } from "fs";
 import { join } from "path";
 import { CONFIG_DIR, getAccountDir, deleteCredentials } from "./credentials.js";
 import { checkLock } from "./lock.js";
-import { sleepSync, sweepStaleTemps, withFileLock, writeFileAtomic } from "../utils/atomic-file.js";
+import { prepareAccountForget } from "./keystore/index.js";
+import { sleepSync, sweepStaleTemps, withFileLock, writeFileAtomic } from "../zalo/kernel/atomic-file.js";
 
 function accountsFile() {
     return join(CONFIG_DIR, "accounts.json");
@@ -278,10 +279,13 @@ export function removeAccount(ownId) {
     const accounts = load();
     if (!accounts.some((a) => a.ownId === ownId)) return { removed: false };
 
+    // A provider's item outside the folder (a keychain entry) goes with the account; read the keyring before the wipe.
+    const forgetKeys = prepareAccountForget(ownId);
     const { wiped, skippedLocked } = wipeAccountDir(ownId);
     if (skippedLocked) {
         return { removed: false, skippedLocked };
     }
+    if (wiped) forgetKeys();
 
     mutate((current) => {
         const filtered = current.filter((a) => a.ownId !== ownId);
@@ -303,9 +307,12 @@ export function removeAccount(ownId) {
  *
  * @param {string|null|undefined} ownId
  * @param {string|null|undefined} name
+ * @param {{ lockTimeoutMs?: number }} [opts] - how long to wait for the registry's lock before giving up on this
+ *   cosmetic refresh (3 s: a daemon calls this from event handlers); a test that is about lost writes, not about
+ *   timing, waits longer
  * @returns {boolean} true when an existing account's name was changed
  */
-export function updateAccountName(ownId, name) {
+export function updateAccountName(ownId, name, { lockTimeoutMs = 3000 } = {}) {
     const id = ownId ? String(ownId).trim() : "";
     const trimmed = typeof name === "string" ? name.trim() : "";
     if (!id || !trimmed) return false;
@@ -324,7 +331,7 @@ export function updateAccountName(ownId, name) {
             },
             // Daemons call this from event handlers: a busy registry costs a missed cosmetic refresh,
             // not seconds of a blocked event loop.
-            { timeoutMs: 3000 },
+            { timeoutMs: lockTimeoutMs },
         );
     } catch (e) {
         // A cached display name is not worth a daemon: say so and carry on.

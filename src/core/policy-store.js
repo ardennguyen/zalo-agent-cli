@@ -1,0 +1,1058 @@
+/**
+ * The runtime policy store: what a deployment may change while the server runs (confirmMode, hiddenChats, approval,
+ * media delivery and links, webhooks, quotas, retention), kept apart from the files and the environment that are read
+ * once at start.
+ *
+ * - **Files.** One per account, `<accountDir>/policy.json`, and one per tenant, `<configDir>/tenants/<tenantId>.json`
+ *   (a tenant is a group of accounts: `quota.tenant.accounts`). Each is `{rev, updatedAt, updatedBy, policy}`, sealed
+ *   under the boot key (src/core/keystore), so it opens without a login. A tenant's files share the keyring of
+ *   `<configDir>/tenants/`.
+ * - **Users.** `<configDir>/users/<userId>.json` (opaque CRM ids): a user belongs to exactly one tenant (`tenant`) and
+ *   owns accounts (`accounts`); each account has exactly one owning user. A tenant's accounts are its users' accounts
+ *   and its legacy `quota.tenant.accounts` list; a write that would put an account under two tenants, or under two
+ *   users, is refused (MEMBERSHIP). Caps and quotas count toward the owner.
+ * - **Layers.** defaults < files < environment < policy; within the policy, a tenant's (in tenant id order), then the
+ *   owning user's, then the account's own. The resolvers read it through ./policy-layer.js on every call.
+ * - **Always-on cap.** `presence.alwaysOn.maxPerUser` (tenant or user policy, default 1) and `maxPerTenant` (tenant,
+ *   default none). A write that takes a user or tenant over its cap demotes the **oldest** always-on account to
+ *   on-demand (owner decision 2026-11-08), as a lowered cap does: an account-level `presence.mode: "on-demand"` written
+ *   by `presence-cap`, a `presence_changed` hook ({@link onPresenceChange}) and an audit line. The check runs under a
+ *   host lock (`users/.presence.lock`), so two writers cannot both pass it.
+ * - **Writers.** The admin API on the MCP HTTP server (src/core/admin-api.js), `zalo-agent policy set|unset` (through
+ *   the daemon's channel when one runs, else the file), and a file drop: a config-management tool writes the file as
+ *   plain JSON; the watcher of a running daemon (debounced) checks it and seals it, or rejects it, keeps the last good
+ *   policy and saves the rejected text beside it as `policy.json.rejected`.
+ * - **Revisions.** Every change raises `rev`. A writer may name the rev it read (`If-Match`): a different one is a
+ *   conflict and nothing is written.
+ * - **Audit.** `<configDir>/policy-audit.log`, one JSON line per change or refusal: when, who, which file, which keys,
+ *   the old and new rev. Never a value: a webhook URL can carry a token.
+ */
+import {
+    appendFileSync,
+    existsSync,
+    mkdirSync,
+    readFileSync,
+    readdirSync,
+    renameSync,
+    rmSync,
+    statSync,
+    watch,
+    writeFileSync,
+} from "node:fs";
+import { join } from "node:path";
+import { CONFIG_DIR, getAccountDir } from "./credentials.js";
+import { isSealed, openBuffer, scopeOfDir, writeSealedJson } from "./keystore/index.js";
+import { setPolicyProvider } from "./policy-layer.js";
+import { setTenantLookup } from "./storage-quota.js";
+import { changedKeys, flattenPolicy, mergePolicy, policyGet, validatePolicy } from "./policy-schema.js";
+import { onLeaveChangeNote } from "./group-exit.js";
+import { writeFileAtomic } from "../zalo/kernel/atomic-file.js";
+
+/** The account's policy file. */
+export const POLICY_FILE = "policy.json";
+const SPEC = Object.freeze({ kind: "policy", use: "boot" });
+// `keyring` is the tenants' folder's own keyring.json (src/core/keystore/keyring.js), never a tenant.
+const TENANT_ID = /^(?!keyring$)[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+const ACCOUNT_ID = /^[1-9][0-9]{0,30}$/;
+// A user is the CRM's opaque id, as a tenant is.
+const USER_ID = TENANT_ID;
+
+/** The default `presence.alwaysOn.maxPerUser`. */
+export const DEFAULT_ALWAYS_ON_PER_USER = 1;
+
+/**
+ * A policy write that could not be done: `code` is INVALID, RESTART_REQUIRED, CONFLICT, NOT_FOUND, BUSY or MEMBERSHIP
+ * (an account under two users or two tenants).
+ */
+export class PolicyError extends Error {
+    /**
+     * @param {string} message
+     * @param {string} code
+     * @param {object} [details]
+     */
+    constructor(message, code, details = {}) {
+        super(message);
+        this.name = "PolicyError";
+        this.code = code;
+        this.details = details;
+        Object.assign(this, details);
+    }
+}
+
+/** @returns {string} */
+export function tenantsDir() {
+    return join(CONFIG_DIR, "tenants");
+}
+
+/** @returns {string} */
+export function usersDir() {
+    return join(CONFIG_DIR, "users");
+}
+
+/** @returns {string} */
+export function policyAuditFile() {
+    return join(CONFIG_DIR, "policy-audit.log");
+}
+
+/**
+ * Check a policy target and name its file.
+ *
+ * @param {{kind: "account"|"user"|"tenant", id: string}} target
+ * @returns {{kind: string, id: string, file: string, dir: string, label: string}}
+ */
+export function resolveTarget(target) {
+    const kind = target?.kind === "tenant" ? "tenant" : target?.kind === "user" ? "user" : "account";
+    const id = String(target?.id ?? "").trim();
+    if (kind === "user") {
+        if (!USER_ID.test(id)) throw new PolicyError(`"${id}" is not a user id (letters, digits, - and _)`, "INVALID");
+        return { kind, id, dir: usersDir(), file: join(usersDir(), `${id}.json`), label: `user:${id}` };
+    }
+    if (kind === "tenant") {
+        if (!TENANT_ID.test(id))
+            throw new PolicyError(`"${id}" is not a tenant id (letters, digits, - and _)`, "INVALID");
+        return { kind, id, dir: tenantsDir(), file: join(tenantsDir(), `${id}.json`), label: `tenant:${id}` };
+    }
+    if (!ACCOUNT_ID.test(id)) throw new PolicyError(`"${id}" is not an account id`, "INVALID");
+    const dir = getAccountDir(id);
+    return { kind, id, dir, file: join(dir, POLICY_FILE), label: `account:${id}` };
+}
+
+/** A dropped (plain JSON) document: `{policy, rev?}`, or the policy object itself. */
+function droppedDoc(text, file) {
+    let parsed;
+    try {
+        parsed = JSON.parse(text);
+    } catch (e) {
+        throw new PolicyError(`${file} is not valid JSON (${e.message})`, "INVALID", { errors: [] });
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+        throw new PolicyError(`${file} must hold a JSON object`, "INVALID", { errors: [] });
+    const wrapped = Boolean(parsed.policy && typeof parsed.policy === "object");
+    const policy = wrapped ? parsed.policy : parsed;
+    const rev = Number.isInteger(parsed.rev) && parsed.policy ? parsed.rev : null;
+    return { policy, rev, tenant: wrapped ? (parsed.tenant ?? null) : null, accounts: wrapped ? parsed.accounts : [] };
+}
+
+/**
+ * Check a user's membership fields. A user names exactly one tenant and owns a list of account ids.
+ *
+ * @param {{tenant?: unknown, accounts?: unknown}} m
+ * @returns {{tenant: string|null, accounts: string[], errors: Array<{key: string, error: string}>}}
+ */
+export function validateMembership(m) {
+    const errors = [];
+    let tenant = m?.tenant ?? null;
+    if (tenant !== null) {
+        tenant = String(tenant).trim();
+        if (!TENANT_ID.test(tenant)) errors.push({ key: "tenant", error: "is not a tenant id" });
+    }
+    const raw = m?.accounts ?? [];
+    const okShape = Array.isArray(raw) || typeof raw === "string";
+    const list = Array.isArray(raw) ? raw : okShape ? String(raw).split(",") : [];
+    const accounts = [...new Set(list.map((a) => String(a).trim()).filter(Boolean))].sort();
+    if (!okShape) errors.push({ key: "accounts", error: "is not a list" });
+    else if (accounts.some((a) => !ACCOUNT_ID.test(a)))
+        errors.push({ key: "accounts", error: "is not a list of account ids" });
+    return { tenant, accounts, errors };
+}
+
+/** The user-only fields of a document: who it belongs to, what it owns, and the cap's bookkeeping. */
+function memberFields(doc) {
+    return {
+        tenant: doc?.tenant ?? null,
+        accounts: Array.isArray(doc?.accounts) ? doc.accounts.map(String) : [],
+        alwaysOnSince: doc?.alwaysOnSince && typeof doc.alwaysOnSince === "object" ? doc.alwaysOnSince : {},
+    };
+}
+
+/**
+ * Read one policy file. A sealed file is opened; a plain one (a file drop) is checked and, when valid, sealed in place
+ * with the next rev. An invalid drop throws INVALID and is left as it is for the caller.
+ *
+ * @param {{kind: string, id: string, file: string, dir: string}} t - from {@link resolveTarget}
+ * @param {{lastRev?: number}} [opts] - the rev known before the drop (the next one is above it)
+ * @returns {{rev: number, updatedAt: string|null, updatedBy: string|null, policy: object, dropped?: boolean}|null}
+ */
+export function readPolicyFile(t, { lastRev = 0 } = {}) {
+    let bytes;
+    try {
+        bytes = readFileSync(t.file);
+    } catch (e) {
+        if (e.code === "ENOENT") return null;
+        throw e;
+    }
+    if (isSealed(bytes)) {
+        const doc = JSON.parse(openBuffer(scopeOfDir(t.dir), SPEC, bytes).toString("utf8"));
+        return {
+            rev: Number(doc.rev) || 0,
+            updatedAt: doc.updatedAt ?? null,
+            updatedBy: doc.updatedBy ?? null,
+            policy: doc.policy ?? {},
+            ...(t.kind === "user" ? memberFields(doc) : {}),
+        };
+    }
+    const drop = droppedDoc(bytes.toString("utf8"), t.file);
+    const v = validatePolicy(drop.policy, { scope: t.kind });
+    const member = t.kind === "user" ? validateMembership(drop) : null;
+    if (member?.errors.length) v.errors.push(...member.errors);
+    if (v.errors.length || v.restartRequired.length) {
+        throw new PolicyError(`${t.file} was not taken: ${describeProblems(v)}`, "INVALID", {
+            errors: v.errors,
+            restartRequired: v.restartRequired,
+        });
+    }
+    const doc = {
+        rev: Math.max(lastRev + 1, drop.rev ?? 0, 1),
+        updatedAt: new Date().toISOString(),
+        updatedBy: "file",
+        policy: v.policy,
+        ...(member ? { tenant: member.tenant, accounts: member.accounts, alwaysOnSince: {} } : {}),
+    };
+    writeSealedJson(t.file, scopeOfDir(t.dir), SPEC, doc);
+    return { ...doc, dropped: true };
+}
+
+/** One line naming what is wrong with a policy. */
+export function describeProblems({ errors = [], restartRequired = [] }) {
+    const parts = errors.map((e) => (e.key ? `${e.key} ${e.error}` : e.error));
+    if (restartRequired.length)
+        parts.push(`${restartRequired.join(", ")} cannot change while the server runs (restartRequired)`);
+    return parts.join("; ");
+}
+
+// ── The live registry ──────────────────────────────────────────────────────────────────────────────────────────────
+
+/** ownId -> the account's document (null: none) */
+const accounts = new Map();
+/** tenantId -> document; null until loaded */
+let tenants = null;
+/** userId -> document; null until loaded */
+let users = null;
+const listeners = new Set();
+const warned = new Set();
+
+function warnOnce(key, line) {
+    if (warned.has(key)) return;
+    warned.add(key);
+    console.error(line);
+}
+
+/** Load every tenant's file (once, or again with `force`; `store: false` reads them without caching). */
+function loadTenants({ strict = false, force = false, store = true } = {}) {
+    if (tenants && !force) return tenants;
+    const next = new Map();
+    let names = [];
+    try {
+        names = readdirSync(tenantsDir()).filter((f) => f.endsWith(".json"));
+    } catch {
+        /* no tenants */
+    }
+    for (const name of names.sort()) {
+        const id = name.slice(0, -5);
+        if (!TENANT_ID.test(id)) continue;
+        try {
+            const t = resolveTarget({ kind: "tenant", id });
+            const doc = readPolicyFile(t, { lastRev: tenants?.get(id)?.rev ?? 0 });
+            if (doc) next.set(id, doc);
+        } catch (e) {
+            if (strict) throw e;
+            const keep = tenants?.get(id);
+            if (keep) next.set(id, keep);
+            warnOnce(`tenant:${id}:${e.message}`, `[policy] tenant ${id}: ${e.message}`);
+        }
+    }
+    if (!store) return next;
+    tenants = next;
+    return tenants;
+}
+
+/** Load every user's file (once, or again with `force`; `store: false` reads them without caching). */
+function loadUsers({ strict = false, force = false, store = true } = {}) {
+    if (users && !force) return users;
+    const next = new Map();
+    let names = [];
+    try {
+        names = readdirSync(usersDir()).filter((f) => f.endsWith(".json"));
+    } catch {
+        /* no users */
+    }
+    for (const name of names.sort()) {
+        const id = name.slice(0, -5);
+        if (!USER_ID.test(id)) continue;
+        try {
+            const doc = readPolicyFile(resolveTarget({ kind: "user", id }), { lastRev: users?.get(id)?.rev ?? 0 });
+            if (doc) next.set(id, doc);
+        } catch (e) {
+            if (strict) throw e;
+            const keep = users?.get(id);
+            if (keep) next.set(id, keep);
+            warnOnce(`user:${id}:${e.message}`, `[policy] user ${id}: ${e.message}`);
+        }
+    }
+    if (!store) return next;
+    users = next;
+    return users;
+}
+
+/**
+ * The user that owns an account, or null (a legacy or self-hosted install).
+ *
+ * @param {string} ownId
+ * @returns {{id: string, rev: number, tenant: string|null, accounts: string[], policy: object}|null}
+ */
+export function ownerOf(ownId) {
+    for (const [id, doc] of loadUsers()) {
+        if (doc.accounts?.includes(String(ownId))) return { id, ...doc };
+    }
+    return null;
+}
+
+/** Every user id on this host, sorted. */
+export function listUsers() {
+    return [...loadUsers().keys()];
+}
+
+/** A tenant's accounts: its users' accounts and its legacy `quota.tenant.accounts`. */
+function tenantMembers(tenantId, doc, allUsers = loadUsers()) {
+    const ids = new Set();
+    const legacy = policyGet(doc?.policy, "quota.tenant.accounts");
+    if (Array.isArray(legacy)) for (const a of legacy) ids.add(String(a));
+    for (const u of allUsers.values()) if (u.tenant === tenantId) for (const a of u.accounts ?? []) ids.add(a);
+    return [...ids].sort();
+}
+
+/** Load one account's file (once, or again with `force`). */
+function loadAccount(ownId, { strict = false, force = false } = {}) {
+    if (accounts.has(ownId) && !force) return accounts.get(ownId);
+    const t = resolveTarget({ kind: "account", id: ownId });
+    try {
+        const doc = readPolicyFile(t, { lastRev: accounts.get(ownId)?.rev ?? 0 });
+        accounts.set(ownId, doc);
+        return doc;
+    } catch (e) {
+        if (strict) throw e;
+        warnOnce(`account:${ownId}:${e.message}`, `[policy] account ${ownId}: ${e.message}`);
+        if (!accounts.has(ownId)) accounts.set(ownId, null);
+        return accounts.get(ownId);
+    }
+}
+
+/**
+ * The tenants an account belongs to (through its owning user, or a legacy `quota.tenant.accounts` list), in id order.
+ * `accounts` is each tenant's whole membership, users' accounts included: quotas sum over it.
+ *
+ * @param {string} ownId
+ * @returns {Array<{id: string, rev: number, policy: object, accounts: string[]}>}
+ */
+export function tenantsOf(ownId) {
+    const out = [];
+    const owner = ownerOf(ownId);
+    const all = loadTenants();
+    for (const [id, doc] of all) {
+        const members = tenantMembers(id, doc);
+        if (members.includes(String(ownId))) out.push({ id, rev: doc.rev, policy: doc.policy, accounts: members });
+    }
+    // A user's tenant that has no file yet is still the account's tenant (no policy, no quota).
+    if (owner?.tenant && !all.has(owner.tenant))
+        out.push({ id: owner.tenant, rev: 0, policy: {}, accounts: tenantMembers(owner.tenant, null) });
+    return out.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+/**
+ * One account's effective policy: its tenants' policies (in id order), then its own.
+ *
+ * @param {string} ownId
+ * @returns {object}
+ */
+export function effectivePolicy(ownId) {
+    const id = String(ownId);
+    let merged = {};
+    const mine = tenantsOf(id);
+    if (mine.length > 1)
+        warnOnce(
+            `multi:${id}`,
+            `[policy] account ${id} is listed by ${mine.length} tenants (${mine.map((t) => t.id).join(", ")}); the later ones win`,
+        );
+    for (const t of mine) merged = mergePolicy(merged, t.policy);
+    const owner = ownerOf(id);
+    if (owner) merged = mergePolicy(merged, owner.policy ?? {});
+    const own = loadAccount(id);
+    if (own) merged = mergePolicy(merged, own.policy);
+    return merged;
+}
+
+// The quota resolver (./storage-quota.js) reads the tenants an account is in from here.
+setTenantLookup((ownId) => tenantsOf(ownId));
+
+setPolicyProvider((ownId) => {
+    const p = effectivePolicy(ownId);
+    return Object.keys(p).length ? p : null;
+});
+
+/**
+ * Load an account's policy and every tenant's now, failing on a file that cannot be used (a daemon's start: a policy
+ * it cannot read is never silently replaced by the defaults).
+ *
+ * @param {string} ownId
+ * @returns {{account: object|null, tenants: string[]}}
+ */
+export function loadPoliciesStrict(ownId) {
+    loadTenants({ strict: true, force: true });
+    loadUsers({ strict: true, force: true });
+    const account = loadAccount(String(ownId), { strict: true, force: true });
+    return { account, tenants: tenantsOf(ownId).map((t) => t.id) };
+}
+
+/**
+ * One target's document as it is now (read from disk, not the cache).
+ *
+ * @param {{kind: "account"|"tenant", id: string}} target
+ * @returns {{rev: number, updatedAt: string|null, updatedBy: string|null, policy: object}}
+ */
+export function getPolicy(target) {
+    const t = resolveTarget(target);
+    const doc = readPolicyFile(t, { lastRev: cacheOf(t.kind)?.get(t.id)?.rev ?? 0 });
+    return (
+        doc ?? {
+            rev: 0,
+            updatedAt: null,
+            updatedBy: null,
+            policy: {},
+            ...(t.kind === "user" ? memberFields(null) : {}),
+        }
+    );
+}
+
+/** The live cache of one kind of target. */
+function cacheOf(kind) {
+    return kind === "tenant" ? loadTenants() : kind === "user" ? loadUsers() : accounts;
+}
+
+/**
+ * Be told of every applied change (from any writer in this process, and from the watcher).
+ *
+ * @param {(change: {target: string, kind: string, id: string, rev: number, changed: string[], accounts: string[]}) => void} fn
+ * @returns {() => void} unsubscribe
+ */
+export function onPolicyChange(fn) {
+    listeners.add(fn);
+    return () => listeners.delete(fn);
+}
+
+function emit(change) {
+    for (const fn of listeners) {
+        try {
+            fn(change);
+        } catch (e) {
+            console.error(`[policy] a change hook failed: ${e.message}`);
+        }
+    }
+}
+
+/** The accounts a change to one target reaches. */
+function reachedAccounts(t, before, after) {
+    if (t.kind === "account") return [t.id];
+    const ids = new Set();
+    if (t.kind === "user") {
+        for (const doc of [before, after]) for (const id of doc?.accounts ?? []) ids.add(String(id));
+        return [...ids].sort();
+    }
+    for (const doc of [before, after]) {
+        const m = policyGet(doc?.policy, "quota.tenant.accounts");
+        if (Array.isArray(m)) for (const id of m) ids.add(String(id));
+    }
+    for (const id of tenantMembers(t.id, null)) ids.add(id);
+    return [...ids].sort();
+}
+
+/**
+ * Append one line to the audit log. Keys and revs only: never a value.
+ *
+ * @param {object} entry
+ */
+export function audit(entry) {
+    try {
+        mkdirSync(CONFIG_DIR, { recursive: true });
+        appendFileSync(policyAuditFile(), JSON.stringify({ at: new Date().toISOString(), ...entry }) + "\n", {
+            mode: 0o600,
+        });
+    } catch (e) {
+        console.error(`[policy] the audit log could not be written: ${e.message}`);
+    }
+}
+
+/** A short exclusive lock on one policy file, across processes. */
+function withFileLock(file, fn) {
+    const lock = `${file}.lock`;
+    const deadline = Date.now() + 5000;
+    for (;;) {
+        try {
+            writeFileSync(lock, String(process.pid), { flag: "wx", mode: 0o600 });
+            break;
+        } catch (e) {
+            if (e.code !== "EEXIST") throw e;
+            try {
+                if (Date.now() - statSync(lock).mtimeMs > 10_000) rmSync(lock, { force: true });
+            } catch {
+                /* gone meanwhile */
+            }
+            if (Date.now() > deadline)
+                throw new PolicyError(`${file} is being changed by another writer; try again`, "BUSY");
+            const until = Date.now() + 20;
+            while (Date.now() < until) {
+                /* a short spin: writes are rare and take milliseconds */
+            }
+        }
+    }
+    try {
+        return fn();
+    } finally {
+        rmSync(lock, { force: true });
+    }
+}
+
+/** The host lock every membership or presence write takes, so the cap check sees one writer at a time. */
+function withHostLock(fn) {
+    mkdirSync(usersDir(), { recursive: true });
+    return withFileLock(join(usersDir(), ".presence"), fn);
+}
+
+/** Where the cap keeps when each account became always-on (ids and times only). */
+export function alwaysOnFile() {
+    return join(usersDir(), ".always-on.json");
+}
+
+function readAlwaysOnSince() {
+    try {
+        const v = JSON.parse(readFileSync(alwaysOnFile(), "utf8"));
+        return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+    } catch {
+        return {};
+    }
+}
+
+/** Refuse a membership that puts an account under two users or two tenants. */
+function checkMembership(t, next) {
+    const problems = [];
+    if (t.kind === "user") {
+        for (const a of next.accounts) {
+            for (const [uid, u] of loadUsers()) {
+                if (uid !== t.id && u.accounts?.includes(a)) problems.push(`account ${a} is owned by user ${uid}`);
+            }
+            for (const [tid, doc] of loadTenants()) {
+                const legacy = policyGet(doc.policy, "quota.tenant.accounts");
+                if (tid !== next.tenant && Array.isArray(legacy) && legacy.map(String).includes(a))
+                    problems.push(
+                        `account ${a} is listed by tenant ${tid}, and user ${t.id} is in tenant ${next.tenant}`,
+                    );
+            }
+        }
+    } else if (t.kind === "tenant") {
+        const listed = policyGet(next.policy, "quota.tenant.accounts");
+        for (const a of Array.isArray(listed) ? listed.map(String) : []) {
+            for (const [tid, doc] of loadTenants()) {
+                const legacy = policyGet(doc.policy, "quota.tenant.accounts");
+                if (tid !== t.id && Array.isArray(legacy) && legacy.map(String).includes(a))
+                    problems.push(`account ${a} is already listed by tenant ${tid}`);
+            }
+            const owner = ownerOf(a);
+            if (owner && owner.tenant && owner.tenant !== t.id)
+                problems.push(`account ${a} is owned by user ${owner.id} of tenant ${owner.tenant}`);
+        }
+    }
+    return problems;
+}
+
+/** One write, under the target file's lock. No cap check (the caller runs it). */
+function writeOne({ t, op, v, keys, ifMatch, actor, member }) {
+    return withFileLock(t.file, () => {
+        const cache = cacheOf(t.kind);
+        const before = readPolicyFile(t, { lastRev: cache.get(t.id)?.rev ?? 0 }) ?? {
+            rev: 0,
+            policy: {},
+            ...(t.kind === "user" ? memberFields(null) : {}),
+        };
+        const wanted =
+            ifMatch === null || ifMatch === undefined || ifMatch === "" || ifMatch === "*"
+                ? null
+                : Number(String(ifMatch).replace(/"/g, ""));
+        if (wanted !== null && wanted !== before.rev) {
+            audit({ actor, target: t.label, op, keys, oldRev: before.rev, result: "conflict" });
+            throw new PolicyError(`the policy is at rev ${before.rev}, not ${ifMatch}: read it again`, "CONFLICT", {
+                rev: before.rev,
+            });
+        }
+        const next = op === "put" ? v.policy : mergePolicy(before.policy, v.policy);
+        const changed = changedKeys(before.policy, next);
+        let membership = null;
+        if (t.kind === "user") {
+            membership = {
+                tenant: member.tenant !== undefined ? member.tenant : op === "put" ? null : before.tenant,
+                accounts: member.accounts !== undefined ? member.accounts : op === "put" ? [] : before.accounts,
+            };
+            if (!membership.tenant)
+                throw new PolicyError("a user belongs to exactly one tenant: name it (tenant)", "INVALID", {
+                    errors: [{ key: "tenant", error: "is required" }],
+                });
+            if (membership.tenant !== before.tenant) changed.push("tenant");
+            if (JSON.stringify(membership.accounts) !== JSON.stringify(before.accounts ?? [])) changed.push("accounts");
+        }
+        if (!changed.length)
+            return {
+                target: t.label,
+                rev: before.rev,
+                oldRev: before.rev,
+                changed,
+                policy: before.policy,
+                accounts: [],
+            };
+        const problems = checkMembership(t, { policy: next, ...(membership ?? {}) });
+        if (problems.length) {
+            audit({ actor, target: t.label, op, keys, oldRev: before.rev, result: "membership" });
+            throw new PolicyError(
+                `${problems.join("; ")}: an account has one owning user and one tenant`,
+                "MEMBERSHIP",
+                {
+                    errors: problems.map((error) => ({ key: "accounts", error })),
+                },
+            );
+        }
+        const doc = {
+            rev: before.rev + 1,
+            updatedAt: new Date().toISOString(),
+            updatedBy: actor,
+            policy: next,
+            ...(membership ?? {}),
+        };
+        writeSealedJson(t.file, scopeOfDir(t.dir), SPEC, doc);
+        cache.set(t.id, doc);
+        const reached = reachedAccounts(t, before, doc);
+        changed.sort();
+        audit({ actor, target: t.label, op, keys: changed, oldRev: before.rev, newRev: doc.rev, result: "applied" });
+        emit({ target: t.label, kind: t.kind, id: t.id, rev: doc.rev, changed, accounts: reached });
+        // What a change means beyond the value: a switch of groups.onLeave is not symmetric (src/core/group-exit.js).
+        const notes = changed.includes("groups.onLeave") ? [onLeaveChangeNote(policyGet(next, "groups.onLeave"))] : [];
+        return {
+            target: t.label,
+            rev: doc.rev,
+            oldRev: before.rev,
+            changed,
+            policy: next,
+            accounts: reached,
+            ...(notes.length ? { notes } : {}),
+        };
+    });
+}
+
+/**
+ * Change one target's policy: validate, check the rev, check the membership, write it sealed, swap the live copy, run
+ * the hooks, audit; then enforce the always-on caps (demoting the oldest always-on accounts over a cap).
+ *
+ * @param {object} args
+ * @param {{kind: "account"|"user"|"tenant", id: string}} args.target
+ * @param {"put"|"patch"} args.op - put replaces the whole policy; patch is a JSON merge patch (null removes a key)
+ * @param {object} args.policy - the new policy, or the patch
+ * @param {number|string|null} [args.ifMatch] - the rev the writer read; another rev is a CONFLICT
+ * @param {string} args.actor - who, for the audit log (`admin-api`, `cli`, …), never a credential
+ * @param {string} [args.tenant] - a user's tenant (users only)
+ * @param {string[]|string} [args.accounts] - the accounts a user owns (users only; replaces the list)
+ * @returns {{target: string, rev: number, oldRev: number, changed: string[], policy: object, accounts: string[],
+ *   demoted: Array<object>}}
+ * @throws {PolicyError}
+ */
+export function applyPolicy({ target, op, policy, ifMatch = null, actor, tenant, accounts: owned }) {
+    const t = resolveTarget(target);
+    const v = validatePolicy(policy ?? {}, { scope: t.kind, allowNull: op === "patch" });
+    const keys = Object.keys(flattenPolicy(policy && typeof policy === "object" ? policy : {})).sort();
+    let member = {};
+    if (t.kind === "user") {
+        const m = validateMembership({ tenant: tenant ?? null, accounts: owned ?? [] });
+        v.errors.push(...m.errors);
+        member = {
+            tenant: tenant === undefined ? undefined : m.tenant,
+            accounts: owned === undefined ? undefined : m.accounts,
+        };
+    } else if (tenant !== undefined || owned !== undefined) {
+        v.errors.push({ key: "tenant", error: "membership is set on a user only" });
+    }
+    if (v.errors.length || v.restartRequired.length) {
+        const restart = v.restartRequired.length && !v.errors.length;
+        audit({ actor, target: t.label, op, keys, result: restart ? "restartRequired" : "invalid" });
+        throw new PolicyError(describeProblems(v), restart ? "RESTART_REQUIRED" : "INVALID", {
+            errors: v.errors,
+            restartRequired: v.restartRequired,
+        });
+    }
+    if (t.kind === "account" && !existsSync(t.dir)) {
+        throw new PolicyError(`account ${t.id} has no folder on this host`, "NOT_FOUND");
+    }
+    mkdirSync(t.dir, { recursive: true });
+    return withHostLock(() => {
+        const r = writeOne({ t, op, v, keys, ifMatch, actor, member });
+        const demoted = r.changed.length ? enforceCaps({ actor }) : [];
+        return { ...r, demoted };
+    });
+}
+
+/** The effective mode the policy gives one account (the policy layers only: what a console controls). */
+function policyMode(ownId) {
+    return policyGet(effectivePolicy(ownId), "presence.mode") ?? null;
+}
+
+/** A user's always-on cap: its own policy, then its tenant's, then the default. */
+function userCap(u, allTenants = loadTenants()) {
+    const own = policyGet(u.policy, "presence.alwaysOn.maxPerUser");
+    if (Number.isInteger(own)) return own;
+    const t = u.tenant ? allTenants.get(u.tenant) : null;
+    const fromTenant = policyGet(t?.policy, "presence.alwaysOn.maxPerUser");
+    return Number.isInteger(fromTenant) ? fromTenant : DEFAULT_ALWAYS_ON_PER_USER;
+}
+
+/**
+ * What the cap check counts: every user, tenant and account file as it is on disk now, read without touching this
+ * process's cache. Another process may have written since this one cached them (a `policy` CLI write beside the
+ * daemon's admin API), and counting the cached copies let both writers keep an account always-on past the cap. The
+ * cache itself stays as it was: the watcher compares against it to notice and announce those changes.
+ *
+ * @returns {{users: Map<string, object>, tenants: Map<string, object>, mode: (ownId: string) => string|null}}
+ */
+function capView() {
+    const allUsers = loadUsers({ force: true, store: false });
+    const allTenants = loadTenants({ force: true, store: false });
+    const own = new Map();
+    const accountDoc = (id) => {
+        if (!own.has(id)) {
+            let doc;
+            try {
+                doc = readPolicyFile(resolveTarget({ kind: "account", id }), { lastRev: accounts.get(id)?.rev ?? 0 });
+            } catch {
+                doc = accounts.get(id) ?? null; // unreadable now: the last good copy, as loadAccount keeps it
+            }
+            own.set(id, doc);
+        }
+        return own.get(id);
+    };
+    const mode = (id) => {
+        let merged = {};
+        for (const [tid, doc] of [...allTenants].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+            if (tenantMembers(tid, doc, allUsers).includes(id)) merged = mergePolicy(merged, doc.policy);
+        for (const u of allUsers.values())
+            if (u.accounts?.includes(id)) {
+                merged = mergePolicy(merged, u.policy ?? {});
+                break;
+            }
+        const doc = accountDoc(id);
+        if (doc) merged = mergePolicy(merged, doc.policy);
+        return policyGet(merged, "presence.mode") ?? null;
+    };
+    return { users: allUsers, tenants: allTenants, mode };
+}
+
+/**
+ * Hold every user and tenant to its always-on cap: over a cap, the oldest always-on accounts (by when they became
+ * always-on, then by id) are demoted to on-demand with an account-level write. Accounts are counted on this host only.
+ * Runs under the host lock (from {@link applyPolicy}, or alone).
+ *
+ * @param {{actor?: string, now?: number}} [o]
+ * @returns {Array<{accountId: string, scope: "user"|"tenant", userId?: string, tenantId?: string, cap: number}>}
+ */
+function enforceCaps({ actor = "presence-cap", now = Date.now() } = {}) {
+    const onHost = (id) => existsSync(getAccountDir(id));
+    const since = readAlwaysOnSince();
+    const live = new Set();
+    const groups = [];
+    const view = capView();
+    for (const [uid, u] of view.users) {
+        const on = (u.accounts ?? []).filter((a) => onHost(a) && view.mode(a) === "always-on");
+        groups.push({ scope: "user", userId: uid, cap: userCap(u, view.tenants), on });
+    }
+    for (const [tid, doc] of view.tenants) {
+        const cap = policyGet(doc.policy, "presence.alwaysOn.maxPerTenant");
+        if (!Number.isInteger(cap)) continue;
+        const on = tenantMembers(tid, doc, view.users).filter((a) => onHost(a) && view.mode(a) === "always-on");
+        groups.push({ scope: "tenant", tenantId: tid, cap, on });
+    }
+    for (const g of groups) for (const a of g.on) live.add(a);
+    for (const a of live) if (!Number.isFinite(since[a])) since[a] = now;
+    const demoted = [];
+    const gone = new Set();
+    for (const g of groups) {
+        const on = g.on.filter((a) => !gone.has(a));
+        if (on.length <= g.cap) continue;
+        on.sort((a, b) => since[a] - since[b] || (a < b ? -1 : a > b ? 1 : 0));
+        for (const a of on.slice(0, on.length - g.cap)) {
+            const t = resolveTarget({ kind: "account", id: a });
+            const v = validatePolicy({ presence: { mode: "on-demand" } }, { allowNull: true });
+            writeOne({ t, op: "patch", v, keys: ["presence.mode"], ifMatch: null, actor: "presence-cap", member: {} });
+            gone.add(a);
+            delete since[a];
+            const event = {
+                accountId: a,
+                from: "always-on",
+                to: "on-demand",
+                reason: "cap",
+                scope: g.scope,
+                ...(g.userId ? { userId: g.userId } : {}),
+                ...(g.tenantId ? { tenantId: g.tenantId } : {}),
+                cap: g.cap,
+            };
+            audit({ actor, target: `account:${a}`, op: "demote", keys: ["presence.mode"], result: "capDemoted" });
+            demoted.push(event);
+            for (const fn of presenceListeners) {
+                try {
+                    fn(event);
+                } catch (e) {
+                    console.error(`[policy] a presence hook failed: ${e.message}`);
+                }
+            }
+        }
+    }
+    for (const a of Object.keys(since)) if (!live.has(a) || gone.has(a)) delete since[a];
+    try {
+        mkdirSync(usersDir(), { recursive: true });
+        writeFileAtomic(alwaysOnFile(), JSON.stringify(since, null, 2), { mode: 0o600 });
+    } catch (e) {
+        console.error(`[policy] the always-on record could not be written: ${e.message}`);
+    }
+    return demoted;
+}
+
+/**
+ * Hold every user and tenant to its always-on cap now (a lowered cap read from a file drop, a daemon's start).
+ *
+ * @param {{actor?: string}} [o]
+ * @returns {Array<object>} the demotions
+ */
+export function enforceAlwaysOnCaps(o = {}) {
+    return withHostLock(() => enforceCaps(o));
+}
+
+const presenceListeners = new Set();
+
+/**
+ * Be told when the cap demotes an account (`presence_changed`, reason `cap`): the daemon of that account sends it to
+ * its webhook and MCP buffer.
+ *
+ * @param {(event: {accountId: string, from: string, to: string, reason: string, scope: string, cap: number}) => void} fn
+ * @returns {() => void} unsubscribe
+ */
+export function onPresenceChange(fn) {
+    presenceListeners.add(fn);
+    return () => presenceListeners.delete(fn);
+}
+
+/**
+ * How many always-on accounts each user (and capped tenant) has on this host, against its cap.
+ *
+ * @returns {{users: Array<{userId: string, tenant: string|null, cap: number, alwaysOn: string[]}>,
+ *   tenants: Array<{tenantId: string, cap: number, alwaysOn: string[]}>}}
+ */
+export function alwaysOnUsage() {
+    const onHost = (id) => existsSync(getAccountDir(id));
+    const out = { users: [], tenants: [] };
+    for (const [uid, u] of loadUsers()) {
+        out.users.push({
+            userId: uid,
+            tenant: u.tenant ?? null,
+            cap: userCap(u),
+            alwaysOn: (u.accounts ?? []).filter((a) => onHost(a) && policyMode(a) === "always-on"),
+        });
+    }
+    for (const [tid, doc] of loadTenants()) {
+        const cap = policyGet(doc.policy, "presence.alwaysOn.maxPerTenant");
+        if (!Number.isInteger(cap)) continue;
+        out.tenants.push({
+            tenantId: tid,
+            cap,
+            alwaysOn: tenantMembers(tid, doc).filter((a) => onHost(a) && policyMode(a) === "always-on"),
+        });
+    }
+    return out;
+}
+
+/**
+ * Re-read one file after it changed on disk (the watcher): a sealed file another writer wrote, or a drop. A drop that
+ * does not validate is moved to `<file>.rejected`, the last good policy is written back, and nothing changes.
+ *
+ * @param {{kind: "account"|"tenant", id: string}} target
+ * @param {{log?: (line: string) => void}} [opts]
+ * @returns {{applied: boolean, rejected?: boolean, rev?: number, changed?: string[]}}
+ */
+export function reloadPolicy(target, { log = (l) => console.error(l) } = {}) {
+    const t = resolveTarget(target);
+    const cache = cacheOf(t.kind);
+    const before = cache.get(t.id) ?? null;
+    let doc;
+    try {
+        doc = readPolicyFile(t, { lastRev: before?.rev ?? 0 });
+    } catch (e) {
+        if (!(e instanceof PolicyError)) {
+            log(`[policy] ${t.file} could not be read (${e.message}); the last good policy stays`);
+            return { applied: false, rejected: true };
+        }
+        try {
+            renameSync(t.file, `${t.file}.rejected`);
+            if (before) writeSealedJson(t.file, scopeOfDir(t.dir), SPEC, before);
+        } catch (err) {
+            log(`[policy] could not set the rejected file aside: ${err.message}`);
+        }
+        audit({ actor: "file", target: t.label, op: "drop", result: "invalid" });
+        log(
+            `[policy] ${e.message}. The last good policy stays (rev ${before?.rev ?? 0}); the file is kept as ${t.file}.rejected`,
+        );
+        return { applied: false, rejected: true };
+    }
+    if ((doc?.rev ?? 0) === (before?.rev ?? 0) && !doc?.dropped) return { applied: false };
+    if (doc) cache.set(t.id, doc);
+    else cache.delete(t.id);
+    const changed = changedKeys(before?.policy ?? {}, doc?.policy ?? {});
+    const reached = reachedAccounts(t, before, doc);
+    audit({
+        actor: "file",
+        target: t.label,
+        op: doc ? "drop" : "remove",
+        keys: changed,
+        oldRev: before?.rev ?? 0,
+        newRev: doc?.rev ?? 0,
+        result: "applied",
+    });
+    if (changed.length) {
+        log(`[policy] ${t.label} rev ${doc?.rev ?? 0} from a file: ${changed.join(", ")}`);
+        emit({ target: t.label, kind: t.kind, id: t.id, rev: doc?.rev ?? 0, changed, accounts: reached });
+    }
+    return { applied: true, rev: doc?.rev ?? 0, changed };
+}
+
+/**
+ * Watch one account's policy file and the tenants' folder for drops and other writers (a daemon). Debounced.
+ *
+ * @param {object} args
+ * @param {string} args.ownId
+ * @param {(line: string) => void} [args.log]
+ * @param {number} [args.debounceMs]
+ * @returns {{stop: () => void}}
+ */
+export function watchPolicies({ ownId, log = (l) => console.error(l), debounceMs = 500 }) {
+    const timers = new Map();
+    const watchers = [];
+    const later = (key, target) => {
+        clearTimeout(timers.get(key));
+        const timer = setTimeout(() => {
+            timers.delete(key);
+            reloadPolicy(target, { log });
+        }, debounceMs);
+        timer.unref?.();
+        timers.set(key, timer);
+    };
+    const account = resolveTarget({ kind: "account", id: ownId });
+    for (const [dir, onName] of [
+        [account.dir, (name) => name === POLICY_FILE && later("account", { kind: "account", id: ownId })],
+        [
+            tenantsDir(),
+            (name) => {
+                const id = name.endsWith(".json") ? name.slice(0, -5) : "";
+                if (TENANT_ID.test(id)) later(`tenant:${id}`, { kind: "tenant", id });
+            },
+        ],
+        [
+            usersDir(),
+            (name) => {
+                const id = name.endsWith(".json") ? name.slice(0, -5) : "";
+                if (USER_ID.test(id)) later(`user:${id}`, { kind: "user", id });
+            },
+        ],
+    ]) {
+        try {
+            mkdirSync(dir, { recursive: true });
+            const w = watch(dir, { persistent: false }, (_event, name) => name && onName(String(name)));
+            w.on("error", () => {});
+            watchers.push(w);
+        } catch (e) {
+            log(`[policy] cannot watch ${dir} (${e.message}): file drops there are picked up at the next start`);
+        }
+    }
+    return {
+        stop() {
+            for (const t of timers.values()) clearTimeout(t);
+            timers.clear();
+            for (const w of watchers) w.close();
+        },
+    };
+}
+
+/** Forget every cached policy (tests). */
+export function resetPolicyCache() {
+    accounts.clear();
+    tenants = null;
+    users = null;
+    warned.clear();
+}
+
+/**
+ * Write a policy as a config-management tool would (plain JSON, atomic). For tests and the docs' examples.
+ *
+ * @param {string} file
+ * @param {object} policy
+ */
+export function dropPolicyFile(file, policy) {
+    writeFileAtomic(file, JSON.stringify({ policy }, null, 2));
+}
+
+/**
+ * What a daemon runs: the account's and the tenants' policies loaded now (a file that cannot be used stops the start),
+ * the watcher for drops, and one hook for every change that reaches this account.
+ *
+ * @param {object} args
+ * @param {string} args.ownId
+ * @param {(changed: string[], change: object) => void} [args.onChange]
+ * @param {(line: string) => void} [args.log]
+ * @returns {{stop: () => void, describe: () => string}}
+ * @throws {PolicyError} when a policy file is invalid
+ */
+export function startPolicyRuntime({ ownId, onChange, log = (l) => console.error(l) }) {
+    const loaded = loadPoliciesStrict(ownId);
+    const watcher = watchPolicies({ ownId, log });
+    const off = onPolicyChange((change) => {
+        if (!change.accounts.includes(String(ownId))) return;
+        onChange?.(change.changed, change);
+    });
+    return {
+        stop() {
+            watcher.stop();
+            off();
+        },
+        describe: () =>
+            `account rev ${loaded.account?.rev ?? 0}` +
+            (loaded.tenants.length ? `, tenant(s) ${loaded.tenants.join(", ")}` : ""),
+    };
+}
+
+/**
+ * Whether a change names any of these keys or a key under them (`media` covers `media.linkAuth`).
+ *
+ * @param {string[]} changed
+ * @param {string[]} prefixes
+ * @returns {boolean}
+ */
+export function touches(changed, prefixes) {
+    return changed.some((k) => prefixes.some((p) => k === p || k.startsWith(`${p}.`)));
+}
+
+/**
+ * The daemon side of `policy set|unset` over the daemon channel.
+ *
+ * @param {{target: {kind: string, id: string}, op: string, policy: object, ifMatch?: unknown}} params
+ * @returns {object}
+ */
+export function servePolicyRequest(params) {
+    const op = params?.op === "put" ? "put" : "patch";
+    return applyPolicy({
+        target: params?.target,
+        op,
+        policy: params?.policy,
+        ifMatch: params?.ifMatch ?? null,
+        actor: "cli via daemon",
+        ...(params?.tenant !== undefined ? { tenant: params.tenant } : {}),
+        ...(params?.accounts !== undefined ? { accounts: params.accounts } : {}),
+    });
+}

@@ -7,6 +7,8 @@
  * returned before the success markers were written. A measured test cache
  * held 12 pending gaps and 0 resolved, so every run woke the phone.
  */
+// Before any src/ import: sync-v2 reaches credentials.js through the key layer (src/core/keystore/).
+import "../helpers/sandbox.js";
 import { describe, it, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";

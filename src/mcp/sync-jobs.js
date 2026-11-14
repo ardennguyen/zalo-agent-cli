@@ -7,6 +7,12 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 /**
+ * The stages zalo_sync can start. Only `messages` taps the owner's phone; the rest run on this server's session
+ * (`reactions` on its socket, `cloud`, `media` and `boards` over HTTP).
+ */
+export const SYNC_STAGES = Object.freeze(["messages", "reactions", "cloud", "media", "boards"]);
+
+/**
  * Create a bounded, account-local job tracker using the daemon's stage lock.
  * Completed jobs are retained until displaced by ten newer jobs or restart.
  * A requestId retry returns the same job while retained, without another tap.
@@ -26,7 +32,7 @@ export function createSyncJobs({ runners, lock }) {
                 }
                 return snapshot(existing);
             }
-            if (!["messages", "reactions"].includes(stage) || typeof runners[stage] !== "function") {
+            if (!SYNC_STAGES.includes(stage) || typeof runners[stage] !== "function") {
                 throw new Error("Unsupported sync stage.");
             }
             const release = lock.tryAcquire(`mcp-sync:${stage}`);

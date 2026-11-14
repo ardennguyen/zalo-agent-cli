@@ -3,11 +3,40 @@
  */
 
 import { getApi } from "../core/zalo-client.js";
-import { success, error, info, output } from "../utils/output.js";
+import { success, error, info, output, warning } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
-import { describeFriendAddError, extractErrorCode } from "../core/friend-requests.js";
+import { describeFriendUndoError, friendAddFailure, readSentRequests } from "../core/friend-requests.js";
+import { errorCodeOf } from "../zalo/errors.js";
 import { readUserAliases } from "../core/current-user-names.js";
+import { allAliases } from "../core/list-all.js";
+import { aliasFirst, ensureAliases } from "../core/contact-names.js";
 import { searchFriends } from "../core/friend-search.js";
+import { guardSubcommand } from "../core/confirm-guard.js";
+import { lastOnlineStatus } from "../core/last-online.js";
+import { getActive } from "../core/accounts.js";
+import { getAccountDbPath } from "../core/credentials.js";
+import { initDb } from "../core/db.js";
+import { groupNames, mutualGroupsLine, mutualGroupsOrError } from "../core/mutual-groups.js";
+import { hiddenSetForCli } from "../utils/hidden-access.js";
+
+/**
+ * The groups shared with one user for a CLI reply (src/core/mutual-groups.js), groups in hidden chats left out as
+ * Zalo does. Never throws: a failed read is `{error}`.
+ *
+ * @param {object} api
+ * @param {string|null|undefined} userId
+ */
+async function cliMutualGroups(api, userId) {
+    const ownId = api.getOwnId?.() ?? null;
+    let hidden = null;
+    try {
+        hidden = ownId ? await hiddenSetForCli(String(ownId), api, { preferMirror: true }) : null;
+    } catch (e) {
+        // Showing them without the hidden set could show a hidden chat's group: say so instead.
+        return { error: `could not read the hidden chats, so the shared groups are not shown: ${e.message}` };
+    }
+    return mutualGroupsOrError(api, userId, { ownId, hidden });
+}
 
 export function registerFriendCommands(program) {
     const friend = program.command("friend").description("Manage friends and contacts");
@@ -17,7 +46,10 @@ export function registerFriendCommands(program) {
         .description("List all friends")
         .action(async () => {
             try {
-                const result = await getApi().getAllFriends();
+                // Names alias first, as Zalo shows them (src/core/contact-names.js): one alias-list read.
+                const raw = await getApi().getAllFriends();
+                await ensureAliases(getApi());
+                const result = Array.isArray(raw) ? raw.map((f) => aliasFirst(f)) : raw;
                 output(result, program.opts().json, () => {
                     const friends = Array.isArray(result) ? result : [];
 
@@ -44,13 +76,20 @@ export function registerFriendCommands(program) {
 
     friend
         .command("online")
-        .description("List currently online friends")
+        .description(
+            "List currently online friends. Zalo answers this request with 404, so the list is empty; " +
+                "use `friend last-online <userId>` or `listen --events online` instead",
+        )
         .action(async () => {
             try {
                 const result = await getApi().getFriendOnlines();
                 output(result, program.opts().json);
             } catch (e) {
-                error(e.message);
+                error(
+                    /404/.test(e.message)
+                        ? `${e.message}. Zalo answered 404 for the online-friends list on every profile host of this account's service map. Zalo's own contact list asks the same thing and discards the answer. \`friend last-online <userId>\` works, and \`listen --events online\` reports presence as Zalo pushes it.`
+                        : e.message,
+                );
             }
         });
 
@@ -63,7 +102,7 @@ export function registerFriendCommands(program) {
                 const friends = Array.isArray(result) ? result : [];
                 // The alias you set for a friend is not in the friend list; it comes from the alias list.
                 const aliases = await readUserAliases(getApi(), (m) => info(`${m}; matching names only`));
-                const matches = searchFriends(friends, aliases, name);
+                const matches = searchFriends(friends, aliases, name).map((f) => aliasFirst(f));
                 output(matches, program.opts().json, () => {
                     if (matches.length === 0) {
                         error(`No friends matching "${name}". Use "friend list" to see all.`);
@@ -72,8 +111,10 @@ export function registerFriendCommands(program) {
                     info(`${matches.length} friend(s) matching "${name}":`);
                     console.log();
                     for (const f of matches) {
+                        // Alias first; the Zalo name beside it when the owner renamed them.
                         const display = f.displayName || f.zaloName || "?";
-                        const aka = f.alias && f.alias !== display ? `  (alias: ${f.alias})` : "";
+                        const aka =
+                            f.alias && f.zaloName && f.zaloName !== display ? `  (Zalo name: ${f.zaloName})` : "";
                         console.log(`  ${f.userId}  ${display}${aka}`);
                     }
                     console.log();
@@ -90,17 +131,22 @@ export function registerFriendCommands(program) {
         .description("Find user by phone number or Zalo ID")
         .action(async (query) => {
             try {
-                const result = await getApi().findUser(query);
-                if (!result || (!result.uid && !result?.data?.uid)) {
+                const found = await getApi().findUser(query);
+                if (!found || (!found.uid && !found?.data?.uid)) {
                     error(
                         `No Zalo user found for "${query}". User may not exist, has disabled phone search, or phone is not registered on Zalo.`,
                     );
                     return;
                 }
-                output(result, program.opts().json, () => {
-                    const u = result?.uid ? result : result?.data || result;
+                await ensureAliases(getApi());
+                const result = found?.uid ? aliasFirst(found) : { ...found, data: aliasFirst(found.data) };
+                const u0 = result?.uid ? result : result?.data || result;
+                const mutualGroups = await cliMutualGroups(getApi(), u0?.uid);
+                output({ ...result, mutualGroups }, program.opts().json, () => {
+                    const u = u0;
                     info(`User ID: ${u.uid || "?"}`);
                     info(`Name: ${u.displayName || u.zaloName || u.display_name || u.zalo_name || "?"}`);
+                    info(mutualGroupsLine(mutualGroups));
                 });
             } catch (e) {
                 error(`Find user failed: ${e.message}`);
@@ -112,13 +158,17 @@ export function registerFriendCommands(program) {
         .description("Get user profile information")
         .action(async (userId) => {
             try {
-                const result = await getApi().getUserInfo(userId);
-                output(result, program.opts().json, () => {
+                const raw = await getApi().getUserInfo(userId);
+                await ensureAliases(getApi());
+                const result = withProfileNames(raw);
+                const mutualGroups = await cliMutualGroups(getApi(), userId);
+                output({ ...result, mutualGroups }, program.opts().json, () => {
                     const profiles = result?.changed_profiles || {};
                     const p = profiles[userId] || {};
                     info(`Name: ${p.displayName || p.zaloName || "?"}`);
                     info(`Phone: ${p.phoneNumber || "?"}`);
                     info(`Avatar: ${p.avatar || "?"}`);
+                    info(mutualGroupsLine(mutualGroups));
                 });
             } catch (e) {
                 error(e.message);
@@ -131,13 +181,12 @@ export function registerFriendCommands(program) {
         .option("-m, --msg <text>", "Message to include", "")
         .action(async (userId, opts) => {
             try {
-                // zca-js API signature: sendFriendRequest(msg, userId)
+                // Session signature: sendFriendRequest(msg, userId)
                 const result = await getApi().sendFriendRequest(opts.msg, userId);
                 output(result, program.opts().json, () => success(`Friend request sent to ${userId}`));
             } catch (e) {
-                // Map Zalo error codes to actionable messages
-                const code = e.code || extractErrorCode(e.message);
-                error(describeFriendAddError(code, userId) || `Friend request failed (code ${code}): ${e.message}`);
+                // Zalo's error codes as actionable messages; no "(code null)" for an error without one.
+                error(friendAddFailure(e, userId));
             }
         });
 
@@ -191,11 +240,37 @@ export function registerFriendCommands(program) {
 
     friend
         .command("last-online <userId>")
-        .description("Check when user was last online")
-        .action(async (userId) => {
+        .description(
+            "When a user was last online, as Zalo reads it: when your own online status is hidden " +
+                '(profile set online-status 0) nothing is asked and hiddenBy is "you"; hiddenBy "them" means ' +
+                "they hide theirs",
+        )
+        .option("--ask-anyway", "Ask Zalo even when your own online status is hidden (diagnostics)")
+        .option(
+            "--cached",
+            "Answer from the listener's cache of Zalo's presence pushes (`listen`/`mcp start`); send nothing",
+        )
+        .option("--oa", "The user is an Official Account (skips the profile lookup that tells)")
+        .action(async (userId, opts) => {
             try {
-                const result = await getApi().lastOnline(userId);
-                output(result, program.opts().json);
+                if (opts.cached) {
+                    // The cache is the account's db, written by the daemon; this only reads it.
+                    const acc = getActive();
+                    if (acc) initDb(getAccountDbPath(acc.ownId));
+                }
+                // The same reply as zalo_friend `last_online` (src/core/last-online.js).
+                const result = await lastOnlineStatus(opts.cached ? null : getApi(), userId, {
+                    askAnyway: Boolean(opts.askAnyway),
+                    cached: Boolean(opts.cached),
+                    ...(opts.oa ? { isOA: true } : {}),
+                });
+                output(result, program.opts().json, () => {
+                    const when = result.lastOnline ? new Date(result.lastOnline).toLocaleString() : null;
+                    if (result.hiddenBy === "you") info("Hidden: your own online status is hidden, so none is shown.");
+                    else if (result.hiddenBy === "them") info("Hidden: this user hides their online status.");
+                    else info(`Last online: ${when ?? "unknown"}`);
+                    if (result.note) info(result.note);
+                });
             } catch (e) {
                 error(e.message);
             }
@@ -206,14 +281,19 @@ export function registerFriendCommands(program) {
         .description("Find a user by their Zalo username")
         .action(async (username) => {
             try {
-                const result = await getApi().findUserByUsername(username);
+                const found = await getApi().findUserByUsername(username);
+                if (found) await ensureAliases(getApi());
+                const result = found ? aliasFirst(found) : found;
                 output(result, program.opts().json, () => {
                     if (!result) {
                         error(`No user found for username "${username}"`);
                         return;
                     }
-                    info(`User ID: ${result.uid || "?"}`);
-                    info(`Name: ${result.displayName || result.zaloName || "?"}`);
+                    // Zalo answers a username lookup in snake_case (`display_name`, `zalo_name`), as a phone
+                    // lookup; the camelCase names are read too, as `friend find` reads them.
+                    const name = result.display_name || result.displayName || result.zalo_name || result.zaloName;
+                    info(`User ID: ${result.uid || result.userId || "?"}`);
+                    info(`Name: ${name || "?"}`);
                 });
             } catch (e) {
                 error(`Find username failed: ${e.message}`);
@@ -235,11 +315,19 @@ export function registerFriendCommands(program) {
     friend
         .command("alias-list")
         .description("List all friend aliases")
-        .option("-c, --count <n>", "Page size", parseIntOption, 100)
-        .option("-p, --page <n>", "Page number", parseIntOption, 1)
+        .option("-c, --count <n>", "Page size (with -c or -p one page is read, 100 a page by default)", parseIntOption)
+        .option("-p, --page <n>", "Read only this page (default: every page)", parseIntOption)
         .action(async (opts) => {
             try {
-                const result = await getApi().getAliasList(opts.count, opts.page);
+                let result;
+                if (opts.count === undefined && opts.page === undefined) {
+                    // No page asked: every page, as Zalo pages its alias list (src/core/list-all.js).
+                    const all = await allAliases(getApi());
+                    result = { items: all.items };
+                    if (all.paging.note) warning(all.paging.note);
+                } else {
+                    result = await getApi().getAliasList(opts.count ?? 100, opts.page ?? 1);
+                }
                 output(result, program.opts().json, () => {
                     const items = result?.items || [];
                     info(`${items.length} alias(es)`);
@@ -284,7 +372,7 @@ export function registerFriendCommands(program) {
                 const result = await getApi().undoFriendRequest(userId);
                 output(result, program.opts().json, () => success(`Friend request to ${userId} cancelled`));
             } catch (e) {
-                error(`Undo friend request failed: ${e.message}`);
+                error(describeFriendUndoError(errorCodeOf(e), userId) || `Undo friend request failed: ${e.message}`);
             }
         });
 
@@ -293,21 +381,25 @@ export function registerFriendCommands(program) {
         .description("List all sent friend requests")
         .action(async () => {
             try {
-                const result = await getApi().getSentFriendRequest();
+                // Zalo's "none sent" (112) arrives as `{}`.
+                const sent = await readSentRequests(getApi());
+                if (Object.keys(sent || {}).length) await ensureAliases(getApi());
+                const result = Object.fromEntries(
+                    Object.entries(sent || {}).map(([uid, r]) => [uid, aliasFirst(r, uid)]),
+                );
                 output(result, program.opts().json, () => {
-                    const entries = Object.entries(result || {});
+                    const entries = Object.entries(result);
+                    if (!entries.length) {
+                        info("No sent friend requests");
+                        return;
+                    }
                     info(`${entries.length} sent request(s)`);
                     for (const [uid, req] of entries) {
                         console.log(`  ${uid}  ${req.displayName || req.zaloName || "?"}`);
                     }
                 });
             } catch (e) {
-                // Code 112 = no friend requests
-                if (String(e.message).includes("112")) {
-                    info("No sent friend requests");
-                } else {
-                    error(`Get sent requests failed: ${e.message}`);
-                }
+                error(`Get sent requests failed: ${e.message}`);
             }
         });
 
@@ -332,7 +424,9 @@ export function registerFriendCommands(program) {
         .description("List close friends")
         .action(async () => {
             try {
-                const result = await getApi().getCloseFriends();
+                const raw = await getApi().getCloseFriends();
+                if (Array.isArray(raw) && raw.length) await ensureAliases(getApi());
+                const result = Array.isArray(raw) ? raw.map((f) => aliasFirst(f)) : raw;
                 output(result, program.opts().json, () => {
                     const friends = Array.isArray(result) ? result : [];
                     info(`${friends.length} close friend(s)`);
@@ -341,7 +435,12 @@ export function registerFriendCommands(program) {
                     }
                 });
             } catch (e) {
-                error(`Get close friends failed: ${e.message}`);
+                error(
+                    `Get close friends failed: ${e.message}` +
+                        (/404/.test(e.message)
+                            ? ". Zalo has retired close friends: Zalo's own apps have no menu for it, and the request answers 404."
+                            : ""),
+                );
             }
         });
 
@@ -350,7 +449,16 @@ export function registerFriendCommands(program) {
         .description("Get friend recommendations and received requests")
         .action(async () => {
             try {
-                const result = await getApi().getFriendRecommendations();
+                const raw = await getApi().getFriendRecommendations();
+                if (raw?.recommItems?.length) await ensureAliases(getApi());
+                const result = Array.isArray(raw?.recommItems)
+                    ? {
+                          ...raw,
+                          recommItems: raw.recommItems.map((i) =>
+                              i?.dataInfo ? { ...i, dataInfo: aliasFirst(i.dataInfo) } : i,
+                          ),
+                      }
+                    : raw;
                 output(result, program.opts().json, () => {
                     const items = result?.recommItems || [];
                     info(`${items.length} recommendation(s)`);
@@ -370,7 +478,11 @@ export function registerFriendCommands(program) {
         .description("Find users by phone numbers")
         .action(async (phones) => {
             try {
-                const result = await getApi().getMultiUsersByPhones(phones);
+                const raw = await getApi().getMultiUsersByPhones(phones);
+                if (Object.keys(raw || {}).length) await ensureAliases(getApi());
+                const result = Object.fromEntries(
+                    Object.entries(raw || {}).map(([phone, u]) => [phone, aliasFirst(u)]),
+                );
                 output(result, program.opts().json, () => {
                     const entries = Object.entries(result || {});
                     info(`${entries.length} user(s) found`);
@@ -402,11 +514,30 @@ export function registerFriendCommands(program) {
         .description("List the groups you share with one or more friends")
         .action(async (friendIds) => {
             try {
-                const result = await getApi().getRelatedFriendGroup(friendIds);
-                output(result, program.opts().json, () => {
-                    for (const [fid, groups] of Object.entries(result?.groupRelateds ?? {})) {
-                        info(`${fid}: ${groups.length} group(s)`);
-                        for (const g of groups) console.log(`  ${g}`);
+                const api = getApi();
+                const result = await api.getRelatedFriendGroup(friendIds);
+                // Groups in hidden chats are left out, as Zalo leaves them out of "Nhóm chung".
+                const ownId = api.getOwnId?.() ?? null;
+                const hidden = ownId ? await hiddenSetForCli(String(ownId), api, { preferMirror: true }) : null;
+                const lists = Object.entries(result?.groupRelateds ?? {}).map(([fid, groups]) => [
+                    fid,
+                    (Array.isArray(groups) ? groups : []).map(String).filter((id) => !hidden?.isHidden(id)),
+                ]);
+                const names = await groupNames(
+                    api,
+                    lists.flatMap(([, ids]) => ids),
+                    { ownId },
+                );
+                const shared = lists.map(([userId, groupIds]) => ({
+                    userId,
+                    count: groupIds.length,
+                    groups: groupIds.map((groupId) => ({ groupId, name: names.get(groupId) ?? null })),
+                }));
+                // groupRelateds is Zalo's own shape (hidden-chat groups left out); shared adds the count and names.
+                output({ groupRelateds: Object.fromEntries(lists), shared }, program.opts().json, () => {
+                    for (const s of shared) {
+                        info(`${s.userId}: ${s.count} mutual group${s.count === 1 ? "" : "s"}`);
+                        for (const g of s.groups) console.log(`  ${g.groupId}${g.name ? `  ${g.name}` : ""}`);
                     }
                 });
             } catch (e) {
@@ -438,4 +569,26 @@ export function registerFriendCommands(program) {
                 error(`Block feed failed: ${e.message}`);
             }
         });
+    // Asked about first, as Zalo does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    guardSubcommand(friend, "remove", "friend.remove", { target: (userId) => ({ userId }) });
+    guardSubcommand(friend, "block", "friend.block", { target: (userId) => ({ userId }) });
+    guardSubcommand(friend, "reject", "friend.reject", { target: (userId) => ({ userId }) });
+    guardSubcommand(friend, "undo-request", "friend.undoRequest", { target: (userId) => ({ userId }) });
+}
+
+/**
+ * A `getUserInfo` answer with each profile named alias first (src/core/contact-names.js `aliasFirst`).
+ *
+ * @param {object} res
+ * @returns {object}
+ */
+function withProfileNames(res) {
+    if (!res || typeof res !== "object") return res;
+    const out = { ...res };
+    for (const key of ["changed_profiles", "unchanged_profiles"]) {
+        if (res[key] && typeof res[key] === "object") {
+            out[key] = Object.fromEntries(Object.entries(res[key]).map(([uid, p]) => [uid, aliasFirst(p, uid)]));
+        }
+    }
+    return out;
 }

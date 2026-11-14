@@ -3,9 +3,7 @@
  */
 
 import { readFileSync, unlinkSync } from "fs";
-import { LoginQRCallbackEventType } from "zca-js";
 import {
-    loginWithQR,
     loginWithCredentials,
     extractCredentials,
     clearSession,
@@ -13,25 +11,227 @@ import {
     getApi,
     getOwnId,
 } from "../core/zalo-client.js";
-import { saveCredentials, loadCredentials, getAccountDir } from "../core/credentials.js";
+import { saveCredentials, loadCredentials, getAccountDir, readSavedDevice } from "../core/credentials.js";
+import { describeLoginDevice, loginDeviceChange } from "../core/device-since.js";
 import { addAccount, getActive, removeAccount, updateAccountName } from "../core/accounts.js";
 import { getDaemonStatus } from "../core/daemon-channel.js";
-import { serverLogout, reportLogout, finishLocalLogout, lockHolder } from "../core/logout.js";
+import { describeSessionExpiry, sessionExpiryFor } from "../core/session-expiry.js";
+import { serverLogout, reportLogout, finishLocalLogout, lockHolder, describeTrustedDevice } from "../core/logout.js";
 import { maskProxy } from "../utils/proxy-helpers.js";
-import { displayQR, getQRPath } from "../utils/qr-display.js";
-import { startQrServer } from "../utils/qr-http-server.js";
+import { getQRPath } from "../utils/qr-display.js";
+import { resolveLoginPublicUrl, runQrLogin } from "../core/qr-login-flow.js";
 import { success, error, info, warning, output } from "../utils/output.js";
-import { parseIntOption } from "../utils/parse-options.js";
+import { parseIntAtLeast, parseIntOption } from "../utils/parse-options.js";
+import { acquireLock, releaseLock } from "../core/lock.js";
+import { clearKickMarker, kickFile } from "../core/kick-marker.js";
+import { guardSubcommand } from "../core/confirm-guard.js";
+
+/**
+ * The newest time this account was known connected, from its local cache, or null (no cache yet, or unreadable).
+ * Read only; a cache that does not exist is not created.
+ *
+ * @param {string} ownId
+ * @returns {Promise<number|null>}
+ */
+async function lastConnectedAtOf(ownId) {
+    try {
+        const { existsSync } = await import("fs");
+        const { getAccountDbPath } = await import("../core/credentials.js");
+        if (!existsSync(getAccountDbPath(ownId))) return null;
+        const { SyncManager } = await import("../core/sync.js");
+        return new SyncManager(getApi(), ownId).getLastConnectedAt();
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * The command that restores what a new device does not have: from the last time the account was seen connected here,
+ * or the whole history when nothing was ever cached here.
+ *
+ * @param {string} ownId
+ * @returns {Promise<string>}
+ */
+async function restoreAdvice(ownId) {
+    const since = await lastConnectedAtOf(ownId);
+    if (!since) return "zalo-agent sync";
+    const { syncFromDate } = await import("../core/sync-v2/gap-advice.js");
+    return `zalo-agent sync --from ${syncFromDate(since)}`;
+}
+
+/**
+ * The saved cursors of this account's control queues, read from its local cache, as `listen` keeps them
+ * (src/core/self-heal.js `cursorKey`). A login that kept its device id reads its control queue from there, as Zalo
+ * does: the phone's offer is at the end of that queue. No cache, or an unreadable one: no cursor (the queue is then
+ * read from its start). Read only.
+ *
+ * @param {string} ownId
+ * @returns {Promise<(queueName: string) => string|null>}
+ */
+async function controlCursorsOf(ownId) {
+    const none = () => null;
+    try {
+        const { existsSync } = await import("fs");
+        const { getAccountDbPath } = await import("../core/credentials.js");
+        const path = getAccountDbPath(ownId);
+        if (!existsSync(path)) return none;
+        const { initDb, getSyncState } = await import("../core/db.js");
+        const { cursorKey } = await import("../core/self-heal.js");
+        initDb(path);
+        return (queueName) => {
+            try {
+                const saved = JSON.parse(getSyncState(cursorKey(queueName)) ?? "null");
+                return /^\d+$/.test(String(saved?.id ?? "")) ? String(saved.id) : null;
+            } catch {
+                return null;
+            }
+        };
+    } catch {
+        return none;
+    }
+}
+
+/**
+ * The `--verbose` lines of a look for the phone's offer: which control queues were read and from where, and every
+ * control that arrived (queue, act type, act, `pc`, whether it had a key, age). Never the key.
+ *
+ * @param {{pulls?: object[], controls?: object[]}} out - what autoSyncAfterLogin returned
+ * @returns {string[]}
+ */
+export function describeOfferCheck(out) {
+    const lines = [];
+    const pulls = out?.pulls ?? [];
+    lines.push(
+        pulls.length
+            ? `Control queues read: ${pulls.map((p) => `${p.queue} from ${p.from} (${p.pages} page(s), ${p.reason})`).join("; ")}`
+            : "Control queues read: none",
+    );
+    const controls = out?.controls ?? [];
+    lines.push(`Controls seen: ${controls.length}`);
+    for (const c of controls) {
+        const age = c.ageMs === null || c.ageMs === undefined ? "?" : `${Math.round(c.ageMs / 1000)} s`;
+        lines.push(
+            `  ${c.queue} #${c.actionId ?? "?"}: act_type=${c.actType ?? "-"} act=${c.act ?? "-"} pc=${c.pc ?? "-"} ` +
+                `key=${c.hasKey ? "yes" : "no"} age=${age}`,
+        );
+    }
+    return lines;
+}
+
+/**
+ * After a QR login: look for the phone's "sync messages to this device" offer and say whether it was ticked. Ticked:
+ * restore at once with the key the phone offered (no tap; the tick is the consent), unless `--no-sync`. Not ticked, or
+ * too late to use: say which `sync` command restores what this login does not have.
+ *
+ * With a `listen`/`mcp` daemon holding the account nothing is opened: a second socket would fight it. The offer is
+ * then not read, and the advice is printed instead.
+ *
+ * @param {string} ownId
+ * @param {{sync?: boolean, syncDays?: number, verbose?: boolean}} opts - `sync` false: `--no-sync`; `verbose`: list
+ *   the control queues read and every control seen (`--json`: `pulls` and `controls` in the event)
+ * @param {{newDevice: boolean, jsonMode: boolean}} ctx
+ */
+async function watchLoginOffer(ownId, opts, { newDevice, jsonMode }) {
+    const { autoSyncAfterLogin } = await import("../core/sync-v2/auto-sync.js");
+    const { resolveSyncWindow } = await import("../core/sync-v2/index.js");
+    const { reportRestore } = await import("./sync.js");
+    const accountDir = getAccountDir(ownId);
+    let diag = {};
+    const say = (status, line, extra = {}) => {
+        if (jsonMode) console.log(JSON.stringify({ event: "login_auto_sync", status, ...extra, ...diag }));
+        else if (line) (status === "restored" || status === "same-device" ? info : warning)(line);
+    };
+    if (!acquireLock(accountDir)) {
+        const advice = await restoreAdvice(ownId);
+        say(
+            "daemon-running",
+            "A listen/mcp daemon holds this account, so the phone's auto sync offer was not read. " +
+                `To restore what this login does not have: \`${advice}\` (it runs on the daemon's socket).`,
+            { command: advice },
+        );
+        return;
+    }
+    try {
+        const win = resolveSyncWindow(opts.syncDays, Date.now());
+        const startedAt = Date.now();
+        if (!jsonMode) info("Checking whether 'sync messages' was ticked on the phone...");
+        const out = await autoSyncAfterLogin(getApi(), ownId, {
+            days: opts.syncDays ?? null,
+            cursorOf: await controlCursorsOf(ownId),
+            restoreWhenTicked: opts.sync !== false,
+            onStatus: ({ phase, detail }) => {
+                if (jsonMode) return;
+                if (phase === "confirm") warning(detail);
+                else if (detail) info(`  ${detail}`);
+            },
+        });
+        if (opts.verbose) {
+            if (jsonMode) diag = { pulls: out.pulls ?? [], controls: out.controls ?? [] };
+            else for (const line of describeOfferCheck(out)) info(line);
+        }
+        if (out.offered) {
+            if (!jsonMode) info(`Auto sync was ticked on the phone: restored ${win.label} with its key (no tap).`);
+            if (jsonMode) say("restored", null, { ageMs: out.ageMs, reason: out.result?.reason ?? null });
+            else reportRestore(out.result, win, { startedAt, keep: [ownId] });
+            return;
+        }
+        const advice = await restoreAdvice(ownId);
+        if (out.status === "ticked") {
+            say("declined", `Auto sync was ticked on the phone; not restored (--no-sync). Later: \`${advice}\`.`, {
+                command: advice,
+            });
+        } else if (out.status === "no-socket") {
+            say("unknown", `Could not check the phone's auto sync offer: ${out.reason}. To restore: \`${advice}\`.`, {
+                command: advice,
+            });
+        } else if (!newDevice) {
+            say(
+                "same-device",
+                `Auto sync was not ticked (${out.reason}). This login kept its device id, so nothing needs restoring ` +
+                    `unless the next listen/mcp start reports a gap.`,
+                { offer: out.status },
+            );
+        } else {
+            say(
+                out.status,
+                `No auto sync: ${out.reason}. History from before this login is not on this device; ` +
+                    `restore it with: \`${advice}\` (it asks for a tap on the phone).`,
+                { command: advice },
+            );
+        }
+    } catch (e) {
+        say("failed", `Auto sync failed: ${e.message}. Run \`zalo-agent sync\` to restore.`);
+    } finally {
+        releaseLock(accountDir);
+    }
+}
 
 export function registerLoginCommands(program) {
     program
         .command("login")
         .description("Login to Zalo via QR code scan or from exported credentials")
-        .option("-p, --proxy <url>", "Proxy URL (http/https/socks5://[user:pass@]host:port)")
+        .option("-p, --proxy <url>", "Proxy URL (http:// or https://[user:pass@]host:port)")
         .option("-n, --name <label>", "Friendly name for this account", "")
         .option("--qr-url", "Start local HTTP server to view QR in browser (for VPS/headless)")
         .option("-q, --qr-port <port>", "Port for QR HTTP server (default: 18927)", parseIntOption)
+        .option(
+            "--public-url <url>",
+            "Print the QR page as <url>/zalo/qr/<one-time token>, for a reverse proxy that routes /zalo/qr/ to the QR port (https, or http on localhost; or ZALO_MCP_PUBLIC_URL / publicUrl in mcp-config.json)",
+        )
         .option("--credentials <path>", "Login from exported credentials file (skip QR)")
+        .option(
+            "--sync",
+            "After the QR login, restore message history at once when 'sync messages' was ticked on the phone (no tap). The default since 3.0.0; kept for scripts",
+        )
+        .option(
+            "--no-sync",
+            "Only report whether 'sync messages' was ticked on the phone; restore nothing (later: zalo-agent sync)",
+        )
+        .option("--sync-days <n>", "When restoring after the login: only the last N days", parseIntAtLeast(1))
+        .option(
+            "--verbose",
+            "After a QR login, list the control queues read for the 'sync messages' offer and every control seen (never its key)",
+        )
         .action(async (opts) => {
             // Credential-based login (headless/CI)
             if (opts.credentials) {
@@ -49,9 +249,13 @@ export function registerLoginCommands(program) {
                     } catch {}
 
                     const creds = extractCredentials();
+                    const device = loginDeviceChange(readSavedDevice(ownId), creds.imei);
                     saveCredentials(ownId, creds);
+                    // A new login ends a kick: `fleet status` stops saying `kicked` before the daemon is back.
+                    clearKickMarker(kickFile(getAccountDir(ownId)));
                     addAccount(ownId, displayName, proxy);
                     success(`Logged in as ${displayName} (${ownId})`);
+                    info(describeLoginDevice(device, Date.now()));
                 } catch (e) {
                     error(`Login from credentials failed: ${e.message}`);
                     process.exit(1);
@@ -61,86 +265,24 @@ export function registerLoginCommands(program) {
 
             // QR-based login
             const jsonMode = program.opts().json;
+            const pub = resolveLoginPublicUrl(opts.publicUrl);
+            if (pub.error) {
+                error(`Invalid public URL: ${pub.error}.`);
+                process.exit(1);
+            }
             if (opts.proxy) info(`Using proxy: ${maskProxy(opts.proxy)}`);
             if (!jsonMode) info("Generating QR code... Scan with Zalo mobile app.");
 
-            let qrServer = null;
+            let login = null;
             try {
-                const { ownId } = await loginWithQR(opts.proxy, (event) => {
-                    switch (event.type) {
-                        case LoginQRCallbackEventType.QRCodeGenerated:
-                            displayQR(event);
-                            // The QR is a login token, so the HTTP view binds
-                            // loopback unless --qr-url explicitly asks for LAN
-                            // exposure (the VPS/headless case the flag exists
-                            // for). It used to bind 0.0.0.0 unconditionally,
-                            // handing anyone on the network a usable login QR
-                            // on every `zalo-agent login`.
-                            if (!qrServer) {
-                                qrServer = startQrServer(
-                                    getQRPath(),
-                                    opts.qrPort || 18927,
-                                    [opts.qrPort || 18927, 8080, 3000, 9000],
-                                    Boolean(opts.qrUrl),
-                                );
-                            }
-                            break;
-
-                        case LoginQRCallbackEventType.QRCodeScanned: {
-                            // Mirrors what real Zalo Web shows the instant the
-                            // phone scans: the account's name (and avatar URL,
-                            // since we don't inline-fetch/render images here)
-                            // — zca-js already hands this through in
-                            // event.data, it was just never surfaced.
-                            const name = event.data?.display_name || "unknown";
-                            if (jsonMode) {
-                                console.log(
-                                    JSON.stringify({
-                                        event: "qr_scanned",
-                                        name,
-                                        avatar: event.data?.avatar || null,
-                                    }),
-                                );
-                            } else {
-                                info(`Scanned by ${name} — confirm on your phone to finish logging in.`);
-                                if (event.data?.avatar) info(`Avatar: ${event.data.avatar}`);
-                            }
-                            break;
-                        }
-
-                        case LoginQRCallbackEventType.QRCodeDeclined:
-                            // The zca-js patch now rejects loginQR()'s promise
-                            // right after firing this event, so the catch
-                            // block below reports the terminal failure — this
-                            // is just the immediate heads-up, matching how
-                            // real Zalo Web reacts the instant you decline.
-                            if (jsonMode) {
-                                console.log(JSON.stringify({ event: "qr_declined" }));
-                            } else {
-                                warning("Login declined on phone.");
-                            }
-                            break;
-
-                        case LoginQRCallbackEventType.QRCodeExpired:
-                            // Without this, a callback-style login (which is
-                            // what this CLI always uses) never calls
-                            // actions.retry()/abort() itself, so zca-js just
-                            // leaves the QR expired and the whole login hangs
-                            // forever instead of refreshing — auto-retry here
-                            // matches upstream zca-js's own no-callback
-                            // default behavior.
-                            if (jsonMode) {
-                                console.log(JSON.stringify({ event: "qr_expired" }));
-                            } else {
-                                info("QR expired — generating a new one...");
-                            }
-                            event.actions?.retry?.();
-                            break;
-
-                        default:
-                            break;
-                    }
+                login = await runQrLogin({
+                    proxy: opts.proxy,
+                    jsonMode,
+                    qrPort: opts.qrPort || 18927,
+                    qrUrl: Boolean(opts.qrUrl),
+                    publicUrl: pub.publicUrl,
                 });
+                const { ownId } = login;
 
                 // Fetch display name from Zalo profile
                 let displayName = opts.name || "";
@@ -150,30 +292,49 @@ export function registerLoginCommands(program) {
                 } catch {}
 
                 const creds = extractCredentials();
-                saveCredentials(ownId, creds);
+                const loginAt = Date.now();
+                // Taken before the save: whether this login kept the account's device id (src/core/device-since.js).
+                const device = loginDeviceChange(readSavedDevice(ownId), creds.imei);
+                saveCredentials(ownId, creds, { now: loginAt });
+                clearKickMarker(kickFile(getAccountDir(ownId)));
                 addAccount(ownId, displayName, opts.proxy);
 
                 if (jsonMode) {
-                    console.log(JSON.stringify({ event: "login_success", ownId, name: displayName }));
+                    console.log(
+                        JSON.stringify({
+                            event: "login_success",
+                            ownId,
+                            name: displayName,
+                            newDevice: device.newDevice,
+                            device: device.reason,
+                        }),
+                    );
                 } else {
                     success(`Logged in as ${displayName} (${ownId})`);
+                    info(describeLoginDevice(device, loginAt));
                 }
+                // The QR page says so too, and closes once it has.
+                await login.finish("done");
+                await watchLoginOffer(ownId, opts, { newDevice: device.newDevice, jsonMode });
             } catch (e) {
                 if (jsonMode) {
                     console.log(JSON.stringify({ event: "login_error", message: e.message }));
                 } else {
                     error(`Login failed: ${e.message}`);
                 }
+                await (login?.finish ?? e.finish)?.("failed", e.message);
                 process.exit(1);
-            } finally {
-                if (qrServer) qrServer.close();
             }
         });
 
     program
         .command("logout")
         .description(
-            "Log out: end the session and delete this device's saved credentials, so the next command needs a new QR login. Chat history is kept unless --delete-history or --purge.",
+            "Log out: sign this device out at Zalo (as Zalo's own apps do) and delete its saved credentials, so the next command needs a new QR login. Chat history is kept unless --delete-history or --purge.",
+        )
+        .option(
+            "--keep-session",
+            "Only end this process's session key, as before v3.0: the saved login stays valid at Zalo and the device stays in the phone's list (local credentials are still deleted)",
         )
         .option(
             "--purge",
@@ -181,7 +342,7 @@ export function registerLoginCommands(program) {
         )
         .option(
             "--delete-history",
-            'Also delete the local chat cache (zalo.db + downloaded media) for this account — mirrors the web app\'s "Delete chat history on logout" checkbox',
+            'Also delete the local chat cache (zalo.db + downloaded media) for this account — like Zalo\'s own "Delete chat history on logout" checkbox',
         )
         .option("--no-remote", "Skip the server-side logout call (still deletes the saved credentials locally)")
         .action(async (opts) => {
@@ -192,27 +353,34 @@ export function registerLoginCommands(program) {
             // credential delete would leave it unable to re-auth.
             const holder = active ? lockHolder(active.ownId) : null;
             if (holder !== null) {
-                warning(
+                error(
                     `A "listen"/"mcp" daemon (pid ${holder}) is running for this account. Stop it, then re-run logout — nothing was changed.`,
                 );
                 return;
             }
+            const jsonMode = program.opts().json;
+            // What --json prints: what was ended and deleted, in place of the lines below.
+            const done = { loggedOut: true, account: active?.ownId ?? null, remote: null };
 
-            // Ask Zalo to end the session (production logout first, then the
-            // optional logoutV2) and report honestly — src/core/logout.js.
-            // Measured live 2026-09-30: these calls end only this device's
-            // session KEY, never the login. The saved credentials would
-            // auto-log-in on the next command, so a real logout deletes them
-            // too (below); the web session is revoked at Zalo only from the
-            // phone's device list.
+            // Sign this device out at Zalo the way Zalo does (the six steps in
+            // src/zalo/official-logout.js), then check that the saved login is
+            // refused, and report honestly — src/core/logout.js. Measured
+            // 2026-09-30: the older calls (kept behind --keep-session) end only the
+            // session KEY, never the login; the official steps do end it.
+            // The saved credentials are deleted below either way.
             if (opts.remote !== false && isLoggedIn()) {
-                reportLogout(await serverLogout(getApi()), { success, warning, info });
+                const creds = active ? loadCredentials(active.ownId) : null;
+                done.remote = await serverLogout(getApi(), {
+                    keepSession: Boolean(opts.keepSession),
+                    savedLogin: creds ? { creds, proxy: active.proxy || null, ownId: active.ownId } : null,
+                });
+                reportLogout(done.remote, { success, warning, info });
             }
 
             clearSession();
 
             if (!active) {
-                success("Logged out.");
+                output(done, jsonMode, () => success("Logged out."));
                 return;
             }
 
@@ -221,9 +389,11 @@ export function registerLoginCommands(program) {
             // rather than pull credentials out from under a running daemon.
             if (opts.purge) {
                 try {
+                    // Asked before the folder goes: the identity is in it.
+                    const trustNote = describeTrustedDevice(active.ownId, "deleted");
                     const { wiped, skippedLocked } = removeAccount(active.ownId);
                     if (skippedLocked) {
-                        warning(
+                        error(
                             `Purge aborted: a "listen"/"mcp" daemon (pid ${skippedLocked.pid}) is still running for this account. Stop it, then re-run --purge.`,
                         );
                         info("Credentials and account registration were left untouched.");
@@ -232,9 +402,12 @@ export function registerLoginCommands(program) {
                     try {
                         unlinkSync(getQRPath());
                     } catch {}
-                    success(
-                        `Logged out and purged ${active.name || active.ownId} — ${wiped ? "local account data deleted" : "no local account data found to delete"}.`,
-                    );
+                    output({ ...done, purged: true, localDataDeleted: wiped }, jsonMode, () => {
+                        success(
+                            `Logged out and purged ${active.name || active.ownId} — ${wiped ? "local account data deleted" : "no local account data found to delete"}.`,
+                        );
+                        if (trustNote && wiped) info(trustNote);
+                    });
                 } catch (e) {
                     // A filesystem-level failure (locked file, permissions, AV
                     // scanner) must not crash the process with a raw stack trace.
@@ -249,7 +422,7 @@ export function registerLoginCommands(program) {
             // unless --delete-history asks otherwise. Guarded by the daemon lock.
             const outcome = finishLocalLogout(active.ownId, { deleteHistory: Boolean(opts.deleteHistory) });
             if (outcome.blockedPid !== undefined) {
-                warning(
+                error(
                     `A "listen"/"mcp" daemon (pid ${outcome.blockedPid}) is still running for this account, so the credentials were kept — the next command would auto-login.`,
                 );
                 info("Stop the daemon and re-run logout to delete the saved credentials.");
@@ -260,19 +433,28 @@ export function registerLoginCommands(program) {
                 unlinkSync(getQRPath());
             } catch {}
             const who = active.name || active.ownId;
-            const historyGone = opts.deleteHistory && (outcome.history.dbDeleted || outcome.history.mediaDeleted);
-            if (outcome.credentialsDeleted) {
-                success(
-                    `Logged out ${who} — saved credentials${historyGone ? " and local chat history" : ""} deleted; the next command needs a new QR login.`,
-                );
-            } else {
-                success(
-                    `Logged out ${who} — ${historyGone ? "local chat history deleted; " : ""}no saved credentials were found to delete.`,
-                );
-            }
-            info(
-                "This ends the session on this device only. To sign it out at Zalo, remove it from your phone's list of logged-in devices.",
+            const historyGone = Boolean(
+                opts.deleteHistory && (outcome.history.dbDeleted || outcome.history.mediaDeleted),
             );
+            const result = { ...done, credentialsDeleted: outcome.credentialsDeleted, historyDeleted: historyGone };
+            output(result, jsonMode, () => {
+                if (outcome.credentialsDeleted) {
+                    success(
+                        `Logged out ${who} — saved credentials${historyGone ? " and local chat history" : ""} deleted; the next command needs a new QR login.`,
+                    );
+                } else {
+                    success(
+                        `Logged out ${who} — ${historyGone ? "local chat history deleted; " : ""}no saved credentials were found to delete.`,
+                    );
+                }
+                const trustNote = describeTrustedDevice(active.ownId, "kept");
+                if (trustNote) info(trustNote);
+                if (opts.keepSession || opts.remote === false) {
+                    info(
+                        "This ended the session on this device only. To sign it out at Zalo, remove it from your phone's list of logged-in devices.",
+                    );
+                }
+            });
         });
 
     program
@@ -323,10 +505,14 @@ export function registerLoginCommands(program) {
                 const accountInfo = await api.fetchAccountInfo();
                 const p = accountInfo?.profile || {};
                 updateAccountName(p.userId || getOwnId(), p.displayName || p.zaloName);
-                output(accountInfo, program.opts().json, () => {
+                // Nothing extends the saved login, so when it ends is worth knowing before it does.
+                const sessionExpiry = sessionExpiryFor(p.userId || getOwnId());
+                output({ ...accountInfo, sessionExpiry }, program.opts().json, () => {
                     info(`Name: ${p.displayName || "?"}`);
                     info(`ID: ${p.userId || getOwnId()}`);
                     info(`Phone: ${p.phoneNumber || "?"}`);
+                    const sessionLine = describeSessionExpiry(sessionExpiry);
+                    if (sessionLine) info(sessionLine);
                 });
             } catch (e) {
                 error(e.message);
@@ -334,4 +520,14 @@ export function registerLoginCommands(program) {
                 process.exitCode = 1;
             }
         });
+    // Every logout needs --yes, and --dry-run says what it would end and delete (src/core/confirm-guard.js).
+    guardSubcommand(program, "logout", "logout", {
+        target: (opts) => ({
+            account: getActive()?.ownId ?? null,
+            keepSession: Boolean(opts.keepSession),
+            purge: Boolean(opts.purge),
+            deleteHistory: Boolean(opts.deleteHistory),
+            remote: opts.remote !== false,
+        }),
+    });
 }

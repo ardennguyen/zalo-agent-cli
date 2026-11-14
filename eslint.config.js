@@ -25,6 +25,7 @@ const NODE_GLOBALS = {
     AbortSignal: "readonly",
     TextDecoder: "readonly",
     TextEncoder: "readonly",
+    WebAssembly: "readonly",
 };
 
 export default [
@@ -45,6 +46,31 @@ export default [
             "no-var": "error",
             "prefer-const": "warn",
             eqeqeq: ["warn", "always"],
+        },
+    },
+    {
+        // src/zalo is a library the application uses, never the other way round: nothing in it may import the
+        // CLI's code (src/core, src/utils, src/commands, src/mcp, src/index.js). There is no core/utils/commands/mcp
+        // folder inside src/zalo, so any number of `../` before those names leaves the layer; `index.js` reached
+        // through `../` is the CLI's entry or the layer's own public entry, and neither belongs in an import here.
+        // tests/unit/zalo-boundary.test.js checks the same, dynamic imports included.
+        files: ["src/zalo/**/*.js"],
+        rules: {
+            "no-restricted-imports": [
+                "error",
+                {
+                    patterns: [
+                        {
+                            regex: "^(\\.\\./)+(core|utils|commands|mcp)(/|$)",
+                            message: "src/zalo must not import the application; have the caller pass it in.",
+                        },
+                        {
+                            regex: "^(\\.\\./)+index\\.js$",
+                            message: "src/zalo must not import src/index.js or its own public entry.",
+                        },
+                    ],
+                },
+            ],
         },
     },
     {

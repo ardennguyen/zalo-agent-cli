@@ -140,7 +140,7 @@ describe("isSessionComplete — when has the phone finished a round?", () => {
     });
 
     it("completes on full coverage even when isLast never arrives", () => {
-        // The captured Zalo Web run ends its last message session with
+        // A captured run ends its last message session with
         // isLast=0 and disposes it anyway; waiting for isLast hangs the run.
         assert.equal(isSessionComplete(S(["oneone/a"], ["oneone/a"], false)), true);
     });

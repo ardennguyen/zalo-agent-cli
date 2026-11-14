@@ -1,19 +1,84 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import Database from "better-sqlite3";
+import { openDatabase } from "./sqlite.js";
+import { stripVietnamese } from "../utils/vn-text.js";
+import { aliasFor, dmTitle } from "./contact-names.js";
+import { deriveDataKey, readKeyring, scopeOfDir } from "./keystore/keyring.js";
+import { readStorageFile } from "./keystore/config.js";
+import {
+    RowIntegrityError,
+    checkRow,
+    ephemeralRowMacKey,
+    installRowMac,
+    registerRowMacFunction,
+    verifyOnReadMode,
+    verifyRows,
+} from "./row-mac.js";
 
 let db;
+/** The open database's row-MAC keys (./row-mac.js): the current one, and how to get retired ones. */
+let rowMacKeys = null;
+/** Is the search index of the open database complete? Reset by {@link initDb}. */
+let searchReady = false;
+/**
+ * The retention floor (`sync_state.retentionFloor`, epoch ms): the quota/retention purge (./storage-quota.js) deleted
+ * every message at or before it, and no writer may store one there again: a re-sync or a history fetch would
+ * otherwise bring back what was purged.
+ */
+let retentionFloor = 0;
+/** Bumped whenever a database is opened or closed, so per-account caches elsewhere know to reload. */
+let dbGeneration = 0;
+/** How long one search may spend building the index before it answers by scanning. */
+let searchBudgetMs = 2000;
+/** Told how the first search's preparation is going (a command shows it; nothing else needs to). */
+let searchProgress;
 
+/**
+ * Change how a search prepares its index: how much it may build per search (default 2 s; 0 builds nothing, so every
+ * search scans), and who is told of progress.
+ *
+ * @param {{budgetMs?: number, onProgress?: ((p: {phase: string, done: number, total: number|null}) => void)|null}} opts
+ */
+export function configureSearchIndex({ budgetMs, onProgress } = {}) {
+    if (Number.isFinite(budgetMs)) searchBudgetMs = budgetMs;
+    if (onProgress !== undefined) searchProgress = onProgress ?? undefined;
+}
+
+/**
+ * The client-side id a message's sender generated, read out of raw_data. Guarded with json_valid() because an older
+ * writer stored the bare content string in raw_data on six figures of rows, and an unguarded json_extract over this
+ * table raises "malformed JSON". Indexed (idx_messages_cli): a lookup by this expression must be written exactly
+ * this way to use the index.
+ */
+const CLIENT_ID_EXPR = "CASE WHEN json_valid(raw_data) THEN json_extract(raw_data, '$.cliMsgId') END";
+
+/** A message text as the `text_norm` column holds it: folded, or null when the message has no text. */
+function foldedText(text) {
+    return text === undefined || text === null ? null : stripVietnamese(text);
+}
+
+/**
+ * Open (creating if needed) the account's message cache and bring its schema up to date. The account is the folder
+ * the file is in (`accounts/<ownId>/zalo.db`): its key comes from that account's keyring.
+ *
+ * @param {string} dbPath
+ * @returns {import("better-sqlite3-multiple-ciphers").Database}
+ * @throws {import("./keystore/container.js").KeystoreError} when the database's key cannot be had (fail closed)
+ */
 export function initDb(dbPath) {
     // A fresh login has no accounts/<ownId>/ yet: only a daemon taking its
     // lock (lock.js) used to create it, so every command that opened the
     // cache before a listener had ever run crashed (sync-cloud, live
     // 2026-09-30: "Cannot open database because the directory does not exist").
     mkdirSync(dirname(dbPath), { recursive: true });
-    db = new Database(dbPath);
-
-    // Enable WAL mode for better performance
-    db.pragma("journal_mode = WAL");
+    // Encrypted at rest (SQLCipher, keyed from the account's data key; src/core/sqlite.js). A plaintext database from
+    // 2.x is encrypted here, once, before anything reads it. WAL and secure_delete are set by the opener.
+    db = openDatabase(dbPath);
+    dbGeneration++;
+    // Row MACs (./row-mac.js): the triggers that keep them call this function, so it is registered before any
+    // statement below that could fire one.
+    rowMacKeys = rowMacKeysFor(dbPath);
+    registerRowMacFunction(db, rowMacKeys.current);
 
     // Create tables
     db.exec(`
@@ -60,10 +125,8 @@ export function initDb(dbPath) {
     );
 
     -- Tracks time windows where we know (or suspect) messages may have been
-    -- missed — mirrors Zalo Web's own client-side "MissingMessageRange" table
-    -- (confirmed live via its IndexedDB schema: id/convId/fromTs/toTs/reason/status)
-    -- but kept account-wide rather than per-conversation, since pullMobileMsg/
-    -- getCrossDB operate on the whole account, not a single thread.
+    -- missed (id/convId/fromTs/toTs/reason/status), kept account-wide rather than per-conversation, since
+    -- pullMobileMsg/getCrossDB operate on the whole account, not a single thread.
     CREATE TABLE IF NOT EXISTS sync_gaps (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       fromTs INTEGER,
@@ -74,10 +137,25 @@ export function initDb(dbPath) {
       resolvedAt INTEGER
     );
 
+    -- What the phone-backed restore has settled, per conversation partition (oneone/<id> or group/<id>):
+    -- the window [fromTs, toTs] it asked for, and whether that is done, failed or still pending. This is
+    -- what lets a run that was killed pick up where it stopped, lets a later run ask only for what came
+    -- after the last one, and keeps a partly failed run from counting as a success. The ids are the phone's
+    -- opaque conversation ids, never a real thread id.
+    CREATE TABLE IF NOT EXISTS sync_ranges (
+      partition TEXT PRIMARY KEY,
+      fromTs INTEGER NOT NULL,
+      toTs INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      reason TEXT,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      updatedAt INTEGER NOT NULL
+    );
+
     -- Board items: notes ("Ghi chú"), pinned messages and polls. These are NOT
     -- in the transfer-sync message stream at all — Zalo keeps them behind
     -- /api/board/list, one call per thread — so they are synced separately and
-    -- stored here. boardType mirrors zca-js BoardType: 1=Note, 2=PinnedMessage,
+    -- stored here. boardType mirrors Zalo's board types: 1=Note, 2=PinnedMessage,
     -- 3=Poll. The id column is scoped by thread because item ids repeat across
     -- threads. (No backticks anywhere in this SQL: it sits inside a JS template
     -- literal, so one would close it and break the whole module.)
@@ -146,7 +224,7 @@ export function initDb(dbPath) {
 
     -- Reactions. NOT in the mobile sync payload at all -- the Sync2 protobuf
     -- has no reaction field. They are NOT unrecoverable, though: the socket
-    -- serves them on cmd 610 (1-1) and 611 (group), which is how Zalo Web shows
+    -- serves them on cmd 610 (1-1) and 611 (group), which is how a client shows
     -- them after a fresh login, so they arrive either live (cmd 612) or from
     -- the sync-reactions command. (No backticks in this SQL: it sits inside a
     -- JS template literal, so one would close it and break the module.)
@@ -186,6 +264,14 @@ export function initDb(dbPath) {
     CREATE INDEX IF NOT EXISTS idx_cloud_msg ON cloud_items(msgId);
     CREATE INDEX IF NOT EXISTS idx_messages_thread_ts ON messages(threadId, timestamp DESC);
     CREATE INDEX IF NOT EXISTS idx_messages_attach ON messages(has_attachment) WHERE has_attachment = 1;
+    -- The repairs below run on every open. With the cache encrypted (SQLCipher) a full scan of messages decrypts every
+    -- page, about 0.7 s per 100,000 messages, and there were four of them: these two indexes answer all four.
+    CREATE INDEX IF NOT EXISTS idx_messages_type ON messages(type);
+    CREATE INDEX IF NOT EXISTS idx_messages_sender_thread ON messages(senderId, threadId);
+    -- Without this, every lookup by client id read and parsed the JSON of every row of the thread: 190 ms per
+    -- message on a 42,000-row thread, which stalled the event loop for minutes during a restore and got the
+    -- socket closed (1006).
+    CREATE INDEX IF NOT EXISTS idx_messages_cli ON messages((${CLIENT_ID_EXPR}), threadId);
     CREATE INDEX IF NOT EXISTS idx_board_thread ON board_items(threadId, boardType);
     CREATE INDEX IF NOT EXISTS idx_reminders_thread ON reminders(threadId);
   `);
@@ -227,6 +313,35 @@ export function initDb(dbPath) {
     try {
         db.exec("ALTER TABLE messages ADD COLUMN mediaPrunedAt INTEGER");
     } catch {}
+    // The rows that point at a downloaded file, a few hundred of several hundred thousand: what the media migration
+    // (media-store.js referencedMedia) and the retention purge (getDownloadedMediaBefore) read, on a daemon's own
+    // thread. Without it each was a walk of the whole table, which on the encrypted database (every page decrypted and
+    // checked) MEASURED 1.8 s and 2.5 s on 436,000 rows: an event-loop stall the socket felt. Built once (about 2 s on
+    // that database, here at the start, before any socket is open).
+    db.exec("CREATE INDEX IF NOT EXISTS idx_messages_localpath ON messages(timestamp) WHERE localPath IS NOT NULL");
+    // The text a search matches: `text` folded the way Zalo's own clients fold it (lowercase, Vietnamese vowels to
+    // bare letters, đ to d; src/utils/vn-text.js). Kept by the message writers below. Rows written before the column
+    // existed are filled in, and the indexes a search wants are built, the first time a search runs
+    // ({@link ensureSearchIndex}): adding a column is instant, building an index on 400,000 messages is not, and no
+    // other command should pay for it.
+    try {
+        db.exec("ALTER TABLE messages ADD COLUMN text_norm TEXT");
+    } catch {}
+    // What the zCloud queue needs to apply a removal: `zKey` (`cliMsgId_conversation_sender`, the key a remove entry
+    // names its victims by), `seenAt` (the start time of the last walk that listed the item, for a full walk's sweep)
+    // and the key/algorithm versions the item's `encryptInfo` carries. All nullable; `sync-cloud` fills the first two
+    // for rows written before they existed.
+    for (const col of ["zKey TEXT", "seenAt INTEGER", "keyVersion INTEGER", "algoVersion INTEGER"]) {
+        try {
+            db.exec(`ALTER TABLE cloud_items ADD COLUMN ${col}`);
+        } catch {}
+    }
+    db.exec("CREATE INDEX IF NOT EXISTS idx_cloud_zkey ON cloud_items(zKey)");
+    // The fold as an SQL function, for the rows that have none yet.
+    db.function("vn_strip", { deterministic: true }, (s) =>
+        s === null || s === undefined ? null : stripVietnamese(s),
+    );
+    searchReady = false;
     // An older listener stored the raw live msgType as the row type, so
     // removals landed as 'chat.undo'/'chat.delete' and media as
     // 'chat.photo'/'share.file'/... Every query keyed on the shared vocabulary
@@ -302,9 +417,10 @@ export function initDb(dbPath) {
     // lines are excluded: their sender is whoever acted.
     try {
         db.prepare(
-            "UPDATE threads SET type = 'dm' WHERE type = 'group' AND threadId IN " +
-                "(SELECT threadId FROM messages WHERE senderId = threadId AND msgId NOT LIKE 'ge:%' " +
-                "AND COALESCE(type, '') NOT IN ('group_event', 'event', 'poll_event', 'deleted'))",
+            // EXISTS per group thread (by idx_messages_sender_thread), not IN over a scan of every message.
+            "UPDATE threads SET type = 'dm' WHERE type = 'group' AND EXISTS " +
+                "(SELECT 1 FROM messages m WHERE m.senderId = threads.threadId AND m.threadId = threads.threadId " +
+                "AND m.msgId NOT LIKE 'ge:%' AND COALESCE(m.type, '') NOT IN ('group_event', 'event', 'poll_event', 'deleted'))",
         ).run();
     } catch {
         /* no messages table yet, or nothing to heal */
@@ -329,6 +445,12 @@ export function initDb(dbPath) {
             db.exec("UPDATE threads SET deleteMarkerAt = leftAt WHERE leftAt IS NOT NULL");
         })();
     }
+    // Why a group stopped being ours (./group-exit.js): leave, removed, blocked or disbanded. Set with leftAt by a
+    // group exit only; a conversation list or `conv delete` leaves it null. While it is set, only a `join` naming us
+    // (or a message dated after leftAt) brings the group back.
+    try {
+        db.exec("ALTER TABLE threads ADD COLUMN goneReason TEXT");
+    } catch {}
     // The read watermark: the newest message this account has read in the
     // conversation, on any device, as the server reports it (./read-state.js).
     // Nullable: nothing is known until the listener sees a report.
@@ -338,9 +460,229 @@ export function initDb(dbPath) {
     try {
         db.exec("ALTER TABLE conv_state ADD COLUMN lastReadTs INTEGER");
     } catch {}
+    // Unread reactions (./read-state.js): the newest reaction someone else made in the conversation (its own msgId,
+    // from the reaction pushes) and the newest one reported seen (cmd 613 clearUnreads). `conv read` sends
+    // react_seen when the first is newer than the second.
+    try {
+        db.exec("ALTER TABLE conv_state ADD COLUMN reactUnreadId TEXT");
+    } catch {}
+    try {
+        db.exec("ALTER TABLE conv_state ADD COLUMN reactSeenId TEXT");
+    } catch {}
+    // When each user was last online, as the listener hears it (602 online_status) (./last-online.js). Read by
+    // `friend last-online --cached` and zalo_friend `last_online` with `cached`, without a request.
+    db.exec(
+        "CREATE TABLE IF NOT EXISTS last_online (userId TEXT PRIMARY KEY, lastOnline INTEGER, updatedAt INTEGER, source TEXT)",
+    );
+    // The account owner's aliases for other users, as the last complete alias-list read gave them
+    // (./contact-names.js). A snapshot: a row absent from it means no alias. Read by every command that names a person.
+    db.exec(
+        "CREATE TABLE IF NOT EXISTS user_aliases (userId TEXT PRIMARY KEY, alias TEXT NOT NULL, updatedAt INTEGER)",
+    );
+    // Last, after the repairs above: the MAC table and triggers, and (once per database) the MACs of the rows written
+    // before they existed.
+    installRowMac(db, rowMacKeys.current, { log: (l) => console.error(l) });
+    retentionFloor = Number(db.prepare("SELECT value FROM sync_state WHERE key = 'retentionFloor'").get()?.value) || 0;
 
     return db;
 }
+
+/** True when a message at this time is at or before the retention floor: a purge removed it and it stays removed. */
+function belowFloor(msg) {
+    const ts = Number(msg?.timestamp);
+    return retentionFloor > 0 && Number.isFinite(ts) && ts > 0 && ts <= retentionFloor;
+}
+
+/**
+ * True when a message is at or before its conversation's delete marker (threads.deleteMarkerAt): `conv delete` or a
+ * group exit removed everything up to it, and no writer -- the listener, a phone restore, a history or cloud fetch --
+ * stores one there again (Zalo's per-conversation `deleteAllPrior` tombstone). Read from the table on every write, not
+ * cached: another process (`group leave` beside a daemon) may have just set it.
+ */
+function belowDeleteMarker(threadId, timestamp) {
+    const ts = Number(timestamp);
+    if (threadId === undefined || threadId === null || !Number.isFinite(ts) || ts <= 0) return false;
+    const at = Number(
+        db.prepare("SELECT deleteMarkerAt FROM threads WHERE threadId = ?").get(String(threadId))?.deleteMarkerAt,
+    );
+    return Number.isFinite(at) && at > 0 && ts <= at;
+}
+
+/**
+ * The retention floor (epoch ms), 0 when nothing was ever purged.
+ *
+ * @returns {number}
+ */
+export function getRetentionFloor() {
+    return retentionFloor;
+}
+
+/**
+ * The bytes the database's pages in use take (page count less the free pages, times the page size). A purge lowers it
+ * at once; the file keeps its size until a VACUUM, and SQLite reuses the free pages first.
+ *
+ * @returns {number}
+ */
+export function dbUsedBytes() {
+    if (!db) throw new Error("Database not initialized");
+    const pages = Number(db.pragma("page_count", { simple: true })) || 0;
+    const free = Number(db.pragma("freelist_count", { simple: true })) || 0;
+    const size = Number(db.pragma("page_size", { simple: true })) || 0;
+    return Math.max(0, pages - free) * size;
+}
+
+/**
+ * The timestamp of the n-th oldest cached message (1-based), or null when there are fewer.
+ *
+ * @param {number} n
+ * @returns {number|null}
+ */
+export function nthOldestMessageTimestamp(n) {
+    if (!db) throw new Error("Database not initialized");
+    const row = db
+        .prepare("SELECT timestamp FROM messages WHERE timestamp > 0 ORDER BY timestamp ASC LIMIT 1 OFFSET ?")
+        .get(Math.max(0, Math.floor(n) - 1));
+    return row ? Number(row.timestamp) : null;
+}
+
+/**
+ * Count what a purge through `cutoff` would remove: the messages at or before it and the media files they hold.
+ *
+ * @param {number} cutoff - epoch ms
+ * @returns {{rows: number, files: number}}
+ */
+export function countMessagesThrough(cutoff) {
+    if (!db) throw new Error("Database not initialized");
+    const r = db
+        .prepare(
+            "SELECT count(*) AS rows, count(localPath) AS files FROM messages WHERE timestamp > 0 AND timestamp <= ?",
+        )
+        .get(Number(cutoff));
+    return { rows: Number(r.rows) || 0, files: Number(r.files) || 0 };
+}
+
+/**
+ * Delete every message at or before `cutoff` (and its reactions; its row MAC and search entry go with it through
+ * their triggers), and raise the retention floor to `cutoff` so no writer stores one there again. Delete-only: the
+ * quota/retention purge, run by the daemon holding daemon.lock (./storage-quota.js). With `secure_delete` on, the
+ * freed pages are zeroed.
+ *
+ * @param {number} cutoff - epoch ms
+ * @returns {{rows: number, reactions: number, files: string[], floor: number}} `files`: the media files those
+ *   messages held, for the caller to delete
+ */
+export function purgeMessagesThrough(cutoff) {
+    if (!db) throw new Error("Database not initialized");
+    const at = Number(cutoff);
+    if (!Number.isFinite(at) || at <= 0) throw new Error("a purge needs a cutoff time");
+    return db.transaction(() => {
+        const files = db
+            .prepare("SELECT localPath FROM messages WHERE timestamp > 0 AND timestamp <= ? AND localPath IS NOT NULL")
+            .all(at)
+            .map((r) => r.localPath);
+        const reactions = db
+            .prepare(
+                "DELETE FROM reactions WHERE msgId IN (SELECT msgId FROM messages WHERE timestamp > 0 AND timestamp <= ?)",
+            )
+            .run(at).changes;
+        const rows = db.prepare("DELETE FROM messages WHERE timestamp > 0 AND timestamp <= ?").run(at).changes;
+        if (at > retentionFloor) {
+            retentionFloor = at;
+            db.prepare(
+                "INSERT INTO sync_state (key, value) VALUES ('retentionFloor', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            ).run(String(at));
+        }
+        return { rows, reactions, files, floor: retentionFloor };
+    })();
+}
+
+/**
+ * Write the WAL back into the database file and truncate it, after a purge (the deleted rows' old pages leave the WAL).
+ */
+export function checkpointDb() {
+    if (!db) throw new Error("Database not initialized");
+    db.pragma("wal_checkpoint(TRUNCATE)");
+}
+
+/**
+ * The row-MAC keys of the database at `dbPath`: the account's `row-mac` data key, and its retired ones on demand (a
+ * rekey that has not finished). A database that belongs to no account (`:memory:`) gets a key for this process only.
+ */
+function rowMacKeysFor(dbPath) {
+    if (!dbPath || dbPath === ":memory:" || String(dbPath).startsWith("file::memory:")) {
+        return { current: ephemeralRowMacKey().key, retired: () => [] };
+    }
+    const scope = scopeOfDir(dirname(dbPath));
+    const { key, keyId } = deriveDataKey(scope, "row-mac");
+    let retired;
+    return {
+        current: key,
+        keyId,
+        retired: () =>
+            (retired ??= (readKeyring(scope.dir)?.retired ?? [])
+                .filter((k) => k.use === "data" && k.id !== keyId)
+                .flatMap((k) => {
+                    try {
+                        return [deriveDataKey(scope, "row-mac", { keyId: k.id }).key];
+                    } catch {
+                        return [];
+                    }
+                })),
+    };
+}
+
+/** Close the open cache, if any (tests; a process that is done with the account). */
+export function closeDb() {
+    if (db?.open) db.close();
+    db = undefined;
+    dbGeneration++;
+    rowMacKeys = null;
+    searchReady = false;
+    retentionFloor = 0;
+}
+
+/**
+ * Check one cached message row against its row MAC (./row-mac.js).
+ *
+ * @param {object} row - a `SELECT *` row of messages
+ * @returns {"ok"|"bad"|"missing"}
+ */
+export function checkMessageRow(row) {
+    if (!db) throw new Error("Database not initialized");
+    const state = checkRow(db, [rowMacKeys.current], row);
+    if (state !== "bad") return state;
+    // An unfinished rekey leaves rows under the old key: still the account's own writes.
+    return checkRow(db, rowMacKeys.retired(), row) === "ok" ? "ok" : "bad";
+}
+
+/**
+ * One cached message for an action that acts on it (quote, forward, delete, recall, pin, media), checked against its
+ * row MAC unless storage.json's `rowMac.verifyOnRead` is `off`. Null when it is not cached.
+ *
+ * @param {string} msgId
+ * @returns {object|null}
+ * @throws {RowIntegrityError} (`code` ROW_MAC) when the row fails its check: the action must not go ahead
+ */
+export function getMessageForAction(msgId) {
+    const row = getMessageById(msgId);
+    if (!row || verifyOnReadMode(readStorageFile()) === "off") return row;
+    const state = checkMessageRow(row);
+    if (state !== "ok") throw new RowIntegrityError(String(msgId), state);
+    return row;
+}
+
+/**
+ * Check the row MAC of every cached message, or one thread's, or those since a time (`db verify`).
+ *
+ * @param {{threadId?: string, since?: number, listMax?: number}} [opts]
+ * @returns {ReturnType<typeof verifyRows>}
+ */
+export function verifyMessageRows(opts = {}) {
+    if (!db) throw new Error("Database not initialized");
+    return verifyRows(db, [rowMacKeys.current, ...rowMacKeys.retired()], opts);
+}
+
+export { RowIntegrityError };
 
 /** Get a bookkeeping value (e.g. "lastConnectedAt"). Returns null if unset. */
 export function getSyncState(key) {
@@ -427,6 +769,79 @@ export function countSyncGaps() {
 }
 
 /**
+ * Record the ranges a restore is about to ask for, as pending. An existing row for the partition is replaced and
+ * its attempt count goes up by one.
+ *
+ * @param {Array<{partition: string, fromTs: number, toTs: number}>} ranges
+ */
+export function markSyncRangesPending(ranges) {
+    if (!db) throw new Error("Database not initialized");
+    const stmt = db.prepare(`
+    INSERT INTO sync_ranges (partition, fromTs, toTs, status, reason, attempts, updatedAt)
+    VALUES (@partition, @fromTs, @toTs, 'pending', NULL, 1, @now)
+    ON CONFLICT(partition) DO UPDATE SET
+      fromTs = excluded.fromTs, toTs = excluded.toTs, status = 'pending', reason = NULL,
+      attempts = sync_ranges.attempts + 1, updatedAt = excluded.updatedAt
+  `);
+    const now = Date.now();
+    db.transaction(() => {
+        for (const r of ranges) stmt.run({ partition: r.partition, fromTs: r.fromTs, toTs: r.toTs, now });
+    })();
+}
+
+/**
+ * Settle one range: done (the window it covers), failed (with why), or back to pending.
+ *
+ * @param {string} partition
+ * @param {"done"|"failed"|"pending"} status
+ * @param {{fromTs?: number, toTs?: number, reason?: string|null}} [extra] - for `done`, the window now covered
+ */
+export function setSyncRangeStatus(partition, status, { fromTs, toTs, reason = null } = {}) {
+    if (!db) throw new Error("Database not initialized");
+    db.prepare(
+        `INSERT INTO sync_ranges (partition, fromTs, toTs, status, reason, attempts, updatedAt)
+     VALUES (@partition, COALESCE(@fromTs, 0), COALESCE(@toTs, 0), @status, @reason, 1, @now)
+     ON CONFLICT(partition) DO UPDATE SET
+       fromTs = COALESCE(@fromTs, sync_ranges.fromTs), toTs = COALESCE(@toTs, sync_ranges.toTs),
+       status = @status, reason = @reason, updatedAt = @now`,
+    ).run({ partition, fromTs: fromTs ?? null, toTs: toTs ?? null, status, reason, now: Date.now() });
+}
+
+/**
+ * The recorded ranges, optionally of one status.
+ *
+ * @param {"done"|"failed"|"pending"} [status]
+ * @returns {Array<{partition: string, fromTs: number, toTs: number, status: string, reason: string|null, attempts: number, updatedAt: number}>}
+ */
+export function getSyncRanges(status) {
+    if (!db) throw new Error("Database not initialized");
+    return status
+        ? db.prepare("SELECT * FROM sync_ranges WHERE status = ? ORDER BY partition").all(status)
+        : db.prepare("SELECT * FROM sync_ranges ORDER BY partition").all();
+}
+
+/** How many ranges are in each state. */
+export function countSyncRanges() {
+    if (!db) throw new Error("Database not initialized");
+    const row = db
+        .prepare(
+            "SELECT SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending, " +
+                "SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed, " +
+                "SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done FROM sync_ranges",
+        )
+        .get();
+    return { pending: Number(row?.pending) || 0, failed: Number(row?.failed) || 0, done: Number(row?.done) || 0 };
+}
+
+/** Forget the given ranges (or every range, with no argument). */
+export function deleteSyncRanges(partitions) {
+    if (!db) throw new Error("Database not initialized");
+    if (partitions === undefined) return db.prepare("DELETE FROM sync_ranges").run().changes;
+    const stmt = db.prepare("DELETE FROM sync_ranges WHERE partition = ?");
+    return db.transaction(() => partitions.reduce((n, p) => n + stmt.run(p).changes, 0))();
+}
+
+/**
  * Run `fn` inside a single SQLite transaction.
  *
  * Bulk restores insert tens of thousands of rows; without this each statement
@@ -445,6 +860,10 @@ export function runInTransaction(fn) {
 
 export function insertMessage(msg) {
     if (!db) throw new Error("Database not initialized");
+    // Purged by quota or retention: never stored again (the listener, sync and history alike).
+    if (belowFloor(msg)) return { changes: 0, belowRetentionFloor: true };
+    // Deleted or left: nothing up to the conversation's delete marker comes back.
+    if (belowDeleteMarker(msg?.threadId, msg?.timestamp)) return { changes: 0, belowDeleteMarker: true };
 
     // A replay may resolve an opaque sender from an older sync. Never let an
     // unresolved replay replace a canonical live UID, or a different numeric
@@ -456,8 +875,8 @@ export function insertMessage(msg) {
        excluded.senderId NOT GLOB '*[^0-9]*')
     )`;
     const stmt = db.prepare(`
-    INSERT INTO messages (msgId, threadId, senderId, senderName, text, timestamp, type, raw_data, localPath, has_attachment, msgStatus)
-    VALUES (@msgId, @threadId, @senderId, @senderName, @text, @timestamp, @type, @raw_data, @localPath, @has_attachment, @msgStatus)
+    INSERT INTO messages (msgId, threadId, senderId, senderName, text, text_norm, timestamp, type, raw_data, localPath, has_attachment, msgStatus)
+    VALUES (@msgId, @threadId, @senderId, @senderName, @text, @text_norm, @timestamp, @type, @raw_data, @localPath, @has_attachment, @msgStatus)
     ON CONFLICT(msgId) DO UPDATE SET
       senderId = CASE WHEN ${canResolveSender} THEN excluded.senderId ELSE messages.senderId END,
       senderName = CASE
@@ -472,6 +891,7 @@ export function insertMessage(msg) {
       -- The phone keeps its own tombstone, so a sync arriving after a live
       -- recall used to overwrite ours with a poorer one.
       text = CASE WHEN messages.type = 'deleted' THEN messages.text ELSE excluded.text END,
+      text_norm = CASE WHEN messages.type = 'deleted' THEN messages.text_norm ELSE excluded.text_norm END,
       timestamp = excluded.timestamp,
       type = CASE WHEN messages.type = 'deleted' THEN messages.type ELSE excluded.type END,
       raw_data = CASE WHEN messages.type = 'deleted' THEN messages.raw_data ELSE excluded.raw_data END,
@@ -540,6 +960,7 @@ export function insertMessage(msg) {
         senderId: msg.senderId,
         senderName: msg.senderName,
         text: msg.text,
+        text_norm: foldedText(msg.text),
         timestamp: msg.timestamp,
         type: msg.type,
         raw_data: raw_data,
@@ -552,13 +973,10 @@ export function insertMessage(msg) {
 /**
  * Insert a message only if its msgId is not stored yet -- never update one.
  *
- * msg history's write-back (storeHistoryMessage in ./live-store.js). Zalo Web
- * writes the history it fetches the same way, ZStorage.setMessage with
- * replace:false. A stored row keeps every column, which is the point: the
- * listener and later events put things on it that a re-fetch cannot know --
- * the media downloader's localPath, a receipt's msgStatus, a recall's
- * tombstone, the st/at/cmd a seen receipt echoes back. {@link insertMessage},
- * the listener's upsert, would replace most of them.
+ * msg history's write-back (storeHistoryMessage in ./live-store.js). A stored
+ * row keeps every column, which is the point: the listener and later events put things on it that a re-fetch cannot
+ * know -- the media downloader's localPath, a receipt's msgStatus, a recall's tombstone, the st/at/cmd a seen receipt
+ * echoes back. {@link insertMessage}, the listener's upsert, would replace most of them.
  *
  * Same columns and value mapping as insertMessage.
  *
@@ -567,10 +985,12 @@ export function insertMessage(msg) {
  */
 export function insertMessageIfAbsent(msg) {
     if (!db) throw new Error("Database not initialized");
+    if (belowFloor(msg)) return { changes: 0, belowRetentionFloor: true };
+    if (belowDeleteMarker(msg?.threadId, msg?.timestamp)) return { changes: 0, belowDeleteMarker: true };
 
     const stmt = db.prepare(`
-    INSERT INTO messages (msgId, threadId, senderId, senderName, text, timestamp, type, raw_data, localPath, has_attachment, msgStatus)
-    VALUES (@msgId, @threadId, @senderId, @senderName, @text, @timestamp, @type, @raw_data, @localPath, @has_attachment, @msgStatus)
+    INSERT INTO messages (msgId, threadId, senderId, senderName, text, text_norm, timestamp, type, raw_data, localPath, has_attachment, msgStatus)
+    VALUES (@msgId, @threadId, @senderId, @senderName, @text, @text_norm, @timestamp, @type, @raw_data, @localPath, @has_attachment, @msgStatus)
     ON CONFLICT(msgId) DO NOTHING
   `);
 
@@ -583,6 +1003,7 @@ export function insertMessageIfAbsent(msg) {
         senderId: msg.senderId,
         senderName: msg.senderName,
         text: msg.text,
+        text_norm: foldedText(msg.text),
         timestamp: msg.timestamp,
         type: msg.type,
         raw_data: raw_data,
@@ -619,9 +1040,8 @@ export function getThreadLeftAt(threadId) {
  * The conversation's delete marker: nothing at or before this time may come
  * back from fetched history. Null when there is none.
  *
- * The nearest thing this cache has to Zalo Web's per-conversation delete
- * marker. Set with the gone marker by `conv delete` and by our own leave,
- * removal or block ({@link markThreadGone}), and kept when the account comes
+ * This cache's per-conversation delete marker. Set with the gone marker by
+ * `conv delete` and by our own leave, removal or block ({@link markThreadGone}), and kept when the account comes
  * back -- a deleted DM's old messages stay deleted after the contact writes
  * again, while the conversation itself stops being an orphan.
  *
@@ -653,6 +1073,70 @@ export function getMessages(threadId, limit = 50, fromTimestamp = null) {
 }
 
 /**
+ * A thread's cached messages in a time window, oldest first, one page at a time (bug-reports #5: a date range instead
+ * of paging back 200 at a time to reach one day).
+ *
+ * A page never ends inside a run of messages that share one millisecond, so `nextSince` (the last timestamp + 1) starts
+ * the next page without skipping or repeating any. A page whose every row shares one millisecond takes that whole run,
+ * even past `limit`.
+ *
+ * @param {string} threadId
+ * @param {{since?: number|null, until?: number|null, limit?: number}} [o] - epoch-ms bounds, both inclusive
+ * @returns {{rows: object[], nextSince: number|null}} `nextSince` is null when nothing is left in the window
+ */
+export function getMessagesInRange(threadId, { since = null, until = null, limit = 200 } = {}) {
+    if (!db) throw new Error("Database not initialized");
+    const where = ["threadId = ?"];
+    const params = [String(threadId)];
+    if (since !== null && since !== undefined) {
+        where.push("timestamp >= ?");
+        params.push(Number(since));
+    }
+    if (until !== null && until !== undefined) {
+        where.push("timestamp <= ?");
+        params.push(Number(until));
+    }
+    const sql = `SELECT * FROM messages WHERE ${where.join(" AND ")} ORDER BY timestamp ASC, msgId ASC`;
+    const rows = db.prepare(`${sql} LIMIT ?`).all(...params, limit + 1);
+    if (rows.length <= limit) return { rows, nextSince: null };
+
+    let page = rows.slice(0, limit);
+    const lastTs = Number(page[page.length - 1].timestamp);
+    if (Number(rows[limit].timestamp) === lastTs) {
+        const before = page.filter((r) => Number(r.timestamp) !== lastTs);
+        page = before.length
+            ? before
+            : db
+                  .prepare("SELECT * FROM messages WHERE threadId = ? AND timestamp = ? ORDER BY msgId ASC")
+                  .all(String(threadId), lastTs);
+    }
+    const next = Number(page[page.length - 1].timestamp) + 1;
+    const more = until === null || until === undefined || next <= Number(until);
+    return { rows: page, nextSince: more ? next : null };
+}
+
+/**
+ * Every cached message of a thread in a time window, oldest first, read in pages of 1000 (`getMessagesInRange`), up
+ * to `cap` messages.
+ *
+ * @param {string} threadId
+ * @param {{since?: number|null, until?: number|null, cap?: number}} [o]
+ * @returns {{rows: object[], hasMore: boolean}} `hasMore`: the cap left messages of the window out
+ */
+export function getAllMessagesInRange(threadId, { since = null, until = null, cap = Infinity } = {}) {
+    const rows = [];
+    let next = since;
+    for (;;) {
+        const page = getMessagesInRange(threadId, { since: next, until, limit: Math.min(1000, cap - rows.length) });
+        rows.push(...page.rows);
+        if (rows.length >= cap)
+            return { rows: rows.slice(0, cap), hasMore: rows.length > cap || page.nextSince !== null };
+        if (page.nextSince === null) return { rows, hasMore: false };
+        next = page.nextSince;
+    }
+}
+
+/**
  * One message by its global id, or null.
  *
  * Callers that hold a msgId and nothing else (the MCP media tool, a delete
@@ -667,27 +1151,152 @@ export function getMessageById(msgId) {
 }
 
 /**
- * Search cached messages by text substring across one or all conversations, newest first.
+ * Fill in `text_norm` for the rows that have a `text` and no fold yet (rows written before the column existed).
  *
- * Purely local SQLite query — never touches the Zalo network. Excludes recalled/deleted
- * tombstones (`type = 'deleted'`) and escapes SQLite LIKE wildcards (`%`, `_`, `\`) so literal
- * characters in `query` match as literals.
+ * One way only: the fold comes from `text` and never from `raw_data`, and a row that already has one is not
+ * touched, so running it again, or beside a live writer, changes nothing it should not. It is derived data, not a
+ * message write: no `text`, `type` or any other column changes.
  *
- * @param {object} opts
- * @param {string} opts.query - Substring to match in message text (case-insensitive for ASCII)
- * @param {string} [opts.threadId] - Restrict to one conversation
- * @param {string} [opts.senderId] - Restrict to one sender UID
- * @param {number} [opts.since] - Only messages at or after this epoch-ms timestamp
- * @param {number} [opts.until] - Only messages at or before this epoch-ms timestamp
- * @param {number} [opts.limit=50] - Max messages to return
- * @returns {Array<object>}
+ * @param {object} [opts]
+ * @param {number} [opts.chunk=5000] - rows per transaction (a live writer waits at most one chunk)
+ * @param {number} [opts.maxRows=Infinity] - stop after this many rows
+ * @param {(done: number) => void} [opts.onProgress]
+ * @returns {{updated: number, remaining: boolean}}
  */
-export function searchMessages(opts = {}) {
+export function backfillTextNorm({ chunk = 5000, maxRows = Infinity, onProgress } = {}) {
     if (!db) throw new Error("Database not initialized");
-    const { query, threadId, senderId, since, until, limit = 50 } = opts;
-    const escaped = String(query ?? "").replace(/[\\%_]/g, "\\$&");
-    const where = ["COALESCE(type, '') != 'deleted'", "text IS NOT NULL", "text LIKE ? ESCAPE '\\'"];
-    const params = [`%${escaped}%`];
+    // Lists exactly the rows still to fill, so "any left?" and "the next chunk" cost nothing once most are done.
+    db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_messages_norm_todo ON messages(msgId) WHERE text_norm IS NULL AND text IS NOT NULL",
+    );
+    const pick = db.prepare("SELECT msgId, text FROM messages WHERE text_norm IS NULL AND text IS NOT NULL LIMIT ?");
+    const fill = db.prepare("UPDATE messages SET text_norm = ? WHERE msgId = ? AND text_norm IS NULL");
+    let updated = 0;
+    while (updated < maxRows) {
+        const rows = pick.all(Math.min(chunk, maxRows - updated));
+        if (!rows.length) break;
+        db.transaction(() => {
+            for (const r of rows) fill.run(stripVietnamese(r.text), r.msgId);
+        })();
+        updated += rows.length;
+        onProgress?.(updated);
+    }
+    const remaining = Boolean(
+        db.prepare("SELECT 1 FROM messages WHERE text_norm IS NULL AND text IS NOT NULL LIMIT 1").get(),
+    );
+    return { updated, remaining };
+}
+
+/**
+ * Make the search fast, a slice at a time: fold the rows that have no fold, then build a trigram full-text index
+ * (FTS5) of the folded text and a timestamp index. On 421,000 messages this turns a search for a rare word from 6 s into
+ * 3 ms, and the tab counts of a common one from 1.9 s into 0.14 s.
+ *
+ * Built so a live daemon is never stopped by it: every step is a short transaction, the triggers that keep the index
+ * current go in before the existing rows are indexed (so no row falls between), indexing a row twice is harmless
+ * (`INSERT OR REPLACE`), and a run that stops half way (a budget, Ctrl+C, a crash) carries on where it was. Until it is
+ * done a search still answers correctly, by scanning; {@link searchMessageRows} asks for a slice before each search.
+ *
+ * @param {object} [opts]
+ * @param {number} [opts.budgetMs=Infinity] - stop after about this long (0: do nothing)
+ * @param {boolean} [opts.foldOnly=false] - stop once every row has its fold
+ * @param {number} [opts.sliceRows=20000] - rows indexed per transaction
+ * @param {(p: {phase: string, done: number, total: number|null}) => void} [opts.onProgress] - called after each slice
+ *   is committed
+ * @returns {{ready: boolean, phase: "ready"|"fold"|"index"}}
+ */
+export function ensureSearchIndex({ budgetMs = Infinity, sliceRows = 20000, foldOnly = false, onProgress } = {}) {
+    if (!db) throw new Error("Database not initialized");
+    if (searchReady) return { ready: true, phase: "ready" };
+    if (String(getSyncState("searchIndexReady")) === "1") {
+        searchReady = true;
+        return { ready: true, phase: "ready" };
+    }
+    if (budgetMs <= 0) return { ready: false, phase: "fold" };
+    const deadline = Date.now() + budgetMs;
+
+    // 1. Fold what has no fold.
+    let folded = 0;
+    let total = null;
+    for (;;) {
+        const r = backfillTextNorm({
+            maxRows: 5000,
+            onProgress: (d) => onProgress?.({ phase: "fold", done: folded + d, total }),
+        });
+        if (total === null) total = r.updated + (r.remaining ? foldTodoCount() : 0);
+        folded += r.updated;
+        if (!r.remaining) break;
+        if (Date.now() >= deadline) return { ready: false, phase: "fold" };
+    }
+    if (foldOnly) return { ready: false, phase: "index" };
+
+    // 2. The index and the triggers that keep it. Triggers first: a row written from now on is indexed by its own
+    //    trigger, and every row written before is at or below the highest rowid read in step 3.
+    db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(text_norm, tokenize='trigram');
+        CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages WHEN new.text_norm IS NOT NULL BEGIN
+            INSERT INTO messages_fts(rowid, text_norm) VALUES (new.rowid, new.text_norm);
+        END;
+        CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
+            DELETE FROM messages_fts WHERE rowid = old.rowid;
+        END;
+        CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE OF text_norm ON messages BEGIN
+            DELETE FROM messages_fts WHERE rowid = old.rowid;
+            INSERT INTO messages_fts(rowid, text_norm) SELECT new.rowid, new.text_norm WHERE new.text_norm IS NOT NULL;
+        END;
+    `);
+    if (Date.now() >= deadline) return { ready: false, phase: "index" };
+    // The newest-first order of every search, so a common word is answered by the first rows of this index.
+    db.exec("CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(timestamp DESC, msgId DESC)");
+
+    // 3. Index the rows that exist, in slices.
+    const max = db.prepare("SELECT COALESCE(MAX(rowid), 0) AS m FROM messages").get().m;
+    let cursor = Number(getSyncState("searchIndexCursor")) || 0;
+    const slice = db.prepare(
+        "INSERT OR REPLACE INTO messages_fts(rowid, text_norm) SELECT rowid, text_norm FROM messages WHERE rowid > ? AND rowid <= ? AND text_norm IS NOT NULL",
+    );
+    while (cursor < max) {
+        if (Date.now() >= deadline) return { ready: false, phase: "index" };
+        const to = Math.min(max, cursor + sliceRows);
+        db.transaction(() => {
+            slice.run(cursor, to);
+            setSyncState("searchIndexCursor", to);
+        })();
+        cursor = to;
+        onProgress?.({ phase: "index", done: cursor, total: max });
+    }
+    setSyncState("searchIndexReady", "1");
+    searchReady = true;
+    return { ready: true, phase: "ready" };
+}
+
+/** How many rows still have a text and no fold. */
+function foldTodoCount() {
+    return db.prepare("SELECT COUNT(*) AS n FROM messages WHERE text_norm IS NULL AND text IS NOT NULL").get().n;
+}
+
+/** The WHERE of a search: what a message must be to be a hit, apart from where the page starts. */
+function searchWhere({ norm, threadId, senderId, since, until, types }) {
+    const text = String(norm ?? "");
+    const like = `%${text.replace(/[\\%_]/g, "\\$&")}%`;
+    const where = ["COALESCE(type, '') != 'deleted'"];
+    const params = [];
+    if (searchReady) {
+        // The trigram index narrows to the rows holding the keyword (it needs three characters); the LIKE then makes
+        // the match exact, so the index can only ever make a search faster, never change what it finds.
+        if ([...text].length >= 3) {
+            where.push("rowid IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?)");
+            params.push(`"${text.replace(/"/g, '""')}"`);
+        }
+        where.push("text_norm LIKE ? ESCAPE '\\'");
+        params.push(like);
+    } else {
+        // Not indexed yet: scan, and fold on the fly the rows that have no fold, so nothing is missed.
+        where.push(
+            "(text_norm LIKE ? ESCAPE '\\' OR (text_norm IS NULL AND text IS NOT NULL AND vn_strip(text) LIKE ? ESCAPE '\\'))",
+        );
+        params.push(like, like);
+    }
     if (threadId) {
         where.push("threadId = ?");
         params.push(String(threadId));
@@ -704,10 +1313,173 @@ export function searchMessages(opts = {}) {
         where.push("timestamp <= ?");
         params.push(Number(until));
     }
-    params.push(limit);
-    return db
-        .prepare(`SELECT * FROM messages WHERE ${where.join(" AND ")} ORDER BY timestamp DESC LIMIT ?`)
+    if (Array.isArray(types) && types.length) {
+        where.push(`type IN (${types.map(() => "?").join(",")})`);
+        params.push(...types.map(String));
+    }
+    return { where, params };
+}
+
+/**
+ * What a search does before it runs: a slice of the index per search until it is complete, so the cost is bounded and
+ * the search is correct whether or not the slice finished. One exception: when many rows still have no fold, finishing
+ * the fold costs about what scanning them with the fold done on the fly would (18 s against 27 s on 421,000 messages),
+ * and only the first search ever meets it, so it is finished first, with progress.
+ */
+function prepareSearch() {
+    const first = ensureSearchIndex({ budgetMs: searchBudgetMs, onProgress: searchProgress });
+    if (!first.ready && first.phase === "fold" && searchBudgetMs > 0) {
+        ensureSearchIndex({ budgetMs: Infinity, foldOnly: true, onProgress: searchProgress });
+    }
+}
+
+/** The statement of one page of a search, and its parameters. */
+function searchStatement(spec) {
+    prepareSearch();
+    const { where, params } = searchWhere(spec);
+    if (spec.after) {
+        where.push("(timestamp < ? OR (timestamp = ? AND msgId < ?))");
+        params.push(Number(spec.after.timestamp), Number(spec.after.timestamp), String(spec.after.msgId));
+    }
+    params.push(Number.isFinite(spec.limit) ? spec.limit : -1);
+    return {
+        stmt: db.prepare(
+            `SELECT * FROM messages WHERE ${where.join(" AND ")} ORDER BY timestamp DESC, msgId DESC LIMIT ?`,
+        ),
+        params,
+    };
+}
+
+/**
+ * The rows of one page of a search, newest first, by the folded text.
+ *
+ * Purely local SQLite: it never touches the Zalo network. Recalled and deleted tombstones are left out. A match is a
+ * substring of `text_norm`; the caller folds the keyword (src/utils/vn-text.js) and decides what an "exact" match
+ * adds. Pages are keyed on `(timestamp, msgId)`, so a new message arriving between two pages cannot shift one.
+ *
+ * @param {object} spec
+ * @param {string} spec.norm - the folded keyword
+ * @param {string} [spec.threadId]
+ * @param {string} [spec.senderId]
+ * @param {number} [spec.since] - epoch ms, inclusive
+ * @param {number} [spec.until] - epoch ms, inclusive
+ * @param {string[]} [spec.types] - message types (`text`, `photo`, `file`, ...)
+ * @param {{timestamp: number, msgId: string}|null} [spec.after] - the last row of the previous page
+ * @param {number} [spec.limit=50]
+ * @returns {Array<object>}
+ */
+export function searchMessageRows(spec = {}) {
+    if (!db) throw new Error("Database not initialized");
+    const { stmt, params } = searchStatement({ ...spec, limit: Number.isFinite(spec.limit) ? spec.limit : 50 });
+    return stmt.all(...params);
+}
+
+/**
+ * The same rows, one at a time and with no limit: for a caller that checks each row itself (the exact-accents mode)
+ * and stops when it has enough, which a fixed-size page cannot do without asking again from the start.
+ *
+ * @param {object} spec - as {@link searchMessageRows}, without `limit`
+ * @returns {IterableIterator<object>}
+ */
+export function* iterateSearchRows(spec = {}) {
+    if (!db) throw new Error("Database not initialized");
+    const { stmt, params } = searchStatement({ ...spec, limit: undefined });
+    yield* stmt.iterate(...params);
+}
+
+/**
+ * How many messages match, by message type: the numbers on a search's tabs. Ignores `types` and `after`, so the tabs
+ * count the whole result whichever one is open.
+ *
+ * @param {object} spec - as {@link searchMessageRows}
+ * @returns {Record<string, number>}
+ */
+export function countSearchMatchesByType(spec = {}) {
+    if (!db) throw new Error("Database not initialized");
+    prepareSearch();
+    const { where, params } = searchWhere({ ...spec, types: undefined });
+    const rows = db
+        .prepare(
+            `SELECT COALESCE(type, '') AS type, COUNT(*) AS n FROM messages WHERE ${where.join(" AND ")} GROUP BY 1`,
+        )
         .all(...params);
+    return Object.fromEntries(rows.map((r) => [r.type, r.n]));
+}
+
+/**
+ * The messages around one in its conversation: up to `before` older and `after` newer, oldest first, the message
+ * itself left out. Tombstones are left out too.
+ *
+ * @param {string} threadId
+ * @param {{timestamp: number, msgId: string}} anchor
+ * @param {number} before
+ * @param {number} after
+ * @returns {{before: object[], after: object[]}}
+ */
+export function getMessagesAround(threadId, anchor, before = 2, after = 2) {
+    if (!db) throw new Error("Database not initialized");
+    const ts = Number(anchor.timestamp);
+    const id = String(anchor.msgId);
+    const older = db
+        .prepare(
+            `SELECT * FROM messages WHERE threadId = ? AND COALESCE(type, '') != 'deleted'
+             AND (timestamp < ? OR (timestamp = ? AND msgId < ?)) ORDER BY timestamp DESC, msgId DESC LIMIT ?`,
+        )
+        .all(String(threadId), ts, ts, id, Math.max(0, before));
+    const newer = db
+        .prepare(
+            `SELECT * FROM messages WHERE threadId = ? AND COALESCE(type, '') != 'deleted'
+             AND (timestamp > ? OR (timestamp = ? AND msgId > ?)) ORDER BY timestamp ASC, msgId ASC LIMIT ?`,
+        )
+        .all(String(threadId), ts, ts, id, Math.max(0, after));
+    return { before: older.reverse(), after: newer };
+}
+
+/**
+ * The oldest message in the cache, for one conversation or (with none) for the whole account: how far back a search
+ * can reach.
+ *
+ * @param {string} [threadId]
+ * @returns {number|null} epoch ms
+ */
+export function getOldestCachedTimestamp(threadId) {
+    if (!db) throw new Error("Database not initialized");
+    if (threadId) {
+        const row = db.prepare("SELECT MIN(timestamp) AS ts FROM messages WHERE threadId = ?").get(String(threadId));
+        return Number.isFinite(row?.ts) ? row.ts : null;
+    }
+    // One index lookup per conversation, instead of a scan of every message.
+    const row = db
+        .prepare(
+            "SELECT MIN(first) AS ts FROM (SELECT (SELECT MIN(timestamp) FROM messages WHERE threadId = t.threadId) AS first FROM threads t)",
+        )
+        .get();
+    return Number.isFinite(row?.ts) ? row.ts : null;
+}
+
+/**
+ * Search cached messages by text across one or all conversations, newest first. Accent-insensitive: the keyword and
+ * the text are folded alike (src/utils/vn-text.js), so "duoc" finds "được". Kept for callers that want a plain
+ * array; {@link searchMessageRows} and src/core/search.js give pages, tabs, snippets and the exact mode.
+ *
+ * @param {object} opts
+ * @param {string} opts.query - What to look for (cut to 100 characters)
+ * @param {string} [opts.threadId] - Restrict to one conversation
+ * @param {string} [opts.senderId] - Restrict to one sender UID
+ * @param {number} [opts.since] - Only messages at or after this epoch-ms timestamp
+ * @param {number} [opts.until] - Only messages at or before this epoch-ms timestamp
+ * @param {number} [opts.limit=50] - Max messages to return
+ * @returns {Array<object>}
+ */
+export function searchMessages(opts = {}) {
+    if (!db) throw new Error("Database not initialized");
+    const { query, threadId, senderId, since, until, limit = 50 } = opts;
+    const norm = stripVietnamese(
+        String(query ?? "")
+            .trim()
+            .slice(0, 100),
+    );
+    return searchMessageRows({ norm, threadId, senderId, since, until, limit });
 }
 
 /**
@@ -718,15 +1490,19 @@ export function searchMessages(opts = {}) {
  * groups *among the newest five threads of any kind* — frequently none —
  * whereas asking for 5 groups should return the 5 newest groups.
  *
- * @param {number} [limit=20]
+ * No limit (or a non-positive one) means every thread: nothing returns a
+ * capped list unless the caller asked for a cap.
+ *
+ * @param {number|null} [limit] - max threads; omitted, null or <= 0 = all
  * @param {"dm"|"group"|null} [type=null] - null means both
  */
-export function getRecentThreads(limit = 20, type = null) {
+export function getRecentThreads(limit = null, type = null) {
     if (!db) throw new Error("Database not initialized");
+    const n = Number(limit) > 0 ? Math.floor(Number(limit)) : -1; // SQLite: LIMIT -1 = no limit
     if (type) {
-        return db.prepare("SELECT * FROM threads WHERE type = ? ORDER BY lastUpdate DESC LIMIT ?").all(type, limit);
+        return db.prepare("SELECT * FROM threads WHERE type = ? ORDER BY lastUpdate DESC LIMIT ?").all(type, n);
     }
-    return db.prepare("SELECT * FROM threads ORDER BY lastUpdate DESC LIMIT ?").all(limit);
+    return db.prepare("SELECT * FROM threads ORDER BY lastUpdate DESC LIMIT ?").all(n);
 }
 
 /**
@@ -819,14 +1595,16 @@ export function upsertThread(thread) {
  * message's `dName`, `msg history` not at all -- so one conversation's media
  * could land in three different folders depending on which command fetched it.
  *
- * @param {number} [limit=5000]
+ * @param {number|null} [limit] - max threads; omitted = every cached thread
  * @returns {Map<string, {name: string, type: string}>}
  */
-export function getThreadNames(limit = 5000) {
+export function getThreadNames(limit = null) {
     const map = new Map();
     try {
         for (const t of getRecentThreads(limit)) {
-            map.set(String(t.threadId), { name: t.name || String(t.threadId), type: t.type });
+            // A 1-1 is titled by the owner's alias as it is now (./contact-names.js); the stored title can predate it.
+            const name = t.type === "dm" ? dmTitle(t.threadId, t.name) : t.name;
+            map.set(String(t.threadId), { name: name || String(t.threadId), type: t.type });
         }
     } catch {
         /* an empty or unopened cache just means folders fall back to thread ids */
@@ -843,6 +1621,7 @@ export function getThreadNames(limit = 5000) {
  *
  * @param {object} [opts]
  * @param {string} [opts.threadId] - restrict to one thread
+ * @param {string[]} [opts.msgIds] - restrict to these messages (one asked for by id, however old)
  * @param {number} [opts.since] - only messages at/after this epoch ms
  * @param {number} [opts.until] - only messages at/before this epoch ms
  * @param {boolean} [opts.onlyMissing=true] - skip rows already downloaded
@@ -851,7 +1630,7 @@ export function getThreadNames(limit = 5000) {
  */
 export function getAttachmentMessages(opts = {}) {
     if (!db) throw new Error("Database not initialized");
-    const { threadId, since, until, onlyMissing = true, includePruned = false, limit = 500 } = opts;
+    const { threadId, msgIds, since, until, onlyMissing = true, includePruned = false, limit = 500 } = opts;
     const where = ["has_attachment = 1"];
     const params = [];
     if (onlyMissing) where.push("localPath IS NULL");
@@ -859,6 +1638,11 @@ export function getAttachmentMessages(opts = {}) {
     // fetches respect it; an explicit re-fetch can opt back in.
     if (!includePruned) where.push("mediaPrunedAt IS NULL");
     if (threadId) (where.push("threadId = ?"), params.push(String(threadId)));
+    if (Array.isArray(msgIds)) {
+        if (!msgIds.length) return [];
+        where.push(`msgId IN (${msgIds.map(() => "?").join(", ")})`);
+        params.push(...msgIds.map(String));
+    }
     if (Number.isFinite(since)) (where.push("timestamp >= ?"), params.push(since));
     if (Number.isFinite(until)) (where.push("timestamp <= ?"), params.push(until));
     params.push(limit);
@@ -1033,7 +1817,9 @@ export function recordConversationList({ present, clearBefore, markBefore, markK
     return db.transaction(() => {
         const cleared = db
             .prepare(
-                "UPDATE threads SET leftAt = NULL WHERE leftAt IS NOT NULL AND leftAt < @clearBefore " +
+                // A listed group is one the account is in now (the list was mapped through the CURRENT group list):
+                // like a join naming us, it ends a group exit too. Events of a gone group never do (./group-exit.js).
+                "UPDATE threads SET leftAt = NULL, goneReason = NULL WHERE leftAt IS NOT NULL AND leftAt < @clearBefore " +
                     "AND threadId IN (SELECT value FROM json_each(@present)) RETURNING threadId",
             )
             .all(params)
@@ -1140,6 +1926,202 @@ export function markThreadGone(threadId, at = Date.now()) {
         .run({ at: Number(at), threadId: String(threadId) });
 }
 
+/** Why a group stopped being ours (threads.goneReason). */
+export const GONE_REASONS = Object.freeze(["leave", "removed", "blocked", "disbanded"]);
+
+/**
+ * Record a group exit (./group-exit.js): the gone marker, the delete marker and why. Unlike
+ * {@link markThreadGone}, a group never cached gets a row, so the delete marker holds for a restore that brings
+ * the group's history in later.
+ *
+ * @param {string} threadId
+ * @param {{at?: number, reason: string}} opts - `at`: the exit's time (epoch ms)
+ * @returns {{leftAt: number, deleteMarkerAt: number, reason: string}}
+ */
+export function markGroupGone(threadId, { at = Date.now(), reason }) {
+    if (!db) throw new Error("Database not initialized");
+    if (!GONE_REASONS.includes(reason)) throw new Error(`not a group exit reason: ${reason}`);
+    const id = String(threadId);
+    const when = Number(at);
+    return db.transaction(() => {
+        db.prepare(
+            "INSERT INTO threads (threadId, type, lastUpdate) VALUES (?, 'group', 0) ON CONFLICT DO NOTHING",
+        ).run(id);
+        db.prepare(
+            "UPDATE threads SET leftAt = @at, goneReason = @reason, " +
+                "deleteMarkerAt = MAX(COALESCE(deleteMarkerAt, 0), @at) WHERE threadId = @id",
+        ).run({ at: when, reason, id });
+        const row = db.prepare("SELECT leftAt, deleteMarkerAt FROM threads WHERE threadId = ?").get(id);
+        return { leftAt: Number(row.leftAt), deleteMarkerAt: Number(row.deleteMarkerAt), reason };
+    })();
+}
+
+/**
+ * Raise a conversation's delete marker (never lowers it).
+ *
+ * @param {string} threadId
+ * @param {number} at - epoch ms
+ */
+export function raiseDeleteMarker(threadId, at) {
+    if (!db) throw new Error("Database not initialized");
+    return db
+        .prepare("UPDATE threads SET deleteMarkerAt = MAX(COALESCE(deleteMarkerAt, 0), ?) WHERE threadId = ?")
+        .run(Number(at), String(threadId));
+}
+
+/** A group is gone while leftAt is set and no chat message is newer (the rule {@link getOrphanThreads} reads). */
+const STILL_GONE =
+    "t.leftAt IS NOT NULL AND t.goneReason IS NOT NULL AND NOT EXISTS (SELECT 1 FROM messages m " +
+    "WHERE m.threadId = t.threadId AND m.timestamp > t.leftAt AND COALESCE(m.type, '') <> 'group_event')";
+
+/**
+ * A group this account left, was removed or blocked from, or that was disbanded -- or null while it is ours.
+ *
+ * @param {string} threadId
+ * @returns {{threadId: string, leftAt: number, goneReason: string, deleteMarkerAt: number|null, messages: number}|null}
+ */
+export function getGroupGone(threadId) {
+    if (!db) throw new Error("Database not initialized");
+    const row = db
+        .prepare(
+            `SELECT t.threadId, t.leftAt, t.goneReason, t.deleteMarkerAt,
+               (SELECT COUNT(*) FROM messages m WHERE m.threadId = t.threadId) AS messages
+             FROM threads t WHERE t.threadId = ? AND ${STILL_GONE}`,
+        )
+        .get(String(threadId));
+    if (!row) return null;
+    return {
+        threadId: String(row.threadId),
+        leftAt: Number(row.leftAt),
+        goneReason: row.goneReason,
+        deleteMarkerAt: Number(row.deleteMarkerAt) || null,
+        messages: Number(row.messages) || 0,
+    };
+}
+
+/**
+ * Every gone group (see {@link getGroupGone}), with what is still cached of it.
+ *
+ * @returns {Array<{threadId: string, name: string|null, leftAt: number, goneReason: string, deleteMarkerAt: number|null, messages: number}>}
+ */
+export function listGoneGroups() {
+    if (!db) throw new Error("Database not initialized");
+    return db
+        .prepare(
+            `SELECT t.threadId, t.name, t.leftAt, t.goneReason, t.deleteMarkerAt,
+               (SELECT COUNT(*) FROM messages m WHERE m.threadId = t.threadId) AS messages
+             FROM threads t WHERE ${STILL_GONE}`,
+        )
+        .all()
+        .map((r) => ({
+            threadId: String(r.threadId),
+            name: r.name ?? null,
+            leftAt: Number(r.leftAt),
+            goneReason: r.goneReason,
+            deleteMarkerAt: Number(r.deleteMarkerAt) || null,
+            messages: Number(r.messages) || 0,
+        }));
+}
+
+/**
+ * A `join` naming us: the group is ours again. Clears the gone marker and the reason; the delete marker stays, so
+ * what was purged stays purged.
+ *
+ * @param {string} threadId
+ * @returns {{changes: number}}
+ */
+export function clearGroupGone(threadId) {
+    if (!db) throw new Error("Database not initialized");
+    return db
+        .prepare(
+            "UPDATE threads SET leftAt = NULL, goneReason = NULL WHERE threadId = ? AND " +
+                "(leftAt IS NOT NULL OR goneReason IS NOT NULL)",
+        )
+        .run(String(threadId));
+}
+
+/**
+ * Delete one bounded chunk of a conversation's messages (their reactions with them; the row MACs and search entries
+ * go through their triggers), in one transaction. The purge of a gone group calls it until it returns no rows,
+ * handing the event loop back between chunks (./group-exit.js).
+ *
+ * @param {string} threadId
+ * @param {number} [limit=500]
+ * @returns {{rows: number, reactions: number, files: string[], newest: number}} `files`: the media paths the rows
+ *   held; `newest`: the latest timestamp deleted (0 when none)
+ */
+export function purgeThreadMessagesChunk(threadId, limit = 500) {
+    if (!db) throw new Error("Database not initialized");
+    const id = String(threadId);
+    return db.transaction(() => {
+        const rows = db
+            .prepare("SELECT msgId, localPath, timestamp FROM messages WHERE threadId = ? LIMIT ?")
+            .all(id, Math.max(1, Math.floor(limit)));
+        if (!rows.length) return { rows: 0, reactions: 0, files: [], newest: 0 };
+        const ids = JSON.stringify(rows.map((r) => String(r.msgId)));
+        const reactions = db
+            .prepare("DELETE FROM reactions WHERE msgId IN (SELECT value FROM json_each(?))")
+            .run(ids).changes;
+        const deleted = db
+            .prepare("DELETE FROM messages WHERE threadId = ? AND msgId IN (SELECT value FROM json_each(?))")
+            .run(id, ids).changes;
+        return {
+            rows: deleted,
+            reactions,
+            files: rows.map((r) => r.localPath).filter(Boolean),
+            newest: rows.reduce((m, r) => Math.max(m, Number(r.timestamp) || 0), 0),
+        };
+    })();
+}
+
+/**
+ * Delete what else a conversation holds besides its messages: reactions, board items (pins, notes, polls),
+ * reminders, the cloud index and the conversation state (pin, unread mark, read watermark). The thread row stays: it
+ * carries the delete marker.
+ *
+ * @param {string} threadId
+ * @returns {{reactions: number, boardItems: number, reminders: number, cloudItems: number, convState: number, files: string[]}}
+ *   `files`: the cloud index's local copies, for the caller to delete when nothing else holds them
+ */
+export function purgeThreadSideRows(threadId) {
+    if (!db) throw new Error("Database not initialized");
+    const id = String(threadId);
+    return db.transaction(() => {
+        const files = db
+            .prepare("SELECT localPath FROM cloud_items WHERE threadId = ? AND localPath IS NOT NULL")
+            .all(id)
+            .map((r) => r.localPath);
+        const run = (sql) => db.prepare(sql).run(id).changes;
+        return {
+            reactions: run("DELETE FROM reactions WHERE threadId = ?"),
+            boardItems: run("DELETE FROM board_items WHERE threadId = ?"),
+            reminders: run("DELETE FROM reminders WHERE threadId = ?"),
+            cloudItems: run("DELETE FROM cloud_items WHERE threadId = ?"),
+            convState: run("DELETE FROM conv_state WHERE threadId = ?"),
+            files,
+        };
+    })();
+}
+
+/**
+ * The media paths of `files` that a cached row still points at (a message or a cloud item of another conversation).
+ *
+ * @param {string[]} files
+ * @returns {Set<string>}
+ */
+export function referencedMediaPaths(files) {
+    if (!db) throw new Error("Database not initialized");
+    if (!files.length) return new Set();
+    const list = JSON.stringify([...new Set(files.map(String))]);
+    const rows = db
+        .prepare(
+            "SELECT localPath FROM messages WHERE localPath IS NOT NULL AND localPath IN (SELECT value FROM json_each(?)) " +
+                "UNION SELECT localPath FROM cloud_items WHERE localPath IN (SELECT value FROM json_each(?))",
+        )
+        .all(list, list);
+    return new Set(rows.map((r) => String(r.localPath)));
+}
+
 /**
  * Record that the account was seen in a conversation: clear its gone marker,
  * if that marker predates the sighting.
@@ -1159,7 +2141,9 @@ export function markThreadBack(threadId, seenAt) {
     const at = Number(seenAt);
     if (!Number.isFinite(at)) return { changes: 0 };
     return db
-        .prepare("UPDATE threads SET leftAt = NULL WHERE threadId = ? AND leftAt IS NOT NULL AND leftAt < ?")
+        .prepare(
+            "UPDATE threads SET leftAt = NULL, goneReason = NULL WHERE threadId = ? AND leftAt IS NOT NULL AND leftAt < ?",
+        )
         .run(String(threadId), at);
 }
 
@@ -1306,6 +2290,27 @@ export function upsertReminder(r) {
         });
 }
 
+/**
+ * Remove one reminder another device deleted (the `remove_reminder11` control), from whichever of the given
+ * conversations holds it. A DM reminder is stored under the other person's id, and the control names both ends.
+ *
+ * @param {string} reminderId
+ * @param {string[]} threadIds - the conversations it may be stored under
+ * @returns {{removed: number, threadIds: string[]}} the conversations a row was removed from
+ */
+export function removeReminder(reminderId, threadIds) {
+    if (!db) throw new Error("Database not initialized");
+    const ids = [...new Set((threadIds || []).filter((t) => t !== undefined && t !== null && t !== "").map(String))];
+    if (!ids.length || reminderId === undefined || reminderId === null) return { removed: 0, threadIds: [] };
+    const where = `reminderId = ? AND threadId IN (${ids.map(() => "?").join(", ")})`;
+    const hit = db
+        .prepare(`SELECT DISTINCT threadId FROM reminders WHERE ${where}`)
+        .all(String(reminderId), ...ids)
+        .map((r) => r.threadId);
+    const removed = db.prepare(`DELETE FROM reminders WHERE ${where}`).run(String(reminderId), ...ids).changes;
+    return { removed, threadIds: hit };
+}
+
 /** Reminders for a thread, or all of them, soonest start first. */
 export function getReminders(threadId = null) {
     if (!db) throw new Error("Database not initialized");
@@ -1320,13 +2325,15 @@ export function getReminders(threadId = null) {
  */
 export function upsertCloudItem(item) {
     if (!db) throw new Error("Database not initialized");
+    // A cloud pull respects the delete marker as the message writers do.
+    if (belowDeleteMarker(item?.threadId, item?.timestamp)) return { changes: 0, belowDeleteMarker: true };
     return db
         .prepare(
             `INSERT INTO cloud_items
        (noiseId, threadId, msgId, msgType, mediaType, cloudUrl, encryptKey, checksum,
-        mediaSize, timestamp, localPath, raw_data, sync_timestamp)
+        mediaSize, timestamp, localPath, raw_data, sync_timestamp, zKey, seenAt, keyVersion, algoVersion)
      VALUES (@noiseId, @threadId, @msgId, @msgType, @mediaType, @cloudUrl, @encryptKey, @checksum,
-             @mediaSize, @timestamp, @localPath, @raw_data, @sync_timestamp)
+             @mediaSize, @timestamp, @localPath, @raw_data, @sync_timestamp, @zKey, @seenAt, @keyVersion, @algoVersion)
      ON CONFLICT(noiseId) DO UPDATE SET
        threadId = COALESCE(excluded.threadId, cloud_items.threadId),
        msgId = COALESCE(excluded.msgId, cloud_items.msgId),
@@ -1336,7 +2343,11 @@ export function upsertCloudItem(item) {
        mediaSize = COALESCE(excluded.mediaSize, cloud_items.mediaSize),
        localPath = COALESCE(excluded.localPath, cloud_items.localPath),
        raw_data = excluded.raw_data,
-       sync_timestamp = excluded.sync_timestamp`,
+       sync_timestamp = excluded.sync_timestamp,
+       zKey = COALESCE(excluded.zKey, cloud_items.zKey),
+       seenAt = COALESCE(excluded.seenAt, cloud_items.seenAt),
+       keyVersion = COALESCE(excluded.keyVersion, cloud_items.keyVersion),
+       algoVersion = COALESCE(excluded.algoVersion, cloud_items.algoVersion)`,
         )
         .run({
             noiseId: String(item.noiseId),
@@ -1352,7 +2363,94 @@ export function upsertCloudItem(item) {
             localPath: item.localPath ?? null,
             raw_data: typeof item.raw_data === "object" ? JSON.stringify(item.raw_data) : (item.raw_data ?? null),
             sync_timestamp: item.sync_timestamp || Date.now(),
+            zKey: item.zKey || null,
+            seenAt: Number(item.seenAt) || null,
+            keyVersion: item.keyVersion === undefined || item.keyVersion === null ? null : Number(item.keyVersion) || 0,
+            algoVersion:
+                item.algoVersion === undefined || item.algoVersion === null ? null : Number(item.algoVersion) || 0,
         });
+}
+
+/**
+ * Remove the cloud items a queue `remove` entry names, by zKey. Returns how many rows went.
+ *
+ * @param {string[]} zKeys
+ */
+export function removeCloudItemsByZKey(zKeys) {
+    if (!db) throw new Error("Database not initialized");
+    const del = db.prepare("DELETE FROM cloud_items WHERE zKey = ?");
+    let n = 0;
+    db.transaction(() => {
+        for (const k of zKeys) if (k) n += del.run(String(k)).changes;
+    })();
+    return n;
+}
+
+/**
+ * Remove a conversation's cloud items older than `beforeTs` (a queue `del_thread` entry: the conversation was
+ * cleared at that moment). Returns how many rows went.
+ *
+ * @param {string} threadId
+ * @param {number} beforeTs - epoch ms; items with a smaller timestamp go
+ */
+export function removeCloudItemsBefore(threadId, beforeTs) {
+    if (!db) throw new Error("Database not initialized");
+    return db
+        .prepare("DELETE FROM cloud_items WHERE threadId = ? AND timestamp < ?")
+        .run(String(threadId), Number(beforeTs) || 0).changes;
+}
+
+/**
+ * Remove every cloud item except the ones of the given conversations (a queue `reset_cloud` entry: the cloud was
+ * emptied, and the self chat is the one conversation that survives it).
+ *
+ * @param {string[]} keepThreadIds
+ */
+export function removeCloudItemsExcept(keepThreadIds) {
+    if (!db) throw new Error("Database not initialized");
+    const keep = [...new Set(keepThreadIds.filter(Boolean).map(String))];
+    const marks = keep.map(() => "?").join(",");
+    // SQLite reads an empty `NOT IN ()` as true, so an empty list empties the table.
+    return db.prepare(`DELETE FROM cloud_items WHERE threadId IS NULL OR threadId NOT IN (${marks})`).run(...keep)
+        .changes;
+}
+
+/**
+ * After a full walk: drop the items no page of that walk listed (`seenAt` older than the walk's start, or never
+ * set). Only call it after a walk that the server said was complete.
+ *
+ * @param {number} walkStartedAt
+ */
+export function sweepCloudItemsNotSeenSince(walkStartedAt) {
+    if (!db) throw new Error("Database not initialized");
+    return db.prepare("DELETE FROM cloud_items WHERE seenAt IS NULL OR seenAt < ?").run(Number(walkStartedAt)).changes;
+}
+
+/**
+ * Give the rows written before `zKey` existed their key: `compute(row)` is handed each such row and returns the key
+ * (or null to leave it). Returns how many rows were filled.
+ *
+ * @param {(row: object) => string|null} compute
+ */
+export function backfillCloudZKeys(compute) {
+    if (!db) throw new Error("Database not initialized");
+    const rows = db.prepare("SELECT noiseId, raw_data, threadId FROM cloud_items WHERE zKey IS NULL").all();
+    const set = db.prepare("UPDATE cloud_items SET zKey = ? WHERE noiseId = ?");
+    let n = 0;
+    db.transaction(() => {
+        for (const row of rows) {
+            let parsed = null;
+            try {
+                parsed = JSON.parse(row.raw_data);
+            } catch {}
+            const key = parsed ? compute(parsed) : null;
+            if (key) {
+                set.run(key, row.noiseId);
+                n++;
+            }
+        }
+    })();
+    return n;
 }
 
 /** zCloud items, newest first; optionally one thread's. */
@@ -1365,10 +2463,27 @@ export function getCloudItems(threadId = null, limit = 500) {
         : db.prepare("SELECT * FROM cloud_items ORDER BY timestamp DESC LIMIT ?").all(limit);
 }
 
+/** What the local zCloud index holds: how many items, and the bytes of their media. */
+export function summarizeCloudItems() {
+    if (!db) throw new Error("Database not initialized");
+    const r = db.prepare("SELECT COUNT(*) AS items, COALESCE(SUM(mediaSize), 0) AS bytes FROM cloud_items").get();
+    return { items: Number(r.items), bytes: Number(r.bytes) };
+}
+
 /** The zCloud backup for one message, if the cloud queue has told us about it. */
 export function getCloudItemByMsgId(msgId) {
     if (!db) throw new Error("Database not initialized");
     return db.prepare("SELECT * FROM cloud_items WHERE msgId = ? LIMIT 1").get(String(msgId)) || null;
+}
+
+/**
+ * The zCloud backup for one message by the key Zalo joins on (`cliMsgId_conversation_sender`, see
+ * `cloudKeyOf` in sync-v2/zcloud.js). The queue's global message id is the literal "0" for most entries, so this is
+ * the lookup that finds them.
+ */
+export function getCloudItemByZKey(zKey) {
+    if (!db) throw new Error("Database not initialized");
+    return db.prepare("SELECT * FROM cloud_items WHERE zKey = ? LIMIT 1").get(String(zKey)) || null;
 }
 
 /**
@@ -1508,6 +2623,7 @@ export function markMessageRecalled(msgId, at = Date.now(), opts = {}) {
             `UPDATE messages SET
          type = 'deleted',
          text = '[deleted]',
+         text_norm = '[deleted]',
          raw_data = @raw,
          -- The media goes with the message. Leaving has_attachment set would
          -- queue the attachment of a just-withdrawn message for download;
@@ -1539,27 +2655,25 @@ export function markMessageRecalled(msgId, at = Date.now(), opts = {}) {
 export function findMessageByClientId(cliMsgId, threadId = null) {
     if (!db) throw new Error("Database not initialized");
     if (cliMsgId === undefined || cliMsgId === null || cliMsgId === "") return null;
-    if (threadId !== undefined && threadId !== null && threadId !== "") {
-        return (
-            db
-                .prepare(
-                    `SELECT * FROM messages
-             WHERE threadId = ? AND json_valid(raw_data) AND json_extract(raw_data, '$.cliMsgId') = ?
-             ORDER BY timestamp DESC LIMIT 1`,
-                )
-                .get(String(threadId), String(cliMsgId)) || null
-        );
-    }
-    return (
-        db
-            .prepare(
-                `SELECT * FROM messages
-         WHERE json_valid(raw_data) AND json_extract(raw_data, '$.cliMsgId') = ?
-         ORDER BY timestamp DESC LIMIT 1`,
-            )
-            .get(String(cliMsgId)) || null
+    const scoped = threadId !== undefined && threadId !== null && threadId !== "";
+    // Every match, newest first, sorted here: an ORDER BY in the query made SQLite walk the thread's timestamp
+    // index instead of the client-id one, which is the whole cost this lookup used to have.
+    const statements = cliLookups.get(db) ?? cliLookups.set(db, {}).get(db);
+    const key = scoped ? "scoped" : "any";
+    statements[key] ??= db.prepare(
+        scoped
+            ? `SELECT * FROM messages WHERE (${CLIENT_ID_EXPR}) = ? AND threadId = ?`
+            : `SELECT * FROM messages WHERE (${CLIENT_ID_EXPR}) = ?`,
     );
+    const rows = scoped
+        ? statements[key].all(String(cliMsgId), String(threadId))
+        : statements[key].all(String(cliMsgId));
+    if (!rows.length) return null;
+    return rows.reduce((newest, row) => (Number(row.timestamp) > Number(newest.timestamp) ? row : newest));
 }
+
+/** Prepared client-id lookups, one set per open database (a new initDb makes a new connection). */
+const cliLookups = new WeakMap();
 
 /** Pinned / unread-marked state for a conversation. Applies to DMs too. */
 export function upsertConvState(st) {
@@ -1583,6 +2697,106 @@ export function upsertConvState(st) {
             unreadMarkedAt: st.unreadMarked === undefined ? null : Number(st.unreadMarkedAt) || Date.now(),
             updatedAt: Date.now(),
         });
+}
+
+/**
+ * Move one of a conversation's reaction marks forward: `reactUnreadId` (the newest reaction someone else made) or
+ * `reactSeenId` (the newest reported seen). Like the read watermark, it only moves forward; ids are compared as
+ * integers.
+ *
+ * @param {{threadId: string, column: "reactUnreadId"|"reactSeenId", msgId: string}} mark
+ * @returns {boolean} whether it moved
+ */
+export function recordReactionMark({ threadId, column, msgId }) {
+    if (!db) throw new Error("Database not initialized");
+    if (column !== "reactUnreadId" && column !== "reactSeenId") throw new Error(`Unknown reaction mark ${column}`);
+    const id = String(msgId ?? "");
+    if (!/^\d+$/.test(id) || BigInt(id) === 0n) return false;
+    const now = Date.now();
+    return db.transaction(() => {
+        const cur = db.prepare(`SELECT ${column} AS v FROM conv_state WHERE threadId = ?`).get(String(threadId));
+        if (/^\d+$/.test(cur?.v ?? "") && BigInt(cur.v) >= BigInt(id)) return false;
+        db.prepare(
+            `INSERT INTO conv_state (threadId, ${column}, updatedAt) VALUES (?, ?, ?)
+     ON CONFLICT(threadId) DO UPDATE SET ${column} = excluded.${column}, updatedAt = excluded.updatedAt`,
+        ).run(String(threadId), id, now);
+        return true;
+    })();
+}
+
+/**
+ * Store when a user was last online, keeping the newer of what is stored and what is given.
+ *
+ * @param {{userId: string, lastOnline: number, source?: string}} row - `lastOnline` in epoch ms
+ * @returns {boolean} whether it changed
+ */
+export function upsertLastOnline({ userId, lastOnline, source = "listen" }) {
+    if (!db) throw new Error("Database not initialized");
+    const t = Number(lastOnline);
+    if (!userId || !Number.isFinite(t) || t <= 0) return false;
+    const res = db
+        .prepare(
+            `INSERT INTO last_online (userId, lastOnline, updatedAt, source) VALUES (?, ?, ?, ?)
+     ON CONFLICT(userId) DO UPDATE SET lastOnline = excluded.lastOnline, updatedAt = excluded.updatedAt,
+       source = excluded.source
+     WHERE excluded.lastOnline > COALESCE(last_online.lastOnline, 0)`,
+        )
+        .run(String(userId), t, Date.now(), String(source));
+    return res.changes > 0;
+}
+
+/**
+ * When a user was last online, as stored, or null.
+ *
+ * @param {string} userId
+ * @returns {{userId: string, lastOnline: number, updatedAt: number, source: string}|null}
+ */
+export function getLastOnline(userId) {
+    if (!db) throw new Error("Database not initialized");
+    return db.prepare("SELECT * FROM last_online WHERE userId = ?").get(String(userId)) || null;
+}
+
+/**
+ * Replace the stored alias snapshot with a complete one (a missing user means the owner removed that alias).
+ *
+ * @param {Map<string, string>} aliases - userId -> the owner's alias
+ * @returns {boolean} whether the stored snapshot changed
+ */
+export function replaceUserAliases(aliases) {
+    if (!db) throw new Error("Database not initialized");
+    const now = Date.now();
+    const current = getUserAliases();
+    let changed = current.size !== aliases.size;
+    if (!changed) for (const [id, alias] of aliases) if (current.get(id) !== alias) changed = true;
+    if (!changed) return false;
+    const insert = db.prepare("INSERT INTO user_aliases (userId, alias, updatedAt) VALUES (?, ?, ?)");
+    db.transaction(() => {
+        db.prepare("DELETE FROM user_aliases").run();
+        for (const [id, alias] of aliases) insert.run(String(id), String(alias), now);
+    })();
+    return true;
+}
+
+/**
+ * The stored alias snapshot. Small (one row per alias the owner set), read once per process and kept in memory.
+ *
+ * @returns {Map<string, string>} userId -> the owner's alias
+ */
+export function getUserAliases() {
+    if (!db) throw new Error("Database not initialized");
+    const map = new Map();
+    for (const r of db.prepare("SELECT userId, alias FROM user_aliases").all()) map.set(String(r.userId), r.alias);
+    return map;
+}
+
+/** Whether a database is open in this process (for display code that also runs before one is). */
+export function isDbOpen() {
+    return Boolean(db?.open);
+}
+
+/** A number that changes whenever a database is opened or closed (per-account caches key on it). */
+export function getDbGeneration() {
+    return dbGeneration;
 }
 
 /** Conversation state for one thread, or every thread that has any. */
@@ -1635,7 +2849,7 @@ export function recordReadWatermark({ threadId, msgId, ts }) {
  * `unreadAfter` counts cached messages only -- ids after the watermark that
  * someone other than this account sent, not recalled or deleted -- so it is a
  * floor, and null when no watermark is known yet ("never told", not "all
- * read"). Own messages are told apart as everywhere else: zca-js rewrites an
+ * read"). Own messages are told apart as everywhere else: the listener rewrites an
  * own message's raw sender "0" to this account's uid before it is stored.
  *
  * @param {string[]} threadIds
@@ -1669,6 +2883,22 @@ export function getReadStates(threadIds, ownId) {
     return out;
 }
 
+/**
+ * Set only the name of a contact, creating the row when it is new and keeping its phone when it exists.
+ * `upsertContact` replaces the phone too, which a caller that knows only the name must not do.
+ *
+ * @param {string|number} userId
+ * @param {string} name
+ */
+export function setContactName(userId, name) {
+    if (!db) throw new Error("Database not initialized");
+    if (userId === undefined || userId === null || userId === "" || !name) return;
+    db.prepare(
+        `INSERT INTO contacts (userId, name, phone) VALUES (?, ?, NULL)
+         ON CONFLICT(userId) DO UPDATE SET name = excluded.name`,
+    ).run(String(userId), String(name));
+}
+
 export function upsertContact(contact) {
     if (!db) throw new Error("Database not initialized");
 
@@ -1690,8 +2920,8 @@ export function upsertContact(contact) {
 /**
  * The display name this account has seen for a user id, or null.
  *
- * Used to turn a `@[uid]` mention token into "@Display Name". Two sources,
- * in order:
+ * Used to turn a `@[uid]` mention token into "@Display Name". The owner's
+ * alias for the user wins; then two sources, in order:
  *
  *   1. `contacts` — authoritative, and the only source that can name someone
  *      who has never posted. `msg send` fills it in: any uid it has to look
@@ -1711,7 +2941,21 @@ export function getDisplayName(userId) {
     if (!db) throw new Error("Database not initialized");
     if (userId === undefined || userId === null || userId === "") return null;
     const id = String(userId);
+    // The owner's alias first, as Zalo shows the person everywhere (./contact-names.js).
+    return aliasFor(id) ?? getStoredName(id);
+}
 
+/**
+ * The name this cache holds for a user without the owner's alias: `contacts`, else the newest `senderName` (the name
+ * a message carried). Null when the uid has never been seen.
+ *
+ * @param {string|number} userId
+ * @returns {string|null}
+ */
+export function getStoredName(userId) {
+    if (!db) throw new Error("Database not initialized");
+    if (userId === undefined || userId === null || userId === "") return null;
+    const id = String(userId);
     const contact = db.prepare("SELECT name FROM contacts WHERE userId = ?").get(id);
     if (contact?.name) return contact.name;
 

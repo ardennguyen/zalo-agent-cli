@@ -2,9 +2,9 @@
  * Fetch the media that a transfer-sync only ever gave us references to.
  *
  * The sync stream carries no file bytes — just CDN URLs on `attach.href` /
- * `attach.thumb`. Zalo Web does the same thing: it indexes those references at
- * sync time and fetches lazily when you scroll to the message. This module is
- * the deliberate, batched version of that fetch.
+ * `attach.thumb`. A chat app indexes those references at sync time and
+ * fetches lazily when you scroll to the message. This module is the
+ * deliberate, batched version of that fetch.
  *
  * Expiry is the interesting part. A Zalo CDN URL is signed with a lifetime
  * tied to the message's age; once it lapses the server answers 200 with a JSON
@@ -30,10 +30,18 @@ import {
     clearMessageLocalPath,
     getThreadNames,
 } from "../db.js";
-import { extractRenewedUrls, makeRenewLink } from "./renewlink.js";
+import { extractRenewedUrls, makeRenewLink } from "../../zalo/custom/renewlink.js";
+import { lookupCloudBackup, messageZKey } from "./zcloud.js";
+import { createDownloadFetch } from "../../zalo/download-fetch.js";
+import { readSealedJson, writeSealedJson } from "../keystore/index.js";
+import { scopeOfDir } from "../keystore/keyring.js";
+import { mediaPlainSize, writeSealedMedia } from "../keystore/media-seal.js";
 
 /** Kinds that point at a byte stream worth saving. */
 export const DOWNLOADABLE_KINDS = new Set(["photo", "video", "file", "gif", "voice", "audio", "doodle"]);
+
+/** Kinds whose thumbnail is still the picture, when no full-size link exists. */
+const THUMB_IS_THE_PICTURE = new Set(["photo", "doodle", "gif"]);
 
 /**
  * Characters a filename must not contain on Windows or POSIX. Kept as a set
@@ -76,6 +84,28 @@ const CONTENT_TYPE_EXT = {
     "audio/mp4": "m4a",
     "application/pdf": "pdf",
 };
+
+/**
+ * The JPEG twin of a JPEG XL photo URL, the form Zalo serves to a client that cannot decode JPEG XL:
+ * `…/jxl/…/x.jxl?jxlstatus=1` becomes `…/jpg/…/x.jpg`. A JPEG XL file opens in almost no viewer and no model, so the
+ * CLI always takes the JPEG. An end-to-end encrypted session's URL keeps its form; any other URL is returned unchanged.
+ *
+ * @param {string} url
+ * @returns {string}
+ */
+export function jpegUrl(url) {
+    if (typeof url !== "string" || !/^https?:\/\/.*\/jxl\/.*\.jxl/.test(url)) return url;
+    let u;
+    try {
+        u = new URL(url);
+    } catch {
+        return url;
+    }
+    u.searchParams.delete("jxlstatus");
+    u.search = decodeURIComponent(u.search);
+    if (url.includes("?e2esession")) return u.href;
+    return u.href.replace("/jxl/", "/jpg/").replace(".jxl", ".jpg");
+}
 
 /** Extension from the filename, then the URL, then content-type, then the kind. */
 function guessExt(att, url, contentType) {
@@ -290,7 +320,7 @@ export const THROTTLE_GIVE_UP = 25;
  *   retryable?: boolean, expired?: boolean, verdict?: string, code?: string,
  *   status?: number, reason?: string}>}
  */
-async function fetchBytes(url, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
+async function fetchBytes(url, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, fetchImpl = (...a) => fetch(...a)) {
     let res;
     let buf;
     let ct;
@@ -299,7 +329,7 @@ async function fetchBytes(url, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
     // and then stops writing the body is exactly the stall this guards against.
     const signal = AbortSignal.timeout(timeoutMs);
     try {
-        res = await fetch(url, { signal, redirect: "follow" });
+        res = await fetchImpl(url, { signal, redirect: "follow" });
         // Reading the body must be guarded too, not just the request. A
         // connection dropped mid-body throws here ("terminated" from undici),
         // and with this outside the try it escaped the worker and aborted an
@@ -344,31 +374,36 @@ async function fetchBytes(url, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
     return { ok: true, buf, contentType: ct };
 }
 
+/** The sealed-file spec of the conversation index. */
+const MEDIA_INDEX_SPEC = Object.freeze({ kind: "media-index", use: "data" });
+
 /**
  * Write `<mediaRoot>/_conversations.json`: the id -> name map for the folders
- * beside it. Best-effort by design -- a media run must never fail because an
+ * beside it, sealed (kind `media-index`, the account's data key): names are
+ * content. Best-effort by design -- a media run must never fail because an
  * index could not be written.
  *
  * @param {string} mediaRoot
  * @param {Map<string,{name:string,type:string}>} names
+ * @param {{id: string, dir: string}} scope - the account
  */
-function writeConversationIndex(mediaRoot, names) {
+function writeConversationIndex(mediaRoot, names, scope) {
     try {
         fs.mkdirSync(mediaRoot, { recursive: true });
+        const file = join(mediaRoot, "_conversations.json");
         let existing = {};
         try {
-            existing = JSON.parse(fs.readFileSync(join(mediaRoot, "_conversations.json"), "utf8"));
+            // A plaintext index (2.x) is sealed in place on the way.
+            existing = readSealedJson(file, scope, MEDIA_INDEX_SPEC) || {};
         } catch {
-            /* first run, or an unreadable index we are about to replace */
+            /* first run, or an unreadable index (another account's, in a shared root) we are about to replace */
         }
         // Merge rather than replace: a run scoped to one thread must not drop
         // the names of conversations it did not look at.
         for (const [id, meta] of names) {
             if (meta?.name) existing[String(id)] = { name: meta.name, type: meta.type || null };
         }
-        const tmp = join(mediaRoot, "_conversations.json.tmp");
-        fs.writeFileSync(tmp, JSON.stringify(existing, null, 2));
-        fs.renameSync(tmp, join(mediaRoot, "_conversations.json"));
+        writeSealedJson(file, scope, MEDIA_INDEX_SPEC, existing);
     } catch {
         /* an index is a convenience, never a reason to fail a download run */
     }
@@ -378,13 +413,20 @@ function writeConversationIndex(mediaRoot, names) {
  * Download the attachments recorded by a transfer sync.
  *
  * @param {object} opts
- * @param {object} [opts.api] - logged-in zca-js api; without it expired URLs cannot be renewed
+ * @param {object} [opts.api] - logged-in session; without it expired URLs cannot be renewed. Its context also
+ *   gives the downloads the account's proxy, User-Agent and Referer
+ * @param {typeof fetch} [opts.fetchImpl] - the fetch the downloads use (tests); default: the account's own
  * @param {string} opts.accountDir - the account's data dir (media lands under `<dir>/media`)
  * @param {string} [opts.threadId] - restrict to one thread
+ * @param {string[]} [opts.msgIds] - restrict to these messages: a caller after one message's media names it
+ *   instead of hoping it is among the newest `limit` rows of its thread
  * @param {Set<string>|string[]} [opts.kinds] - restrict to these attachment kinds
- * @param {number} [opts.limit=500] - max messages to consider
+ * @param {number} [opts.limit=-1] - opt-in bound on the messages considered; -1 (default): every one still missing its file
  * @param {number} [opts.since] / @param {number} [opts.until] - epoch ms bounds
- * @param {number} [opts.concurrency=4]
+ * @param {number} [opts.concurrency=2] - parallel downloads. Two, not more: the CDN answers a burst with 403 and 429
+ *   long before it runs short of bandwidth
+ * @param {number} [opts.maxFiles] - download at most this many files in this run; the rest are counted in
+ *   `deferred` and stay pending for the next run. Unset: all of them
  * @param {number} [opts.maxBytes] - skip attachments larger than this
  * @param {boolean} [opts.thumbs=false] - also save thumbnails
  * @param {boolean} [opts.dryRun=false] - report what would be fetched, write nothing
@@ -399,9 +441,12 @@ function writeConversationIndex(mediaRoot, names) {
  * @param {(req: object) => Promise<object>} [opts.renewLink] - pre-built renewal caller;
  *   defaults to one derived from `api`. Injectable so the renewal path can be
  *   exercised without round-tripping Zalo's request crypto.
+ * @param {(msgId: string, zKey?: string|null) => {found: boolean}} [opts.cloudLookup] - whether the local zCloud index lists a message's
+ *   backup (defaults to {@link lookupCloudBackup}); a file that is gone from the CDN and listed there is counted in
+ *   `cloudBacked`: it exists, but the copy is end-to-end encrypted under the account's cloud key, which this client never holds
  * @param {(p: object) => void} [opts.onProgress]
  * @returns {Promise<{considered:number, downloaded:number, skipped:number, failed:number, expired:number,
- *   throttled:number, unknown:number, renewed:number, bytes:number, abortedEarly:boolean,
+ *   cloudBacked:number, throttled:number, unknown:number, renewed:number, bytes:number, abortedEarly:boolean, deferred:number,
  *   reasons:Record<string,number>, failures:Array<object>}>}
  *   `throttled` counts only responses that said to slow down; `unknown` counts the retryable
  *   failures that explained nothing. `reasons` tallies the observed codes — pass it to
@@ -412,10 +457,12 @@ export async function downloadSyncedMedia(opts = {}) {
         api,
         accountDir,
         threadId,
-        limit = 500,
+        msgIds,
+        limit = -1,
         since,
         until,
-        concurrency = 4,
+        concurrency = 2,
+        maxFiles,
         maxBytes,
         thumbs = false,
         dryRun = false,
@@ -434,12 +481,16 @@ export async function downloadSyncedMedia(opts = {}) {
     // (sender name / thread id / real name).
     const names = threadNames || getThreadNames();
 
-    const rows = getAttachmentMessages({ threadId, since, until, limit, onlyMissing: true, includePruned });
+    const rows = getAttachmentMessages({ threadId, msgIds, since, until, limit, onlyMissing: true, includePruned });
     const jobs = [];
     for (const row of rows) {
         let index = 0;
         for (const att of attachmentsOf(row)) {
-            const url = att.url || (thumbs ? att.thumbUrl : null);
+            // The full file, else the HD one, else (for a picture with nothing better) the thumbnail: a row counts as
+            // having an attachment when any of these is there, so taking only `url` left such rows pending forever.
+            const url = jpegUrl(
+                att.url || att.hdUrl || (thumbs || THUMB_IS_THE_PICTURE.has(att.kind) ? att.thumbUrl : null),
+            );
             if (!url || !kinds.has(att.kind)) continue;
             if (maxBytes && att.size && att.size > maxBytes) continue;
             jobs.push({ row, att, url, index: index++ });
@@ -449,12 +500,20 @@ export async function downloadSyncedMedia(opts = {}) {
         }
     }
 
+    // A cap on the run, not on what is pending: what it leaves out is still missing a localPath, so the next run
+    // (or `sync-media`) picks it up. Counted so the caller can say how much is left.
+    const deferred = Number.isFinite(maxFiles) && maxFiles > 0 && jobs.length > maxFiles ? jobs.length - maxFiles : 0;
+    if (deferred > 0) jobs.length = maxFiles;
+
     const stats = {
         considered: jobs.length,
+        deferred,
         downloaded: 0,
         skipped: 0,
         failed: 0,
         expired: 0,
+        // Of the files that are gone, the ones the local zCloud index lists: the cloud holds a copy this client cannot open.
+        cloudBacked: 0,
         // Only responses that said so: 429, 5xx, or a body asking us to wait.
         throttled: 0,
         // Everything retryable that explained nothing — 403 above all, which
@@ -484,12 +543,23 @@ export async function downloadSyncedMedia(opts = {}) {
 
     // Explicit mediaRootOpt or global ZALO_MEDIA_DIR (--media-dir) overrides the
     // per-account default (<accountDir>/media).
+    // The account's own fetch: its proxy, its User-Agent and the Referer Zalo expects (plan item ZP-01).
+    const download = opts.fetchImpl ?? createDownloadFetch(api);
+    const isInCloudIndex = (row) => {
+        try {
+            return Boolean((opts.cloudLookup ?? lookupCloudBackup)(row.msgId, messageZKey(row))?.found);
+        } catch {
+            return false; // no local index to ask (no database open): not a verdict
+        }
+    };
     const configuredRoot = mediaRootOpt || process.env.ZALO_MEDIA_DIR;
     const mediaRoot = configuredRoot ? resolve(configuredRoot) : resolve(accountDir, "media");
 
     // Folders are ids, so without this the media tree is unreadable by a human.
     // Written before any download, so an interrupted run still leaves an index.
-    writeConversationIndex(mediaRoot, names);
+    // Every file is sealed for the account the folder names (keystore/media-seal.js).
+    const scope = scopeOfDir(resolve(accountDir));
+    writeConversationIndex(mediaRoot, names, scope);
     let cursor = 0;
     // Consecutive throttled responses across all workers. Zalo starts dropping
     // connections under sustained load, and charging on through nine thousand
@@ -538,11 +608,13 @@ export async function downloadSyncedMedia(opts = {}) {
             // id -> name mapping a human needs to find anything.
             const dir = join(mediaRoot, String(row.threadId));
 
-            let got = await fetchBytes(url, timeoutMs);
+            let got = await fetchBytes(url, timeoutMs, download);
+            let wasGone = false;
 
             // One renewal attempt: only helps while Zalo still holds the file.
             if (!got.ok && got.expired && renewLink) {
                 stats.expired++;
+                wasGone = true;
                 try {
                     const resp = await renewLink({
                         threadId: row.threadId,
@@ -552,9 +624,9 @@ export async function downloadSyncedMedia(opts = {}) {
                         clientId: JSON.parse(row.raw_data || "{}").cliMsgId,
                     });
                     const fresh = extractRenewedUrls(resp);
-                    const next = fresh?.normalUrl || fresh?.hdUrl || fresh?.thumbUrl;
+                    const next = jpegUrl(fresh?.normalUrl || fresh?.hdUrl || fresh?.thumbUrl);
                     if (next) {
-                        got = await fetchBytes(next, timeoutMs);
+                        got = await fetchBytes(next, timeoutMs, download);
                         if (got.ok) stats.renewed++;
                     }
                 } catch (e) {
@@ -562,9 +634,11 @@ export async function downloadSyncedMedia(opts = {}) {
                 }
             } else if (!got.ok && got.expired) {
                 stats.expired++;
+                wasGone = true;
             }
 
             if (!got.ok) {
+                if (wasGone && isInCloudIndex(row)) stats.cloudBacked++;
                 // Tally what was actually observed, so the summary reports it
                 // rather than inferring a cause from the bucket it landed in.
                 if (got.code) stats.reasons[got.code] = (stats.reasons[got.code] || 0) + 1;
@@ -602,7 +676,20 @@ export async function downloadSyncedMedia(opts = {}) {
             const path = destPath(dir, row, att, ext, job.index);
             try {
                 fs.mkdirSync(dirname(path), { recursive: true });
-                fs.writeFileSync(path, got.buf);
+                // Sealed and atomic: never a plaintext byte on disk, never half a file. A key that cannot be had
+                // fails the write (fail closed).
+                writeSealedMedia(
+                    path,
+                    scope,
+                    {
+                        msgId: row.msgId,
+                        att: job.index,
+                        thumb: Boolean(att.isThumb),
+                        mime: got.contentType ? String(got.contentType).split(";")[0].trim() : null,
+                        ext,
+                    },
+                    got.buf,
+                );
             } catch (e) {
                 stats.failed++;
                 onProgress({ phase: "fail", msgId: row.msgId, detail: `write: ${e.message}` });
@@ -673,7 +760,9 @@ export async function pruneDownloadedMedia(opts = {}) {
     for (const row of rows) {
         let size = 0;
         try {
-            size = fs.statSync(row.localPath).size;
+            fs.statSync(row.localPath);
+            // The plaintext size, from the sealed header (no key needed).
+            size = mediaPlainSize(row.localPath) ?? 0;
         } catch {
             // Already gone from disk -- still worth clearing the stale pointer.
             stats.missing++;

@@ -7,7 +7,7 @@
  * nothing. One process has one db module and one connection, so "which process
  * wrote this row" has no answer there. This is the second process: the real
  * daemon side -- startDaemonChannel serving createSyncRunners, the wiring
- * `listen` and `mcp start` both use -- on a real zca-js session whose transport
+ * `listen` and `mcp start` both use -- on a real session whose transport
  * is ../fake-zalo-session.js, writing the test's sandboxed zalo.db through its
  * own connection, as `listen` does.
  *

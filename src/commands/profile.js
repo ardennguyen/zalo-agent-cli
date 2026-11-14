@@ -5,58 +5,12 @@
 import { resolve } from "path";
 import { getApi, getOwnId } from "../core/zalo-client.js";
 import { updateAccountName } from "../core/accounts.js";
-import { success, error, info, output } from "../utils/output.js";
+import { success, error, info, output, warning } from "../utils/output.js";
+import { allAvatars } from "../core/list-all.js";
 import { parseIntOption } from "../utils/parse-options.js";
 import { parseOnOff, parseLanguage } from "../utils/cli-args.js";
-
-/** Valid privacy setting keys and their human-readable labels + value descriptions. */
-const SETTING_MAP = {
-    "online-status": {
-        key: "show_online_status",
-        label: "Show online status",
-        values: { 0: "hidden", 1: "visible" },
-    },
-    "seen-status": {
-        key: "display_seen_status",
-        label: "Display seen status",
-        values: { 0: "hidden", 1: "visible" },
-    },
-    birthday: {
-        key: "view_birthday",
-        label: "Birthday visibility",
-        values: { 0: "hidden", 1: "full (day/month/year)", 2: "partial (day/month)" },
-    },
-    "receive-msg": {
-        key: "receive_message",
-        label: "Receive messages from",
-        values: { 1: "everyone", 2: "friends only" },
-    },
-    "accept-call": {
-        key: "accept_stranger_call",
-        label: "Accept calls from",
-        values: { 2: "friends only", 3: "everyone", 4: "friends + contacted" },
-    },
-    "add-by-phone": {
-        key: "add_friend_via_phone",
-        label: "Find by phone number",
-        values: { 0: "disabled", 1: "enabled" },
-    },
-    "add-by-qr": {
-        key: "add_friend_via_qr",
-        label: "Find by QR code",
-        values: { 0: "disabled", 1: "enabled" },
-    },
-    "add-by-group": {
-        key: "add_friend_via_group",
-        label: "Find via group",
-        values: { 0: "disabled", 1: "enabled" },
-    },
-    recommend: {
-        key: "display_on_recommend_friend",
-        label: "Show in friend recommendations",
-        values: { 0: "disabled", 1: "enabled" },
-    },
-};
+import { guardSubcommand } from "../core/confirm-guard.js";
+import { SETTING_MAP, describeSettings, profileUpdatePayload, updateSetting } from "../core/profile-settings.js";
 
 export function registerProfileCommands(program) {
     const profile = program.command("profile").description("View and update your Zalo profile and settings");
@@ -141,22 +95,9 @@ export function registerProfileCommands(program) {
                 // Fetch current profile to fill missing fields (API requires all 3)
                 const current = await getApi().fetchAccountInfo();
                 const p = current?.profile || {};
-                // Convert sdob (DD/MM/YYYY) to YYYY-MM-DD format required by API
-                let currentDob = "2000-01-01";
-                if (p.sdob) {
-                    const parts = p.sdob.split("/");
-                    if (parts.length === 3) currentDob = `${parts[2]}-${parts[1]}-${parts[0]}`;
-                }
-                const nextName = opts.name || p.displayName || p.zaloName;
-                const payload = {
-                    profile: {
-                        name: nextName,
-                        dob: opts.dob || currentDob,
-                        gender: opts.gender !== undefined ? Number(opts.gender) : (p.gender ?? 0),
-                    },
-                };
+                const payload = profileUpdatePayload(p, opts);
                 const result = await getApi().updateProfile(payload);
-                updateAccountName(p.userId || getOwnId(), nextName);
+                updateAccountName(p.userId || getOwnId(), payload.profile.name);
                 output(result, program.opts().json, () => success("Profile updated"));
             } catch (e) {
                 error(`Profile update failed: ${e.message}`);
@@ -165,19 +106,27 @@ export function registerProfileCommands(program) {
 
     profile
         .command("settings")
-        .description("View current privacy settings")
+        .description(
+            "View the privacy settings, the read-only ones (strangers' messages, two-factor, quick messages), and " +
+                "with --json every other key Zalo sent, under `other`",
+        )
         .action(async () => {
             try {
-                const result = await getApi().getSettings();
+                // The same reply as zalo_profile `settings` (src/core/profile-settings.js).
+                const result = describeSettings(await getApi().getSettings());
                 output(result, program.opts().json, () => {
                     info("Privacy settings:");
                     console.log();
-                    for (const [slug, meta] of Object.entries(SETTING_MAP)) {
-                        const raw = result[meta.key];
-                        // Normalize booleans to 0/1 (API returns bool for some settings)
-                        const val = raw === true ? 1 : raw === false ? 0 : raw;
-                        const label = meta.values[val] || String(val);
-                        console.log(`  ${meta.label.padEnd(30)} ${label}  (${slug}=${val})`);
+                    for (const row of result.settings) {
+                        const label = row.meaning ?? String(row.value);
+                        console.log(`  ${row.label.padEnd(32)} ${label}  (${row.setting}=${row.value})`);
+                    }
+                    console.log();
+                    info("Read-only here:");
+                    for (const row of result.readOnly) {
+                        const label = row.meaning ?? String(row.value);
+                        const how = row.changeWith ? `  (change with ${row.changeWith})` : "";
+                        console.log(`  ${row.label.padEnd(32)} ${label}${how}`);
                     }
                     console.log();
                     info("Update: zalo-agent profile set <setting> <value>");
@@ -191,11 +140,19 @@ export function registerProfileCommands(program) {
     profile
         .command("avatars")
         .description("List your avatar gallery")
-        .option("-c, --count <n>", "Page size", parseIntOption, 50)
-        .option("-p, --page <n>", "Page number", parseIntOption, 1)
+        .option("-c, --count <n>", "Page size (with -c or -p one page is read, 50 a page by default)", parseIntOption)
+        .option("-p, --page <n>", "Read only this page (default: the whole gallery)", parseIntOption)
         .action(async (opts) => {
             try {
-                const result = await getApi().getAvatarList(opts.count, opts.page);
+                let result;
+                if (opts.count === undefined && opts.page === undefined) {
+                    // No page asked: the whole gallery, page by page (src/core/list-all.js).
+                    const { paging, ...all } = await allAvatars(getApi());
+                    result = all;
+                    if (paging.note) warning(paging.note);
+                } else {
+                    result = await getApi().getAvatarList(opts.count ?? 50, opts.page ?? 1);
+                }
                 output(result, program.opts().json);
             } catch (e) {
                 error(`Get avatars failed: ${e.message}`);
@@ -257,22 +214,11 @@ export function registerProfileCommands(program) {
         .description("Update a privacy setting (use 'profile settings' to see options)")
         .action(async (setting, value) => {
             try {
-                const meta = SETTING_MAP[setting];
-                if (!meta) {
-                    error(`Unknown setting: "${setting}". Valid: ${Object.keys(SETTING_MAP).join(", ")}`);
-                    return;
-                }
-                const numVal = Number(value);
-                if (!(numVal in meta.values)) {
-                    error(
-                        `Invalid value for ${setting}. Valid: ${Object.entries(meta.values)
-                            .map(([k, v]) => `${k}=${v}`)
-                            .join(", ")}`,
-                    );
-                    return;
-                }
-                const result = await getApi().updateSettings(meta.key, numVal);
-                output(result, program.opts().json, () => success(`${meta.label}: ${meta.values[numVal]} (${numVal})`));
+                // Zalo answers the update with an empty body, so the reply is what was set (the same reply as
+                // zalo_profile `set`, src/core/profile-settings.js); an unknown setting or value sends nothing.
+                const reply = await updateSetting(getApi(), setting, value);
+                const label = SETTING_MAP[setting].label;
+                output(reply, program.opts().json, () => success(`${label}: ${reply.meaning} (${reply.value})`));
             } catch (e) {
                 error(`Setting update failed: ${e.message}`);
             }
@@ -280,7 +226,10 @@ export function registerProfileCommands(program) {
 
     profile
         .command("active <on|off>")
-        .description("Turn your online (active) status on or off")
+        .description(
+            "Set this session's presence, active (on) or away (off), as Zalo does when its window gains or loses " +
+                "focus. It does not hide your online status from others: that is `profile set online-status 0`",
+        )
         .action(async (state) => {
             try {
                 const active = parseOnOff(state, "active");
@@ -306,7 +255,7 @@ export function registerProfileCommands(program) {
 
     profile
         .command("lost-focus")
-        .description("Tell Zalo this client moved to the background (what Zalo Web sends when its tab loses focus)")
+        .description("Tell Zalo this client moved to the background (what Zalo sends when its window loses focus)")
         .action(async () => {
             try {
                 const result = await getApi().lostFocus();
@@ -315,4 +264,6 @@ export function registerProfileCommands(program) {
                 error(`Lost focus failed: ${e.message}`);
             }
         });
+    // Asked about first, as Zalo does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    guardSubcommand(profile, "delete-avatar", "profile.deleteAvatar", { target: (photoIds) => ({ photoIds }) });
 }

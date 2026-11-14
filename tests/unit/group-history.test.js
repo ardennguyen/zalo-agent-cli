@@ -1,15 +1,15 @@
 /**
- * src/core/group-history.js -- group history from Zalo's cloud-message store.
+ * src/zalo/custom/group-history.js -- group history from Zalo's cloud-message store.
  *
- * Driven through a real zca-js session whose transport is
+ * Driven through a real session whose transport is
  * ./fake-zalo-session.js, so every assertion is about the request that
  * actually goes out (decrypted) or what the caller gets back.
  *
  * What the evidence does and does not establish (see the module's header):
  *   - the newest page (getrecentv2, globalMsgId 2^63, src 1) is captured;
  *   - the older-page loop -- next globalMsgId = the response's lastMsgId, and
- *     getoldv2 only when the response says isOld -- is Zalo Web's own code
- *     (getCloudMessage's client retry), and the src 3 "load more" request
+ *     getoldv2 only when the response says isOld -- is how Zalo pages it,
+ *     and the src 3 "load more" request
  *     shape is captured, but no captured page ever carried messages or isOld.
  * These tests pin the client to that specification; they do not prove the
  * server pages that way. The live session does.
@@ -18,7 +18,7 @@ import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { getGroupHistory, quoteUids } from "../../src/core/group-history.js";
+import { getGroupHistory, quoteUids } from "../../src/zalo/custom/group-history.js";
 import { FAKE, installFakeZalo, loginFake, serviceHost } from "./fake-zalo-session.js";
 
 const GID = "7000000000000000001";
@@ -72,7 +72,7 @@ describe("getGroupHistory", () => {
 
     const storeCalls = () => fake.calls("/api/cm/");
 
-    it("asks for the newest page exactly as Zalo Web opens a group", async () => {
+    it("asks for the newest page exactly as a group is opened", async () => {
         fake.route("/api/cm/getrecentv2", () => page(rows(0, 3)));
 
         const res = await getGroupHistory(api, GID, 3, { delayMs: 0 });
@@ -94,13 +94,13 @@ describe("getGroupHistory", () => {
         assert.equal(res.groupMsgs.length, 3);
     });
 
-    it("strips the leading g that Zalo Web strips from a group id", async () => {
+    it("strips the leading g from a group id", async () => {
         fake.route("/api/cm/getrecentv2", () => page([]));
         await getGroupHistory(api, `g${GID}`, 1, { delayMs: 0 });
         assert.equal(storeCalls()[0].params.groupId, GID);
     });
 
-    it("returns messages newest first, as zca-js GroupMessage objects", async () => {
+    it("returns messages newest first, as listener GroupMessage objects", async () => {
         fake.route("/api/cm/getrecentv2", () =>
             page([row(msgIdAt(2)), row(msgIdAt(0)), row(msgIdAt(1))], { hasMore: 0 }),
         );
@@ -176,6 +176,37 @@ describe("getGroupHistory", () => {
         assert.equal(res.more, 0);
     });
 
+    it("with count Infinity pages back 50 a request until the store says hasMore 0, never repeating a request", async () => {
+        // 12 pages of 50 (600 messages): far past the old count-derived page bound.
+        fake.route("/api/cm/getrecentv2", () => page(rows(0, 50), { hasMore: 1, isOld: 1, lastMsgId: msgIdAt(49) }));
+        fake.route("/api/cm/getoldv2", (req) => {
+            const from = 8300000000999 - Number(req.params.globalMsgId) + 1;
+            const last = from + 50 >= 600;
+            return page(rows(from, 50), { hasMore: last ? 0 : 1, isOld: 1, lastMsgId: msgIdAt(from + 49) });
+        });
+
+        const res = await getGroupHistory(api, GID, Infinity, { delayMs: 0 });
+
+        const calls = storeCalls();
+        assert.equal(calls.length, 12);
+        assert.ok(calls.every((c) => c.params.count === 50));
+        const anchors = calls.map((c) => c.params.globalMsgId);
+        assert.equal(new Set(anchors).size, anchors.length, "a request was sent twice");
+        assert.equal(res.groupMsgs.length, 600);
+        assert.equal(res.more, 0);
+        assert.equal(res.stalled, false);
+    });
+
+    it("stops and flags stalled when the store says more but its cursor does not move older", async () => {
+        fake.route("/api/cm/getrecentv2", () => page(rows(0, 50), { hasMore: 1, isOld: 1, lastMsgId: NEWEST }));
+
+        const res = await getGroupHistory(api, GID, Infinity, { delayMs: 0 });
+
+        assert.equal(storeCalls().length, 1);
+        assert.equal(res.stalled, true);
+        assert.equal(res.groupMsgs.length, 50);
+    });
+
     it("pages older from the returned lastMsgId, on getoldv2 when the server says isOld", async () => {
         fake.route("/api/cm/getrecentv2", () => page(rows(0, 50), { hasMore: 1, isOld: 1, lastMsgId: msgIdAt(49) }));
         fake.route("/api/cm/getoldv2", () => page(rows(50, 20), { hasMore: 0, lastMsgId: msgIdAt(69) }));
@@ -234,7 +265,7 @@ describe("getGroupHistory", () => {
         assert.equal(res.more, 1, "the server still says there is more");
     });
 
-    it("keeps uids past 2^53 exact, as Zalo Web's preParse does", async () => {
+    it("keeps uids past 2^53 exact", async () => {
         // The server may send these as bare numbers; JSON.parse would round them.
         const raw =
             '{"error":0,"lastMsgId":"0","hasMore":0,"isOld":0,"groupMsgs":[' +
@@ -260,12 +291,12 @@ describe("getGroupHistory", () => {
         assert.deepEqual(out.uid, [BIG_UID, "2"]);
         assert.equal(out.x.ownerId, "-5");
         assert.equal(JSON.parse(out.params).uidFrom, BIG_UID);
-        // Not one of Zalo Web's preParse keys, so not ours to touch.
+        // Not one of the listed id keys, so not ours to touch.
         assert.equal(typeof out.msgId, "number");
         assert.equal(out.ts, 12.5);
     });
 
-    it("drops recall and delete events, empty rows and duplicates, as Zalo Web does", async () => {
+    it("drops recall and delete events, empty rows and duplicates", async () => {
         fake.route("/api/cm/getrecentv2", () =>
             page([
                 row(msgIdAt(0), { msgType: "chat.undo", content: { globalMsgId: msgIdAt(1), deleteMsg: 0 } }),

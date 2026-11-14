@@ -6,6 +6,9 @@
 import { appendFileSync, mkdirSync, existsSync, readFileSync } from "fs";
 import { resolve, join } from "path";
 import { getApi, clearSession } from "../core/zalo-client.js";
+import { attachHiddenChatControls, hiddenEventView } from "../core/hidden-chats.js";
+import { hiddenSetForCli, unlockOrExit } from "../utils/hidden-access.js";
+import { readControls } from "../zalo/queues/control-queue.js";
 import { success, error, info, warning, output } from "../utils/output.js";
 import { resolveWebhookSecret } from "../utils/secrets.js";
 import { parseAccountId, selectDaemonAccount, loginDaemonAccount } from "../core/daemon-account.js";
@@ -13,6 +16,11 @@ import { updateAccountName } from "../core/accounts.js";
 import { CONFIG_DIR, getAccountDir } from "../core/credentials.js";
 import { createStartupGate, resolveStartupSettings } from "../core/startup-gate.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
+import { startMediaMigration } from "../core/media-store.js";
+import { getMediaLinks, linkForCachedMessage, startTempfileSweeper } from "../core/media-deliver.js";
+import { ensureMediaServed } from "../core/media-route.js";
+import { resolveMediaDelivery } from "../core/deploy-policy.js";
+import { scopeOfDir } from "../core/keystore/keyring.js";
 import {
     createStageLock,
     statusViaDaemon,
@@ -24,11 +32,18 @@ import {
 } from "../core/daemon-channel.js";
 import { createSyncRunners } from "../core/daemon-sync.js";
 import { createSocketContext, startEventLoopMonitor } from "../core/daemon-log.js";
-import { setUserInfoLogger } from "../core/user-info.js";
-import { createSocketTap } from "../core/socket-tap.js";
+import { setUserInfoLogger } from "../zalo/custom/user-info.js";
+import { createSocketTap } from "../zalo/listener/socket-tap.js";
 import { createSelfHeal } from "../core/self-heal.js";
+import { createUndecryptableNotice } from "../core/e2ee-notice.js";
+import { createCloudVerifier } from "../core/cloud-verify.js";
+import { attachUnknownActs } from "../core/unknown-acts.js";
+import { attachVoiceText, voiceTextFile } from "../core/voice-text.js";
 import { createReadStateSync, readStateEvent } from "../core/read-state.js";
-import { initDb, getPendingSyncGaps } from "../core/db.js";
+import { attachLastOnline } from "../core/last-online.js";
+import { groupEventNames, nameFor, personLabel, senderNameFields, startDaemonAliases } from "../core/contact-names.js";
+import { CONTROL_EVENT_KINDS, attachControlEvents, describeControlEvent } from "../core/control-events.js";
+import { clearSyncState, initDb, getMessageById, getPendingSyncGaps, getSyncState, setSyncState } from "../core/db.js";
 import {
     storeLiveMessage,
     refreshLiveMessageIdentities,
@@ -44,19 +59,44 @@ import {
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 import { SyncManager } from "../core/sync.js";
 import { describeGap } from "../core/sync-v2/gap-advice.js";
-import { createDeliveredReceipts } from "../core/receipts.js";
-import { envForAccount, resolveWebhookDelivery } from "../mcp/mcp-config.js";
-import { startWebhookDelivery } from "../core/webhook-outbox.js";
+import { createDeliveredReceipts } from "../zalo/receipts.js";
+import { envForAccount, resolveWebhookDelivery, resolveWebhookUrl } from "../mcp/mcp-config.js";
+import { servePolicyRequest, startPolicyRuntime, touches } from "../core/policy-store.js";
+import { describeQuotaEvent, startStorageJobs } from "../core/storage-quota.js";
+import { applyGroupExit, describeGroupGone, setGroupGoneSink } from "../core/group-exit.js";
+import { purgeDeadDeliveries, startWebhookDelivery } from "../core/webhook-outbox.js";
 import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
+import { describeSessionExpiry, sessionExpiryFor } from "../core/session-expiry.js";
+import { describeSessionExpiring, startSessionExpiryWatch } from "../core/session-notice.js";
+import { createSocketHost, EXIT_CODE } from "../core/socket-host.js";
+import {
+    alarmingGapCount,
+    createGapTracker,
+    HEARTBEAT_MS,
+    IDLE_GAP_REASON,
+    PARKED_AT_KEY,
+    startupGapReason,
+} from "../core/listener-lifecycle.js";
+import {
+    createDaemonPresence,
+    presenceConfigFiles,
+    describeSocketPolicy,
+    presenceTransport,
+    resolveDaemonPresence,
+} from "../core/daemon-presence.js";
+import { createAccountStateTracker, describeAccountState } from "../core/account-state.js";
+import { kickFile } from "../core/kick-marker.js";
 import { DEBUG_MARK, LOG_LEVELS } from "../core/log-sink.js";
+import { deviceSinceOf } from "../core/device-since.js";
+import { describeQueueOverflow } from "../core/overflow-repair.js";
 
 const PKG_VERSION = JSON.parse(readFileSync(join(import.meta.dirname, "..", "..", "package.json"), "utf8")).version;
 
-/** Thread types matching zca-js ThreadType enum */
+/** Thread types matching the engine's THREAD_TYPE (src/zalo/enums.js) */
 const THREAD_USER = 0;
 const THREAD_GROUP = 1;
 
-/** Friend event type → readable label (matches zca-js FriendEventType enum order) */
+/** Friend event type → readable label (the listener's FRIEND_EVENT_TYPE numbers) */
 const FRIEND_EVENT_LABELS = {
     0: "friend_added",
     1: "friend_removed",
@@ -69,9 +109,6 @@ const FRIEND_EVENT_LABELS = {
 };
 const FRIEND_REQUEST_TYPE = 2;
 
-/** Zalo close code for duplicate web session */
-const CLOSE_DUPLICATE = 3000;
-
 export function registerListenCommand(program) {
     program
         .command("listen")
@@ -81,11 +118,11 @@ export function registerListenCommand(program) {
             parseAccountId,
         )
         .description(
-            "Listen for all Zalo events (messages, friend requests, group events) via one WebSocket. Auto-reconnect enabled.",
+            "Listen for all Zalo events (messages, friend requests, group events) via one WebSocket. In the foreground it stays connected; with --daemon it follows the presence settings (on-demand by default: parks when idle, wakes on demand).",
         )
         .option(
             "-e, --events <types>",
-            "Comma-separated event types: message,friend,group,reaction,read (default), plus the opt-in typing (someone is typing) and upload (Zalo finished processing a video or file you uploaded)",
+            "Comma-separated event types: message,friend,group,reaction,read (default), plus the opt-in typing (someone is typing), upload (Zalo finished processing a video or file you uploaded), catalog (a product catalog changed on another device), reminder (a DM reminder was created, updated or removed on another device), devices (the account's device list changed), online (a user's last-online time, as Zalo pushes it), settings (this account's own settings changed on another device), conversation (a conversation muted or unmuted, archived or back, its auto-delete time or the labels changed on another device) and quick-message (a quick message created, edited or deleted on another device)",
             "message,friend,group,reaction,read",
         )
         .option("-f, --filter <type>", "Message filter: user (DM only), group (groups only), all", "all")
@@ -103,12 +140,21 @@ export function registerListenCommand(program) {
         )
         .option(
             "--no-self-heal",
-            "Do not pull what a dropped socket missed from Zalo's offline queue on reconnect (the default does, as Zalo Web does, on this socket and with no phone tap)",
+            "Do not pull what a dropped socket missed from Zalo's offline queue on reconnect (the default does, as Zalo does, on this socket and with no phone tap)",
         )
         .option(
             "--log-level <level>",
             "Log level of daemon.log (and of stderr in the foreground): error, warn, info (default) or debug, which adds a line per HTTP request and per message. Env: ZALO_LOG_LEVEL[_<ownId>]; also ZALO_LOG_FORMAT=json, ZALO_LOG_MAX_SIZE (default 50m) and ZALO_LOG_KEEP (default 3) for rotation",
         )
+        .option(
+            "--include-hidden",
+            "Show events of hidden conversations too: asks for the hidden-chat PIN at start (foreground only)",
+        )
+        .option(
+            "--hidden-contentless",
+            "Report an event in a hidden conversation as {event, hidden: true}, with no thread id or content",
+        )
+        .option("--pin-stdin", "Read the hidden-chat PIN for --include-hidden from standard input")
         .option("-d, --daemon", "Run in the background (logs to <accountDir>/daemon.log)")
         .option("--stop", "Stop the running background daemon for this account")
         .option("--status", "Show background daemon status for this account")
@@ -184,6 +230,43 @@ export function registerListenCommand(program) {
             if (!process.env.ZALO_DAEMON_CHILD)
                 for (const w of logging.warnings) console.error(`[listen] [logging] ${w}`);
 
+            // The PIN is asked in the foreground only: a background daemon has no terminal, and a PIN must never
+            // ride on its command line.
+            if (opts.includeHidden && opts.daemon) {
+                error(
+                    "--include-hidden asks for the hidden-chat PIN, which a background daemon cannot do. Run " +
+                        "`listen --include-hidden` in the foreground, or use --hidden-contentless.",
+                );
+                process.exit(1);
+            }
+
+            // On-demand presence (src/core/daemon-presence.js): a foreground `listen` prints to stdout and is always-on;
+            // a background one (`--daemon`) follows the settings. On-demand without the self-heal would lose what
+            // arrives while parked, so that pair is refused before anything starts.
+            const presenceRole = presenceTransport({
+                command: "listen",
+                background: Boolean(opts.daemon || process.env.ZALO_DAEMON_CHILD),
+            });
+            // The settings come from the same layers as `mcp start`: mcp-config.json (`presence`,
+            // `accounts.<ownId>.presence`, `<accountDir>/mcp-config.json`) < env < policy. A file a background
+            // listener cannot use is refused, as `mcp start` refuses it: the defaults would silently run on-demand.
+            const presenceFiles = presenceConfigFiles({ ownId: activeAcc.ownId, accountDir });
+            if (presenceFiles.problem && presenceRole !== "stdout") {
+                error(`Refusing to start: ${presenceFiles.problem} (its presence settings would be ignored).`);
+                process.exit(1);
+            }
+            const presenceConfig = presenceFiles.config;
+            const presenceCheck = resolveDaemonPresence({
+                config: presenceConfig,
+                ownId: activeAcc.ownId,
+                transport: presenceRole,
+                selfHeal: opts.selfHeal !== false,
+            });
+            if (presenceCheck.problem) {
+                error(`Refusing to start: ${presenceCheck.problem}`);
+                process.exit(1);
+            }
+
             if (opts.daemon && !process.env.ZALO_DAEMON_CHILD) {
                 const spawned = await spawnDaemonProcess({ accountDir, args: process.argv.slice(1) });
                 if (!spawned.ok) {
@@ -255,15 +338,58 @@ export function registerListenCommand(program) {
                 error(`Pinned account login failed: ${e.message}`);
                 process.exit(1);
             }
+            // The account's hidden chats (src/core/hidden-chats.js): left out of every event unless --include-hidden
+            // (and the PIN, asked now) or --hidden-contentless.
+            const listenHidden = await hiddenSetForCli(activeAcc.ownId, getApi());
+            if (opts.includeHidden)
+                await unlockOrExit(listenHidden, { pinStdin: Boolean(opts.pinStdin), json: jsonMode });
+            const listenHiddenMode = opts.includeHidden
+                ? "include"
+                : opts.hiddenContentless
+                  ? "contentless"
+                  : "exclude";
+            // Media links this daemon hands out over its channel (`msg media --deliver link`): capability links on a
+            // 127.0.0.1 listener; `listen` has no config file, so the policy is the environment's and the defaults.
+            let listenMediaPolicy = resolveMediaDelivery({ accountId: activeAcc.ownId });
+            const mediaLinks = getMediaLinks().configure({
+                linkAuth: "capability",
+                ttlMs: listenMediaPolicy.linkTtlMs,
+                rateLimit: listenMediaPolicy.linkRateLimit,
+                log: (line) => console.error(line),
+            });
+            listenHidden.onChange?.((set) => {
+                if (listenHiddenMode === "include") return;
+                mediaLinks.revokeWhere((l) => l.threadId !== null && set.isHidden(l.threadId), "its chat was hidden");
+            });
             try {
                 initDb(join(accountDir, "zalo.db"));
                 info(`Local database initialized at ${accountDir}/zalo.db`);
+                // Media a 2.x install downloaded is sealed in the background, a batch at a time (media-store.js).
+                startMediaMigration(activeAcc.ownId, { log: (l) => console.error(`[listen] ${l}`) });
+                // Decrypted copies (msg media) expire on time while this daemon runs (src/core/media-deliver.js).
+                startTempfileSweeper({ ttlMs: listenMediaPolicy.tempfileTtlMs });
                 // Logged in and the cache open: the heavy part of start-up is over.
                 gate.leave();
             } catch (err) {
                 gate.leave();
                 releaseLock(accountDir);
                 error(`Failed to initialize local DB: ${err.message}`);
+                process.exit(1);
+            }
+            // The runtime policy (src/core/policy-store.js), as `mcp start` reads it: a file that cannot be used stops
+            // the start; a change (`policy set`, a file drop) counts at once.
+            let onPolicyChanged = () => {};
+            let policyRuntime;
+            try {
+                policyRuntime = startPolicyRuntime({
+                    ownId: activeAcc.ownId,
+                    onChange: (changed) => onPolicyChanged(changed),
+                    log: (l) => console.error(`[listen] ${l}`),
+                });
+                info(`Runtime policy: ${policyRuntime.describe()}`);
+            } catch (err) {
+                releaseLock(accountDir);
+                error(`The runtime policy cannot be used: ${err.message}`);
                 process.exit(1);
             }
 
@@ -274,12 +400,6 @@ export function registerListenCommand(program) {
             // connected. See reportGap() for why the daemon reports rather than
             // backfilling on its own.
             const syncManager = new SyncManager(getApi(), activeAcc.ownId);
-            const HEARTBEAT_MS = 60 * 1000;
-            let lastHeartbeatAt = 0;
-            // The one place that knows whether the socket is actually up. The
-            // `connected`/`disconnected` handlers below own it; everything else
-            // reads it. Starts null: nothing is claimed before the first connect.
-            let downSince = null;
             // Set by SIGINT before anything is torn down. listener.stop() emits
             // closed(1000), which is indistinguishable from a real drop, so
             // without this the shutdown path runs the RECOVERY path: five
@@ -288,19 +408,10 @@ export function registerListenCommand(program) {
             // daemon-channel.json already deleted. The next listen/mcp/sync then
             // took the free lock and the two sessions flapped over code 3000.
             let stopping = false;
+            // markConnected() means "coverage is good up to now"; the shared tracker stamps it on a beat only while
+            // the socket is actually up (not down, not parked), so a crash mid-outage keeps its window.
             function heartbeat() {
-                const now = Date.now();
-                if (now - lastHeartbeatAt < HEARTBEAT_MS) return;
-                lastHeartbeatAt = now;
-                // markConnected() means "coverage is good up to now". Stamping
-                // that on a timer with no liveness check kept advancing
-                // lastConnectedAt while the socket was down -- through zca-js's
-                // internal retry, the 5s re-login wait and the 30s retry wait --
-                // so a crash mid-outage made the NEXT launch compute its
-                // startup-gap from a moment we were not actually connected, and
-                // the outage vanished.
-                if (downSince !== null) return;
-                syncManager.markConnected();
+                lifecycle.heartbeat();
             }
 
             /**
@@ -310,7 +421,7 @@ export function registerListenCommand(program) {
              * How the daemon self-heals
              * -------------------------
              * A window the socket was down for is first RECORDED here, then
-             * closed from Zalo's offline queue -- the way Zalo Web closes it on
+             * closed from Zalo's offline queue -- the way Zalo closes it on
              * every connect. After each handshake the daemon asks each message
              * queue (510_1, 511_1) for everything after the last message it
              * stored, pages until the server says there is no more, and writes
@@ -336,7 +447,7 @@ export function registerListenCommand(program) {
              *    and the daemon never starts it on its own -- only a
              *    `zalo-agent sync` someone typed does. (The self-heal this
              *    replaces called the retired pullMobileMsg/getCrossDB pair,
-             *    MEASURED 2026-09-20 to have zero call sites in Zalo Web: it
+             *    MEASURED 2026-09-20 to be unused by Zalo itself: it
              *    announced an attempt, said nothing more, and the gap stayed
              *    pending forever.)
              *
@@ -350,6 +461,11 @@ export function registerListenCommand(program) {
                 const toTs = Date.now();
                 const gapId = syncManager.recordGap(fromTs, toTs, reason);
                 if (!gapId) return null; // under recordGap's 1-second floor
+                // A parked window (on-demand presence) is planned: one quiet line, the self-heal closes it.
+                if (reason === IDLE_GAP_REASON) {
+                    info(`Parked since ${new Date(fromTs).toISOString()}: catching up from Zalo's offline queue`);
+                    return gapId;
+                }
                 let pendingGaps = [];
                 try {
                     pendingGaps = getPendingSyncGaps();
@@ -414,8 +530,22 @@ export function registerListenCommand(program) {
             // Deliberate restarts stay quiet on their own merits: SIGINT stamps
             // markConnected() on the way out, so a clean stop/start reports the
             // true downtime rather than a heartbeat-rounded guess.
+            // The coverage bookkeeping `mcp start` uses (src/core/listener-lifecycle.js): down-ness observed from the
+            // listener's own events (first drop wins), a park's close planned, the parked window filed on the wake.
+            const lifecycle = createGapTracker({
+                syncManager,
+                reportGap,
+                setState: setSyncState,
+                deleteState: clearSyncState,
+            });
             const lastConnectedAt = syncManager.getLastConnectedAt();
-            if (!reportGap(lastConnectedAt, "startup-gap")) {
+            // A stop or crash while parked left lastConnectedAt at the park stamp: that window is a planned one.
+            const parkedStamp = Number(getSyncState(PARKED_AT_KEY)) || null;
+            const startupReason = parkedStamp
+                ? startupGapReason({ lastConnectedAt, parkedAt: parkedStamp })
+                : "startup-gap";
+            if (parkedStamp) clearSyncState(PARKED_AT_KEY);
+            if (!reportGap(lastConnectedAt, startupReason)) {
                 // Nothing filed -- no prior connection on record, or a gap under
                 // the floor. Either way we are caught up as of now.
                 syncManager.markConnected();
@@ -428,8 +558,8 @@ export function registerListenCommand(program) {
             const enabledEvents = new Set(opts.events.split(",").map((e) => e.trim()));
 
             // Delivered receipts (deliveredv2): what every Zalo client sends when a
-            // message arrives -- Zalo Web included, for our own echoes too. Built
-            // once and shared with `mcp start` through src/core/receipts.js, so the
+            // message arrives -- for our own echoes too. Built
+            // once and shared with `mcp start` through src/zalo/receipts.js, so the
             // two listeners cannot drift apart (AGENTS.md §13). `getApi`, not an
             // api: a re-login replaces it. Seen receipts are never sent from here.
             const deliveredReceipts = createDeliveredReceipts({
@@ -445,7 +575,7 @@ export function registerListenCommand(program) {
                 return h > 0 ? `${h}h${m}m` : `${m}m${s % 60}s`;
             }
 
-            const webhookUrl = opts.webhook?.trim() || envForAccount("ZALO_WEBHOOK_URL", activeAcc.ownId) || null;
+            const webhookUrl = resolveWebhookUrl({ accountId: activeAcc.ownId, flag: opts.webhook });
             const webhookSecret = resolveWebhookSecret({
                 flag: cliWebhookSecret,
                 env: envForAccount("ZALO_WEBHOOK_SECRET", activeAcc.ownId),
@@ -458,19 +588,47 @@ export function registerListenCommand(program) {
             // written to disk first and delivered from there, so a receiver that is down costs a
             // backlog (zalo-agent mcp webhook status), not events.
             let webhookDelivery = null;
-            if (webhookUrl) {
+            /** Start the delivery, or move a running one to the current receiver and settings (a live policy change). */
+            const applyWebhook = (url) => {
                 const delivery = resolveWebhookDelivery(activeAcc.ownId);
                 for (const w of delivery.warnings) warning(w);
+                if (!url) {
+                    webhookDelivery?.stop();
+                    webhookDelivery = null;
+                    return;
+                }
+                if (webhookDelivery) {
+                    webhookDelivery.reconfigure({ url, batchSize: delivery.batchSize, maxAgeMs: delivery.maxAgeMs });
+                    return;
+                }
                 webhookDelivery = startWebhookDelivery({
                     accountDir,
                     accountId: activeAcc.ownId,
-                    url: webhookUrl,
+                    url,
                     secret: webhookSecret,
                     batchSize: delivery.batchSize,
                     maxAgeMs: delivery.maxAgeMs,
                     log: (line) => console.error(`[listen] ${line}`),
                 });
-            }
+            };
+            if (webhookUrl) applyWebhook(webhookUrl);
+            // A policy change counts at once: the media link limits and the webhook are set up again.
+            onPolicyChanged = (changed) => {
+                console.error(`[listen] Policy changed: ${changed.join(", ")}`);
+                if (touches(changed, ["media"])) {
+                    listenMediaPolicy = resolveMediaDelivery({ accountId: activeAcc.ownId });
+                    mediaLinks.configure({
+                        ttlMs: listenMediaPolicy.linkTtlMs,
+                        rateLimit: listenMediaPolicy.linkRateLimit,
+                    });
+                    startTempfileSweeper({ ttlMs: listenMediaPolicy.tempfileTtlMs });
+                }
+                if (touches(changed, ["quota", "retention"])) storageJobs.reschedule();
+                if (touches(changed, ["webhook", "webhookBatchSize", "webhookMaxAge"]))
+                    applyWebhook(resolveWebhookUrl({ accountId: activeAcc.ownId, flag: opts.webhook }));
+                // presence.*: live (a switch to always-on holds the socket now; one to on-demand starts the idle clock).
+                daemonPresence?.applyPolicy(changed);
+            };
 
             /** Queue an event for the webhook — never blocks event processing */
             function postWebhook(data) {
@@ -503,6 +661,13 @@ export function registerListenCommand(program) {
 
             /** Output event as JSON or human-readable, save locally, then post to webhook */
             function emitEvent(data, humanMsg) {
+                // Hidden chats, as the flags say: left out (default), contentless, or shown after the PIN.
+                const view = hiddenEventView(data, listenHidden, listenHiddenMode, { name: data?.event });
+                if (!view) return;
+                if (view.hidden) {
+                    data = view;
+                    humanMsg = `Something arrived in a hidden conversation (${view.event})`;
+                }
                 eventCount++;
                 if (process.env.ZALO_DAEMON_CHILD === "1") {
                     // In daemon.log an event line is a per-message line: debug (it carries the message text).
@@ -516,6 +681,34 @@ export function registerListenCommand(program) {
                 postWebhook(data);
             }
 
+            // Quotas and retention (src/core/storage-quota.js): this daemon holds daemon.lock, so it purges, on its
+            // timer and for `db purge` over its channel. A storage_quota event is reported like any other event.
+            // group_gone (src/core/group-exit.js): our own exit seen live, a disband found by group info, a
+            // keep -> purge switch acted on. Reported like any other event (stdout, webhook, JSONL), never gated.
+            setGroupGoneSink((event) => emitEvent(event, describeGroupGone(event)));
+            const storageJobs = startStorageJobs({
+                ownId: activeAcc.ownId,
+                emit: (event) => emitEvent(event, describeQuotaEvent(event)),
+                log: (l) => console.error(`[listen] ${l}`),
+                purgeOutboxDead: (cutoff) => purgeDeadDeliveries(accountDir, cutoff),
+            });
+            // account_state (src/core/account-state.js): one word per change, reported like any other event (stdout,
+            // webhook, JSONL) and in /status, the same as `mcp start`; detail.presence is the mode presence runs in.
+            let daemonPresence = null;
+            const accountState = createAccountStateTracker({
+                accountId: activeAcc.ownId,
+                emit: (event) => emitEvent(event, describeAccountState(event)),
+                detail: () => daemonPresence?.detail() ?? { presence: presenceCheck.settings.mode },
+            });
+
+            // session_expiring (src/core/session-notice.js): the saved login ends by itself; once per threshold (14, 7,
+            // 3, 1 days, ended), reported like any other event (stdout, webhook, JSONL), the same as `mcp start`.
+            const sessionWatch = startSessionExpiryWatch({
+                ownId: activeAcc.ownId,
+                accountDir,
+                emit: (event) => emitEvent(event, describeSessionExpiring(event)),
+            });
+
             /** Whether --events, --filter or --no-self keep a message off stdout, the webhook and the JSONL. */
             function isMuted(msg) {
                 const filteredOut =
@@ -527,10 +720,19 @@ export function registerListenCommand(program) {
                 return !enabledEvents.has("message") || filteredOut || (!opts.self && msg.isSelf);
             }
 
+            /** " (Name, Name)" for a group event's members, alias first; "" when it names none. */
+            function groupEventWho(data) {
+                const named =
+                    groupEventNames(data)
+                        ?.updateMembers?.map((m) => m?.dName || m?.id)
+                        .filter(Boolean) ?? [];
+                return named.length ? ` (${named.join(", ")})` : "";
+            }
+
             /**
              * A message as `listen` reports it: the event object, and its one-line human form.
              *
-             * @param {object} msg - the zca-js message event
+             * @param {object} msg - the listener's message event
              * @param {object} [extra] - fields to add, e.g. `{catchUp: true}`
              * @returns {{data: object, human: string}}
              */
@@ -538,6 +740,7 @@ export function registerListenCommand(program) {
                 const rawContent = msg.data.content;
                 const isText = typeof rawContent === "string";
                 const msgType = msg.data.msgType || null;
+                const sender = senderNameFields(msg.data.uidFrom, msg.data.dName);
                 // Build readable display: show type + title/href for non-text
                 let displayContent;
                 if (isText) {
@@ -558,7 +761,10 @@ export function registerListenCommand(program) {
                     type: msg.type,
                     isSelf: msg.isSelf,
                     uidFrom: msg.data.uidFrom || null,
-                    dName: msg.data.dName || null,
+                    // The sender as Zalo shows them to this account: the owner's alias first (src/core/contact-names.js);
+                    // `senderZaloName` is the name the message carried.
+                    dName: sender.senderName,
+                    ...sender,
                     msgType,
                     content: rawContent,
                     ...extra,
@@ -566,15 +772,16 @@ export function registerListenCommand(program) {
                 const dir = msg.isSelf ? "→" : "←";
                 const typeLabel = msg.type === THREAD_USER ? "DM" : "GR";
                 const tag = extra.catchUp ? " [catch-up]" : "";
+                const who = !msg.isSelf && sender.senderName ? `${sender.senderName}: ` : "";
                 return {
                     data,
-                    human: `${dir} [${typeLabel}]${tag} [${msg.threadId}] ${displayContent}  (msgId: ${msg.data.msgId})`,
+                    human: `${dir} [${typeLabel}]${tag} [${msg.threadId}] ${who}${displayContent}  (msgId: ${msg.data.msgId})`,
                 };
             }
 
             // One stage at a time on this socket -- the lock the daemon
             // channel's routes hold, shared with this daemon's own catch-up --
-            // and one raw reader on the socket for the fields zca-js drops.
+            // and one raw reader on the socket for the fields the listener's events drop.
             // Built once, like the receipter: they outlive every re-login.
             const stageLock = createStageLock();
             // See mcp.js: stage progress, event-loop stalls and refused lookups belong in the log too.
@@ -588,18 +795,66 @@ export function registerListenCommand(program) {
             });
             const socketContext = createSocketContext({ lock: stageLock, monitor: loopMonitor });
             setUserInfoLogger(daemonLog);
+            // The owner's aliases, which every line and payload names people by: read at start, on an `alias`
+            // control and every 30 minutes, kept in the account's db. Same in `mcp start` (src/core/contact-names.js).
+            const daemonAliases = startDaemonAliases({
+                getApi,
+                log: daemonLog,
+                onOwnName: (name) => updateAccountName(activeAcc.ownId, name),
+            });
             // Same health object `mcp start` builds (src/core/daemon-health.js): `listen --status` prints it.
             const health = createDaemonHealth({ kind: "listen", accountId: activeAcc.ownId, version: PKG_VERSION });
-            health.setSource("gaps", () => getPendingSyncGaps().length);
+            // Planned idle windows (on-demand presence) are not worth a warning; everything else is.
+            health.setSource("gaps", () => alarmingGapCount(getPendingSyncGaps()));
             health.setSource("stage", () => stageLock.current());
+            health.setSource("accountState", () => accountState.current());
             health.setSource("webhook", () => webhookDelivery?.status() ?? null);
+            health.setSource("session", () => sessionExpiryFor(activeAcc.ownId));
+            health.setSource("presence", () => daemonPresence?.snapshot() ?? null);
+            const sessionLine = describeSessionExpiry(sessionExpiryFor(activeAcc.ownId));
+            if (sessionLine) console.error(`[listen] ${sessionLine}`);
+            // On-demand presence: when this daemon holds the account's socket (src/core/daemon-presence.js, shared
+            // with `mcp start`). Built before the socket host, which it drives through park/wake.
+            try {
+                daemonPresence = createDaemonPresence({
+                    ownId: activeAcc.ownId,
+                    config: presenceConfig,
+                    transport: presenceRole,
+                    selfHeal: opts.selfHeal !== false,
+                    configDir: CONFIG_DIR,
+                    log: (line) => console.error(`[listen] ${line}`),
+                    getSocketHost: () => socketHost,
+                    stageLock,
+                    deliveredReceipts,
+                    lifecycle,
+                    health,
+                    accountState,
+                    coveredUntil: () => syncManager.getLastConnectedAt(),
+                });
+            } catch (e) {
+                dropLock();
+                error(`Refusing to start: ${e.message}`);
+                process.exit(1);
+            }
+            {
+                const p = daemonPresence.settings;
+                info(
+                    `Presence: ${p.mode}${daemonPresence.forced ? ` (${daemonPresence.forced})` : ""}` +
+                        (p.mode === "on-demand"
+                            ? `: parks after ${Math.round(p.idleTimeoutMs / 1000)}s with no demand, ` +
+                              `never within ${Math.round(p.minConnectedMs / 1000)}s of a connect`
+                            : ""),
+                );
+                info(describeSocketPolicy(p, { exitOnSignedOut: daemonPresence.exitOnSignedOut }));
+            }
             const socketTap = createSocketTap({ log: (line) => console.error(`[listen] ${line}`) });
             // Read state other devices report -- a conversation read on the
-            // phone, an unread mark set or cleared there -- which zca-js
-            // drops. Stored always, like reactions; printed only with
+            // phone, an unread mark set or cleared there -- which the listener's events
+            // drop. Stored always, like reactions; printed only with
             // `--events read`. It rides the tap, which re-arms on every socket.
             createReadStateSync({
                 tap: socketTap,
+                ownId: activeAcc.ownId,
                 log: (line) => console.error(`[listen] ${line}`),
                 onChange: (change) => {
                     if (!enabledEvents.has("read")) return;
@@ -607,12 +862,70 @@ export function registerListenCommand(program) {
                     emitEvent(data, human);
                 },
             });
+            // The cloud queue, kept current when the server says it may be stale (cmd 621): bounded, read-only,
+            // never beside another stage (src/core/cloud-verify.js). Same in `listen` and `mcp start`.
+            createCloudVerifier({
+                tap: socketTap,
+                getApi,
+                lock: stageLock,
+                log: (line) => console.error(`[listen] ${line}`),
+            });
+            // The control actions the server sends that nobody handles, named once in the account folder
+            // (src/core/unknown-acts.js). Same in `listen` and `mcp start`.
+            attachUnknownActs({
+                tap: socketTap,
+                file: join(accountDir, "unknown-acts.json"),
+                log: (line) => console.error(`[listen] ${line}`),
+            });
+            // The text of a voice message Zalo transcribed arrives as a control push; it is kept in the account
+            // folder for `read run voice-transcript` (src/core/voice-text.js). Same in `listen` and `mcp start`.
+            attachVoiceText({
+                tap: socketTap,
+                file: voiceTextFile(accountDir),
+                log: (line) => console.error(`[listen] ${line}`),
+            });
+            // A catalog changed, a DM reminder created, edited or removed, the device list changed, a conversation
+            // muted, archived, labeled or its auto-delete changed, a quick message changed, on another device
+            // (src/core/control-events.js): the reminder is stored or dropped in the cache whatever --events says;
+            // the events are printed only when asked for (`catalog`, `reminder`, `devices`, `settings`,
+            // `conversation`, `quick-message`). Same in `mcp start`.
+            // Hidden chats hidden, unhidden or their PIN changed or removed on another device (601 `hidden_chat`).
+            // Same in `listen` and `mcp start`.
+            attachHiddenChatControls({ tap: socketTap, set: listenHidden, getApi, readControls });
+            attachControlEvents({
+                tap: socketTap,
+                ownId: activeAcc.ownId,
+                log: (line) => console.error(`[listen] ${line}`),
+                onEvent: (ev) => {
+                    const kind = CONTROL_EVENT_KINDS[ev.event];
+                    if (kind && enabledEvents.has(kind)) emitEvent(ev, describeControlEvent(ev));
+                },
+            });
+            // A user's last-online time as Zalo pushes it (602 online_status): kept in the cache whatever --events
+            // says, for `friend last-online --cached`; printed with `--events online`. Same in `mcp start`.
+            attachLastOnline({
+                tap: socketTap,
+                log: (line) => console.error(`[listen] ${line}`),
+                onEvent: (ev) => {
+                    if (!enabledEvents.has("online")) return;
+                    emitEvent(ev, `Online: ${ev.userId} at ${new Date(ev.lastOnline).toLocaleString()}`);
+                },
+            });
+            // End-to-end encrypted messages this client cannot read: the first is named in the log, the rest counted.
+            const undecryptable = createUndecryptableNotice({ log: (line) => console.error(`[listen] ${line}`) });
             const selfHeal = createSelfHeal({
                 getApi,
                 tap: socketTap,
                 lock: stageLock,
                 enabled: opts.selfHeal !== false,
                 log: (line) => console.error(`[listen] ${line}`),
+                // Coverage never spans a device change (src/core/device-since.js): read on each run, so a
+                // re-login's new device id counts from the next handshake. Same in `mcp start`.
+                deviceSince: () => deviceSinceOf(activeAcc.ownId, getApi()),
+                // Zalo dropped part of a queue: reported like any other event (stdout, webhook, JSONL).
+                onNotice: (event) => emitEvent(event, describeQueueOverflow(event)),
+                // A catch-up finished: on-demand presence ends its start-up and pulse holds. Same in `mcp start`.
+                onRun: ({ ms }) => daemonPresence?.noteCatchUpDone({ ms }),
                 // A message recovered after a drop reaches stdout, the JSONL and
                 // the webhook as a live one would, marked so a consumer can tell.
                 onRecovered: (items) => {
@@ -627,6 +940,7 @@ export function registerListenCommand(program) {
             /** Attach ALL handlers (data + lifecycle) to current API listener */
             function attachAllHandlers(api) {
                 health.attach(api.listener);
+                daemonAliases.attach(api.listener);
                 // --- Message events ---
                 // Registered unconditionally. --events, --filter and --no-self
                 // decide what is PRINTED, forwarded and saved as JSONL -- never
@@ -639,6 +953,13 @@ export function registerListenCommand(program) {
                 // connected for.
                 {
                     api.listener.on("message", async (msg) => {
+                        // A message Zalo re-sent (534) that is already stored was announced when it was stored;
+                        // self-heal owns re-pushes, so it is not printed or posted twice.
+                        if (selfHeal.isRepeatedRepush(msg)) {
+                            heartbeat();
+                            return;
+                        }
+                        undecryptable.note(msg);
                         const mute = isMuted(msg);
 
                         // A "delete for me" frame rides the message channel but
@@ -714,7 +1035,7 @@ export function registerListenCommand(program) {
                 deliveredReceipts.attach(api.listener);
 
                 // Also after the storing handler, and here for the same reason:
-                // the tap reads the envelope fields zca-js drops, and the
+                // the tap reads the envelope fields the listener's events drop, and the
                 // self-heal moves its cursor only past a row already written,
                 // then catches up on every handshake this listener makes.
                 socketTap.attach(api.listener);
@@ -729,11 +1050,13 @@ export function registerListenCommand(program) {
                             threadId: event.threadId,
                             isSelf: event.isSelf,
                             data: event.data,
+                            // Alias first, as Zalo shows the person (src/core/contact-names.js).
+                            name: nameFor(event.threadId, event.data?.dName ?? event.data?.displayName ?? null),
                         };
                         const humanMsg =
                             event.type === FRIEND_REQUEST_TYPE
-                                ? `Friend request from ${event.data.fromUid}: "${event.data.message || ""}"`
-                                : `${label} — ${event.threadId}`;
+                                ? `Friend request from ${personLabel(event.data.fromUid, event.data.dName ?? event.data.displayName)}: "${event.data.message || ""}"`
+                                : `${label} — ${personLabel(event.threadId)}`;
                         emitEvent(data, humanMsg);
 
                         // Auto-accept incoming friend requests
@@ -751,20 +1074,25 @@ export function registerListenCommand(program) {
                 // --- Typing and upload events (opt-in) ---
                 // Not in the default --events: typing is constant noise, and upload
                 // only matters to a caller that is uploading. Neither is stored.
-                // zca-js also emits `cipher_key`, the session's key material; it is
+                // the listener also emits `cipher_key`, the session's key material; it is
                 // deliberately never subscribed to, so it can reach no log, file or webhook.
                 if (enabledEvents.has("typing")) {
                     api.listener.on("typing", (t) => {
                         emitEvent(
                             {
                                 event: "typing",
+                                // "typing", or "fsending": the peer is sending a file. Our own devices' typing never
+                                // arrives here (the listener drops it, as Zalo does).
+                                action: t.action ?? "typing",
                                 threadId: t.threadId,
                                 isGroup: t.type === THREAD_GROUP,
                                 uid: t.data?.uid ?? null,
+                                name: nameFor(t.data?.uid),
+                                isSelf: Boolean(t.isSelf),
                                 isPC: Boolean(t.data?.isPC),
                                 data: t.data,
                             },
-                            `Typing: ${t.data?.uid ?? "?"} in ${t.threadId}`,
+                            `${t.action === "fsending" ? "Sending a file" : "Typing"}: ${personLabel(t.data?.uid)} in ${t.threadId}`,
                         );
                     });
                 }
@@ -795,9 +1123,21 @@ export function registerListenCommand(program) {
                     // is what tells being removed from removing someone else
                     // -- mcp.js passes it too.
                     const gone = storeGroupEvent(event, { ownId: activeAcc.ownId });
-                    // The system line itself, as the row a sync would restore.
-                    // Stored whatever --events says: output flags never gate storage.
-                    const row = storeGroupEventRow(event);
+                    // A gone group's later events are skipped until a join names us (as Zalo does).
+                    if (gone.ignored) return;
+                    // Our own exit: purge the group's history, or keep it flagged (groups.onLeave, read now). The
+                    // group_gone event goes out through the sink set at start.
+                    if (gone.gone) {
+                        applyGroupExit({
+                            ownId: activeAcc.ownId,
+                            threadId: gone.threadId,
+                            reason: gone.reason,
+                            at: gone.at,
+                        }).catch((e) => console.error(`[listen] group exit of ${gone.threadId} failed: ${e.message}`));
+                    }
+                    // The system line itself, as the row a sync would restore (not for an exit: the delete
+                    // marker covers it). Stored whatever --events says: output flags never gate storage.
+                    const row = gone.gone ? { stored: false } : storeGroupEventRow(event);
                     if (!row.stored && row.reason && row.reason !== "not a system-line event") {
                         console.error(`[listen] group event not stored: ${row.reason}`);
                     }
@@ -807,20 +1147,15 @@ export function registerListenCommand(program) {
                             event: `group_${event.type}`,
                             threadId: event.threadId,
                             isSelf: event.isSelf,
-                            data: event.data,
+                            // Members and actor named alias first; the stored system line keeps what Zalo sent.
+                            data: groupEventNames(event.data),
                         },
-                        `Group: ${event.type} — ${event.threadId}`,
+                        `Group: ${event.type} — ${event.threadId}${groupEventWho(event.data)}`,
                     );
                     if (board.stale) {
                         emitEvent(
                             { event: "board_changed", threadId: board.threadId, type: event.type },
                             `Board changed in ${board.threadId} (${event.type}) — run sync-boards to refresh`,
-                        );
-                    }
-                    if (gone.gone) {
-                        emitEvent(
-                            { event: "thread_gone", threadId: gone.threadId },
-                            `No longer in ${gone.threadId} — its local history is now orphaned (see \`conv forget\`)`,
                         );
                     }
                 });
@@ -852,9 +1187,11 @@ export function registerListenCommand(program) {
                             isGroup: reaction.isGroup,
                             removing: r.removing ?? null,
                             changed: r.changed ?? null,
+                            // Who reacted, alias first (src/core/contact-names.js).
+                            ...senderNameFields(reaction.data?.uidFrom, reaction.data?.dName),
                             data: reaction.data,
                         },
-                        `${what} in ${reaction.threadId}`,
+                        `${what} in ${reaction.threadId}${reaction.data?.uidFrom ? ` by ${personLabel(reaction.data.uidFrom, reaction.data.dName)}` : ""}`,
                     );
                 });
 
@@ -892,89 +1229,98 @@ export function registerListenCommand(program) {
                     // Driven by observed socket state, NOT by reconnectCount.
                     // reconnectCount is incremented only in the `closed` handler,
                     // and `closed` never fires for a code on the server's
-                    // close_and_retry_codes list -- zca-js emits `disconnected`,
+                    // close_and_retry_codes list -- the listener emits `disconnected`,
                     // retries internally, then emits `connected`. Those codes ARE
                     // the recoverable ones, so on the common drop path the old
                     // guard was always false: no gap was filed, and markConnected()
                     // below then asserted coverage over the whole outage. Messages
                     // lost to an ordinary reconnect were lost silently and for
-                    // good, because `sync` is driven off exactly this advice.
-                    if (downSince !== null) {
-                        reportGap(downSince, "reconnect-gap");
-                        downSince = null;
-                    }
-                    syncManager.markConnected();
+                    // good, because `sync` is driven off exactly this advice. The tracker files
+                    // the outage (reportGap from when it went down) before it claims coverage.
+                    lifecycle.noteUp();
                 });
 
                 api.listener.on("disconnected", (code, _reason) => {
                     if (stopping) return;
+                    // A park's close (on-demand presence) is planned, like a shutdown's.
+                    if (socketHost.isParking() || socketHost.isParked()) return;
+                    // After a kick the socket host has already said why it is not reconnecting.
+                    if (socketHost.kicked()) return;
                     warning(`Disconnected (code: ${code}). Auto-retrying... (${socketContext.describe()})`);
                     // First drop wins: a flapping socket that emits several
                     // `disconnected` before one `connected` is ONE outage, and the
-                    // gap must span from the start of it.
-                    if (downSince === null) downSince = Date.now();
-                    syncManager.markDisconnected();
+                    // gap must span from the start of it (the tracker keeps the first).
+                    if (!lifecycle.isDown()) reconnectCount++;
+                    lifecycle.noteDown();
                 });
 
-                api.listener.on("closed", async (code, _reason) => {
-                    // A deliberate stop closes with 1000 and must not be treated
-                    // as a failure to recover from.
-                    if (stopping) return;
-                    if (code === CLOSE_DUPLICATE) {
-                        error("Another Zalo Web session opened. Listener stopped.");
-                        dropLock();
-                        process.exit(1);
-                    }
-                    reconnectCount++;
-                    if (downSince === null) downSince = Date.now();
-                    syncManager.markDisconnected();
-                    warning(
-                        `Connection closed (code: ${code}). Re-login in 5s... (uptime: ${uptime()}; ${socketContext.describe()})`,
-                    );
-                    await new Promise((r) => setTimeout(r, 5000));
-                    try {
-                        clearSession();
-                        await loginDaemonAccount(activeAcc);
-                        info("Re-login successful. Restarting listener...");
-                        // Attach ALL handlers to the NEW api (including lifecycle),
-                        // and repoint the SyncManager at it so its bookkeeping
-                        // runs against a live, authenticated client.
-                        const newApi = getApi();
-                        syncManager.api = newApi;
-                        attachAllHandlers(newApi);
-                        newApi.listener.start({ retryOnClose: true });
-                    } catch (e) {
-                        error(`Re-login failed: ${e.message}. Retrying in 30s...`);
-                        await new Promise((r) => setTimeout(r, 30000));
-                        try {
-                            clearSession();
-                            await loginDaemonAccount(activeAcc);
-                            const retryApi = getApi();
-                            syncManager.api = retryApi;
-                            attachAllHandlers(retryApi);
-                            retryApi.listener.start({ retryOnClose: true });
-                            info("Re-login successful on retry.");
-                        } catch (e2) {
-                            error(`Re-login retry failed: ${e2.message}. Exiting.`);
-                            process.exit(1);
-                        }
-                    }
-                });
+                // There is no `closed` handler on purpose. Keeping this socket alive is the socket
+                // host's job (src/core/socket-host.js, shared with `mcp start`): it retries by Zalo's own
+                // rules, treats a duplicate session as the end, and logs in again only when the session
+                // was refused. The `closed` ladder this replaced reconnected on a duplicate session and
+                // so evicted the other one again and again.
 
                 api.listener.on("error", (_err) => {
                     // WS errors are followed by close/disconnect — don't crash
                 });
             }
 
+            // The one place that keeps the socket alive, shared with `mcp start`.
+            const socketHost = createSocketHost({
+                log: (level, message) =>
+                    level === "error" ? error(message) : level === "warn" ? warning(message) : info(message),
+                // The supervisor's states reach presence, health and account_state through one place.
+                health: { noteSocketState: (state) => daemonPresence.noteSocketState(state) },
+                // On-demand: a kick by another session of this login yields (the daemon stays up, refusing requests
+                // until `presence resume`); a park marks its close as planned before the supervisor stops.
+                yieldOnKick: () => daemonPresence.yieldOnKick(),
+                onParking: () => daemonPresence.onParking(),
+                isStopping: () => stopping,
+                anomalyFile: join(accountDir, "sock-anomaly.json"),
+                kickFile: kickFile(accountDir),
+                relogin: async () => {
+                    clearSession();
+                    await loginDaemonAccount(activeAcc);
+                    const newApi = getApi();
+                    // Attach ALL handlers to the NEW api (including lifecycle), and repoint the
+                    // SyncManager at it so its bookkeeping runs against a live, authenticated client.
+                    syncManager.api = newApi;
+                    attachAllHandlers(newApi);
+                    return newApi;
+                },
+                onKicked: () => {
+                    // Said before the exit: the account is not coming back by itself.
+                    accountState.note("kicked", { exitCode: EXIT_CODE.KICKED });
+                    mediaLinks.revokeAll("the session ended");
+                    dropLock();
+                    process.exit(EXIT_CODE.KICKED);
+                },
+                onRevoked: (e) => {
+                    mediaLinks.revokeAll("the session ended");
+                    error(
+                        `Zalo keeps refusing the saved login (${e?.message ?? e}): another browser or device took ` +
+                            "the web login. Add the account again by QR (`zalo-agent login`).",
+                    );
+                    // Signed out: the daemon stays up (status, a QR re-add) and refuses requests; exit 4 only with
+                    // ZALO_EXIT_ON_SIGNED_OUT[_<ownId>]=1.
+                    if (daemonPresence.signOut(e)) return;
+                    accountState.note("login_needed", { exitCode: EXIT_CODE.SESSION_REVOKED });
+                    dropLock();
+                    process.exit(EXIT_CODE.SESSION_REVOKED);
+                },
+            });
+
             // --- Initial start ---
             try {
                 const api = getApi();
                 attachAllHandlers(api);
-                api.listener.start({ retryOnClose: true });
+                // The host takes the session; presence opens the socket now (always-on, the start-up catch-up) or
+                // on the first demand.
+                daemonPresence.start(api);
+                daemonAliases.refreshNow("start").catch(() => {});
 
                 info("Listening for Zalo events... Press Ctrl+C to stop.");
                 info(`Events: ${opts.events}`);
-                info("Auto-reconnect enabled.");
                 if (opts.filter !== "all") info(`Message filter: ${opts.filter}`);
                 if (webhookUrl) info(`Webhook: ${webhookUrl}${webhookSecret ? " (signed)" : ""}`);
                 if (saveDir) info(`Save dir: ${saveDir} (JSONL per thread)`);
@@ -1007,15 +1353,23 @@ export function registerListenCommand(program) {
             //
             // `createSyncRunners` is handed `getApi`, not an api: this daemon
             // rebuilds one on a duplicate-session close, and a stage bound to
-            // the old object would tap a socket zca-js has already nulled.
+            // the old object would tap a socket the listener has already nulled.
             let channel = null;
             const shutdown = () => {
                 // First, before anything can emit a close event.
                 stopping = true;
+                lifecycle.setStopping();
                 health.noteStopping();
+                daemonPresence?.stop();
                 channel?.stop();
+                policyRuntime.stop();
+                storageJobs.stop();
+                sessionWatch.stop();
                 webhookDelivery?.stop();
+                mediaLinks.revokeAll("the daemon stopped");
                 deliveredReceipts.stop();
+                // The supervisor first, so the close that follows is read as a stop and not as a drop.
+                socketHost.stop().catch(() => {});
                 try {
                     getApi().listener.stop();
                 } catch (e) {
@@ -1061,6 +1415,25 @@ export function registerListenCommand(program) {
                     lock: stageLock,
                     onStop: shutdown,
                     onStatus: () => health.snapshot(),
+                    // `policy set|unset`: applied here, so it counts at once (src/core/policy-store.js).
+                    onPolicy: servePolicyRequest,
+                    // `db purge`: this daemon is the account's one writer, so the purge runs here.
+                    onPurge: ({ dryRun }) => ({ report: storageJobs.runNow({ dryRun: dryRun !== false }) }),
+                    // `presence status|wake|park|resume`, and the fleet controller's relay.
+                    onPresence: (p) => daemonPresence.serve(p),
+                    // An upload or a sync stage holds the socket (refused while yielded or signed out).
+                    presenceGate: (o) => daemonPresence.admit(o),
+                    // `msg media --deliver link`: a link this daemon serves on 127.0.0.1 while it runs.
+                    onMediaLink: ({ msgId }) =>
+                        linkForCachedMessage({
+                            row: getMessageById(msgId),
+                            scope: scopeOfDir(accountDir),
+                            accountId: activeAcc.ownId,
+                            hidden: listenHiddenMode === "include" ? null : listenHidden,
+                            links: mediaLinks,
+                            ensureServed: ensureMediaServed,
+                            policy: listenMediaPolicy,
+                        }),
                 });
                 info(`Sync & upload channel ready on 127.0.0.1:${channel.port} — this socket is reused for both.`);
                 info("`zalo-agent sync` will run its socket stages here; it still needs your phone tap.");

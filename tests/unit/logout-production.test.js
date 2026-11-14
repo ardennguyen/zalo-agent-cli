@@ -1,11 +1,12 @@
 /**
- * `logout` must end the session the way Zalo Web ends it — and must say so only
- * when it has seen the session end.
+ * `logout --keep-session` must end the session KEY the way Zalo ends it — and
+ * must say so only when it has seen the session end. (The default logout, which
+ * signs the device out, is tested in logout-official.test.js.)
  *
  * Until this change both `logout` and `account remove` called only the patched
  * `logoutV2()`, which POSTs to `https://stg-wpa.chat.zalo.me/api/v2/login/logOut`.
- * That is a real call Zalo Web makes, but only as an optional extra step. The
- * web's actual logout is `GET https://wpa.chat.zalo.me/api/login/logOut` (cmd
+ * That is a real call, but only an optional extra step. The
+ * actual logout is `GET https://wpa.chat.zalo.me/api/login/logOut` (cmd
  * 11135) with a plain query string. Tier 5 saw the result: logout reported
  * success, and the credential still answered `whoami` afterwards.
  *
@@ -17,10 +18,12 @@
  * request that goes out, and that "ended" is only ever claimed after Zalo has
  * rejected a follow-up call.
  *
- * Transport: `ctx.options.polyfill` is zca-js's own HTTP seam, so the real
- * request builder runs with no socket, no session and no network. `logoutV2` and
- * `fetchAccountInfo` are fakes on the api object, because what matters about
- * them here is order and outcome, not their wire format.
+ * Transport: `ctx.options.polyfill` is the session's HTTP seam, so the real
+ * request builders (the production logout here, `sendLogoutV2` of
+ * src/zalo/official-logout.js) run with no socket, no session and no network.
+ * `fetchAccountInfo` is a fake on the api object, because what matters about it
+ * here is order and outcome, not its wire format. logoutV2's wire form is
+ * pinned in logout-keep-session.test.js.
  */
 
 import { assertSandboxed } from "../helpers/sandbox.js";
@@ -31,10 +34,17 @@ import { join } from "node:path";
 import { CONFIG_DIR, loadCredentials, saveCredentials } from "../../src/core/credentials.js";
 import { acquireLock, releaseLock } from "../../src/core/lock.js";
 import { serverLogout, describeLogout, finishLocalLogout, logoutNeedsSession } from "../../src/core/logout.js";
+import { sealSession } from "../../src/zalo/kernel/cipher.js";
 
 assertSandboxed(CONFIG_DIR);
 
 const OWN = "9000000000000000009";
+
+/**
+ * The key-only logout (`logout --keep-session`), the only one these tests are about. The default logout is the
+ * official six steps, tested in logout-official.test.js.
+ */
+const KEEP = { keepSession: true };
 const ROOT = join(import.meta.dirname, "..", "..");
 
 /**
@@ -44,7 +54,7 @@ const ROOT = join(import.meta.dirname, "..", "..");
  * @param {object} [opts.logoutBody] - JSON the fake Zalo answers the production call with
  * @param {"ok"|"fail"} [opts.v2] - how the staging logoutV2 behaves
  * @param {"rejected"|"answers"|"network"} [opts.afterLogout] - how the follow-up probe behaves
- * @returns {{api: object, calls: string[], requests: object[]}}
+ * @returns {{api: object, calls: string[], requests: object[]}} `requests` holds the production calls only
  */
 function harness({
     logoutBody = { error_code: 0, error_message: "Successful.", data: 1 },
@@ -58,36 +68,37 @@ function harness({
         imei: "test-imei-0000",
         uid: OWN,
         userAgent: "zalo-agent-cli-offline-test",
-        API_VERSION: 691,
+        API_VERSION: 694,
         API_TYPE: 30,
         options: {
             logging: false,
             async polyfill(url, options) {
-                calls.push("production");
-                requests.push({ url, method: options?.method ?? "GET", body: options?.body ?? null });
-                return {
+                const answer = (body) => ({
                     ok: true,
                     status: 200,
                     headers: { get: () => null },
-                    json: async () => logoutBody,
-                };
+                    json: async () => body,
+                });
+                if (String(url).includes("/api/v2/login/logOut")) {
+                    calls.push("v2");
+                    if (v2 === "fail") return answer({ error_code: -1, error_message: "staging refused" });
+                    return answer({ error_code: 0, error_message: "Successful.", data: 1 });
+                }
+                calls.push("production");
+                requests.push({ url, method: options?.method ?? "GET", body: options?.body ?? null });
+                return answer(logoutBody);
             },
         },
     };
     const api = {
         getContext: () => ctx,
-        async logoutV2() {
-            calls.push("v2");
-            if (v2 === "fail") throw new Error("staging refused");
-            return 1;
-        },
         async fetchAccountInfo() {
             calls.push("probe");
             if (afterLogout === "rejected") {
                 throw Object.assign(new Error("zpw_sek bị thiếu hoặc không đúng"), { code: 600 });
             }
             if (afterLogout === "network") throw new Error("fetch failed");
-            // What zca-js threw after every successful logout on 2026-09-30.
+            // What the previous engine threw after every successful logout on 2026-09-30.
             if (afterLogout === "empty") throw new Error("Failed to parse response data");
             return { profile: { userId: OWN } };
         },
@@ -95,11 +106,11 @@ function harness({
     return { api, calls, requests };
 }
 
-describe("serverLogout sends Zalo Web's production logout", () => {
+describe("serverLogout --keep-session sends the production logout", () => {
     it("GET https://wpa.chat.zalo.me/api/login/logOut with a plain query, time in seconds", async () => {
         const { api, requests } = harness();
         const before = Math.floor(Date.now() / 1000);
-        await serverLogout(api);
+        await serverLogout(api, KEEP);
         const after = Math.ceil(Date.now() / 1000);
 
         assert.equal(requests.length, 1, "exactly one production logout request");
@@ -107,8 +118,8 @@ describe("serverLogout sends Zalo Web's production logout", () => {
         const url = new URL(req.url);
         // Red if the call goes back to staging, to a service-map host, or to the v2 path.
         assert.equal(url.origin, "https://wpa.chat.zalo.me", "production auth domain, not stg-wpa");
-        assert.equal(url.pathname, "/api/login/logOut", "the web's logout path (cmd 11135), not /api/v2/");
-        assert.equal(req.method, "GET", "the web sends it as a GET, not a POST");
+        assert.equal(url.pathname, "/api/login/logOut", "the production logout path (cmd 11135), not /api/v2/");
+        assert.equal(req.method, "GET", "it goes out as a GET, not a POST");
         assert.equal(req.body, null, "no request body");
 
         const q = url.searchParams;
@@ -117,17 +128,17 @@ describe("serverLogout sends Zalo Web's production logout", () => {
         const time = Number(q.get("time"));
         // Red if `time` is milliseconds, which is what logoutV2 sends.
         assert.ok(time >= before && time <= after, `time must be unix SECONDS, got ${q.get("time")}`);
-        assert.equal(q.get("client_version"), "691");
+        assert.equal(q.get("client_version"), "694");
         assert.equal(q.get("type"), "30");
         assert.equal(q.get("imei"), "test-imei-0000");
         assert.equal(q.get("computer_name"), "Web");
-        assert.equal(q.get("zpw_ver"), "691", "the common params ride along");
+        assert.equal(q.get("zpw_ver"), "694", "the common params ride along");
         assert.equal(q.get("zpw_type"), "30");
     });
 
     it("sends the production logout FIRST, then logoutV2 best-effort", async () => {
         const { api, calls } = harness({ v2: "fail" });
-        const result = await serverLogout(api);
+        const result = await serverLogout(api, KEEP);
 
         // Measured live 2026-09-30: with logoutV2 first, it killed the session
         // key and the production call answered "Invalid Param"; sent first, the
@@ -136,31 +147,55 @@ describe("serverLogout sends Zalo Web's production logout", () => {
         assert.deepEqual(calls, ["production", "v2", "probe"]);
         assert.equal(result.production.ok, true);
         assert.equal(result.v2.ok, false, "a staging failure is recorded, not hidden");
+        assert.match(result.v2.error, /staging refused/, "with Zalo's own words");
     });
 
     it("reports a production rejection instead of swallowing it", async () => {
         const { api } = harness({
             logoutBody: { error_code: 102, error_message: "session key was improperly submitted" },
         });
-        const result = await serverLogout(api);
+        const result = await serverLogout(api, KEEP);
 
         assert.equal(result.production.ok, false);
         assert.equal(result.production.code, 102);
         assert.match(result.production.error, /improperly submitted/);
     });
+
+    it("a plain-text `data` that is not sealed is an answer, not a failure", async () => {
+        const { api } = harness({ logoutBody: { error_code: 0, error_message: "Successful.", data: "logged out" } });
+        const result = await serverLogout(api, KEEP);
+
+        // Red if a `data` string that the session key does not open is read as an error.
+        assert.equal(result.production.ok, true, JSON.stringify(result.production));
+    });
+
+    it("a sealed `data` with an inner error code is that error, with the inner code", async () => {
+        const { api } = harness();
+        const key = api.getContext().secretKey;
+        const sealed = sealSession(key, JSON.stringify({ error_code: 214, error_message: "fake inner refusal" }));
+        const { api: sealedApi } = harness({
+            logoutBody: { error_code: 0, error_message: "Successful.", data: sealed },
+        });
+        const result = await serverLogout(sealedApi, KEEP);
+
+        // Red if only the outer envelope's code is honored: the outer one says "Successful.".
+        assert.equal(result.production.ok, false);
+        assert.equal(result.production.code, 214);
+        assert.match(result.production.error, /fake inner refusal/);
+    });
 });
 
-describe("serverLogout claims the session ended only after seeing it end", () => {
+describe("serverLogout --keep-session claims the session ended only after seeing it end", () => {
     it("a follow-up call rejected with error 600 is a verified end", async () => {
         const { api } = harness({ afterLogout: "rejected" });
-        const result = await serverLogout(api);
+        const result = await serverLogout(api, KEEP);
 
         assert.equal(result.verdict, "ended");
     });
 
     it("a session that still answers is reported, not hidden behind a success line", async () => {
         const { api } = harness({ afterLogout: "answers" });
-        const result = await serverLogout(api);
+        const result = await serverLogout(api, KEEP);
 
         // This is the tier 5 outcome. Red if the helper reports "ended" regardless.
         assert.equal(result.verdict, "still-answers");
@@ -168,35 +203,16 @@ describe("serverLogout claims the session ended only after seeing it end", () =>
 
     it("a probe failure that is not a session rejection proves nothing", async () => {
         const { api } = harness({ afterLogout: "network" });
-        const result = await serverLogout(api);
+        const result = await serverLogout(api, KEEP);
 
         // Red if any thrown error is read as proof of logout.
         assert.equal(result.verdict, "unverified");
         assert.match(result.probeError, /fetch failed/);
     });
 
-    it("runs the probe with zca-js logging off, then restores it", async () => {
-        // The probe's failure is the expected outcome of a working logout, and
-        // zca-js printed it as a raw stack trace. Red if the probe logs again,
-        // or if logging stays off for the rest of the process.
-        const { api } = harness({ afterLogout: "empty" });
-        api.getContext().options.logging = true;
-        const probe = api.fetchAccountInfo;
-        let loggingDuringProbe;
-        api.fetchAccountInfo = async () => {
-            loggingDuringProbe = api.getContext().options.logging;
-            return probe();
-        };
-
-        await serverLogout(api);
-
-        assert.equal(loggingDuringProbe, false);
-        assert.equal(api.getContext().options.logging, true);
-    });
-
     it("an empty reply after an accepted logout says so, but never as a success", async () => {
         const { api } = harness({ afterLogout: "empty" });
-        const lines = describeLogout(await serverLogout(api));
+        const lines = describeLogout(await serverLogout(api, KEEP));
 
         assert.ok(!lines.some((l) => l.level === "success"), "an empty reply is not proof");
         assert.ok(lines.some((l) => /came back empty/.test(l.text)));
@@ -205,7 +221,7 @@ describe("serverLogout claims the session ended only after seeing it end", () =>
     it("prints success only for a verified end", async () => {
         const levels = async (afterLogout) => {
             const { api } = harness({ afterLogout });
-            return describeLogout(await serverLogout(api)).map((l) => l.level);
+            return describeLogout(await serverLogout(api, KEEP)).map((l) => l.level);
         };
         // The old code printed a success line whenever the call did not throw.
         // Red if a surviving or unverified session is ever reported as success.

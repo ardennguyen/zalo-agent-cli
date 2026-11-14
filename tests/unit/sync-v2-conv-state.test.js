@@ -10,6 +10,8 @@
  *    Number.MAX_SAFE_INTEGER, so it arrives rounded (4123456789012345678 ->
  *    4123456789012346000). It can only be matched, never read back exactly.
  */
+// The cache is encrypted under a keyring the key layer makes: the sandbox gives it its offline test provider.
+import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -17,7 +19,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initDb, upsertThread, getConvState } from "../../src/core/db.js";
 import { parsePinnedId, resolveLossyThreadId, syncConvState } from "../../src/core/sync-v2/conv-state.js";
+import { CONFIG_DIR } from "../../src/core/credentials.js";
 
+assertSandboxed(CONFIG_DIR);
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-convstate-"));
 const opened = [];
 let n = 0;
@@ -139,6 +143,17 @@ describe("syncConvState", () => {
         assert.equal(st.unpinned, 0);
         assert.equal(getConvState(G1).pinned, 1);
         assert.equal(st.failures[0].what, "pinned");
+    });
+
+    it("skips the pinned list's `m1` entry: not a pin, not an unresolved id", async () => {
+        // Red if m1 were parsed like an id: it would count as unresolved (and look like a pin the cache lacks).
+        const st = await syncConvState({ api: api({ pins: ["m1", `g${G1}`] }) });
+        assert.equal(st.pinned, 1);
+        assert.equal(st.unresolved, 0);
+        assert.deepEqual(
+            getConvState().map((r) => r.threadId),
+            [G1],
+        );
     });
 
     it("counts a conversation the cache has never seen, and writes nothing for it", async () => {

@@ -3,7 +3,7 @@
  *
  * A seen or delivered receipt names each message by nine fields, and three of
  * them -- `st`, `at`, `cmd` -- exist nowhere but on the socket frame that
- * delivered the message. Zalo Web echoes them back verbatim: the captured
+ * delivered the message. Zalo expects them back verbatim: the captured
  * group seenv2 carried `"st":3,"at":0,"cmd":521`, the DM one `"st":3,"at":9,
  * "cmd":501`, and `at` differs from message to message (5 for plain text, 0
  * for a card, 9 elsewhere). So a value cannot be reconstructed later; it can
@@ -19,11 +19,11 @@ import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { GroupMessage, UserMessage } from "zca-js";
+import { GroupMessage, UserMessage } from "../../src/zalo/listener/models.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { initDb, getMessages } from "../../src/core/db.js";
 import { storeLiveMessage } from "../../src/core/live-store.js";
-import { classifyLiveMessage } from "../../src/core/sync-v2/message-types.js";
+import { classifyLiveMessage } from "../../src/zalo/transfer-sync/message-types.js";
 
 // Fake ids. Real ones never appear in tests (AGENTS.md §12).
 const OWN = "9100000000000000001";
@@ -106,7 +106,7 @@ describe("the listener's own write path stores them in zalo.db", () => {
     });
 
     it("a group echo written by storeLiveMessage reads back with st/at/cmd", () => {
-        // GroupMessage is zca-js's own model: this is the object `listen` and
+        // GroupMessage is the listener's own model: this is the object `listen` and
         // `mcp start` receive for a 521 frame.
         const r = storeLiveMessage(new GroupMessage(OWN, groupFrame()));
         assert.equal(r.stored, true, r.reason);

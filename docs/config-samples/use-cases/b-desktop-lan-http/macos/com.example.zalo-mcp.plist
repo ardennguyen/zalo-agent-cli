@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~/Library/LaunchAgents/com.example.zalo-mcp.plist: the MCP HTTP server as a launchd
+  agent of YOUR user (the keychain holds the account's keys; a LaunchDaemon running as
+  root would not reach it). Log in first:  zalo-agent login
+      launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.zalo-mcp.plist
+      launchctl kickstart -k gui/$(id -u)/com.example.zalo-mcp        (restart)
+      launchctl bootout gui/$(id -u)/com.example.zalo-mcp             (stop and unload)
+  launchd stops it with SIGTERM, which mcp start handles like Ctrl+C.
+  The paths are absolute: launchd does not read your shell's PATH. Use what
+  `command -v zalo-agent` and `command -v node` print (Homebrew: /opt/homebrew/bin).
+  CHANGE_ME_USER is your macOS short user name.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.example.zalo-mcp</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/zalo-agent</string>
+        <string>--env-file</string>
+        <string>/Users/CHANGE_ME_USER/.zalo-agent-cli/server.env</string>
+        <string>mcp</string>
+        <string>start</string>
+        <string>--account</string>
+        <string>1000000000000000001</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>ZALO_AGENT_NO_UPDATE_CHECK</key>
+        <string>1</string>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>/Users/CHANGE_ME_USER</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <!-- Restart after a crash, but not after exit 3 (kicked) or 4 (login refused): launchd
+         cannot tell codes apart, so KeepAlive restarts only on a crash (SuccessfulExit=false
+         would also restart those). Check `fleet status` / `mcp start --status` after a stop. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>15</integer>
+    <key>StandardErrorPath</key>
+    <string>/Users/CHANGE_ME_USER/Library/Logs/zalo-mcp.log</string>
+    <key>StandardOutPath</key>
+    <string>/Users/CHANGE_ME_USER/Library/Logs/zalo-mcp.log</string>
+</dict>
+</plist>

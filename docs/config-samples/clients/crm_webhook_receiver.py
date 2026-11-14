@@ -31,7 +31,12 @@ def events_of(body: dict) -> list:
 
 
 def handle(event: dict) -> None:
-    print("message", event.get("id") or event.get("msgId"), event.get("threadId"))
+    if event.get("event") == "approval_requested":
+        # approval.deliver "webhook": show event["wouldDo"] and a button opening event["secureUrl"] to a signed-in
+        # person before event["expiresAt"]; the agent then repeats its call with the ticket its tool result carried.
+        print("approval", event.get("kind"), event.get("action"), event.get("expiresAt"))
+        return
+    print("message", event.get("msgId"), event.get("threadId"))
 
 
 class Hook(BaseHTTPRequestHandler):
@@ -45,7 +50,7 @@ class Hook(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"ok")
         for event in events_of(json.loads(raw)):
-            key = (event.get("accountId"), event.get("id") or event.get("msgId"))
+            key = (event.get("accountId"), event.get("msgId"))
             if key[1] is not None and key in SEEN:
                 continue
             SEEN.add(key)
@@ -58,4 +63,6 @@ class Hook(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     if not SECRET:
         raise SystemExit("set WEBHOOK_SECRET")
-    HTTPServer(("0.0.0.0", int(os.environ.get("PORT", "8080"))), Hook).serve_forever()
+    # HOST: the address to bind (default loopback, behind your TLS proxy); set it to an interface
+    # address to take the webhook directly.
+    HTTPServer((os.environ.get("HOST", "127.0.0.1"), int(os.environ.get("PORT", "8080"))), Hook).serve_forever()

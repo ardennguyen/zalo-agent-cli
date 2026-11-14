@@ -47,7 +47,7 @@ const TYPE_LABEL = {
 
 export class ZaloNotifier {
     /**
-     * @param {object} api - zca-js API instance
+     * @param {object} api - session object
      * @param {object} config - Full MCP config (uses config.notify section)
      * @param {boolean} config.notify.enabled
      * @param {string|null} config.notify.thread - Group ID to send notifications to

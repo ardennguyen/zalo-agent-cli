@@ -9,15 +9,28 @@ import { InvalidArgumentError } from "commander";
 import { getApi, getOwnId } from "../core/zalo-client.js";
 import { withCurrentSenderNames } from "../core/current-user-names.js";
 import { success, error, info, output, warning } from "../utils/output.js";
+import { sendRefusal } from "../core/group-exit.js";
 import { parseIntOption } from "../utils/parse-options.js";
 import { parseThreadTypeArg, parseReportReason } from "../utils/cli-args.js";
 import { getActive } from "../core/accounts.js";
 import { getAccountDir, getAccountDbPath } from "../core/credentials.js";
-import { initDb, getMessages, getMessageById, getDisplayName, getThreadType } from "../core/db.js";
+import { hiddenAccess } from "../utils/hidden-access.js";
+import {
+    initDb,
+    getMessages,
+    getAllMessagesInRange,
+    getMessageForAction,
+    getDisplayName,
+    getThreadType,
+} from "../core/db.js";
+import { parseDateBound, parsePeriod } from "../utils/date-range.js";
 import { sendViaDaemon, getDaemonChannel, getSyncChannel, syncViaDaemon } from "../core/daemon-channel.js";
 import { fetchAndCacheHistory } from "../core/history-fetch.js";
-import { classifyLiveMessage } from "../core/sync-v2/message-types.js";
+import { classifyLiveMessage } from "../zalo/transfer-sync/message-types.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
+import { mediaPlainSize } from "../core/keystore/media-seal.js";
+import { scopeOf } from "../core/keystore/index.js";
+import { decryptToTempfile, removeMediaTemp } from "../core/media-deliver.js";
 import { describeZaloError } from "../core/sync-v2/board.js";
 import {
     cachedCliMsgId,
@@ -27,15 +40,27 @@ import {
     reactionCliMsgId,
     recallCliMsgId,
 } from "../core/cached-message.js";
-import { buildForwardReference, sendForward, LOG_SRC_TYPE } from "../core/forward.js";
+import {
+    buildForwardReference,
+    sendForward,
+    LOG_SRC_TYPE,
+    videoResendOptions,
+    voiceResendOptions,
+} from "../zalo/custom/forward.js";
+import { undoPayload } from "../zalo/custom/group-visibility.js";
 import { fetchMemberNames } from "../core/group-members.js";
-import { pinMessage, unpinMessage, textPinParams } from "../core/pin.js";
-import { expandMentions, parseMentionSpecs, shiftStyles, ALL_MENTION_UID } from "../utils/mentions.js";
+import { pinMessage, unpinMessage, textPinParams } from "../zalo/custom/pin.js";
+import { expandMentions, parseMentionSpecs, shiftStyles, ALL_MENTION_UID } from "../zalo/format/mentions.js";
 import { applySelfThreadAlias } from "../utils/my-documents.js";
 import { buildQuote, resolveQuoteSender } from "../utils/quote.js";
-import { urgencyLevel } from "../utils/urgency.js";
-import { markdownToZalo, resolveSendFormat } from "../utils/markdown.js";
-import { splitMessage, sendParts } from "../utils/split-message.js";
+import { urgencyLevel } from "../zalo/format/urgency.js";
+import { registerMsgSearch } from "./msg-search.js";
+import { registerMsgMedia } from "./msg-media.js";
+import { markdownToZalo, resolveSendFormat } from "../zalo/format/markdown.js";
+import { splitMessage, sendParts } from "../zalo/format/split-message.js";
+import { guardSubcommand } from "../core/confirm-guard.js";
+import { sendTyping } from "../core/typing.js";
+import { seenMessages } from "../core/receipts.js";
 
 /**
  * Open the active account's SQLite cache.
@@ -165,7 +190,7 @@ function send2meIdOf(api) {
 /**
  * What a forward reference needs to know about its source message.
  *
- * @param {object} api - a logged-in zca-js API
+ * @param {object} api - a logged-in session
  * @param {object} row - the cached source message
  * @returns {Promise<object>} the input for buildForwardReference, or `{error}`
  */
@@ -200,7 +225,7 @@ async function forwardSource(api, row) {
         senderUid: sender.uid,
         threadId,
         isGroup: kind === "group" && !isMyDocuments,
-        // The web's sendDttm: the server timestamp for any message it did not
+        // Zalo's sendDttm: the server timestamp for any message it did not
         // send itself. The cliMsgId is the fallback for a row that lost it.
         ts: Number(row.timestamp) || Number(cliMsgId),
         ...(isMyDocuments && { logSrcType: LOG_SRC_TYPE.MY_CLOUD }),
@@ -209,7 +234,7 @@ async function forwardSource(api, row) {
 
 /**
  * Commander parser for `--urgency`: `important` → 1, `urgent` → 2. The
- * mapping is src/utils/urgency.js, which `zalo_send_message` shares.
+ * mapping is src/zalo/format/urgency.js, which `zalo_send_message` shares.
  *
  * @param {string} value
  * @returns {number}
@@ -296,7 +321,7 @@ function daemonHistoryFailure(r, pid) {
 }
 
 /**
- * TextStyle codes matching zca-js TextStyle enum.
+ * TextStyle codes matching Zalo's text style codes.
  * Used for --style option and markdown parsing.
  */
 const TEXT_STYLES = {
@@ -362,7 +387,7 @@ function parseMarkdownStyles(input) {
 }
 
 /**
- * Extensions zca-js uploads through its inline-image path.
+ * Extensions the session uploads through its inline-image path.
  *
  * uploadAttachment() routes on EXTENSION, not on which CLI command was used:
  * these four resolve their upload promise synchronously, `gif` is split off
@@ -387,7 +412,7 @@ function allInlineImages(paths) {
  *
  * `msg send` reports `result.cliMsgId` off `result.message`, but an
  * attachment send usually has no `result.message` at all: for a single
- * jpg/jpeg/png/webp zca-js folds the caption into the attachment and leaves
+ * jpg/jpeg/png/webp the session folds the caption into the attachment and leaves
  * `message` null. The ids live in `result.attachment` instead -- an array,
  * one entry per file.
  *
@@ -414,9 +439,9 @@ function sentAttachmentIds(result) {
  * Send attachments, bringing the WebSocket listener up first when any of
  * them needs it.
  *
- * zca-js's uploadAttachment() resolves synchronously for inline images, but
+ * The session's uploadAttachment() resolves synchronously for inline images, but
  * for "video" and "others" it registers an entry in ctx.uploadCallbacks and
- * awaits a promise that ONLY apis/listen.js can settle, when the
+ * awaits a promise that ONLY the listener can settle, when the
  * upload-complete control frame arrives. With no listener there is no
  * timeout and no fallback — the await never settles and the command hangs
  * with no output at all.
@@ -436,10 +461,13 @@ function sentAttachmentIds(result) {
  * @param {string} threadId
  * @param {number} type
  * @param {object} opts - {caption, uploadTimeout}
- * @returns {Promise<{result?: object, error?: string, listenerStarted?: boolean, viaDaemon?: boolean}>}
+ * @param {object|null} [video] - send `absPaths[0]` as a video message instead (`sendVideoFile`'s options other than
+ *   the file and the caption: thumbnailFile or thumbnailUrl, width, height, duration)
+ * @returns {Promise<{result?: object, error?: string, listenerStarted?: boolean, viaDaemon?: boolean,
+ *   oldDaemon?: boolean}>} `oldDaemon`: a daemon that predates video sends took it and sent the file as a file
  */
-async function sendAttachments(api, absPaths, threadId, type, opts) {
-    const needsListener = !allInlineImages(absPaths);
+async function sendAttachments(api, absPaths, threadId, type, opts, video = null) {
+    const needsListener = video !== null || !allInlineImages(absPaths);
     let listenerStarted = false;
 
     // A running `listen`/`mcp` daemon already holds the account's one permitted
@@ -456,12 +484,14 @@ async function sendAttachments(api, absPaths, threadId, type, opts) {
                 type,
                 caption: opts.caption,
                 timeoutMs: Number(opts.uploadTimeout),
+                ...(video ? { video } : {}),
             });
             // null means no daemon answered; fall through and open our own.
             if (viaDaemon) {
+                const oldDaemon = Boolean(video) && viaDaemon.video !== true;
                 return viaDaemon.ok
-                    ? { result: viaDaemon.result, viaDaemon: true }
-                    : { error: viaDaemon.error, viaDaemon: true };
+                    ? { result: viaDaemon.result, viaDaemon: true, oldDaemon }
+                    : { error: viaDaemon.error, viaDaemon: true, oldDaemon };
             }
         }
     }
@@ -487,8 +517,11 @@ async function sendAttachments(api, absPaths, threadId, type, opts) {
     }
 
     try {
+        const send = video
+            ? api.sendVideoFile({ ...video, file: absPaths[0], msg: opts.caption }, threadId, type)
+            : api.sendMessage({ msg: opts.caption, attachments: absPaths }, threadId, type);
         const result = await withTimeout(
-            api.sendMessage({ msg: opts.caption, attachments: absPaths }, threadId, type),
+            send,
             Number(opts.uploadTimeout),
             "Upload timed out waiting for Zalo's upload-complete event",
         );
@@ -509,8 +542,8 @@ async function sendAttachments(api, absPaths, threadId, type, opts) {
 /**
  * Reject with `message` if `promise` hasn't settled within `ms`.
  *
- * Used by the attachment path: zca-js's non-inline upload waits on a
- * WebSocket event with no timeout of its own, so a dropped or missed
+ * Used by the attachment path: a non-inline upload waits on a WebSocket
+ * event, and this bounds the command around it, so a dropped or missed
  * upload-complete frame would otherwise hang the command indefinitely.
  * Better to fail loudly than to look frozen.
  *
@@ -544,8 +577,104 @@ function parseStyleSpecs(specs) {
         .filter(Boolean);
 }
 
+/**
+ * `msg history --since/--until/--last`: every cached message of one conversation in a period, oldest first, read in
+ * pages of 1000 (bug-reports #5: no more paging back 200 at a time to reach one day). Cache only, as Zalo's server has
+ * nothing older than this login; `-n` caps it only when it is given.
+ *
+ * @param {object} p
+ * @returns {Promise<void>}
+ */
+async function showHistoryRange({ api, activeAcc, threadId, threadType, opts, cmd, jsonMode }) {
+    let since = null;
+    let until = null;
+    try {
+        if (opts.last !== undefined) since = parsePeriod(opts.last);
+        else if (opts.since !== undefined) since = parseDateBound(opts.since, "start");
+        if (opts.until !== undefined) until = parseDateBound(opts.until, "end");
+    } catch (e) {
+        error(e.message);
+        process.exit(1);
+    }
+    if (since !== null && until !== null && since > until) {
+        error("--since is after --until.");
+        process.exit(1);
+    }
+    const cap = cmd?.getOptionValueSource?.("limit") === "cli" ? Number(opts.limit) : Infinity;
+
+    try {
+        initDb(join(getAccountDir(activeAcc.ownId), "zalo.db"));
+    } catch (e) {
+        error(`The local cache could not be opened: ${e.message}`);
+        process.exit(1);
+    }
+    const { rows: kept, hasMore } = getAllMessagesInRange(threadId, { since, until, cap });
+
+    const messages = await withCurrentSenderNames(
+        api,
+        kept.map((m) => ({
+            msgId: m.msgId,
+            threadId: m.threadId,
+            senderId: m.senderId,
+            senderName: m.senderName,
+            text: m.text,
+            timestamp: m.timestamp,
+            type: m.type,
+            mediaCached: Boolean(m.localPath),
+        })),
+        threadType === 0 ? [threadId] : [],
+    );
+    const when = (t) => (t === null ? "…" : new Date(t).toLocaleString());
+    output(
+        {
+            threadId,
+            threadType: threadType === 0 ? "dm" : "group",
+            source: "sqlite",
+            since,
+            until,
+            count: messages.length,
+            hasMore,
+            messages,
+        },
+        jsonMode,
+        () => {
+            success(`${messages.length} message(s) from ${threadId}, ${when(since)} to ${when(until)} (local cache)`);
+            for (const m of messages) {
+                const date = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
+                const name = m.senderDisplayName || m.senderId || "?";
+                const mediaInfo = m.mediaCached ? ` [Media: zalo-agent msg media ${m.msgId}]` : "";
+                console.log(`  [${date}] ${name}: ${(m.text || "").slice(0, 200)}${mediaInfo}`);
+            }
+            if (hasMore)
+                info(`More messages are in this period: raise -n, or run again with --since after the last one.`);
+            if (messages.length === 0) {
+                info(
+                    "Nothing cached in this period. Zalo's server serves only messages since this login; restore older ones with `zalo-agent sync`.",
+                );
+            }
+        },
+    );
+}
+
+/** The msg subcommands that send into the thread named by their first argument. */
+const GONE_CHECKED_SENDS = new Set([
+    "send",
+    "send-image",
+    "send-file",
+    "send-card",
+    "send-bank",
+    "send-qr-transfer",
+    "sticker",
+    "send-voice",
+    "send-link",
+    "send-video",
+]);
+
 export function registerMsgCommands(program) {
     const msg = program.command("msg").description("Send and manage messages");
+
+    registerMsgSearch(msg, program);
+    registerMsgMedia(msg, program);
 
     // `me` (or the own uid) as a thread argument means My Documents, a 1-1
     // thread of its own -- see src/utils/my-documents.js. Resolved once, here,
@@ -561,6 +690,15 @@ export function registerMsgCommands(program) {
             process.exit(1);
         }
         if (out?.notice) info(out.notice);
+        // A group this account left, was removed or blocked from, or that was disbanded: refused here with why,
+        // not at the server (src/core/group-exit.js).
+        if (GONE_CHECKED_SENDS.has(actionCommand.name()) && openAccountDb()) {
+            const why = sendRefusal(String(actionCommand.args?.[0] ?? ""));
+            if (why) {
+                error(why);
+                process.exit(1);
+            }
+        }
     });
 
     msg.command("send <threadId> <message>")
@@ -645,7 +783,7 @@ export function registerMsgCommands(program) {
                 styles = shiftStyles(styles, expanded.edits);
                 const mentions = [...parseMentionSpecs(opts.mention), ...expanded.mentions];
 
-                // zca-js drops mentions outside a group, so a `-t 0` send would
+                // The session drops mentions outside a group, so a `-t 0` send would
                 // quietly arrive with the names as plain text and nobody tagged.
                 if (mentions.length > 0 && Number(opts.type) !== 1) {
                     warning("Mentions only apply to group messages — pass -t 1 to tag anyone.");
@@ -653,7 +791,7 @@ export function registerMsgCommands(program) {
 
                 let quote;
                 if (opts.quote) {
-                    const built = buildQuote(cached ? getMessageById(opts.quote) : null, {
+                    const built = buildQuote(cached ? getMessageForAction(opts.quote) : null, {
                         msgId: opts.quote,
                         threadId,
                     });
@@ -677,11 +815,11 @@ export function registerMsgCommands(program) {
                 }
 
                 // Build message content. `urgency` is 1 (important) or 2
-                // (urgent); zca-js turns it into the `metaData: {urgency}`
-                // object Zalo Web sends, on every text endpoint.
+                // (urgent); the session turns it into the `metaData: {urgency}`
+                // object Zalo sends, on every text endpoint.
                 //
                 // Zalo refuses one oversized message (114 plain, 112 styled), so
-                // a long text goes out as Web sends it: split at 3000 bytes of
+                // a long text goes out as Zalo sends it: split at 3000 bytes of
                 // text plus styles, in order, 300 ms apart. The quote and the
                 // urgency belong to the first part only.
                 const urgency = opts.urgency;
@@ -703,7 +841,9 @@ export function registerMsgCommands(program) {
                 const answers = await sendParts(parts, (part, index) =>
                     getApi().sendMessage(contentOf(part, index), threadId, Number(opts.type)),
                 );
-                const result = answers[0];
+                // Zalo answers a send with the message's ids; an empty answer must not crash the report of a send
+                // that went out (src/utils/output.js jsonReply).
+                const result = answers[0] || { success: true, threadId };
                 if (parts.length > 1) {
                     result.splitInto = parts.length;
                     result.parts = answers.map((r) => ({
@@ -712,13 +852,11 @@ export function registerMsgCommands(program) {
                     }));
                 }
 
-                // The cliMsgId comes back from zca-js, which hands over the
-                // clientId it actually put on the wire (patches/zca-js+2.2.0.patch
-                // — upstream stamps `params.clientId = Date.now()` inside
-                // handleMessage() and returns only {msgId}).
+                // The cliMsgId comes back from the send, which hands over the
+                // clientId it actually put on the wire.
                 //
                 // This used to be a second `Date.now()` read here, taken before
-                // the call. That is a different number from the one zca-js sent,
+                // the call. That is a different number from the one the send put on the wire,
                 // by however long the AES encrypt and the POST took — usually
                 // 0-2ms, never guaranteed equal. So every id `send --json`
                 // printed was a near-miss, and all three things that key on it
@@ -737,10 +875,9 @@ export function registerMsgCommands(program) {
 
                 if (result.message && !cliMsgId) {
                     warning(
-                        "Zalo returned no cliMsgId for this send, so none is reported — the zca-js patch " +
-                            "is missing (run `npx patch-package`). `msg react`/`msg undo`/`msg send --quote` " +
-                            "need one; the local cache gets the real value once `listen` or `sync` sees " +
-                            "Zalo echo the message back.",
+                        "Zalo returned no cliMsgId for this send, so none is reported. " +
+                            "`msg react`/`msg undo`/`msg send --quote` need one; the local cache gets the " +
+                            "real value once `listen` or `sync` sees Zalo echo the message back.",
                     );
                 }
 
@@ -749,8 +886,7 @@ export function registerMsgCommands(program) {
                     // addReaction needs the message's real cliMsgId — with the
                     // msgId in its place Zalo accepts the call and the
                     // reaction never shows up. It used to fall back to exactly
-                    // that on an install whose zca-js patch had not applied;
-                    // now the reaction is skipped and the way to add it later
+                    // that whenever a send came back without one; now the reaction is skipped and the way to add it later
                     // is named. The message itself has already gone out.
                     //
                     // Exit status stays 0: the send succeeded, and a caller
@@ -1025,15 +1161,61 @@ export function registerMsgCommands(program) {
             }
         });
 
-    msg.command("send-video <threadId> <videoUrl>")
-        .description("Send a video from URL")
-        .requiredOption("--thumb <url>", "Thumbnail image URL")
+    msg.command("send-video <threadId> <video>")
+        .description("Send a video from a URL, or a local file uploaded in chunks and sent as a video as Zalo does")
+        .requiredOption("--thumb <urlOrFile>", "Thumbnail: an image URL, or a local jpg/png/webp (uploaded)")
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .option("-m, --caption <text>", "Caption text", "")
         .option("-d, --duration <ms>", "Video duration in milliseconds", parseIntOption)
         .option("-W, --width <px>", "Video width", parseIntOption, 1280)
         .option("-H, --height <px>", "Video height", parseIntOption, 720)
+        .option("--upload-timeout <ms>", "Max wait for the upload-complete event (a local file)", "120000")
         .action(async (threadId, videoUrl, opts) => {
+            if (!/^https?:\/\//i.test(videoUrl)) {
+                // A local file: uploaded on the account's socket (or the running daemon's), then sent as a video.
+                const file = resolve(videoUrl);
+                if (!existsSync(file)) {
+                    error(`Send video failed: ${videoUrl} is neither an http(s) URL nor a file here`);
+                    process.exitCode = 1;
+                    return;
+                }
+                const thumbIsUrl = /^https?:\/\//i.test(opts.thumb);
+                const video = {
+                    ...(thumbIsUrl ? { thumbnailUrl: opts.thumb } : { thumbnailFile: resolve(opts.thumb) }),
+                    width: opts.width,
+                    height: opts.height,
+                    duration: opts.duration,
+                };
+                const {
+                    result,
+                    error: err,
+                    listenerStarted,
+                    viaDaemon,
+                    oldDaemon,
+                } = await sendAttachments(getApi(), [file], threadId, Number(opts.type), opts, video);
+                if (err) error(`Send video failed: ${err}`);
+                else {
+                    if (oldDaemon) {
+                        warning(
+                            "The running daemon predates video sends: it sent the file as a file attachment. " +
+                                "Restart it to send videos as videos.",
+                        );
+                    }
+                    output({ ...result, viaDaemon: Boolean(viaDaemon), verified: false }, program.opts().json, () =>
+                        success(`Video sent to ${threadId}${viaDaemon ? " (via the running daemon)" : ""}`),
+                    );
+                }
+                if (listenerStarted) process.exit(err ? 1 : 0);
+                else if (err) process.exitCode = 1;
+                return;
+            }
+            // A URL video is sent by reference, so its thumbnail must be a URL too
+            // (a local path would reach Zalo as a broken link). zalo_send_message refuses the same.
+            if (!/^https?:\/\//i.test(opts.thumb)) {
+                error("Send video failed: with a video URL, --thumb must be an image URL too");
+                process.exitCode = 1;
+                return;
+            }
             try {
                 info(`Sending video: ${videoUrl}`);
                 const result = await getApi().sendVideo(
@@ -1103,7 +1285,7 @@ export function registerMsgCommands(program) {
         )
         .action(async (msgId, threadId, reaction, opts) => {
             try {
-                // zca-js addReaction(icon, dest) — dest needs msgId + cliMsgId.
+                // The session's addReaction(icon, dest) — dest needs msgId + cliMsgId.
                 // The cliMsgId used to fall back to the msgId, which Zalo
                 // accepts and never displays. Resolved before getApi(), so an
                 // uncached message is refused without touching the network.
@@ -1141,7 +1323,7 @@ export function registerMsgCommands(program) {
             try {
                 const type = Number(opts.type);
 
-                // zca-js takes deleteMessage(dest, onlyMe) where dest is
+                // The session takes deleteMessage(dest, onlyMe) where dest is
                 // {data: {cliMsgId, msgId, uidFrom}, threadId, type} — NOT
                 // (msgId, threadId, type), which is what this used to pass.
                 // That shape put a bare string where `dest` belongs, so every
@@ -1198,11 +1380,10 @@ export function registerMsgCommands(program) {
                 // only ever necessary for a message this machine never saw.
                 //
                 // `send --json` is a valid source again. It used to print a
-                // second Date.now() of its own -- zca-js stamps the real
-                // clientId inside handleMessage() and upstream returns only
-                // {msgId} -- so the id it gave matched only by luck. The zca-js
-                // patch now hands that clientId back, and `msg send` reports
-                // that value or none at all.
+                // second Date.now() of its own -- the send stamps the real
+                // clientId just before the request -- so the id it gave matched
+                // only by luck. The send now hands that clientId back, and
+                // `msg send` reports that value or none at all.
                 //
                 // The resolution is shared with `zalo_undo`
                 // (src/core/cached-message.js). The refusal exits 0 here, as
@@ -1215,8 +1396,15 @@ export function registerMsgCommands(program) {
                     error(target.error);
                     return;
                 }
-                const payload = { msgId, cliMsgId: target.cliMsgId };
-                const result = await getApi().undo(payload, threadId, Number(opts.type));
+                // A group recall carries the group's own visibility, as Zalo's does (src/zalo/custom/group-visibility.js).
+                const api = getApi();
+                const payload = await undoPayload(
+                    api,
+                    { msgId, cliMsgId: target.cliMsgId },
+                    threadId,
+                    Number(opts.type),
+                );
+                const result = await api.undo(payload, threadId, Number(opts.type));
                 output(result, program.opts().json, () => success("Message recalled (undone)"));
             } catch (e) {
                 error(`Undo failed: ${e.message}`);
@@ -1230,14 +1418,14 @@ export function registerMsgCommands(program) {
         )
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .action(async (msgId, threadId, opts) => {
-            // This command could never have worked. zca-js takes
+            // This command could never have worked. The previous engine took
             // `forwardMessage(payload, threadIds, type)` where payload is
             // `{ message: string }` and threadIds is an ARRAY; the old call
             // passed the msgId string as the payload and a bare string as the
             // thread list. `if (!payload.message) throw` fires on the first
             // line of the API, so every invocation died with "Missing message
             // content" before touching the network -- identically for -t 0 and
-            // -t 1, for every message type. The zca-api-surface test did not
+            // -t 1, for every message type. The api-surface test did not
             // catch it because the method does exist; only its arity was wrong.
             const jsonMode = program.opts().json;
             const activeAcc = getActive();
@@ -1249,10 +1437,12 @@ export function registerMsgCommands(program) {
             let row;
             try {
                 initDb(getAccountDbPath(activeAcc.ownId));
-                row = getMessageById(msgId);
+                row = getMessageForAction(msgId);
             } catch (e) {
                 error(
-                    `Local cache unavailable (${e.message}). Run \`zalo-agent listen\` or \`zalo-agent sync\` first.`,
+                    e?.code === "ROW_MAC"
+                        ? e.message
+                        : `Local cache unavailable (${e.message}). Run \`zalo-agent listen\` or \`zalo-agent sync\` first.`,
                 );
                 process.exit(1);
             }
@@ -1302,12 +1492,22 @@ export function registerMsgCommands(program) {
                     info("Fetch it first:  zalo-agent sync-media -T <threadId>");
                     process.exit(1);
                 }
-                const out = await sendAttachments(api, [resolve(row.localPath)], threadId, threadType, {
-                    caption: "",
-                    uploadTimeout: 120000,
+                // The cached copy is sealed: the upload takes a path, so it gets a private decrypted copy for the
+                // length of the send (0600, its own folder, deleted in finally): src/core/media-deliver.js.
+                const copy = decryptToTempfile(resolve(row.localPath), scopeOf(activeAcc.ownId), {
+                    msgId: row.msgId,
+                    ttlMs: 0,
                 });
-                if (out.error) throw new Error(out.error);
-                return out.result;
+                try {
+                    const out = await sendAttachments(api, [copy.path], threadId, threadType, {
+                        caption: "",
+                        uploadTimeout: 120000,
+                    });
+                    if (out.error) throw new Error(out.error);
+                    return out.result;
+                } finally {
+                    removeMediaTemp(copy);
+                }
             };
 
             const forwarders = {
@@ -1319,27 +1519,12 @@ export function registerMsgCommands(program) {
                 link: async () => api.sendLink({ link: c?.href }, threadId, threadType),
                 // sendVideo wants the geometry too; Zalo rejects the call with
                 // code 114 when duration/width/height are missing. They live in
-                // the payload's `params` blob, not as top-level fields.
-                video: async () => {
-                    let p = {};
-                    try {
-                        p = typeof c?.params === "string" ? JSON.parse(c.params) : (c?.params ?? {});
-                    } catch {
-                        /* geometry falls back to the defaults below */
-                    }
-                    return api.sendVideo(
-                        {
-                            videoUrl: c?.href,
-                            thumbnailUrl: c?.thumb || "",
-                            duration: Number(p.duration) || 0,
-                            width: Number(p.video_width || p.video_original_width) || 1280,
-                            height: Number(p.video_height || p.video_original_height) || 720,
-                        },
-                        threadId,
-                        threadType,
-                    );
-                },
-                voice: async () => api.sendVoice({ voiceUrl: c?.href }, threadId, threadType),
+                // the payload's `params` blob, not as top-level fields. A size
+                // the cache knows (params, or the downloaded copy) spares the
+                // HEAD to the CDN; one it does not know is bounded.
+                video: async () =>
+                    api.sendVideo(videoResendOptions(c, mediaPlainSize(row.localPath)), threadId, threadType),
+                voice: async () => api.sendVoice(voiceResendOptions(c), threadId, threadType),
                 photo: resendLocal,
                 file: resendLocal,
                 gif: resendLocal,
@@ -1375,8 +1560,8 @@ export function registerMsgCommands(program) {
             // message. Without it the copy arrives as plain text with no
             // "forwarded" badge, which is all this command used to send. The
             // reference id is md5(cliMsgId + senderUid + conversationKey),
-            // derived the way Zalo Web derives it -- src/core/forward.js has
-            // the derivation and the capture it reproduces. Refuse rather than
+            // derived the way Zalo derives it -- src/zalo/custom/forward.js has
+            // the derivation. Refuse rather than
             // send a reference built from a guess.
             const source = await forwardSource(api, row);
             if (source.error) {
@@ -1409,8 +1594,8 @@ export function registerMsgCommands(program) {
                 // `sent` shape send-image and send-file report. The forward
                 // call mints ONE clientId for the whole call; Zalo echoes it
                 // per target as `clientId`, and sendForward reports it at the
-                // top level as `cliMsgId` (as patches/zca-js+2.2.0.patch does
-                // for zca-js's forwardMessage) -- neither spot alone gives a
+                // top level as `cliMsgId` (as every send of the session does)
+                // -- neither spot alone gives a
                 // caller the {msgId, cliMsgId} pair that `msg undo` needs.
                 // Tier 4 hit exactly that: it recorded the forwarded msgId
                 // with a null id and could not recall the message.
@@ -1439,7 +1624,7 @@ export function registerMsgCommands(program) {
                 // Everything the pin carries -- cliMsgId, sender, text -- comes
                 // from the cached row, so every refusal below happens before
                 // any request.
-                const row = openAccountDb() ? getMessageById(msgId) : null;
+                const row = openAccountDb() ? getMessageForAction(msgId) : null;
                 if (!row) {
                     refuse(
                         `Message ${msgId} is not in the local cache, so it cannot be pinned: a pin carries the ` +
@@ -1498,7 +1683,7 @@ export function registerMsgCommands(program) {
                 // Unpinning takes the pin's topic id, which comes from the
                 // conversation's live pin list -- so only the conversation has
                 // to be known, not the message.
-                const row = openAccountDb() ? getMessageById(msgId) : null;
+                const row = openAccountDb() ? getMessageForAction(msgId) : null;
                 if (threadId && row?.threadId && String(row.threadId) !== String(threadId)) {
                     refuse(`Message ${msgId} belongs to thread ${row.threadId}, not ${threadId}.`);
                     return;
@@ -1524,19 +1709,49 @@ export function registerMsgCommands(program) {
         });
 
     msg.command("history <threadId>")
-        .description("Fetch message history. Groups try REST API then fallback to WebSocket. DMs use WebSocket.")
+        .description(
+            "A conversation's history: everything cached, or for a group not cached yet, Zalo's group message store " +
+                "paged back until it has nothing older. A DM has no server history (as in Zalo): the cache, " +
+                "plus the socket's old-message scan only with --scan",
+        )
         .option("-t, --type <n>", "Thread type: 0=User(DM), 1=Group", "0")
-        .option("-n, --limit <n>", "Max most-recent messages to fetch", "50")
-        .option("--scan <n>", "Max raw global messages to scan (WebSocket only)", "2000")
+        .option("-n, --limit <n>", "Only the most recent N messages (default: all of them)")
+        .option(
+            "--scan [n]",
+            "Also scan the socket's old-message stream (a DM, or a group whose store failed), at most n raw messages (default 2000)",
+        )
         .option("--from-msg-id <id>", "Anchor message ID to scan older messages from")
         .option("--timeout <ms>", "Timeout in milliseconds waiting for response", "15000")
         .option("--no-cache", "Force live fetch instead of using local cache, and amend db")
-        .action(async (threadId, opts) => {
+        .option(
+            "--since <date>",
+            "Every cached message from this date (YYYY-MM-DD, or a date and time), oldest first; -n caps it only when given",
+        )
+        .option("--until <date>", "Every cached message up to this date (YYYY-MM-DD: through the end of that day)")
+        .option("--last <period>", "Every cached message of the last period: 12h, 7d, 2w, 3m, 1y (replaces --since)")
+        .option(
+            "--include-hidden",
+            "Allow a hidden conversation: asks for the hidden-chat PIN (never pass it on the command line)",
+        )
+        .option("--pin-stdin", "Read the hidden-chat PIN from standard input instead of a prompt")
+        .action(async (threadId, opts, cmd) => {
             const jsonMode = program.opts().json;
             const threadType = Number(opts.type);
-            const limit = Number(opts.limit);
+            // No -n: everything. Given: that many of the most recent.
+            const limit = opts.limit === undefined ? Infinity : Number(opts.limit);
+            if (!(limit >= 1)) {
+                error("-n/--limit needs a number of at least 1.");
+                process.exit(1);
+            }
             const timeout = Number(opts.timeout);
-            const scanLimit = Number(opts.scan);
+            // The socket scan is opt-in: `--scan` alone bounds it at 2000 raw messages, `--scan <n>` at n.
+            const scanLimit = opts.scan === undefined ? 0 : opts.scan === true ? 2000 : Number(opts.scan);
+            if (opts.scan !== undefined && !(scanLimit >= 1)) {
+                error("--scan needs a number of at least 1.");
+                process.exit(1);
+            }
+            /** SQLite's "no limit" for the cache reads. */
+            const rowLimit = Number.isFinite(limit) ? limit : -1;
 
             // Order matters: getApi() throws when there is no session, and
             // this line sits outside any try/catch. Calling it ABOVE the
@@ -1557,6 +1772,22 @@ export function registerMsgCommands(program) {
                 process.exit(1);
             }
 
+            // A hidden chat's history is shown only with --include-hidden and the PIN, as Zalo opens one.
+            const hidden = await hiddenAccess(opts, { ownId: activeAcc.ownId, api, json: jsonMode });
+            if (hidden.mode !== "include" && hidden.set.isHidden(threadId)) {
+                const why =
+                    `Not shown: ${threadId} is one of the account's hidden chats. Run again with --include-hidden ` +
+                    "and type the PIN at the prompt (or --pin-stdin).";
+                if (jsonMode) console.log(JSON.stringify({ error: why, hidden: true, pinRequired: true }, null, 2));
+                else error(why);
+                process.exit(2);
+            }
+
+            if (opts.since !== undefined || opts.until !== undefined || opts.last !== undefined) {
+                await showHistoryRange({ api, activeAcc, threadId, threadType, opts, cmd, jsonMode });
+                return;
+            }
+
             if (!jsonMode) {
                 info(
                     "Note: To maintain a complete local cache without missing gaps, ensure the 'zalo-cli listen' daemon is running continuously on this device.",
@@ -1572,8 +1803,12 @@ export function registerMsgCommands(program) {
                 dbActive = true;
 
                 if (opts.cache !== false) {
-                    localMsgs = getMessages(threadId, limit);
-                    if (localMsgs && localMsgs.length >= limit) {
+                    localMsgs = getMessages(threadId, rowLimit);
+                    // The cache answers when it holds what was asked for: -n messages, or with no -n whatever it
+                    // has. A DM always answers from the cache unless --scan asks for the socket scan: Zalo keeps no
+                    // 1-1 history a client can page.
+                    const enough = Number.isFinite(limit) ? localMsgs.length >= limit : localMsgs.length > 0;
+                    if (localMsgs && (enough || (threadType === 0 && !scanLimit))) {
                         if (!jsonMode) info(`Found ${localMsgs.length} messages in local cache.`);
                         // Fetch through the shared downloader, which writes to
                         // accounts/<ownId>/media/<threadName>/ and records the
@@ -1587,10 +1822,10 @@ export function registerMsgCommands(program) {
                                 api,
                                 accountDir,
                                 threadId,
-                                limit,
+                                limit: rowLimit,
                                 concurrency: 2,
                             });
-                            localMsgs = getMessages(threadId, limit);
+                            localMsgs = getMessages(threadId, rowLimit);
                         } catch {
                             /* showing history must not fail because media did */
                         }
@@ -1604,7 +1839,7 @@ export function registerMsgCommands(program) {
                                 text: m.text,
                                 timestamp: m.timestamp,
                                 type: m.type,
-                                localPath: m.localPath,
+                                mediaCached: Boolean(m.localPath),
                             })),
                             threadType === 0 ? [threadId] : [],
                         );
@@ -1615,24 +1850,34 @@ export function registerMsgCommands(program) {
                                 threadType: threadType === 0 ? "dm" : "group",
                                 count: messages.length,
                                 source: "sqlite",
+                                ...(threadType === 0 &&
+                                    !scanLimit && {
+                                        note:
+                                            "Zalo keeps no server history for a 1-1 conversation; this is the local " +
+                                            "cache. --scan also scans the socket's old-message stream.",
+                                    }),
                                 messages,
                             },
                             jsonMode,
                             () => {
                                 success(`${messages.length} message(s) from ${threadId} (Local Cache)`);
+                                if (threadType === 0 && !scanLimit && !messages.length) {
+                                    info(
+                                        "Zalo keeps no server history for a 1-1 conversation. `--scan` also scans " +
+                                            "the socket's old-message stream; `zalo-agent sync` restores from the phone.",
+                                    );
+                                }
                                 for (const m of messages) {
                                     const date = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
                                     const name = m.senderDisplayName || m.senderId || "?";
-                                    const mediaInfo = m.localPath ? ` [Media: ${m.localPath}]` : "";
+                                    const mediaInfo = m.mediaCached ? ` [Media: zalo-agent msg media ${m.msgId}]` : "";
                                     console.log(`  [${date}] ${name}: ${(m.text || "").slice(0, 200)}${mediaInfo}`);
                                 }
                             },
                         );
                         return;
                     } else if (localMsgs && localMsgs.length > 0 && !jsonMode) {
-                        info(
-                            `Found only ${localMsgs.length} messages in cache. Falling back to live fetch to reach limit of ${limit}.`,
-                        );
+                        info(`Found only ${localMsgs.length} messages in cache. Fetching live to reach ${limit}.`);
                     }
                 } else if (opts.cache === false && !jsonMode) {
                     info(`--no-cache specified. Fetching live from server and amending database.`);
@@ -1644,7 +1889,7 @@ export function registerMsgCommands(program) {
             }
 
             try {
-                if (!jsonMode && limit > 100) {
+                if (!jsonMode && Number.isFinite(limit) && limit > 100) {
                     info(`Warning: fetching up to ${limit} messages.`);
                 }
 
@@ -1654,7 +1899,13 @@ export function registerMsgCommands(program) {
                     if (e.level === "warn") warning(e.detail);
                     else info(e.detail);
                 };
-                const fetchOpts = { limit, scanLimit, timeoutMs: timeout, fromMsgId: opts.fromMsgId || null };
+                // No -n crosses the daemon channel as null: "everything". No --scan: no socket scan.
+                const fetchOpts = {
+                    limit: Number.isFinite(limit) ? limit : null,
+                    ...(scanLimit && { scanLimit }),
+                    timeoutMs: timeout,
+                    fromMsgId: opts.fromMsgId || null,
+                };
 
                 // The group store, the WebSocket global stream scanning and the
                 // cache write after them are one function, fetchAndCacheHistory,
@@ -1775,7 +2026,7 @@ export function registerMsgCommands(program) {
                         for (const m of cleanResult) {
                             const date = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
                             const name = m.senderDisplayName || m.senderId || "?";
-                            const mediaInfo = m.localPath ? ` [Media: ${m.localPath}]` : "";
+                            const mediaInfo = m.mediaCached ? ` [Media: zalo-agent msg media ${m.msgId}]` : "";
                             console.log(`  [${date}] ${name}: ${(m.text || "").slice(0, 200)}${mediaInfo}`);
                         }
                     },
@@ -1792,12 +2043,59 @@ export function registerMsgCommands(program) {
         });
 
     msg.command("typing <threadId>")
-        .description('Show the "typing…" indicator in a conversation')
+        .description(
+            'Show the "typing…" indicator in a conversation. Refused for a stranger in a 1-1 conversation when the ' +
+                "friend list is known, as Zalo never sends it there; a one-shot command knows none, so it sends " +
+                "and says so",
+        )
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .action(async (threadId, opts) => {
             try {
-                const result = await getApi().sendTypingEvent(threadId, parseThreadTypeArg(opts.type));
-                output(result, program.opts().json, () => success("Typing indicator sent"));
+                // The same reply as zalo_conversation `typing` (src/core/typing.js).
+                const result = await sendTyping(getApi(), {
+                    threadId,
+                    type: parseThreadTypeArg(opts.type),
+                    ownId: getOwnId(),
+                });
+                output(result, program.opts().json, () => {
+                    success("Typing indicator sent");
+                    if (result.note) info(result.note);
+                });
+            } catch (e) {
+                error(e.message);
+            }
+        });
+
+    msg.command("seen <threadId> [msgIds...]")
+        .description(
+            "Mark messages seen: one seen receipt for the cached incoming messages named (at most 50), or the newest " +
+                'cached incoming one. The sender sees "Seen" unless your seen status is hidden (profile set ' +
+                "seen-status 0), and Zalo also moves your own read position up to them. `conv read` marks the whole " +
+                "conversation read",
+        )
+        .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
+        .action(async (threadId, msgIds, opts) => {
+            const activeAcc = getActive();
+            if (!activeAcc) {
+                error("No active account. Please login first.");
+                return;
+            }
+            try {
+                initDb(getAccountDbPath(activeAcc.ownId));
+                // The same reply as zalo_conversation `seen` (src/core/receipts.js).
+                const result = await seenMessages(getApi(), {
+                    threadId,
+                    type: parseThreadTypeArg(opts.type),
+                    ownId: activeAcc.ownId,
+                    msgIds,
+                });
+                if (!result.success && program.opts().json) process.exitCode = 1;
+                output(result, program.opts().json, () => {
+                    if (result.success) success(`Marked ${result.sent} message(s) seen (${result.msgIds.join(", ")})`);
+                    else error(result.error);
+                    for (const n of result.notSent) info(`  ${n.msgId}: ${n.reason}`);
+                    if (result.note) info(result.note);
+                });
             } catch (e) {
                 error(e.message);
             }
@@ -1849,4 +2147,10 @@ export function registerMsgCommands(program) {
                 error(`URL scan failed: ${e.message}`);
             }
         });
+    // Asked about first, as Zalo does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    // `msg pin` is not guarded: Zalo asks only when the pin would replace one, and knowing that takes a read.
+    guardSubcommand(msg, "undo", "msg.undo", { target: (msgId, threadId) => ({ msgId, threadId }) });
+    guardSubcommand(msg, "delete", "msg.delete", {
+        target: (msgId, threadId, opts) => ({ msgId, threadId, everyone: Boolean(opts.everyone) }),
+    });
 }

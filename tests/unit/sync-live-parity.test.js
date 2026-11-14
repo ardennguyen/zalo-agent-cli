@@ -20,7 +20,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { classifyLiveMessage, classifySyncMessage } from "../../src/core/sync-v2/message-types.js";
+import { classifyLiveMessage, classifySyncMessage } from "../../src/zalo/transfer-sync/message-types.js";
 
 const J = (o) => JSON.stringify(o);
 

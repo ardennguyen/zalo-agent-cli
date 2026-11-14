@@ -5,12 +5,13 @@ import {
     getSyncState,
     setSyncState,
     recordSyncGap,
+    countSyncRanges,
     getPendingSyncGaps,
     resolveAllPendingSyncGaps,
 } from "./db.js";
 import { storeLiveMessage } from "./live-store.js";
 
-/** zca-js ThreadType values, mirrored so this module doesn't import the enum. */
+/** Thread type values, mirrored so this module doesn't import the enum. */
 const THREAD_TYPE_USER = 0;
 const THREAD_TYPE_GROUP = 1;
 
@@ -18,9 +19,8 @@ function resolveAccountDir(accountName) {
     return resolve(getAccountDir(accountName));
 }
 
-/** Zalo Web's own client only ever seems to backfill about this far on a
- * fresh login (confirmed by live observation — see agent/docs/mobile-sync-
- * live-test-results.md, task #4). Clamp any gap we ask the mobile app to
+/** Zalo only ever seems to backfill about this far on a fresh login
+ * (confirmed by live observation). Clamp any gap we ask the mobile app to
  * fill to this width so we never request something the platform wouldn't
  * honor anyway, and so a very old `lastConnectedAt` (e.g. the tool sat
  * uninstalled for months) doesn't produce a nonsensical multi-month ask. */
@@ -28,12 +28,9 @@ export const MAX_GAP_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
 
 /**
  * How recently a sync must have completed for a fresh one to be treated as
- * redundant and skipped. This is the CLI equivalent of Zalo Web's own
- * redundant-sync gate: after a successful sync, Zalo Web sets a
- * `0_sufficient_msg_ts` marker and records the run in `0_sync_download_stats_v1`,
- * and clicking "Đồng bộ tin nhắn" again while those are fresh is a silent no-op —
- * it never re-opens the transfer session, so it never re-pings the phone
- * (confirmed by a live capture, 2026-09-21). Bypass with `{force: true}`
+ * redundant and skipped: a redundant-sync gate, so that asking again while the
+ * last run is fresh is a silent no-op that never re-opens the transfer session
+ * and so never re-pings the phone. Bypass with `{force: true}`
  * (the `sync-mobile --force` flag).
  */
 export const SYNC_FRESHNESS_MS = 60 * 60 * 1000; // 1 hour
@@ -71,7 +68,9 @@ export class SyncManager {
         if (safeTo - safeFrom < 1000) return null; // not worth tracking (<1s)
         const id = recordSyncGap(safeFrom, safeTo, reason);
         setSyncState("lastConnectionOk", "false");
-        console.log(
+        // stderr: `listen --json` streams one event per stdout line, and a
+        // startup gap is recorded while that stream is open.
+        console.error(
             `[Sync] Recorded coverage gap #${id} (${reason}): ${new Date(safeFrom).toISOString()} → ${new Date(safeTo).toISOString()}`,
         );
         return id;
@@ -158,12 +157,13 @@ export class SyncManager {
 
     /**
      * Decide whether a sync can be skipped because we completed one recently
-     * and know of no coverage gap — the CLI equivalent of Zalo Web's
-     * redundant-sync debounce (see {@link SYNC_FRESHNESS_MS}), so repeated runs
+     * and know of no coverage gap — a redundant-sync
+     * debounce (see {@link SYNC_FRESHNESS_MS}), so repeated runs
      * don't spam the socket or, for the phone-waking transfer-sync path, the
      * owner's phone.
      *
-     * A pending coverage gap always forces a sync, and so does `force`.
+     * A pending coverage gap always forces a sync, and so does an unfinished conversation range (a restore that
+     * settled only part of its window), and so does `force`.
      * Otherwise we skip when the last success is younger than `freshnessMs` —
      * unless the caller is asking for a WIDER window than the last success
      * covered (`coversFrom` older than the recorded `lastSyncOkFrom`). A
@@ -186,6 +186,10 @@ export class SyncManager {
 
         if (force) return out(false, "forced");
         if (getPendingSyncGaps().length > 0) return out(false, "pending-gap");
+        // A restore that settled only part of its window left ranges behind: that is work to finish, however
+        // recently the last run ended (Y5b).
+        const ranges = countSyncRanges();
+        if (ranges.pending + ranges.failed > 0) return out(false, "unfinished-ranges");
         if (lastSyncAt === null) return out(false, "never-synced");
         if (ageMs < freshnessMs) {
             const widening = Number.isFinite(opts.coversFrom) && coveredFrom !== null && coveredFrom > opts.coversFrom;
@@ -199,22 +203,20 @@ export class SyncManager {
      * WebSocket, writing it into the same zalo.db the `listen` daemon uses.
      *
      * Uses socket cmd 510 (DMs) and 511 (groups), subCmd 1, payload
-     * `{first: true, lastId, preIds: []}` — which zca-js already speaks via
-     * `listener.requestOldMessages()` and the `old_messages` event, so no
-     * patch to the library is needed.
+     * `{first: true, lastId, preIds: []}` — which the listener already speaks via
+     * `listener.requestOldMessages()` and the `old_messages` event.
      *
      * MEASURED 2026-09-20, and worth knowing before trusting this: Zalo
      * returned an EMPTY set for both commands on the development account, both
-     * with `lastId: null` and with the exact anchor ids Zalo Web sends. Zalo
-     * Web gets the same empty answer and falls back to `transfer-sync-v2`
-     * (cmd 590/591, libsignal), which is not implemented here. Treat this as a
+     * with `lastId: null` and with exact anchor ids. The fallback is
+     * `transfer-sync-v2` (cmd 590/591, libsignal), which is not implemented here. Treat this as a
      * cheap probe, not a guaranteed restore. See agent/work/transfer-sync-v2/NOTES.md § Mobile sync.
      *
      * The caller owns the socket: it must hold `daemon.lock`, start the
      * listener, and stop it afterwards. This method only issues the two
      * requests and persists whatever comes back.
      *
-     * @param {import("zca-js").Listener} listener A started zca-js listener.
+     * @param {import("../zalo/listener/listener.js").Listener} listener A started listener.
      * @param {{timeoutMs?: number, onBatch?: (info: object) => void}} [opts]
      * @returns {Promise<{status: string, saved: number, total: number, reason: string}>}
      */

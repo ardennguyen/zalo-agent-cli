@@ -248,9 +248,24 @@ describe("the login slots", () => {
 describe("across real processes", () => {
     it("six daemons starting at once, two slots: never more than two inside, and all get through", async () => {
         writeFileSync(join(dir, "concurrency.json"), JSON.stringify({ active: 0, max: 0 }));
-        const results = await Promise.all(
-            Array.from({ length: 6 }, (_, i) => work("hold", dir, "2", "300", String(1000 + i))),
-        );
+        // All six are started, say they are ready, and enter together on the go file: contention does not depend on how
+        // fast this machine boots six processes.
+        process.env.ZALO_SLOT_BARRIER = "1";
+        let results;
+        try {
+            const running = Promise.all(
+                Array.from({ length: 6 }, (_, i) => work("hold", dir, "2", "300", String(1000 + i))),
+            );
+            const until = Date.now() + 60_000;
+            while (readdirSync(dir).filter((f) => f.startsWith("ready-")).length < 6) {
+                assert.ok(Date.now() < until, "the six workers did not all become ready");
+                await new Promise((r) => setTimeout(r, 20));
+            }
+            writeFileSync(join(dir, "go"), "");
+            results = await running;
+        } finally {
+            delete process.env.ZALO_SLOT_BARRIER;
+        }
         const { max } = JSON.parse(readFileSync(join(dir, "concurrency.json"), "utf8"));
         assert.equal(results.length, 6);
         assert.ok(max <= 2, `at most 2 were logging in at once, saw ${max}`);

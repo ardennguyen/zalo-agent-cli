@@ -115,6 +115,23 @@ describe("the request oaRequest sends", () => {
         assert.equal(m.calls[1].init.headers.access_token, "shop-tok");
     });
 
+    it("sends appsecret_proof = hex HMAC-SHA256(key: app secret, data: access token) with the stored token", async () => {
+        // Computed here independently: Zalo's own SDKs build it this way and send it as a header.
+        const { createHmac } = await import("node:crypto");
+        const expected = createHmac("sha256", "sek").update("tok-1").digest("hex");
+        m = mockFetch(() => ({}));
+        await oaRequest({ url: `${OPENAPI_V2}/oa/getoa` });
+        await oaRequest({ url: `${ZBS_BASE}/template/all` });
+        assert.equal(m.calls[0].init.headers.appsecret_proof, expected);
+        assert.equal(m.calls[1].init.headers.appsecret_proof, expected, "ZBS endpoints too (-1241)");
+        // Red if a proof goes out for a token whose app we do not know, or for an OA with no saved secret.
+        saveOACreds({ accessToken: "shop-tok" }, "shop");
+        await oaRequest({ url: `${OPENAPI_V2}/oa/getoa`, token: "given" });
+        await oaRequest({ url: `${OPENAPI_V2}/oa/getoa`, oaId: "shop" });
+        assert.equal(m.calls[2].init.headers.appsecret_proof, undefined);
+        assert.equal(m.calls[3].init.headers.appsecret_proof, undefined);
+    });
+
     it("refuses before any request when the OA is not configured", async () => {
         m = mockFetch(() => ({}));
         await assert.rejects(

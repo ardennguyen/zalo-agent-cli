@@ -17,6 +17,7 @@
  */
 
 import fs from "node:fs";
+import { createHmac } from "node:crypto";
 import { Blob } from "node:buffer";
 import { basename, extname, join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -91,7 +92,10 @@ export const OA_ERRORS = Object.freeze({
     "-238": ["asset_id is already used or disabled", "pick a valid asset_id (`oa group quota`)"],
     "-240": ["the v2 message API was shut down", "use the v3 message API"],
     "-241": ["the package's free asset_id is already used", "pick another asset_id"],
-    "-242": ["invalid appsecret_proof", "check the appsecret_proof sent with the call"],
+    "-242": [
+        "invalid appsecret_proof",
+        "it is computed from the saved app secret key: run `oa setup` with the app's current secret key (a reset key invalidates it)",
+    ],
     "-244": ["the user restricted this message type from the OA", ""],
     "-248": ["violates Zalo's platform standards", "see go.zalo.me/oa-policy"],
     "-249": [
@@ -141,7 +145,10 @@ export const ZBS_ERRORS = Object.freeze({
     "-120": ["the OA's package does not include this feature", "buy an OA package"],
     "-1202": ["the OA has no permission to use this media resource", ""],
     "-124": ["the access token is invalid", "run `zalo-agent oa refresh`, or log in again"],
-    "-1241": ["invalid appsecret_proof", ""],
+    "-1241": [
+        "invalid appsecret_proof",
+        "it is computed from the saved app secret key: run `oa setup` with the app's current secret key (a reset key invalidates it)",
+    ],
     "-125": ["invalid Official Account id", ""],
     "-126": ["the development-mode wallet is out of balance", ""],
     "-127": ["test templates can only be sent to the OA's admins", ""],
@@ -439,6 +446,8 @@ export function buildUrl(url, { data, query } = {}) {
  *   message and `data`, plus the docs' `meaning` and `hint`;
  * - on -216/-220 (and ZBS -124) with a stored token and refresh credentials, refreshes once under a lock and retries
  *   once; never loops. An explicit `token` is never refreshed.
+ * - with the stored token and the app's secret key at hand, sends `appsecret_proof` (see {@link appSecretProof}), so
+ *   an app that turned on that check (error -242, ZBS -1241) keeps working.
  *
  * The result carries a non-enumerable `rateLimit` (`{ limit, remain }` from `X-RateLimit-Limit` /
  * `X-RateLimit-Remain`) when Zalo sent those headers; it does not appear in JSON output.
@@ -470,15 +479,17 @@ export async function oaRequest({
     if (!url) throw new TypeError("oaRequest: url is required");
     const explicit = Boolean(token);
     const useToken = token || getToken(oaId);
+    // The proof binds the token to the app: only for the stored token, whose app's secret is the stored one.
+    const secret = explicit ? undefined : loadOACreds(oaId)?.secretKey;
     try {
-        return await sendOnce({ method, url, data, query, body, form, token: useToken, extra: headers });
+        return await sendOnce({ method, url, data, query, body, form, token: useToken, extra: headers, secret });
     } catch (e) {
         if (explicit || !(e instanceof OAError) || !isTokenExpiry(e.code, url)) throw e;
         const creds = loadOACreds(oaId);
         if (!creds?.refreshToken || !creds?.appId || !creds?.secretKey) throw e;
         const { refreshStoredToken } = await import("./oauth.js");
         const fresh = await refreshStoredToken(oaId, { staleToken: useToken });
-        return sendOnce({ method, url, data, query, body, form, token: fresh.accessToken, extra: headers });
+        return sendOnce({ method, url, data, query, body, form, token: fresh.accessToken, extra: headers, secret });
     }
 }
 
@@ -486,9 +497,23 @@ function isTokenExpiry(code, url) {
     return TOKEN_EXPIRED.has(code) || (code === ZBS_TOKEN_INVALID && isZbsUrl(url));
 }
 
-async function sendOnce({ method, url, data, query, body, form, token, extra }) {
+/**
+ * `appsecret_proof`: hex HMAC-SHA256 of the access token keyed with the app's secret key. Zalo's OA docs name it only
+ * in error -242 ("appsecret_proof is invalid") and ZBS -1241; Zalo's own PHP and Java SDKs compute it this way and send
+ * it as a request header.
+ *
+ * @param {string} accessToken
+ * @param {string} secretKey - the app's secret key
+ * @returns {string} 64 hex characters
+ */
+export function appSecretProof(accessToken, secretKey) {
+    return createHmac("sha256", String(secretKey)).update(String(accessToken), "utf8").digest("hex");
+}
+
+async function sendOnce({ method, url, data, query, body, form, token, extra, secret }) {
     const target = buildUrl(url, { data, query });
     const headers = { ...(extra ?? {}), access_token: token };
+    if (secret && token) headers.appsecret_proof = appSecretProof(token, secret);
     const opts = { method, headers };
     if (form !== undefined) {
         opts.body = form; // fetch sets the multipart boundary

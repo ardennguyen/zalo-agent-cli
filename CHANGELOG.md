@@ -9,7 +9,7 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
-## [3.0.0] — unreleased
+## [3.0.0] — 2026-11-15
 
 ### What's changed since v2.5.9
 
@@ -288,6 +288,7 @@ Every `oa` request was checked against Zalo's current Official Account docs and 
 - fix: **long ids come back exact**: an integer too large for a JavaScript number in a reply (Zalo types product, beneficiary and ZCA ids as `long`) is kept as its digits, a string, instead of being rounded. The token reply's lifetime is read as `expires_in` or `expire_in` (the docs use both).
 - fix: **`oa listen` and `oa init` accept the events whose body has no `app_id`** (`extension_purchased`, `change_template_quality`, `change_oa_daily_quota`): their signature is checked with the app's own id (`oa listen --app-id`, else the saved one) instead of being refused with 401, which would have made Zalo redeliver and in the end disable the webhook. Events the OA sent or acted on name the user (`recipient.id`), not the OA; group membership, tag and call-consent events name their users.
 - **Breaking:** **domain verification serves what Zalo gives, unchanged**: `oa listen --verify-file <path>` (the HTML file downloaded from the app's "Xác thực domain" page, at its own name) or `--verify-meta '<meta …>'` (the tag Zalo shows, in the home page's head); `oa init` takes the same two. `--verify-domain <code>` and `--verify-code <code>` are gone: they served a page made up from the code, which Zalo's docs never describe.
+- feat: **`appsecret_proof` is sent** with every OA and ZBS request made with the stored token (hex HMAC-SHA256 of the access token keyed with the app secret, as Zalo's own SDKs build it), so an app with that check turned on no longer fails with -242 / -1241.
 - fix: **every bank in Zalo's BIN list can be named** in `bank add`, `msg send-bank` and `msg send-qr-transfer`: LPBank (LienVietPostBank, 970449), Citibank, Cathay United, Liobank, BNP Paribas and KEB Hana (HCM and HN branches) were missing, and each short name in that list now resolves. Error -230 says what counts as a user's interaction with the OA, per Zalo's docs.
 - fix: JSON arguments and options are read one way in every `oa`/`zbs` command: inline JSON, `@file`, or a file path. Birth dates go out as `dd/MM/yyyy` (`1/2/1999` → `01/02/1999`). `zbs template create|update` no longer refuses param types past the docs' list (their own example uses 18 and 19), and a three-emotion rating may hold 3 items.
 - fix: **login follows OAuth v4 with PKCE**: a fresh `code_verifier`, `code_challenge` and `state` in the permission URL, `code_verifier` on the exchange (no undocumented `redirect_uri` in the token body), a callback that refuses a foreign `state`, binds `127.0.0.1` and HTML-escapes what it reflects, a timer cleared on success (the process exits at once), and the browser opening on Windows. `oa login` saves `expiresAt`.

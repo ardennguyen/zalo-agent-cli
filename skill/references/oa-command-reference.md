@@ -334,6 +334,8 @@ Stored: `~/.zalo-agent/oa-credentials.json` (mode 0600, written atomically under
 
 One record per `--oa-id`: `appId`, `secretKey`, `accessToken`, `refreshToken`, `expiresIn`, `expiresAt`, `oaId`, `updatedAt`, and `webhookUrl` / `verifyFile` / `verifyMeta` when `oa init` set them.
 
+Every request with the stored token also carries `appsecret_proof` (hex HMAC-SHA256 of the access token, keyed with the saved app secret key), as Zalo's own SDKs send it, so an app that turned that check on keeps working (otherwise error -242, ZBS -1241). A token passed explicitly gets no proof.
+
 ## Errors
 
 A Zalo error prints as `OA API error <code>: <Zalo's message> (<what the code means>). <What to do>` (`ZBS API error <code>: …` for a ZBS endpoint, send-by-UID included), and the command exits 1. An id too long for a JavaScript number (Zalo types product, beneficiary and ZCA ids as `long`) comes back as its exact digits, a string. With `--json` the error object carries the same text. The meanings come from the error tables in Zalo's OA and ZBS docs (ZBS endpoints read the ZBS table first; send-by-UID reads the OA table first, as the ZBS error page says). The common ones:

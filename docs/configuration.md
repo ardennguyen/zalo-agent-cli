@@ -485,7 +485,7 @@ OAuth is **off unless you turn it on** (since 3.0.1): a server with only `--auth
 
 **Claude.ai custom connector, and Claude Desktop** (Claude Desktop uses the connectors of your Claude account):
 
-1. On the server: `ZALO_MCP_OAUTH_CLIENT_ID=zalo-connector`, `ZALO_MCP_OAUTH_CLIENT_SECRET=<openssl rand -hex 32>`, `ZALO_MCP_OAUTH_REDIRECT_URIS=https://claude.ai/api/mcp/auth_callback,https://claude.com/api/mcp/auth_callback`; restart.
+1. On the server: `ZALO_MCP_OAUTH_CLIENT_ID=zalo-connector`, `ZALO_MCP_OAUTH_CLIENT_SECRET=<openssl rand -hex 20>`, `ZALO_MCP_OAUTH_REDIRECT_URIS=https://claude.ai/api/mcp/auth_callback,https://claude.com/api/mcp/auth_callback`; restart.
 2. In Claude: Settings → Connectors → Add custom connector. URL `https://zalo.example.com/mcp`; under Advanced settings, the OAuth Client ID and Client Secret above. (With dynamic registration on, leave both empty.)
 3. Connect. A tab opens this server's approve page: type the approver password, Approve. Claude returns to the chat connected.
 
@@ -574,3 +574,7 @@ curl -s http://HOST:PORT/mcp -H "Authorization: Bearer $TOKEN" \
 zalo-agent mcp start --account 1000000000000000001 --status
 tail -f ~/.zalo-agent-cli/accounts/1000000000000000001/daemon.log   # when started with -d
 ```
+
+## Notes
+
+- Claude's custom connector form has cut a 64-character client secret short (the token request then fails with `invalid_client`): keep `ZALO_MCP_OAUTH_CLIENT_SECRET` at 40 characters or fewer, e.g. `openssl rand -hex 20`.

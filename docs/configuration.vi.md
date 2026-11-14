@@ -486,7 +486,7 @@ OAuth **tắt trừ khi bạn bật** (từ 3.0.1): server chỉ có `--auth` / 
 
 **Custom connector của Claude.ai, và Claude Desktop** (Claude Desktop dùng các connector của tài khoản Claude):
 
-1. Trên server: `ZALO_MCP_OAUTH_CLIENT_ID=zalo-connector`, `ZALO_MCP_OAUTH_CLIENT_SECRET=<openssl rand -hex 32>`, `ZALO_MCP_OAUTH_REDIRECT_URIS=https://claude.ai/api/mcp/auth_callback,https://claude.com/api/mcp/auth_callback`; khởi động lại.
+1. Trên server: `ZALO_MCP_OAUTH_CLIENT_ID=zalo-connector`, `ZALO_MCP_OAUTH_CLIENT_SECRET=<openssl rand -hex 20>`, `ZALO_MCP_OAUTH_REDIRECT_URIS=https://claude.ai/api/mcp/auth_callback,https://claude.com/api/mcp/auth_callback`; khởi động lại.
 2. Trong Claude: Settings → Connectors → Add custom connector. URL `https://zalo.example.com/mcp`; trong Advanced settings, điền OAuth Client ID và Client Secret ở trên. (Nếu bật đăng ký động thì để trống cả hai.)
 3. Connect. Một tab mở trang duyệt của server này: nhập mật khẩu người duyệt, bấm Approve. Claude quay lại cuộc trò chuyện đã kết nối.
 
@@ -575,3 +575,7 @@ curl -s http://HOST:PORT/mcp -H "Authorization: Bearer $TOKEN" \
 zalo-agent mcp start --account 1000000000000000001 --status
 tail -f ~/.zalo-agent-cli/accounts/1000000000000000001/daemon.log   # khi chạy với -d
 ```
+
+## Ghi chú
+
+- Biểu mẫu custom connector của Claude từng cắt ngắn client secret dài 64 ký tự (khi đó yêu cầu token thất bại với `invalid_client`): hãy giữ `ZALO_MCP_OAUTH_CLIENT_SECRET` từ 40 ký tự trở xuống, ví dụ `openssl rand -hex 20`.

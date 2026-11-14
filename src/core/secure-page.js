@@ -102,7 +102,11 @@ export class TicketStore {
      * @param {boolean} [spec.separateClaim] - the agent repeats its call with a claim token of its own instead of the
      *   page's token (a link the agent must not be able to rebuild)
      * @param {(fields: object) => Promise<object>|object} [spec.onSubmit] - checks what was typed; returns
-     *   `{status: "approved"|"done"|"retry"|"failed", message?, outcome?}`; the fields are dropped afterwards
+     *   `{status: "approved"|"done"|"retry"|"failed", message?, outcome?, redirect?}`; the fields are dropped
+     *   afterwards. `redirect` (approved or done only): the browser is sent there instead of shown a status page
+     * @param {string[]} [spec.formActionOrigins] - other origins the form's answer may redirect to (the page's CSP
+     *   `form-action` allows them): an OAuth client's callback
+     * @param {string|null} [spec.declineRedirect] - where Decline sends the browser, instead of a status page
      * @returns {{token: string, claim: string, expiresAt: number}}
      */
     issue({
@@ -116,6 +120,8 @@ export class TicketStore {
         secretKind = null,
         separateClaim = false,
         onSubmit,
+        formActionOrigins = [],
+        declineRedirect = null,
     }) {
         this.#prune();
         const token = randomBytes(16).toString("base64url");
@@ -132,6 +138,8 @@ export class TicketStore {
             hasPin,
             secretKind,
             onSubmit,
+            formActionOrigins: formActionOrigins.filter((o) => /^https?:\/\/[^\s;,'"]+$/.test(String(o))),
+            declineRedirect,
             status: "pending",
             message: null,
             outcome: null,
@@ -335,9 +343,29 @@ const PAGE_HEADERS = {
         "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
 };
 
-function send(res, status, html) {
-    res.writeHead(status, PAGE_HEADERS);
+function send(res, status, html, headers = PAGE_HEADERS) {
+    res.writeHead(status, headers);
     res.end(html);
+}
+
+/** The headers of a ticket's form: its CSP also lets the form's answer redirect to the ticket's other origins. */
+function formHeaders(ticket) {
+    if (!ticket.formActionOrigins?.length) return PAGE_HEADERS;
+    return {
+        ...PAGE_HEADERS,
+        "Content-Security-Policy": PAGE_HEADERS["Content-Security-Policy"].replace(
+            "form-action 'self'",
+            `form-action 'self' ${ticket.formActionOrigins.join(" ")}`,
+        ),
+    };
+}
+
+/** Send the browser on (303, so the form's POST becomes a GET there). */
+function redirectTo(res, location) {
+    const headers = { ...PAGE_HEADERS, Location: location };
+    delete headers["Content-Type"];
+    res.writeHead(303, headers);
+    res.end();
 }
 
 /** The form fields of a POST: express's parsed body, else read here (small bodies only). */
@@ -425,7 +453,7 @@ export async function handleSecureRequest(req, res, { store, accountId, publicUr
         return true;
     }
     if (req.method === "GET") {
-        send(res, 200, formPage(ticket));
+        send(res, 200, formPage(ticket), formHeaders(ticket));
         return true;
     }
 
@@ -442,12 +470,13 @@ export async function handleSecureRequest(req, res, { store, accountId, publicUr
     }
     if (fields.decision === "decline") {
         store.settle(ticket, "declined", { message: "The person declined on the page; nothing was done." });
-        send(res, 200, statusPage("Declined", "Nothing was done. You can close this page."));
+        if (ticket.declineRedirect) redirectTo(res, ticket.declineRedirect);
+        else send(res, 200, statusPage("Declined", "Nothing was done. You can close this page."));
         return true;
     }
     if (ticket.kind === "confirm") {
         if (fields.decision !== "approve") {
-            send(res, 400, formPage(ticket, "Choose Approve or Decline."));
+            send(res, 400, formPage(ticket, "Choose Approve or Decline."), formHeaders(ticket));
             return true;
         }
         if (!ticket.secretKind) {
@@ -467,11 +496,15 @@ export async function handleSecureRequest(req, res, { store, accountId, publicUr
     }
     typed.pin = typed.newPin = typed.newPin2 = typed.secret = undefined;
     if (result.status === "retry") {
-        send(res, 400, formPage(ticket, result.message));
+        send(res, 400, formPage(ticket, result.message), formHeaders(ticket));
         return true;
     }
     store.settle(ticket, result.status, { message: result.message ?? null, outcome: result.outcome ?? null });
     const ok = result.status === "approved" || result.status === "done";
+    if (ok && typeof result.redirect === "string" && result.redirect) {
+        redirectTo(res, result.redirect);
+        return true;
+    }
     send(
         res,
         ok ? 200 : 400,

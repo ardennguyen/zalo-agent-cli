@@ -17,7 +17,7 @@
 import "../helpers/sandbox.js";
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { generateKeyPairSync, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { once } from "node:events";
 import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import https from "node:https";
@@ -27,6 +27,7 @@ import { openFile, SHELL_METACHARACTERS } from "../../src/utils/open-file.js";
 import { sanitize } from "../../src/core/sync-v2/media.js";
 import { startQrServer, qrVersion } from "../../src/utils/qr-http-server.js";
 import { createHTTPServer } from "../../src/mcp/mcp-http-transport.js";
+import { SecurePage } from "../../src/core/secure-page.js";
 
 // ── 1. shell injection through a downloaded filename ───────────────────
 
@@ -133,6 +134,14 @@ describe("qrVersion — which QR is current", () => {
 
 // ── 3. MCP bearer auth ─────────────────────────────────────────────────
 
+/** An MCP initialize request: a served one answers 200 with the server's info. */
+const INITIALIZE = {
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" } },
+};
+
 describe("createHTTPServer — bearer auth", () => {
     const servers = [];
     after(() => servers.forEach((s) => s.close()));
@@ -188,8 +197,28 @@ describe("createHTTPServer — bearer auth", () => {
         // here so the day someone makes an empty --auth fatal, this test is
         // the reminder to update the docs with it.
         const base = await start(null);
-        const res = await fetch(`${base}/mcp`, { method: "POST", body: "{}" });
-        assert.notEqual(res.status, 401, "with authToken=null the transport accepts anything");
+        const res = await fetch(`${base}/mcp`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+            body: JSON.stringify(INITIALIZE),
+        });
+        assert.equal(res.status, 200, "with authToken=null the transport serves anyone");
+        assert.match(await res.text(), /"serverInfo"/);
+    });
+
+    it("the right token is served (the MCP initialize answer), not merely 'not 401'", async () => {
+        const base = await start("s3cret");
+        const res = await fetch(`${base}/mcp`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Accept: "application/json, text/event-stream",
+                Authorization: "Bearer s3cret",
+            },
+            body: JSON.stringify(INITIALIZE),
+        });
+        assert.equal(res.status, 200);
+        assert.match(await res.text(), /"serverInfo"/);
     });
 });
 
@@ -271,6 +300,7 @@ function httpsRequest(port, path, options = {}) {
                 res.on("end", () =>
                     resolve({
                         status: res.statusCode,
+                        headers: res.headers,
                         body: Buffer.concat(chunks).toString("utf8"),
                     }),
                 );
@@ -279,6 +309,24 @@ function httpsRequest(port, path, options = {}) {
         req.on("error", reject);
         if (options.body) req.write(options.body);
         req.end();
+    });
+}
+
+/**
+ * An MCP initialize call over HTTPS with a bearer token.
+ * @param {number} port
+ * @param {string} token
+ * @returns {Promise<{ status: number, body: string }>}
+ */
+function mcpInitHttps(port, token) {
+    return httpsRequest(port, "/mcp", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json, text/event-stream",
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(INITIALIZE),
     });
 }
 
@@ -312,126 +360,154 @@ describe("createHTTPServer — HTTPS with TLS cert & key", () => {
         });
         assert.equal(unauth.status, 401);
 
-        const authed = await httpsRequest(port, "/mcp", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                Authorization: "Bearer tls-s3cret",
-            },
-            body: "{}",
-        });
-        assert.notEqual(authed.status, 401);
+        // The right token gets the MCP server's answer to initialize, not merely "something other than 401".
+        const authed = await mcpInitHttps(port, "tls-s3cret");
+        assert.equal(authed.status, 200);
+        assert.match(authed.body, /"serverInfo"/);
+        assert.equal((await mcpInitHttps(port, "tls-s3cre")).status, 401, "a prefix of the token is not the token");
     });
 
-    it("supports full OAuth 2.0 discovery, authorization_code, refresh_token, and Basic client auth for Gemini", async () => {
+    it("OAuth over HTTPS for Gemini: discovery, approval, authorization_code with S256 PKCE, refresh, Basic auth", async () => {
         const tls = generateSelfSignedTls();
+        const securePage = new SecurePage({ accountId: "1000000000000000001" });
         const deps = {
             api: {},
             buffer: { getStats: () => [] },
             filter: {},
             config: {},
             nameCache: null,
-            accountDir: ".",
+            accountDir: mkdtempSync(join(tmpdir(), "zalo-oauth-tls-")),
+            securePage,
+            oauthApprover: () => ({
+                kind: "password",
+                approverSecret: true,
+                check: async (typed) =>
+                    typed === "approver-password-not-real"
+                        ? { status: "approved" }
+                        : { status: "retry", message: "Wrong approver password." },
+            }),
         };
+        const redirectUri = "https://vertexaisearch.cloud.google.com/oauth-redirect";
         const server = createHTTPServer(() => {}, deps, 0, "static-s3cret", "127.0.0.1", tls, {
+            accountId: "1000000000000000001",
             clientId: "gemini-client",
             clientSecret: "oauth-s3cret",
+            redirectUris: [redirectUri],
             issuerUrl: null,
         });
         servers.push(server);
         if (!server.listening) await once(server, "listening");
         const port = server.address().port;
+        securePage.configure({ localBaseUrl: `https://127.0.0.1:${port}` });
 
         // 1. Metadata discovery (unauthenticated)
         const metaRes = await httpsRequest(port, "/.well-known/oauth-authorization-server");
         assert.equal(metaRes.status, 200);
         const meta = JSON.parse(metaRes.body);
+        assert.equal(meta.issuer, `https://127.0.0.1:${port}`);
         assert.equal(meta.authorization_endpoint, `https://127.0.0.1:${port}/authorize`);
         assert.equal(meta.token_endpoint, `https://127.0.0.1:${port}/token`);
+        assert.deepEqual(meta.code_challenge_methods_supported, ["S256"]);
 
         const prmRes = await httpsRequest(port, "/.well-known/oauth-protected-resource/mcp");
         assert.equal(prmRes.status, 200);
-        const prm = JSON.parse(prmRes.body);
-        assert.equal(prm.resource, `https://127.0.0.1:${port}/mcp`);
+        assert.equal(JSON.parse(prmRes.body).resource, `https://127.0.0.1:${port}/mcp`);
 
-        // 2. Authorization code flow (GET /authorize -> 302 redirect with ?code=...&state=...)
-        const redirectUri = "https://vertexaisearch.cloud.google.com/oauth-redirect";
+        // 2. /authorize sends the browser to the approve page; the code comes only after the approver password.
+        const verifier = "a-pkce-code-verifier-of-at-least-forty-three-characters";
+        const challenge = createHash("sha256").update(verifier, "ascii").digest("base64url");
         const authPath =
-            `/authorize?response_type=code&client_id=gemini-client` +
-            `&redirect_uri=${encodeURIComponent(redirectUri)}&state=xyz123`;
-        const authRes = await new Promise((resolve, reject) => {
-            const req = https.request(
-                { hostname: "127.0.0.1", port, path: authPath, method: "GET", rejectUnauthorized: false },
-                (res) => resolve({ status: res.statusCode, location: res.headers.location }),
-            );
-            req.on("error", reject);
-            req.end();
-        });
+            `/authorize?response_type=code&client_id=gemini-client&redirect_uri=${encodeURIComponent(redirectUri)}` +
+            `&state=xyz123&code_challenge=${challenge}&code_challenge_method=S256`;
+        const authRes = await httpsRequest(port, authPath);
         assert.equal(authRes.status, 302);
-        const redirected = new URL(authRes.location);
+        assert.ok(!authRes.headers.location.includes("code="), "no code before approval");
+        const pagePath = new URL(authRes.headers.location, `https://127.0.0.1:${port}/authorize`).pathname;
+        const approved = await httpsRequest(port, pagePath, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: "decision=approve&secret=approver-password-not-real",
+        });
+        assert.equal(approved.status, 303);
+        const redirected = new URL(approved.headers.location);
         assert.equal(redirected.origin + redirected.pathname, redirectUri);
         assert.equal(redirected.searchParams.get("state"), "xyz123");
+        assert.equal(redirected.searchParams.get("iss"), `https://127.0.0.1:${port}`);
         const code = redirected.searchParams.get("code");
-        assert.ok(code && code.startsWith("zmcp_code_"));
+        assert.match(code, /^zmcp_code_/);
 
-        // 3. Exchange code at POST /token using client_secret_basic (Authorization: Basic ...)
+        // 3. Exchange the code at POST /token with client_secret_basic and the PKCE verifier
         const basicAuth = Buffer.from("gemini-client:oauth-s3cret", "utf8").toString("base64");
         const tokenBody = new URLSearchParams({
             grant_type: "authorization_code",
             code,
             redirect_uri: redirectUri,
+            code_verifier: verifier,
         }).toString();
-        const tokenRes = await httpsRequest(port, "/token", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/x-www-form-urlencoded",
-                Authorization: `Basic ${basicAuth}`,
-            },
-            body: tokenBody,
-        });
+        const tokenHeaders = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            Authorization: `Basic ${basicAuth}`,
+        };
+        const tokenRes = await httpsRequest(port, "/token", { method: "POST", headers: tokenHeaders, body: tokenBody });
         assert.equal(tokenRes.status, 200);
         const tokens = JSON.parse(tokenRes.body);
-        assert.ok(tokens.access_token.startsWith("zmcp_at_"));
-        assert.ok(tokens.refresh_token.startsWith("zmcp_rt_"));
+        assert.match(tokens.access_token, /^zmcp_at_/);
+        assert.match(tokens.refresh_token, /^zmcp_rt_/);
         assert.equal(tokens.token_type, "Bearer");
+        assert.equal(tokens.expires_in, 3600);
 
         // 4. Reusing the same authorization code is rejected (single-use)
         const replayRes = await httpsRequest(port, "/token", {
             method: "POST",
-            headers: {
-                "Content-Type": "application/x-www-form-urlencoded",
-                Authorization: `Basic ${basicAuth}`,
-            },
+            headers: tokenHeaders,
             body: tokenBody,
         });
         assert.equal(replayRes.status, 400);
+        assert.equal(JSON.parse(replayRes.body).error, "invalid_grant");
 
-        // 5. Call POST /mcp with the issued OAuth access_token
-        const mcpWithOAuth = await httpsRequest(port, "/mcp", {
+        // 5. The replay revoked that grant (RFC 6749 §4.1.2): its access token no longer opens /mcp. A new grant's does.
+        assert.equal((await mcpInitHttps(port, tokens.access_token)).status, 401);
+        const again = await httpsRequest(port, authPath);
+        const page2 = new URL(again.headers.location, `https://127.0.0.1:${port}/authorize`).pathname;
+        const ok2 = await httpsRequest(port, page2, {
             method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${tokens.access_token}`,
-            },
-            body: "{}",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: "decision=approve&secret=approver-password-not-real",
         });
-        assert.notEqual(mcpWithOAuth.status, 401);
+        const code2 = new URL(ok2.headers.location).searchParams.get("code");
+        const fresh = JSON.parse(
+            (
+                await httpsRequest(port, "/token", {
+                    method: "POST",
+                    headers: tokenHeaders,
+                    body: new URLSearchParams({
+                        grant_type: "authorization_code",
+                        code: code2,
+                        redirect_uri: redirectUri,
+                        code_verifier: verifier,
+                    }).toString(),
+                })
+            ).body,
+        );
+        const mcpWithOAuth = await mcpInitHttps(port, fresh.access_token);
+        assert.equal(mcpWithOAuth.status, 200);
+        assert.match(mcpWithOAuth.body, /"serverInfo"/);
 
-        // 6. Refresh token grant
-        const refreshBody = new URLSearchParams({
-            grant_type: "refresh_token",
-            refresh_token: tokens.refresh_token,
-            client_id: "gemini-client",
-            client_secret: "oauth-s3cret",
-        }).toString();
+        // 6. Refresh token grant (client_secret_post): a new pair, the refresh token rotated
         const refreshRes = await httpsRequest(port, "/token", {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: refreshBody,
+            body: new URLSearchParams({
+                grant_type: "refresh_token",
+                refresh_token: fresh.refresh_token,
+                client_id: "gemini-client",
+                client_secret: "oauth-s3cret",
+            }).toString(),
         });
         assert.equal(refreshRes.status, 200);
         const refreshed = JSON.parse(refreshRes.body);
-        assert.ok(refreshed.access_token.startsWith("zmcp_at_"));
+        assert.match(refreshed.access_token, /^zmcp_at_/);
+        assert.notEqual(refreshed.refresh_token, fresh.refresh_token);
     });
 
     it("supports multiple OAuth clients (oauth.clients[]) for concurrent Gemini and CRM integration", async () => {
@@ -442,9 +518,10 @@ describe("createHTTPServer — HTTPS with TLS cert & key", () => {
             filter: {},
             config: {},
             nameCache: null,
-            accountDir: ".",
+            accountDir: mkdtempSync(join(tmpdir(), "zalo-oauth-tls-")),
         };
         const server = createHTTPServer(() => {}, deps, 0, "master-s3cret", "127.0.0.1", tls, {
+            accountId: "1000000000000000001",
             clientId: "gemini-client",
             clientSecret: "gemini-s3cret",
             clients: [{ clientId: "crm-backend", clientSecret: "crm-s3cret" }],
@@ -452,31 +529,25 @@ describe("createHTTPServer — HTTPS with TLS cert & key", () => {
         servers.push(server);
         if (!server.listening) await once(server, "listening");
         const port = server.address().port;
+        const cc = (client_id, client_secret) =>
+            httpsRequest(port, "/token", {
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body: new URLSearchParams({ grant_type: "client_credentials", client_id, client_secret }).toString(),
+            });
 
-        // CRM client exchanges client_credentials with its own secret
-        const crmRes = await httpsRequest(port, "/token", {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({
-                grant_type: "client_credentials",
-                client_id: "crm-backend",
-                client_secret: "crm-s3cret",
-            }).toString(),
-        });
+        // CRM client exchanges client_credentials with its own secret, and the token opens /mcp
+        const crmRes = await cc("crm-backend", "crm-s3cret");
         assert.equal(crmRes.status, 200);
         const crmTok = JSON.parse(crmRes.body);
-        assert.ok(crmTok.access_token.startsWith("zmcp_at_"));
+        assert.match(crmTok.access_token, /^zmcp_at_/);
+        assert.equal((await mcpInitHttps(port, crmTok.access_token)).status, 200);
 
-        // Wrong secret for crm-backend is rejected
-        const badRes = await httpsRequest(port, "/token", {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({
-                grant_type: "client_credentials",
-                client_id: "crm-backend",
-                client_secret: "wrong-secret",
-            }).toString(),
-        });
-        assert.equal(badRes.status, 401);
+        // A wrong secret, another client's secret and the master bearer token are all rejected for crm-backend
+        for (const secret of ["wrong-secret", "gemini-s3cret", "master-s3cret"]) {
+            const badRes = await cc("crm-backend", secret);
+            assert.equal(badRes.status, 401, secret);
+            assert.equal(JSON.parse(badRes.body).error, "invalid_client");
+        }
     });
 });

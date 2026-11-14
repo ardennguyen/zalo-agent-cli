@@ -56,7 +56,7 @@ import {
 import { getMediaLinks, linkForCachedMessage, startTempfileSweeper } from "../core/media-deliver.js";
 import { ensureMediaServed } from "../core/media-route.js";
 import { scopeOfDir } from "../core/keystore/keyring.js";
-import { approverStatus } from "../core/approval.js";
+import { approverFor, approverStatus } from "../core/approval.js";
 import { resolveConfirmMode } from "../core/confirm-guard.js";
 import { getSecurePage } from "../core/secure-page.js";
 import { getQrPage } from "../utils/qr-http-server.js";
@@ -127,6 +127,7 @@ import { registerMCPApproverCommand } from "./mcp-approver.js";
 import { createMCPServer } from "../mcp/mcp-server.js";
 import { registerTools } from "../mcp/mcp-tools.js";
 import { createHTTPServer } from "../mcp/mcp-http-transport.js";
+import { oauthStartCheck } from "../mcp/mcp-oauth.js";
 import { createAdminApi, resolveAdminCredentials } from "../core/admin-api.js";
 import { createExportApi } from "../core/data-export.js";
 import { servePolicyRequest, startPolicyRuntime, touches } from "../core/policy-store.js";
@@ -309,6 +310,82 @@ export function warnApprovalPolicy({ config, accountId, accountDir, hasWebhook, 
     return lines;
 }
 
+/** A yes/no setting: true for 1/true/yes/on, false for 0/false/no/off, else null (unset or not understood). */
+function flagValue(value) {
+    if (typeof value === "boolean") return value;
+    const v = String(value ?? "")
+        .trim()
+        .toLowerCase();
+    if (["1", "true", "yes", "on"].includes(v)) return true;
+    if (["0", "false", "no", "off"].includes(v)) return false;
+    return null;
+}
+
+/**
+ * The static bearer token and the OAuth settings of one HTTP server (src/mcp/mcp-oauth.js), from the flags, the
+ * environment (`NAME_<ownId>` first) and mcp-config.json. Since 3.0.1 an OAuth client secret is no longer the bearer
+ * token, `--auth` alone no longer turns OAuth on, and a client secret never defaults to `--auth`.
+ *
+ * @param {object} args
+ * @param {object} args.opts - `mcp start`'s options (`auth`, `clientId`, `clientSecret`)
+ * @param {object} args.config - the resolved MCP config
+ * @param {string} args.accountId
+ * @param {string|null} args.publicUrl
+ * @param {NodeJS.ProcessEnv} [args.env]
+ * @returns {{authToken: string|null, oauth: object, warnings: string[]}}
+ */
+export function resolveOAuthOptions({ opts = {}, config = {}, accountId, publicUrl, env = process.env }) {
+    const warnings = [];
+    const authToken = opts.auth?.trim() || envForAccount("ZALO_MCP_AUTH_TOKEN", accountId, env) || null;
+    const redirectEnv = envForAccount("ZALO_MCP_OAUTH_REDIRECT_URIS", accountId, env);
+    const list = (v) =>
+        (Array.isArray(v) ? v : String(v ?? "").split(",")).map((s) => String(s).trim()).filter(Boolean);
+    const durationSec = (value, name) => {
+        if (value === undefined || value === null || value === "") return null;
+        const ms = parseDuration(value);
+        if (ms >= 60_000) return Math.floor(ms / 1000);
+        warnings.push(`${name} "${value}" is not a duration of at least 1m (e.g. 1h, 30d); using the default`);
+        return null;
+    };
+    const flag = (envName, configValue, name) => {
+        const raw = envForAccount(envName, accountId, env) ?? configValue;
+        const v = flagValue(raw);
+        if (v === null && raw !== undefined && raw !== null && raw !== "") {
+            warnings.push(`${name} "${raw}" is not true or false; using false`);
+        }
+        return v === true;
+    };
+    const oauth = {
+        clientId:
+            opts.clientId?.trim() ||
+            envForAccount("ZALO_MCP_OAUTH_CLIENT_ID", accountId, env) ||
+            config?.oauth?.clientId?.trim() ||
+            "zalo-mcp",
+        clientSecret:
+            opts.clientSecret?.trim() ||
+            envForAccount("ZALO_MCP_OAUTH_CLIENT_SECRET", accountId, env) ||
+            config?.oauth?.clientSecret?.trim() ||
+            null,
+        redirectUris: list(redirectEnv ?? config?.oauth?.redirectUris),
+        clients: Array.isArray(config?.oauth?.clients) ? config.oauth.clients : [],
+        issuerUrl: publicUrl || null,
+        allowDynamicRegistration: flag(
+            "ZALO_MCP_OAUTH_DYNAMIC_REGISTRATION",
+            config?.oauth?.allowDynamicRegistration,
+            "oauth.allowDynamicRegistration",
+        ),
+        secretsAsBearer: flag(
+            "ZALO_MCP_OAUTH_SECRETS_AS_BEARER",
+            config?.oauth?.secretsAsBearer,
+            "oauth.secretsAsBearer",
+        ),
+        accessTokenTtlSec: durationSec(config?.oauth?.accessTokenTtl, "oauth.accessTokenTtl"),
+        refreshTokenTtlSec: durationSec(config?.oauth?.refreshTokenTtl, "oauth.refreshTokenTtl"),
+        accountId: String(accountId ?? ""),
+    };
+    return { authToken, oauth, warnings };
+}
+
 /**
  * Validate and load TLS certificate & private key buffers from paths.
  * @param {string|null|undefined} rawCert
@@ -369,7 +446,7 @@ export function registerMCPCommands(program) {
         )
         .option(
             "--client-secret <key>",
-            "OAuth 2.0 Client Secret (defaults to --auth / ZALO_MCP_AUTH_TOKEN, or ZALO_MCP_OAUTH_CLIENT_SECRET)",
+            "OAuth 2.0 Client Secret of that client (or ZALO_MCP_OAUTH_CLIENT_SECRET); setting it turns OAuth on. Its callback URLs go in ZALO_MCP_OAUTH_REDIRECT_URIS / oauth.redirectUris",
         )
         .option(
             "--public-url <url>",
@@ -548,6 +625,23 @@ export function registerMCPCommands(program) {
                   })
                 : { publicUrl: null, source: "default", error: null };
             if (publicUrl.error) failStart(`Refusing to start: ${publicUrl.error}.`);
+            // OAuth (src/mcp/mcp-oauth.js): checked here, before a daemon is spawned, so a server that would infer its
+            // issuer from a request's Host header off loopback (or has nothing to sign tokens with) never starts.
+            if (effectiveHttpPort) {
+                const resolved = resolveOAuthOptions({
+                    opts,
+                    config,
+                    accountId: activeAcc.ownId,
+                    publicUrl: publicUrl.publicUrl,
+                });
+                const check = oauthStartCheck({
+                    oauth: resolved.oauth,
+                    authToken: resolved.authToken,
+                    host: opts.host || envForAccount("ZALO_MCP_HOST", activeAcc.ownId) || config?.host || "127.0.0.1",
+                    publicUrl: publicUrl.publicUrl,
+                });
+                if (check.problem) failStart(`Refusing to start: ${check.problem}.`);
+            }
 
             if (!tlsOptions) {
                 const acctCert = envForAccount("ZALO_MCP_TLS_CERT", activeAcc.ownId) ?? config?.tls?.cert;
@@ -951,33 +1045,33 @@ export function registerMCPCommands(program) {
                         presence: presenceDoor,
                         leases: leaseDoor,
                     };
-                    const authToken =
-                        opts.auth?.trim() ||
-                        envForAccount("ZALO_MCP_AUTH_TOKEN", activeAcc.ownId) ||
-                        envForAccount("ZALO_MCP_OAUTH_CLIENT_SECRET", activeAcc.ownId) ||
-                        config?.oauth?.clientSecret?.trim() ||
-                        null;
-                    const oauthClientId =
-                        opts.clientId?.trim() ||
-                        envForAccount("ZALO_MCP_OAUTH_CLIENT_ID", activeAcc.ownId) ||
-                        config?.oauth?.clientId?.trim() ||
-                        "zalo-mcp";
-                    const oauthClientSecret =
-                        opts.clientSecret?.trim() ||
-                        envForAccount("ZALO_MCP_OAUTH_CLIENT_SECRET", activeAcc.ownId) ||
-                        config?.oauth?.clientSecret?.trim() ||
-                        authToken;
-                    const oauthIssuerUrl = publicUrl.publicUrl;
-                    const oauthClients = Array.isArray(config?.oauth?.clients) ? config.oauth.clients : [];
-                    const oauthOptions =
-                        oauthClientSecret || oauthClients.length > 0
-                            ? {
-                                  clientId: oauthClientId,
-                                  clientSecret: oauthClientSecret,
-                                  issuerUrl: oauthIssuerUrl,
-                                  clients: oauthClients,
-                              }
-                            : null;
+                    // The static bearer token and OAuth (src/mcp/mcp-oauth.js): OAuth only with a configured client or
+                    // dynamic registration; its approve page asks for the approver password (or the PIN).
+                    const {
+                        authToken,
+                        oauth: oauthOptions,
+                        warnings: oauthWarnings,
+                    } = resolveOAuthOptions({
+                        opts,
+                        config,
+                        accountId: activeAcc.ownId,
+                        publicUrl: publicUrl.publicUrl,
+                    });
+                    const oauthCheck = oauthStartCheck({
+                        oauth: oauthOptions,
+                        authToken,
+                        host,
+                        publicUrl: publicUrl.publicUrl,
+                    });
+                    for (const w of [...oauthWarnings, ...oauthCheck.warnings]) console.error(`[mcp] WARNING: ${w}`);
+                    const approvalSecret = resolveApproval({ config, accountId: activeAcc.ownId }).secret;
+                    deps.oauthApprover = () =>
+                        approverFor({
+                            mode: approvalSecret === "pin" ? "pin" : "password",
+                            throughAgent: true,
+                            accountDir,
+                            hidden: () => hidden,
+                        });
                     const scheme = tlsOptions ? "HTTPS" : "HTTP";
                     httpServer = createHTTPServer(
                         registerTools,
@@ -988,6 +1082,25 @@ export function registerMCPCommands(program) {
                         tlsOptions && adminCa ? { ...tlsOptions, ca: adminCa } : tlsOptions,
                         oauthOptions,
                     );
+                    if (oauthCheck.enabled) {
+                        console.error(
+                            `[mcp] OAuth: on (${[
+                                oauthOptions.clientSecret || oauthOptions.redirectUris.length
+                                    ? "a configured client"
+                                    : null,
+                                oauthOptions.clients.length
+                                    ? `${oauthOptions.clients.length} more in oauth.clients`
+                                    : null,
+                                oauthOptions.allowDynamicRegistration ? "dynamic registration" : null,
+                            ]
+                                .filter(Boolean)
+                                .join(", ")}); each connection is approved with the ` +
+                                `${approvalSecret === "pin" ? "hidden-chat PIN" : "approver password"}` +
+                                (approvalSecret !== "pin" && !approverStatus(accountDir).set
+                                    ? " (none is set: run `zalo-agent mcp approver set` before connecting an app)"
+                                    : ""),
+                        );
+                    }
                     // The secure page (/zalo/secure/<token>) and the QR login page (/zalo/qr/<token>) are served on this
                     // port; their links use publicUrl (behind a reverse proxy or TLS) or else this server's own address,
                     // never a request's Host header.
@@ -998,7 +1111,7 @@ export function registerMCPCommands(program) {
                     mediaLinks.configure({
                         publicUrl: publicUrl.publicUrl,
                         localBaseUrl,
-                        bearerAvailable: Boolean(authToken || oauthClientSecret || oauthClients.length > 0),
+                        bearerAvailable: Boolean(authToken || oauthCheck.enabled),
                     });
                     console.error(
                         `[mcp] Media links: ${mediaLinks.linkAuth} (${mediaAuth.source}), ${Math.round(mediaPolicy.linkTtlMs / 60_000)} min` +
@@ -1010,7 +1123,7 @@ export function registerMCPCommands(program) {
                         `[mcp] Public address: ${publicUrl.publicUrl ? `${publicUrl.publicUrl} (${publicUrl.source})` : `none set: links use ${localBaseUrl} (set publicUrl behind a proxy)`}`,
                     );
                     console.error(`[mcp] ${scheme} server started on port ${port}`);
-                    if (!authToken && !oauthClientSecret && oauthClients.length === 0) {
+                    if (!authToken && !oauthCheck.enabled) {
                         console.error(
                             `[mcp] WARNING: no --auth token. Anyone who can reach ${host}:${port} can read this ` +
                                 "account's messages and send as it.",

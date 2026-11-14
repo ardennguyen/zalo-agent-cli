@@ -54,11 +54,18 @@ export function getDefaultConfig() {
             cert: null,
             key: null,
         },
+        // OAuth 2.1 for remote connectors (src/mcp/mcp-oauth.js). Off unless a client is configured (clientSecret or
+        // redirectUris, or clients[]) or allowDynamicRegistration is true; --auth alone never turns it on.
         oauth: {
             clientId: null,
             clientSecret: null,
+            redirectUris: [], // the primary client's callback URLs (exact match; any port on http loopback)
             issuerUrl: null, // deprecated name of publicUrl, still read
-            clients: [],
+            clients: [], // more clients: {clientId, clientSecret?, redirectUris?}
+            allowDynamicRegistration: null, // RFC 7591 /register; unset: ZALO_MCP_OAUTH_DYNAMIC_REGISTRATION, else false
+            secretsAsBearer: null, // a client secret also works as a bearer token (3.0.0); unset: false
+            accessTokenTtl: null, // "1h"
+            refreshTokenTtl: null, // "30d", sliding: each refresh starts it again
         },
         webhookSecret: null,
         webhookBatchSize: 1, // events per webhook POST; 1 = each event alone, exactly as before the outbox
@@ -351,16 +358,16 @@ export function resolveWebhookUrl({ accountId, flag = null, config = {}, env = p
 }
 
 /**
- * Parse duration string (e.g. "2h", "5m", "30s") to milliseconds.
+ * Parse duration string (e.g. "30d", "2h", "5m", "30s") to milliseconds.
  * @param {string|number} duration
  * @returns {number} Milliseconds
  */
 export function parseDuration(duration) {
     if (typeof duration === "number") return duration;
-    const match = String(duration).match(/^(\d+)\s*(h|m|s|ms)?$/i);
+    const match = String(duration).match(/^(\d+)\s*(d|h|m|s|ms)?$/i);
     if (!match) return 0;
     const value = parseInt(match[1], 10);
     const unit = (match[2] || "ms").toLowerCase();
-    const multipliers = { h: 3600000, m: 60000, s: 1000, ms: 1 };
+    const multipliers = { d: 86400000, h: 3600000, m: 60000, s: 1000, ms: 1 };
     return value * (multipliers[unit] || 1);
 }

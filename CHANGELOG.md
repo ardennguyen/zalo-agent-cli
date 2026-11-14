@@ -9,7 +9,7 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
-## [3.0.1] — unreleased
+## [3.0.1] — 2026-11-15
 
 A security release for the MCP server's OAuth, the official-API logins and moving an account between machines, and the saved login renewed from the running server.
 

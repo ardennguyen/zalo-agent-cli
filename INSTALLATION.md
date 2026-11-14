@@ -328,7 +328,7 @@ This engine source registers **36 MCP tools** in `src/mcp/mcp-tools.js`, all cov
 
 See [Sync usage and details](docs/mcp-sync.md) / [Tiếng Việt](docs/mcp-sync.vi.md).
 
-Every personal CLI command has an MCP action. **CLI-only** are Official Account and ZBS commands (`oa …`, `zbs …`, separate official APIs), logging in and out (`login`, `logout`, `status`), the local account registry (`account list|login|switch|remove|info|export`), the operator's steps on this machine's keys and data (`account security …`, `db query|backup|export|verify|purge`), the runtime policy (`policy …`: an agent never sees or changes its own limits), the daemon and fleet commands (`listen`, `mcp start`, `mcp webhook …`, `mcp approver`, `presence status|wake|park`, `fleet …`), `update`, `profile lost-focus`, and `cloud get` (it takes the account's cloud key); agents reach them by shelling out to `zalo-agent <command> --json` (or `zalo-mcp <command> --json`).
+Every personal CLI command has an MCP action. **CLI-only** are the Official Account, ZBS and Social API commands (`oa …`, `zbs …`, `social …`, separate official APIs), logging in and out (`login`, `logout`, `status`), the local account registry (`account list|login|switch|remove|info|export`), the operator's steps on this machine's keys and data (`account security …`, `db query|backup|export|verify|purge`), the runtime policy (`policy …`: an agent never sees or changes its own limits), the daemon and fleet commands (`listen`, `mcp start`, `mcp webhook …`, `mcp approver`, `presence status|wake|park`, `fleet …`), `update`, `profile lost-focus`, and `cloud get` (it takes the account's cloud key); agents reach them by shelling out to `zalo-agent <command> --json` (or `zalo-mcp <command> --json`).
 
 Full tool reference (parameters, return shapes, config): [skill/references/mcp-guide.md](skill/references/mcp-guide.md).
 
@@ -406,7 +406,7 @@ Official Account credentials are stored separately at `~/.zalo-agent/oa-credenti
 
 ## CLI Command Reference (via `npx zalo-agent <command>`)
 
-Append `--json` to any command for machine-readable output. This is a shortlist — the exhaustive reference for all 315 commands is [skill/references/command-reference.md](skill/references/command-reference.md).
+Append `--json` to any command for machine-readable output. This is a shortlist — the exhaustive reference for all 321 commands is [skill/references/command-reference.md](skill/references/command-reference.md).
 
 ### Session & maintenance
 | Command | Description |

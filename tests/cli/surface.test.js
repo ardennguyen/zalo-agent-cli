@@ -205,6 +205,7 @@ const COMMAND_SURFACE = {
     ],
     // ZBS Template Message (official API).
     zbs: ["template", "upload-image", "send", "rsa-key", "journey", "uid", "status", "quota", "quality"],
+    social: ["setup", "login", "refresh", "me", "status", "logout"],
 };
 
 /** Nested OA and ZBS subgroups: "oa msg" → its subcommands. */
@@ -609,6 +610,13 @@ describe("disclaimer behavior", () => {
     it("suppresses the disclaimer for oa commands (official API)", async () => {
         const { all } = await runCli(["oa", "--help"], opts);
         assert.doesNotMatch(all, /unofficial Zalo APIs/);
+    });
+
+    it("social, an official API: no disclaimer and no personal-account login (it runs with no session)", async () => {
+        // Red if `social` is treated as a personal command: the disclaimer prints and the auto-login fails first.
+        const { all } = await runCli(["social", "status", "--profile", "surface-test"], opts);
+        assert.doesNotMatch(all, /unofficial Zalo APIs/);
+        assert.match(all, /No user login for profile "surface-test"/);
     });
 
     it("suppresses the disclaimer in --json mode so stdout stays parseable", async () => {

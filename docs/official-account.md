@@ -45,7 +45,7 @@ zalo-agent oa login --app-id <APP_ID> --secret <SECRET> --callback-host https://
 
 ## Commands
 
-There are **88 commands**: 70 in the `oa` group and 18 in the `zbs` group. Every command accepts `--oa-id <id>` (default `default`) for managing multiple OAs, and `--json` for machine-readable output. Every option and default is in [`skill/references/oa-command-reference.md`](../skill/references/oa-command-reference.md); this page shows the shape of each area.
+There are **94 commands**: 70 in the `oa` group, 18 in the `zbs` group and 6 in the `social` group ([Social API](#social-api-social)). Every command accepts `--oa-id <id>` (default `default`) for managing multiple OAs, and `--json` for machine-readable output. Every option and default is in [`skill/references/oa-command-reference.md`](../skill/references/oa-command-reference.md); this page shows the shape of each area.
 
 ### Setup & Auth
 
@@ -402,6 +402,28 @@ zalo-agent zbs quota --oa-id shop2
 
 ---
 
+## Social API (`social`)
+
+A Zalo user logs in to **your app** and the app reads that user's app-scoped ID, name and avatar (Zalo's Social API: OAuth v4 with PKCE and `state`, then `graph.zalo.me`). Independent from the personal account and from the OA: its own app login per `--profile` (default `default`) in `~/.zalo-agent/social-credentials.json` (0600). The app's callback URL (developers.zalo.me → the app → Đăng nhập → Web) must be `http://localhost:<port>/callback` or `<callback-host>/callback`. Every call carries `appsecret_proof`. The access token lasts 1 hour and renews itself (once, on error 452, serialized); the login lasts at most 30 days, because a refreshed token keeps what was left of the one it replaced. A Zalo error prints `Social API error <code>: <message> (<meaning from the Social docs' table>)`; `-501` means the call came from an IP outside Vietnam. Not an MCP tool.
+
+```bash
+zalo-agent social setup --app-id <app-id> --secret <app-secret>
+zalo-agent social login --dpop          # opens the browser; waits on http://localhost:3457/callback
+zalo-agent social me --picture large
+zalo-agent social status
+```
+
+| Command | Description |
+|---------|-------------|
+| `setup --app-id <id> --secret <key> [--profile <name>]` | Save the app's ID and secret key. |
+| `login [--app-id <id>] [--secret <key>] [-p, --port <port>] [--callback-host <host>] [--dpop] [--profile <name>]` | Open Zalo's permission page (`oauth.zaloapp.com/v4/permission`, PKCE and `state`), wait for the callback on 127.0.0.1 (0.0.0.0 with `--callback-host`), check `state`, exchange the code with the verifier, save the tokens, then show the user. Port default 3457. `--dpop` binds the tokens to a new P-256 key pair (DPoP, ES256): every later call and refresh carries a proof signed with it, so a stolen token is useless on its own. |
+| `refresh [--profile <name>]` | Renew the access token now (the refresh token is single use; serialized under a lock). Refused, with nothing sent, once the 30-day login ended. |
+| `me [--fields <list>] [--picture small\|normal\|large] [--profile <name>]` | `GET graph.zalo.me/v2.0/me`: `id` (this app's ID for the user, not usable by other apps), `name`, `picture` (smallest unless `--picture`), and `is_sensitive` when asked (a user the law requires special handling for). Other fields are refused before any request. |
+| `status [--profile <name>]` | Whether a user is logged in, when the access token and the login end, DPoP on or off. Never shows a token. |
+| `logout [--profile <name>]` | Forget the user's tokens and DPoP key on this machine; the app's ID and secret stay. |
+
+---
+
 ## Personal vs Official Account Comparison
 
 | | `zalo-agent` (personal) | `zalo-agent oa` / `zbs` (official) |
@@ -414,7 +436,7 @@ zalo-agent zbs quota --oa-id shop2
 | Credentials | `~/.zalo-agent-cli/` | `~/.zalo-agent/` (no `-cli` suffix) |
 | Runtime disclaimer | Shown | Suppressed (official API) |
 | Pre-command auto-login | Yes | No — `oa` manages its own OAuth token |
-| Command count | 227 (of 315 total CLI commands) | 88 (70 `oa` + 18 `zbs`) |
+| Command count | 227 (of 321 total CLI commands) | 94 (70 `oa` + 18 `zbs` + 6 `social`) |
 | Real-time events | WebSocket (`listen`) | HTTP Webhook (`oa listen`) |
 | Exposed as MCP tools? | Yes — 36 tools (see [mcp-guide](../skill/references/mcp-guide.md)) | **No** — CLI only |
 

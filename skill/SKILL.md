@@ -13,7 +13,7 @@ Automate Zalo messaging, groups, contacts, payments, and real-time events via `z
 Handles: login/logout, messaging (text/image/file/sticker/voice/video/link), reactions, mentions, recall, message history, friends, groups, conversations, profile, polls, reminders, auto-reply, quick messages, labels, catalogs, listen (WebSocket), webhooks, local SQLite cache + mobile sync, bank cards, VietQR, multi-account with proxy, **Official Account (OA) API v3.0** (OAuth login, OA messaging, followers, tags, articles, store, webhook listener), **MCP Server** (Model Context Protocol for Claude Code and MCP clients).
 Does NOT handle: Zalo Mini App, Zalo Ads, ZNS templates, non-Zalo platforms.
 
-Surface: **315 CLI commands** across 39 command containers (23 top-level groups + 11 OA subgroups + 3 ZBS subgroups + `mcp webhook` + `account security`) + **36 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
+Surface: **321 CLI commands** across 40 command containers (24 top-level groups + 11 OA subgroups + 3 ZBS subgroups + `mcp webhook` + `account security`) + **36 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
 
 ## Prerequisites
 
@@ -257,6 +257,8 @@ zalo-agent oa refresh                                            # Refresh token
 zalo-agent zbs send 0901234567 <templateId> '<template_data>'    # ZBS template message by phone
 zalo-agent zbs uid <uid> <templateId> '<template_data>'          # ZBS template message by user id
 zalo-agent zbs status <msgId>                                    # Delivery status
+zalo-agent social login                                          # A Zalo user logs in to your app (Social API)
+zalo-agent social me                                             # Their app-scoped id, name, avatar
 ```
 OA and ZBS use official Zalo APIs (no ban risk), with their own OAuth login, separate from the personal account. `oa msg` sends consultation messages only: transaction and promotion messages are ZBS templates (`zbs send`/`zbs uid`). `oa store`, `oa menu`, `oa msg list` and `oa msg status` were removed in 3.0.0 (`zbs status` replaces the last). Destructive or paying commands (`follower delete-info`, `userfield delete`, `tag remove`, `purchase …`, `article remove`, `group remove-members`, `group delete`) need `--yes`.
 Full reference: `references/oa-command-reference.md`
@@ -351,7 +353,7 @@ Sync requests share the daemon socket and lock. Reuse requestId and arguments af
 | Profile, privacy, linked devices | `zalo_profile` | `zalo-agent --json profile …` / `account devices` |
 | Auto-reply, quick-msg, catalog, bank, zCloud index, stickers, links | `zalo_auto_reply`, `zalo_quick_message`, `zalo_catalog`, `zalo_bank`, `zalo_cloud`, `zalo_sticker`, `zalo_link` | `zalo-agent --json auto-reply\|quick-msg\|catalog\|bank\|cloud …` |
 | Login, the account registry, daemon and fleet, `update`, `profile lost-focus`, `cloud get`, `db …` | **none (CLI-only)** | `zalo-agent --json …` |
-| Official Account and ZBS (all 88 commands) | **none** | `zalo-agent --json oa …` / `zbs …` |
+| Official Account, ZBS and Social (all 94 commands) | **none** | `zalo-agent --json oa …` / `zbs …` / `social …` |
 
 **Rule of thumb:** use an MCP tool when one exists; otherwise shell out to `zalo-agent <command> --json` and parse the JSON. Do not claim a capability is unavailable just because it has no MCP tool.
 
@@ -402,9 +404,9 @@ Every write changes something. 26 of the 27 have been answered by a live account
 
 | File | Contents |
 |------|----------|
-| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 315 commands + 36 MCP tools) |
+| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 321 commands + 36 MCP tools) |
 | `references/mcp-guide.md` | MCP tools, parameters, return shapes, `mcp-config.json`, architecture (Vietnamese) |
-| `references/oa-command-reference.md` | Official Account and ZBS reference: every `oa`/`zbs` command, webhook events and signature, error codes, ZBS permissions, webhook checklist |
+| `references/oa-command-reference.md` | Official Account, ZBS and Social API reference: every `oa`/`zbs`/`social` command, webhook events and signature, error codes, ZBS permissions, webhook checklist |
 | `references/login-flow.md` | QR login, headless credentials login, multi-account, proxy formats, troubleshooting |
 | `references/listen-mode-guide.md` | Listener flags, webhook payloads, JSONL archival, pm2 deployment, local cache behavior |
 | `evals/eval-scenarios.md` | Behavior + security eval scenarios for this skill |

@@ -45,7 +45,7 @@ zalo-agent oa login --app-id <APP_ID> --secret <SECRET> --callback-host https://
 
 ## Lệnh
 
-Tổng cộng **88 lệnh**: 70 lệnh trong nhóm `oa` và 18 lệnh trong nhóm `zbs`. Mọi lệnh đều nhận `--oa-id <id>` (mặc định `default`) để quản lý nhiều OA, và `--json` để xuất kết quả dạng máy đọc. Mọi tùy chọn và giá trị mặc định có trong [`skill/references/oa-command-reference.md`](../skill/references/oa-command-reference.md); trang này cho thấy dáng của từng nhóm.
+Tổng cộng **94 lệnh**: 70 lệnh trong nhóm `oa`, 18 lệnh trong nhóm `zbs` và 6 lệnh trong nhóm `social` ([Social API](#social-api-social)). Mọi lệnh đều nhận `--oa-id <id>` (mặc định `default`) để quản lý nhiều OA, và `--json` để xuất kết quả dạng máy đọc. Mọi tùy chọn và giá trị mặc định có trong [`skill/references/oa-command-reference.md`](../skill/references/oa-command-reference.md); trang này cho thấy dáng của từng nhóm.
 
 ### Setup & Auth
 
@@ -402,6 +402,28 @@ zalo-agent zbs quota --oa-id shop2
 
 ---
 
+## Social API (`social`)
+
+Người dùng Zalo đăng nhập vào **ứng dụng của bạn** và ứng dụng đọc ID (riêng cho ứng dụng), tên và ảnh đại diện của họ (Social API của Zalo: OAuth v4 với PKCE và `state`, rồi `graph.zalo.me`). Độc lập với tài khoản cá nhân và với OA: đăng nhập ứng dụng riêng theo `--profile` (mặc định `default`) trong `~/.zalo-agent/social-credentials.json` (0600). Callback URL của ứng dụng (developers.zalo.me → ứng dụng → Đăng nhập → Web) phải là `http://localhost:<port>/callback` hoặc `<callback-host>/callback`. Mọi lệnh gọi đều kèm `appsecret_proof`. Access token sống 1 giờ và tự làm mới (một lần, khi gặp lỗi 452, tuần tự); phiên đăng nhập kéo dài tối đa 30 ngày, vì token làm mới giữ nguyên thời gian còn lại của token cũ. Lỗi từ Zalo in dạng `Social API error <mã>: <thông báo> (<ý nghĩa theo bảng mã lỗi Social>)`; `-501` nghĩa là lệnh gọi đến từ IP ngoài Việt Nam. Không có công cụ MCP.
+
+```bash
+zalo-agent social setup --app-id <app-id> --secret <app-secret>
+zalo-agent social login --dpop          # opens the browser; waits on http://localhost:3457/callback
+zalo-agent social me --picture large
+zalo-agent social status
+```
+
+| Lệnh | Mô tả |
+|------|-------|
+| `setup --app-id <id> --secret <key> [--profile <name>]` | Lưu App ID và secret key của ứng dụng. |
+| `login [--app-id <id>] [--secret <key>] [-p, --port <port>] [--callback-host <host>] [--dpop] [--profile <name>]` | Mở trang cấp quyền của Zalo (`oauth.zaloapp.com/v4/permission`, PKCE và `state`), chờ callback trên 127.0.0.1 (0.0.0.0 khi có `--callback-host`), kiểm tra `state`, đổi code lấy token bằng verifier, lưu token rồi hiện người dùng. Cổng mặc định 3457. `--dpop` gắn token với một cặp khóa P-256 mới (DPoP, ES256): mọi lệnh gọi và lần làm mới sau đều kèm bằng chứng ký bằng khóa đó, nên token bị lộ một mình là vô dụng. |
+| `refresh [--profile <name>]` | Làm mới access token ngay (refresh token chỉ dùng một lần; chạy tuần tự dưới khóa). Bị từ chối, không gửi gì, khi phiên đăng nhập 30 ngày đã hết. |
+| `me [--fields <list>] [--picture small\|normal\|large] [--profile <name>]` | `GET graph.zalo.me/v2.0/me`: `id` (ID của người dùng trong riêng ứng dụng này), `name`, `picture` (nhỏ nhất nếu không có `--picture`), và `is_sensitive` khi được hỏi (người dùng cần xử lý dữ liệu theo quy định riêng của pháp luật). Trường khác bị từ chối trước khi gửi. |
+| `status [--profile <name>]` | Có người dùng đăng nhập không, khi nào access token và phiên đăng nhập hết hạn, DPoP bật hay tắt. Không bao giờ hiện token. |
+| `logout [--profile <name>]` | Xóa token và khóa DPoP của người dùng trên máy này; App ID và secret vẫn giữ. |
+
+---
+
 ## So sánh
 
 | | `zalo-agent` (personal) | `zalo-agent oa` / `zbs` (official) |
@@ -414,7 +436,7 @@ zalo-agent zbs quota --oa-id shop2
 | Credentials | `~/.zalo-agent-cli/` | `~/.zalo-agent/` (không có hậu tố `-cli`) |
 | Disclaimer khi chạy | Có | Không (API chính thức) |
 | Auto-login trước lệnh | Có | Không — `oa` tự quản lý token riêng |
-| Số lệnh | 227 (trong tổng 315 lệnh CLI) | 88 (70 `oa` + 18 `zbs`) |
+| Số lệnh | 227 (trong tổng 321 lệnh CLI) | 94 (70 `oa` + 18 `zbs` + 6 `social`) |
 | Realtime | WebSocket (`listen`) | Webhook HTTP (`oa listen`) |
 | Có MCP tool? | Có — 36 tools (xem [mcp-guide](../skill/references/mcp-guide.md)) | **Chưa** — chỉ dùng được qua CLI |
 

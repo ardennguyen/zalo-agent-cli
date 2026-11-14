@@ -542,7 +542,7 @@ See [MCP sync](../../docs/mcp-sync.md) / [Tiếng Việt](../../docs/mcp-sync.vi
 
 ---
 
-## Official Account — `oa` and ZBS — `zbs` (official APIs, 88 commands: 70 `oa` + 18 `zbs`)
+## Official Account — `oa`, ZBS — `zbs` and Social API — `social` (official APIs, 94 commands: 70 `oa` + 18 `zbs` + 6 `social`)
 
 Completely independent from the personal (unofficial-API) account: separate OAuth credentials, separate storage (`~/.zalo-agent/oa-credentials.json`, note: **no `-cli` suffix** — different directory from personal `~/.zalo-agent-cli/`), no unofficial-API disclaimer shown. `zbs` uses the same OA token and credentials as `oa`. Multi-OA supported everywhere via `--oa-id <id>` (default: `"default"`); every command below takes it. The access token goes in the `access_token` header; an expired token (`-216`/`-220`, ZBS `-124`) is refreshed once under a file lock and the call retried once. A Zalo error prints `OA API error <code>: <Zalo's message> (<meaning from Zalo's error table>). <What to do>` and exits 1; a non-2xx or non-JSON answer is `http_<status>`. Webhook events, the error table, ZBS permissions and examples: [`oa-command-reference.md`](oa-command-reference.md).
 
@@ -678,6 +678,19 @@ Uses the OA's token (`oa login`). Each area needs a permission the OA grants the
 | `quota` | The OA's quota for phone-number messages: daily, and monthly promotion. |
 | `quality` | The OA's sending quality: last 48 hours and last 7 days. |
 
+### Social API — `social`
+
+A Zalo user logs in to **your app** and the app reads that user's app-scoped ID, name and avatar (Zalo's Social API: OAuth v4 with PKCE and `state`, then `graph.zalo.me`). Independent from the personal account and from the OA: its own app login per `--profile` (default `default`) in `~/.zalo-agent/social-credentials.json` (0600). The app's callback URL (developers.zalo.me → the app → Đăng nhập → Web) must be `http://localhost:<port>/callback` or `<callback-host>/callback`. Every call carries `appsecret_proof`. The access token lasts 1 hour and renews itself (once, on error 452, serialized); the login lasts at most 30 days, because a refreshed token keeps what was left of the one it replaced. A Zalo error prints `Social API error <code>: <message> (<meaning from the Social docs' table>)`; `-501` means the call came from an IP outside Vietnam. Not an MCP tool.
+
+| Command | Description |
+|---------|-------------|
+| `setup --app-id <id> --secret <key> [--profile <name>]` | Save the app's ID and secret key. |
+| `login [--app-id <id>] [--secret <key>] [-p, --port <port>] [--callback-host <host>] [--dpop] [--profile <name>]` | Open Zalo's permission page (`oauth.zaloapp.com/v4/permission`, PKCE and `state`), wait for the callback on 127.0.0.1 (0.0.0.0 with `--callback-host`), check `state`, exchange the code with the verifier, save the tokens, then show the user. Port default 3457. `--dpop` binds the tokens to a new P-256 key pair (DPoP, ES256): every later call and refresh carries a proof signed with it, so a stolen token is useless on its own. |
+| `refresh [--profile <name>]` | Renew the access token now (the refresh token is single use; serialized under a lock). Refused, with nothing sent, once the 30-day login ended. |
+| `me [--fields <list>] [--picture small\|normal\|large] [--profile <name>]` | `GET graph.zalo.me/v2.0/me`: `id` (this app's ID for the user, not usable by other apps), `name`, `picture` (smallest unless `--picture`), and `is_sensitive` when asked (a user the law requires special handling for). Other fields are refused before any request. |
+| `status [--profile <name>]` | Whether a user is logged in, when the access token and the login end, DPoP on or off. Never shows a token. |
+| `logout [--profile <name>]` | Forget the user's tokens and DPoP key on this machine; the app's ID and secret stay. |
+
 ---
 
 ## Command Count Summary
@@ -709,7 +722,8 @@ Uses the OA's token (`oa login`). Each area needs a permission the OA grants the
 | `fleet` | 8 (`ports`, `status`, `start`, `stop`, `restart`, `purge`, `generate`, `serve`) |
 | `oa` (all subgroups) | 70 |
 | `zbs` (all subgroups) | 18 |
-| **Total** | **315 CLI commands** (227 personal + 88 OA/ZBS) + 36 MCP tools |
+| `social` | 6 |
+| **Total** | **321 CLI commands** (227 personal + 94 OA/ZBS/Social) + 36 MCP tools |
 
 ## Provenance
 

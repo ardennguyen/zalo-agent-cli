@@ -328,7 +328,7 @@ Engine này đăng ký **36 MCP tools** trong `src/mcp/mcp-tools.js`, phục v�
 
 Xem thêm [Chi tiết sử dụng đồng bộ qua MCP](docs/mcp-sync.vi.md) / [English](docs/mcp-sync.md).
 
-Mọi lệnh CLI của tài khoản cá nhân đều có hành động MCP tương ứng. **Chỉ có trên CLI**: các lệnh Official Account và ZBS (`oa …`, `zbs …`, các API chính thức riêng), đăng nhập và đăng xuất (`login`, `logout`, `status`), danh sách tài khoản trên máy (`account list|login|switch|remove|info|export`), các bước của người vận hành trên khóa và dữ liệu của máy này (`account security …`, `db query|backup|export|verify|purge`), chính sách runtime (`policy …`: agent không bao giờ xem hay đổi giới hạn của chính nó), các lệnh daemon và fleet (`listen`, `mcp start`, `mcp webhook …`, `mcp approver`, `presence status|wake|park`, `fleet …`), `update`, `profile lost-focus`, và `cloud get` (cần khóa cloud của tài khoản); AI agent dùng chúng bằng cách gọi `zalo-agent <lệnh> --json` (hoặc `zalo-mcp <lệnh> --json`).
+Mọi lệnh CLI của tài khoản cá nhân đều có hành động MCP tương ứng. **Chỉ có trên CLI**: các lệnh Official Account, ZBS và Social API (`oa …`, `zbs …`, `social …`, các API chính thức riêng), đăng nhập và đăng xuất (`login`, `logout`, `status`), danh sách tài khoản trên máy (`account list|login|switch|remove|info|export`), các bước của người vận hành trên khóa và dữ liệu của máy này (`account security …`, `db query|backup|export|verify|purge`), chính sách runtime (`policy …`: agent không bao giờ xem hay đổi giới hạn của chính nó), các lệnh daemon và fleet (`listen`, `mcp start`, `mcp webhook …`, `mcp approver`, `presence status|wake|park`, `fleet …`), `update`, `profile lost-focus`, và `cloud get` (cần khóa cloud của tài khoản); AI agent dùng chúng bằng cách gọi `zalo-agent <lệnh> --json` (hoặc `zalo-mcp <lệnh> --json`).
 
 Tham chiếu đầy đủ về MCP tools (tham số, cấu trúc trả về, cấu hình): [skill/references/mcp-guide.md](skill/references/mcp-guide.md).
 
@@ -406,7 +406,7 @@ Thông tin xác thực Official Account được lưu riêng tại `~/.zalo-agen
 
 ## Tham chiếu nhanh lệnh CLI (qua `npx zalo-agent <lệnh>`)
 
-Thêm `--json` vào bất kỳ lệnh nào để nhận kết quả JSON phục vụ tự động hóa. Dưới đây là các lệnh tiêu biểu — tài liệu tham chiếu đầy đủ cho toàn bộ 315 lệnh nằm tại [skill/references/command-reference.md](skill/references/command-reference.md).
+Thêm `--json` vào bất kỳ lệnh nào để nhận kết quả JSON phục vụ tự động hóa. Dưới đây là các lệnh tiêu biểu — tài liệu tham chiếu đầy đủ cho toàn bộ 321 lệnh nằm tại [skill/references/command-reference.md](skill/references/command-reference.md).
 
 ### Phiên đăng nhập & bảo trì
 | Lệnh | Mô tả |

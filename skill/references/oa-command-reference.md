@@ -1,6 +1,6 @@
-# Official Account (OA) and ZBS Command Reference
+# Official Account (OA), ZBS and Social API Command Reference
 
-Zalo's official APIs (OA OpenAPI v2.0/v3.0 and ZBS Template Message), separate from the personal account. **88 commands** (70 `oa` + 18 `zbs`).
+Zalo's official APIs (OA OpenAPI v2.0/v3.0, ZBS Template Message and the Social API), separate from the personal account. **94 commands** (70 `oa` + 18 `zbs` + 6 `social`); `social` is described [at the end](#social-api-social).
 
 - Every `oa` and `zbs` command accepts `--oa-id <id>` (default `default`) to pick which stored OA, and the global `--json`.
 - `zbs` uses the same OA access token and credentials as `oa`: log in once with `oa login` (or `oa init`), then both work.
@@ -384,3 +384,23 @@ Failures before Zalo answered carry a word instead of a number: `http_<status>` 
 3. Official Account → permissions → tick what the commands need (OA management, messaging, articles, GMF, calls; the ZBS groups above) → Save
 4. Domain verification: a DNS TXT record, or serve what Zalo gives (`oa listen --verify-file <file>` or `--verify-meta '<meta …>'`)
 5. Webhook → set the HTTPS URL → turn on the events; copy the OA Secret Key for `oa listen -s`
+
+## Social API (`social`)
+
+A Zalo user logs in to **your app** and the app reads that user's app-scoped ID, name and avatar (Zalo's Social API: OAuth v4 with PKCE and `state`, then `graph.zalo.me`). Independent from the personal account and from the OA: its own app login per `--profile` (default `default`) in `~/.zalo-agent/social-credentials.json` (0600). The app's callback URL (developers.zalo.me → the app → Đăng nhập → Web) must be `http://localhost:<port>/callback` or `<callback-host>/callback`. Every call carries `appsecret_proof`. The access token lasts 1 hour and renews itself (once, on error 452, serialized); the login lasts at most 30 days, because a refreshed token keeps what was left of the one it replaced. A Zalo error prints `Social API error <code>: <message> (<meaning from the Social docs' table>)`; `-501` means the call came from an IP outside Vietnam. Not an MCP tool.
+
+```bash
+zalo-agent social setup --app-id <app-id> --secret <app-secret>
+zalo-agent social login --dpop          # opens the browser; waits on http://localhost:3457/callback
+zalo-agent social me --picture large
+zalo-agent social status
+```
+
+| Command | Description |
+|---------|-------------|
+| `setup --app-id <id> --secret <key> [--profile <name>]` | Save the app's ID and secret key. |
+| `login [--app-id <id>] [--secret <key>] [-p, --port <port>] [--callback-host <host>] [--dpop] [--profile <name>]` | Open Zalo's permission page (`oauth.zaloapp.com/v4/permission`, PKCE and `state`), wait for the callback on 127.0.0.1 (0.0.0.0 with `--callback-host`), check `state`, exchange the code with the verifier, save the tokens, then show the user. Port default 3457. `--dpop` binds the tokens to a new P-256 key pair (DPoP, ES256): every later call and refresh carries a proof signed with it, so a stolen token is useless on its own. |
+| `refresh [--profile <name>]` | Renew the access token now (the refresh token is single use; serialized under a lock). Refused, with nothing sent, once the 30-day login ended. |
+| `me [--fields <list>] [--picture small\|normal\|large] [--profile <name>]` | `GET graph.zalo.me/v2.0/me`: `id` (this app's ID for the user, not usable by other apps), `name`, `picture` (smallest unless `--picture`), and `is_sensitive` when asked (a user the law requires special handling for). Other fields are refused before any request. |
+| `status [--profile <name>]` | Whether a user is logged in, when the access token and the login end, DPoP on or off. Never shows a token. |
+| `logout [--profile <name>]` | Forget the user's tokens and DPoP key on this machine; the app's ID and secret stay. |

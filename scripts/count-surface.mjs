@@ -3,7 +3,7 @@
  * Measures the numbers that docs quote (AGENTS.md §10) straight from the code, so nobody has to
  * trust a number written down:
  *
- *   node scripts/count-surface.mjs            # commands, groups, OA/ZBS commands, MCP tools
+ *   node scripts/count-surface.mjs            # commands, groups, OA/ZBS/Social commands, MCP tools
  *   node scripts/count-surface.mjs --json     # the same as one JSON object
  *   node scripts/count-surface.mjs --tests    # also run `npm test` and report its summary line
  *
@@ -12,7 +12,7 @@
  * fresh Commander tree, walk it, count nodes with no subcommands as invokable leaves and nodes with
  * subcommands as containers, then add the commands src/index.js registers inline with
  * `.command("...")`. MCP tools are the `server.registerTool("name", …)` calls in src/mcp/mcp-tools.js.
- * The official-API commands (`oa …` and `zbs …`, both on the OA's OAuth token) count together as "OA/ZBS";
+ * The official-API commands (`oa …`, `zbs …` and `social …`, Zalo's sanctioned APIs) count together as "OA/ZBS/Social";
  * everything else is the personal-account surface.
  *
  * Importing the command modules has no side effects beyond reading the environment; the config
@@ -32,9 +32,10 @@ const { Command } = await import(pathToFileURL(join(root, "node_modules", "comma
 const indexSrc = readFileSync(join(root, "src", "index.js"), "utf8");
 
 /** `import { registerX } from "./commands/y.js"` pairs, in file order. */
-const registrars = [...indexSrc.matchAll(/import \{ (register\w+) \} from "(\.\/commands\/[\w-]+\.js)"/g)].map(
-    (m) => ({ fn: m[1], file: m[2] }),
-);
+const registrars = [...indexSrc.matchAll(/import \{ (register\w+) \} from "(\.\/commands\/[\w-]+\.js)"/g)].map((m) => ({
+    fn: m[1],
+    file: m[2],
+}));
 /** Commands registered inline on `program` in src/index.js (e.g. `update`). */
 const inline = [...indexSrc.matchAll(/^program\s*\n?\s*\.command\("([\w-]+)"\)/gm)].map((m) => m[1]);
 
@@ -65,8 +66,8 @@ for (const { fn, file } of registrars) {
 }
 if (inline.length) perGroup["(inline top-level)"] = inline.length;
 
-/** The official-API surface: `oa …` and `zbs …` (ZBS uses the OA's token). */
-const OFFICIAL = ["oa", "zbs"];
+/** The official-API surface: `oa …`, `zbs …` (on the OA's token) and `social …` (a user's login to an app). */
+const OFFICIAL = ["oa", "zbs", "social"];
 const oa = acc.leaves.filter((l) => OFFICIAL.some((g) => l === g || l.startsWith(`${g} `))).length;
 const mcpSrc = readFileSync(join(root, "src", "mcp", "mcp-tools.js"), "utf8");
 const tools = [...mcpSrc.matchAll(/registerTool\(\s*"([\w-]+)"/g)].map((m) => m[1]);
@@ -92,7 +93,9 @@ if (process.argv.includes("--tests")) {
 if (process.argv.includes("--json")) {
     console.log(JSON.stringify(result, null, 2));
 } else {
-    console.log(`CLI commands (invokable leaves): ${result.commands} (${result.personalCommands} personal + ${oa} OA/ZBS)`);
+    console.log(
+        `CLI commands (invokable leaves): ${result.commands} (${result.personalCommands} personal + ${oa} OA/ZBS/Social)`,
+    );
     console.log(`Command groups (containers):     ${result.groups}`);
     console.log(`MCP tools:                       ${result.mcpTools}`);
     console.log(`  ${tools.join(", ")}`);

@@ -216,7 +216,7 @@ before(async () => {
         }
     };
     walk(program, []);
-    leaves = leaves.filter((l) => !["oa", "zbs"].includes(l.split(" ")[0]));
+    leaves = leaves.filter((l) => !["oa", "zbs", "social"].includes(l.split(" ")[0]));
 });
 
 const { tools } = tool();

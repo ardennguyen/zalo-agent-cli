@@ -8,7 +8,7 @@
  *
  * The method is the one in docs/agent-notes.md: load every `register*` export that `src/index.js` calls into a fresh
  * commander tree and count the invokable leaves, plus the one inline `update` command. The official-API commands
- * (`oa …` and `zbs …`, both on the OA's OAuth token) count together as "OA/ZBS" (`oaLeaves`), as
+ * (`oa …`, `zbs …` and `social …`, Zalo's sanctioned APIs) count together as "OA/ZBS/Social" (`oaLeaves`), as
  * `scripts/count-surface.mjs` counts them.
  */
 import "../helpers/sandbox.js";
@@ -52,7 +52,7 @@ before(async () => {
                 walk(c, t);
             } else {
                 leaves++;
-                if (t === "oa" || t === "zbs") oaLeaves++;
+                if (t === "oa" || t === "zbs" || t === "social") oaLeaves++;
             }
         }
     };
@@ -77,12 +77,12 @@ const QUOTES = [
     ["AGENTS.md", /CLI commands \(\*\*(\d+)\*\*\)/g, "leaves"],
     ["AGENTS.md", /command groups \(\*\*(\d+)\*\* containers\)/g, "containers"],
     ["AGENTS.md", /MCP tools \(\*\*(\d+)\*\*\)/g, "mcpTools"],
-    ["AGENTS.md", /OA\/ZBS commands \(\*\*(\d+)\*\*\)/g, "oaLeaves"],
+    ["AGENTS.md", /OA\/ZBS\/Social commands \(\*\*(\d+)\*\*\)/g, "oaLeaves"],
     ["skill/SKILL.md", /\*\*(\d+) CLI commands\*\*/g, "leaves"],
     ["skill/SKILL.md", /across (\d+) command containers/g, "containers"],
     ["skill/SKILL.md", /\*\*(\d+) MCP tools\*\*/g, "mcpTools"],
     ["skill/SKILL.md", /\(all (\d+) commands \+ /g, "leaves"],
-    ["skill/SKILL.md", /Official Account and ZBS \(all (\d+) commands\)/g, "oaLeaves"],
+    ["skill/SKILL.md", /Official Account, ZBS and Social \(all (\d+) commands\)/g, "oaLeaves"],
     ["skill/SKILL.md", /use the (\d+) MCP tools/g, "mcpTools"],
     ["skill/references/command-reference.md", /\*\*(\d+) CLI commands\*\*/g, "leaves"],
     ["skill/references/command-reference.md", /\*\*(\d+) MCP tools exposed\*\*/g, "mcpTools"],
@@ -98,9 +98,13 @@ const QUOTES = [
     ["README.md", /· (\d+) lệnh ·/g, "leaves"],
     ["skill/SKILL.md", /\((\d+) top-level groups/g, "groups"],
     ["INSTALLATION.md", /all (\d+) commands/g, "leaves"],
-    ["docs/agent-notes.md", /\*\*(\d+)\*\* invokable leaves \(\d+ personal \+ \d+ OA\/ZBS\)/g, "leaves"],
-    ["docs/agent-notes.md", /\*\*\d+\*\* invokable leaves \((\d+) personal \+ \d+ OA\/ZBS\)/g, "personalLeaves"],
-    ["docs/agent-notes.md", /\*\*\d+\*\* invokable leaves \(\d+ personal \+ (\d+) OA\/ZBS\)/g, "oaLeaves"],
+    ["docs/agent-notes.md", /\*\*(\d+)\*\* invokable leaves \(\d+ personal \+ \d+ OA\/ZBS\/Social\)/g, "leaves"],
+    [
+        "docs/agent-notes.md",
+        /\*\*\d+\*\* invokable leaves \((\d+) personal \+ \d+ OA\/ZBS\/Social\)/g,
+        "personalLeaves",
+    ],
+    ["docs/agent-notes.md", /\*\*\d+\*\* invokable leaves \(\d+ personal \+ (\d+) OA\/ZBS\/Social\)/g, "oaLeaves"],
     ["skill/references/oa-command-reference.md", /\*\*(\d+) commands\*\* \(/g, "oaLeaves"],
     ["docs/agent-notes.md", /is a table of (\d+) reads/g, "reads"],
     ["docs/agent-notes.md", /There are (\d+) reads and \d+ writes now/g, "reads"],

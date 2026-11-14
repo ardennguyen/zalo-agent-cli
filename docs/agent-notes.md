@@ -112,11 +112,11 @@ Each of these reports success, or names the wrong cause. They were all learned t
 
 | Invariant | Current | Source of truth | How to check |
 |---|---|---|---|
-| CLI commands | **315** invokable leaves (227 personal + 88 OA/ZBS) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
-| Command groups | **39** containers — 23 top-level + 11 OA subgroups + 3 ZBS subgroups + `mcp webhook` + `account security` | the live commander tree | walk it. The number of `register*` calls in `src/index.js` is neither number: `oa` registers 11 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
+| CLI commands | **321** invokable leaves (227 personal + 94 OA/ZBS/Social) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
+| Command groups | **40** containers — 24 top-level + 11 OA subgroups + 3 ZBS subgroups + `mcp webhook` + `account security` | the live commander tree | walk it. The number of `register*` calls in `src/index.js` is neither number: `oa` registers 11 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **36** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
-| OA/ZBS commands | **88** (70 `oa` + 18 `zbs`) | `src/commands/oa.js` + `src/commands/oa/*.js`, `src/commands/zbs.js` | `node scripts/count-surface.mjs`. `zbs` counts with `oa`: both are the official API on the OA's OAuth token, so "personal" stays the unofficial surface |
-| Offline tests | **6347** as of 2026-11-14 (6342 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| OA/ZBS/Social commands | **94** (70 `oa` + 18 `zbs` + 6 `social`) | `src/commands/oa.js` + `src/commands/oa/*.js`, `src/commands/zbs.js`, `src/commands/social.js` | `node scripts/count-surface.mjs`. `zbs` counts with `oa`: both are the official API on the OA's OAuth token, so "personal" stays the unofficial surface |
+| Offline tests | **6367** as of 2026-11-14 (6362 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that

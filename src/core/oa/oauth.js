@@ -13,6 +13,10 @@
  *    single use (3 months); the answer carries a new one and the old access token stops working at once. So a
  *    refresh is serialized under a file lock, re-reads the stored token inside the lock, and saves the new pair
  *    before anything uses it.
+ *
+ * The Social API's user login is the same flow on `oauth.zaloapp.com/v4/permission` and `/v4/access_token`
+ * (src/core/social/client.js): the token, exchange and callback helpers take those URLs, extra headers (DPoP) and
+ * a save function.
  */
 
 import { createHash, randomBytes, randomInt } from "node:crypto";
@@ -72,25 +76,36 @@ export function createState() {
  * @param {{ codeChallenge?: string, state?: string }} [pkce]
  * @returns {string}
  */
-export function getOAuthUrl(appId, redirectUri = "http://localhost:3456/callback", { codeChallenge, state } = {}) {
+export function getOAuthUrl(
+    appId,
+    redirectUri = "http://localhost:3456/callback",
+    { codeChallenge, state, permissionUrl = OAUTH_PERMISSION_URL } = {},
+) {
     const params = new URLSearchParams({ app_id: appId, redirect_uri: redirectUri });
     if (codeChallenge) params.set("code_challenge", codeChallenge);
     if (state) params.set("state", state);
-    return `${OAUTH_PERMISSION_URL}?${params}`;
+    return `${permissionUrl}?${params}`;
 }
 
-async function postToken(secretKey, fields) {
+/**
+ * Where a token request goes and what it adds: the OA token URL by default; the Social API's user token URL and a
+ * DPoP header when its caller says so.
+ *
+ * @typedef {{ url?: string, headers?: Record<string, string> }} TokenEndpoint
+ */
+
+async function postToken(secretKey, fields, { url = OAUTH_TOKEN_URL, headers = {} } = {}) {
     let res;
     try {
-        res = await fetch(OAUTH_TOKEN_URL, {
+        res = await fetch(url, {
             method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded", secret_key: secretKey },
+            headers: { ...headers, "Content-Type": "application/x-www-form-urlencoded", secret_key: secretKey },
             body: new URLSearchParams(fields),
         });
     } catch (e) {
-        throw new OAError(`${OAUTH_TOKEN_URL} could not be reached: ${e.message}`, { code: "network" });
+        throw new OAError(`${url} could not be reached: ${e.message}`, { code: "network" });
     }
-    const reply = await readZaloJson(res, OAUTH_TOKEN_URL);
+    const reply = await readZaloJson(res, url);
     // The docs' examples say `expires_in`, their field tables `expire_in`: read either.
     if (reply.expires_in === undefined && reply.expire_in !== undefined) reply.expires_in = reply.expire_in;
     return reply;
@@ -104,12 +119,13 @@ async function postToken(secretKey, fields) {
  * @param {string} appId
  * @param {string} secretKey
  * @param {string} [codeVerifier] - required when the permission URL carried a code_challenge
+ * @param {TokenEndpoint} [endpoint] - default: the OA token URL
  * @returns {Promise<object>}
  */
-export async function exchangeCode(code, appId, secretKey, codeVerifier) {
+export async function exchangeCode(code, appId, secretKey, codeVerifier, endpoint) {
     const fields = { code, app_id: appId, grant_type: "authorization_code" };
     if (codeVerifier) fields.code_verifier = codeVerifier;
-    return postToken(secretKey, fields);
+    return postToken(secretKey, fields, endpoint);
 }
 
 /**
@@ -118,10 +134,11 @@ export async function exchangeCode(code, appId, secretKey, codeVerifier) {
  * @param {string} refreshToken
  * @param {string} appId
  * @param {string} secretKey
+ * @param {TokenEndpoint} [endpoint] - default: the OA token URL
  * @returns {Promise<object>}
  */
-export async function refreshAccessToken(refreshToken, appId, secretKey) {
-    return postToken(secretKey, { refresh_token: refreshToken, app_id: appId, grant_type: "refresh_token" });
+export async function refreshAccessToken(refreshToken, appId, secretKey, endpoint) {
+    return postToken(secretKey, { refresh_token: refreshToken, app_id: appId, grant_type: "refresh_token" }, endpoint);
 }
 
 /** The text of an OAuth error answer, or null when the answer is a token. */
@@ -311,6 +328,10 @@ export function openInBrowser(url) {
  * @param {string} [opts.oaId] - the record to save into (default "default")
  * @param {number} [opts.timeoutMs] - default 2 minutes
  * @param {(info: { authUrl: string, bindHost: string, port: number }) => void} [opts.onListening]
+ * @param {string} [opts.permissionUrl] - default: the OA permission URL (the Social API passes its own)
+ * @param {() => TokenEndpoint} [opts.tokenEndpoint] - built at exchange time (a DPoP proof is fresh); default OA
+ * @param {(tokenData: object, ctx: { appId: string, secretKey: string, returnedOaId: string|null }) => object} [opts.save]
+ *   - stores the answer and returns what was saved; default: the OA record `oaId`
  * @returns {{ authUrl: string, redirectUri: string, done: Promise<{ tokenData: object, oaId: string|null, saved: object }> }}
  */
 export function startOAuthLogin({
@@ -321,12 +342,19 @@ export function startOAuthLogin({
     oaId = "default",
     timeoutMs = 120_000,
     onListening,
+    permissionUrl,
+    tokenEndpoint,
+    save,
 }) {
     const callbackBase = callbackHost ? callbackHost.replace(/\/+$/, "") : `http://localhost:${port}`;
     const redirectUri = `${callbackBase}/callback`;
     const verifier = createCodeVerifier();
     const state = createState();
-    const authUrl = getOAuthUrl(appId, redirectUri, { codeChallenge: codeChallengeFor(verifier), state });
+    const authUrl = getOAuthUrl(appId, redirectUri, {
+        codeChallenge: codeChallengeFor(verifier),
+        state,
+        permissionUrl,
+    });
     const bindHost = callbackHost ? "0.0.0.0" : "127.0.0.1";
 
     const done = new Promise((resolveDone, rejectDone) => {
@@ -366,16 +394,16 @@ export function startOAuthLogin({
                 return finish(new Error(msg));
             }
             try {
-                const tokenData = await exchangeCode(code, appId, secretKey, verifier);
+                const tokenData = await exchangeCode(code, appId, secretKey, verifier, tokenEndpoint?.());
                 const failed = tokenErrorText(tokenData);
                 if (failed) throw new Error(`Token error ${failed}`);
-                const saved = {
-                    appId,
-                    secretKey,
-                    ...tokenFields(tokenData),
-                    oaId: returnedOaId || oaId,
-                };
-                saveOACreds(saved, oaId);
+                let saved;
+                if (save) {
+                    saved = save(tokenData, { appId, secretKey, returnedOaId });
+                } else {
+                    saved = { appId, secretKey, ...tokenFields(tokenData), oaId: returnedOaId || oaId };
+                    saveOACreds(saved, oaId);
+                }
                 page(res, 200, "Login successful!", "You can close this tab and return to the terminal.");
                 finish(null, { tokenData, oaId: returnedOaId, saved });
             } catch (e) {

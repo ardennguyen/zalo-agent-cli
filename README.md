@@ -22,7 +22,7 @@ Engine do dự án tự viết theo giao thức của Zalo (từ 3.0, không cò
 > riêng, chạy song song với server được** — muốn xem tin nhắn bên cạnh server thì dùng hai ứng dụng này, đừng dùng trình duyệt.
 > Mỗi lần đăng nhập QR, điện thoại hiện thêm một mục trong danh sách thiết bị (các mục cũ của server bị đăng xuất),
 > nhưng hàng đợi tin nhắn offline vẫn còn, vì CLI giữ nguyên mã thiết bị của tài khoản khi đăng nhập lại.
-> Lệnh `oa` và `zbs` là ngoại lệ — chúng dùng **API chính thức** của Zalo OA và ZBS, không có rủi ro ban.
+> Lệnh `oa`, `zbs` và `social` là ngoại lệ — chúng dùng **API chính thức** của Zalo (OA, ZBS, Social API), không có rủi ro ban.
 
 > [!TIP]
 > **AI Agent Skill** — Dùng với OpenClaw, Claude Code, hoặc bất kỳ agent nào hỗ trợ SKILL.md:
@@ -30,7 +30,7 @@ Engine do dự án tự viết theo giao thức của Zalo (từ 3.0, không cò
 > clawhub install zalo-agent          # OpenClaw (từ ClawHub registry)
 > cp -r skill/ ~/.claude/skills/zalo-agent/   # Claude Code
 > ```
-> 23 nhóm lệnh · 315 lệnh · listen mode + webhook · 55+ ngân hàng VN · đa tài khoản + proxy
+> 24 nhóm lệnh · 321 lệnh · listen mode + webhook · 60+ ngân hàng VN · đa tài khoản + proxy
 > Xem [skill/SKILL.md](skill/SKILL.md) · [Tham chiếu lệnh đầy đủ](skill/references/command-reference.md) · [Eval scenarios](skill/evals/)
 
 > [!NOTE]
@@ -162,6 +162,7 @@ Tất cả lệnh hỗ trợ `--json`. Tài liệu đầy đủ: **[Wiki](https:
 | `mcp` | 8 | MCP server (`start`, `wait`, `mark-read`, bốn lệnh `webhook` và `approver` đặt mật khẩu người duyệt) — 36 tools cho AI agent + zero-polling CLI | [MCP Server](https://github.com/ardennguyen/zalo-agent-cli/wiki/MCP-Server-(VN)) |
 | **`oa`** | **70** | **Zalo Official Account API — OAuth, tin tư vấn, người dùng, tag, bài viết, nhóm chat GMF, gọi thoại, webhook** | **[Official Account](https://github.com/ardennguyen/zalo-agent-cli/wiki/Official-Account-(VN))** |
 | **`zbs`** | **18** | **ZBS Template Message — template, gửi tin qua SĐT (hash, RSA, journey) hoặc UID, trạng thái, quota, chất lượng** | **[Official Account](https://github.com/ardennguyen/zalo-agent-cli/wiki/Official-Account-(VN))** |
+| **`social`** | **6** | **Social API — người dùng Zalo đăng nhập vào ứng dụng của bạn (OAuth v4, PKCE, DPoP), đọc ID, tên, ảnh đại diện** | **[Official Account](https://github.com/ardennguyen/zalo-agent-cli/wiki/Official-Account-(VN))** |
 
 Xem thêm: [Đa tài khoản & Proxy](https://github.com/ardennguyen/zalo-agent-cli/wiki/%C4%90a-T%C3%A0i-Kho%E1%BA%A3n-&-Proxy) · [Cài đặt VPS](https://github.com/ardennguyen/zalo-agent-cli/wiki/C%C3%A0i-%C4%90%E1%BA%B7t-VPS) · [Thẻ chuyển khoản & QR](https://github.com/ardennguyen/zalo-agent-cli/wiki/Th%E1%BA%BB-Chuy%E1%BB%83n-Kho%E1%BA%A3n-&-QR) · [Bộ nhớ đệm & Đồng bộ](https://github.com/ardennguyen/zalo-agent-cli/wiki/B%E1%BB%99-Nh%E1%BB%9B-%C4%90%E1%BB%87m-&-%C4%90%E1%BB%93ng-B%E1%BB%99) · [Bảo mật](https://github.com/ardennguyen/zalo-agent-cli/wiki/B%E1%BA%A3o-M%E1%BA%ADt)
 
@@ -171,7 +172,7 @@ Xem thêm: [Đa tài khoản & Proxy](https://github.com/ardennguyen/zalo-agent-
 
 - Đăng nhập QR qua HTTP server tự động (browser + terminal), báo ngay khi bị **từ chối trên điện thoại** thay vì treo tới khi mã hết hạn; trang QR báo đăng nhập thành công hay thất bại, và mã hết hạn có nút "Lấy mã mới"
 - Đa tài khoản với proxy riêng biệt (1:1), device fingerprint riêng cho từng tài khoản; chạy **nhiều tài khoản live đồng thời** (mỗi tài khoản một tiến trình `mcp start` hoặc `listen` kèm `--account <ID>`, và truyền `--account <ID>` / `ZALO_ACCOUNT` trên mọi lệnh CLI mà không ghi đè `accounts.json`)
-- **315 lệnh** phủ hết tính năng Zalo cá nhân, cùng API chính thức OA và ZBS
+- **321 lệnh** phủ hết tính năng Zalo cá nhân, cùng API chính thức OA, ZBS và Social API
 - **Zalo Official Account (OA) API và ZBS Template Message** — OAuth login, tin tư vấn, người dùng, tag, bài viết, nhóm chat GMF, gọi thoại, tin template qua SĐT hoặc UID, webhook listener, multi-OA
 - **MCP server** (stdio + HTTP/HTTPS + OAuth 2.0) — 36 tools cho Claude Code, Gemini và các MCP client: đọc, chờ tin nhắn đến (`zalo_wait_for_message`), gửi (văn bản, link preview, danh thiếp, vào My Documents, đánh dấu Quan trọng/Khẩn cấp), tìm kiếm tin nhắn trong cache, tra cứu người dùng, gắn/gỡ nhãn hội thoại (`zalo_label`), quản lý bạn bè và lời mời kết bạn (`zalo_friend`), quản trị nhóm đầy đủ (`zalo_group`), cài đặt hội thoại (`zalo_conversation`), hồ sơ (`zalo_profile`), trả lời tự động, tin nhắn nhanh, catalog, tài khoản ngân hàng, chỉ mục zCloud, sticker và link, thả cảm xúc, thu hồi, chuyển tiếp, xóa tin, nhắc hẹn, ghi chú/ghim tin, bình chọn, xem thành viên nhóm, liệt kê hội thoại gần đây và kiểm tra độ đầy đủ của cache; mọi lệnh CLI của tài khoản cá nhân đều có hành động MCP tương ứng
 - **Dữ liệu được mã hóa trên đĩa** — thông tin đăng nhập và các file nhỏ được niêm phong, `zalo.db` và hàng đợi webhook là SQLCipher v4, media tải về được mã hóa; khóa nằm trong bộ cung cấp khóa của máy (DPAPI, keychain, Secret Service, systemd-creds, KMS hoặc file passphrase). Mỗi tin nhắn có **row MAC** để phát hiện chỉnh sửa (`db verify`). Bot đọc dữ liệu qua `db query` / `db export` (chat ẩn chỉ khi có PIN) hoặc các MCP tool — xem [docs/security.vi.md](docs/security.vi.md)
@@ -184,7 +185,7 @@ Xem thêm: [Đa tài khoản & Proxy](https://github.com/ardennguyen/zalo-agent-
 - **Rời nhóm thì xóa lịch sử nhóm trên máy**, như ứng dụng Zalo (sự kiện `group_gone`); `groups.onLeave: "keep"` giữ lại
 - **Bộ nhớ đệm cục bộ (SQLite mã hóa)** — `listen` ghi mọi tin nhắn vào `zalo.db`, `msg history` đọc từ cache, `sync` (hoặc `sync-mobile`) khôi phục toàn bộ lịch sử từ điện thoại vào `zalo.db` (giải mã transfer-sync-v2; xác nhận một lần trên điện thoại), mặc định lấy **toàn bộ** lịch sử (không còn mốc chặn 2024-01-01); thêm `--days <n>` hoặc `--from <YYYY-MM-DD>` nếu chỉ cần một khoảng. Dọn dẹp: `sync-media --prune <days|all>` giải phóng dung lượng nhưng giữ nguyên nội dung tin nhắn, `--prune-orphans` nhắm vào hội thoại tài khoản không còn, và `conv forget` xoá hẳn bản sao cục bộ của một hội thoại — không cái nào gửi gì tới Zalo. Luồng đồng bộ chỉ mang **liên kết** media chứ không mang file, nên sau khi lưu tin nhắn, `sync-mobile` **tự động tải media về** (thêm `--messages-only` nếu chỉ muốn tin nhắn); `sync-media` chạy lại/tiếp tục bước tải này, không cần xác nhận trên điện thoại. Ghi chú, tin ghim, bình chọn và nhắc hẹn nằm ngoài luồng tin nhắn — dùng `sync-boards`
 - Tự động tải media (ảnh/audio/video) — một downloader duy nhất cho `listen`, `msg history`, `mcp start` và các lệnh sync, lưu vào `~/.zalo-agent-cli/accounts/<id>/media/<threadId>/` (hoặc tách riêng credentials, database `zalo.db`, media và OA sang các ổ đĩa/mount khác nhau qua `--credentials-dir`, `--data-dir`, `--media-dir`, `--oa-dir` / biến môi trường `ZALO_*_DIR` trong `~/.zalo-agent-cli/.env`; nếu dùng kèm `zalo-mcp`, chỉ nên giữ cấu hình PORT trong `zalo-mcp/.env` và đặt toàn bộ đường dẫn lưu trữ vào `<CONFIG_DIR>/.env`)
-- Thẻ chuyển khoản (55+ ngân hàng VN) & QR VietQR
+- Thẻ chuyển khoản (60+ ngân hàng VN) & QR VietQR
 - Lắng nghe real-time với webhook & lưu JSONL local. Webhook **bền vững**: mỗi sự kiện ghi xuống đĩa rồi mới gửi, đúng thứ tự, thử lại khi bên nhận hỏng, sống sót qua khởi động lại (`mcp webhook status`)
 - **Vận hành nhiều tài khoản**: `/health`, `/ready`, `/status` và `/metrics` (Prometheus), `fleet status|start|stop|restart|purge|generate|serve`, mức log + xoay vòng `daemon.log`, `ZALO_START_JITTER` / `ZALO_LOGIN_SLOTS` / `ZALO_CONNECT_SLOTS` — xem [docs/deployment.vi.md](docs/deployment.vi.md) §4.7–4.8 và [bộ cấu hình mẫu theo từng trường hợp](docs/config-samples/use-cases/) (máy cá nhân, LAN, VPS, backend CRM, SaaS với KMS)
 - Hàng đợi offline của Zalo tính theo thiết bị: đăng nhập lại bằng QR giữ nguyên mã thiết bị; độ phủ của cache không bao giờ tính từ trước khi thiết bị này bắt đầu dùng (`deviceSince`), và khi Zalo báo tràn hàng đợi, tin nhóm được bù từ kho tin trên cloud (sự kiện `queue_overflow`)
@@ -247,7 +248,7 @@ Its engine is this project's own implementation of Zalo's protocol (since 3.0, n
 > clawhub install zalo-agent                    # OpenClaw (from ClawHub registry)
 > cp -r skill/ ~/.claude/skills/zalo-agent/     # Claude Code
 > ```
-> 23 command groups · 315 commands · listen mode + webhook · 55+ VN banks · multi-account + proxy
+> 24 command groups · 321 commands · listen mode + webhook · 60+ VN banks · multi-account + proxy
 > See [skill/SKILL.md](skill/SKILL.md) · [Full command reference](skill/references/command-reference.md) · [Eval scenarios](skill/evals/)
 
 > [!NOTE]
@@ -345,6 +346,7 @@ Full docs: **[Wiki](https://github.com/ardennguyen/zalo-agent-cli/wiki)** · [Fu
 | `mcp` | 8 | MCP server (`start`, `wait`, `mark-read`, the four `webhook` commands and `approver` for the approver password) — 36 tools for AI agents + zero-polling CLI | [MCP Server](https://github.com/ardennguyen/zalo-agent-cli/wiki/MCP-Server) |
 | **`oa`** | **70** | **Zalo Official Account API — OAuth, consultation messages, users, tags, articles, GMF group chats, voice calls, webhook** | **[Official Account](https://github.com/ardennguyen/zalo-agent-cli/wiki/Official-Account)** |
 | **`zbs`** | **18** | **ZBS Template Message — templates, sends by phone number (hashed, RSA, journey) or UID, status, quota, quality** | **[Official Account](https://github.com/ardennguyen/zalo-agent-cli/wiki/Official-Account)** |
+| **`social`** | **6** | **Social API — a Zalo user logs in to your app (OAuth v4, PKCE, DPoP); their ID, name and avatar** | **[Official Account](https://github.com/ardennguyen/zalo-agent-cli/wiki/Official-Account)** |
 
 See also: [Multi-Account & Proxy](https://github.com/ardennguyen/zalo-agent-cli/wiki/Multi-Account-&-Proxy) · [VPS Setup](https://github.com/ardennguyen/zalo-agent-cli/wiki/VPS-Setup) · [Bank Card & QR Payments](https://github.com/ardennguyen/zalo-agent-cli/wiki/Bank-Card-&-QR-Payments) · [Local Cache & Sync](https://github.com/ardennguyen/zalo-agent-cli/wiki/Local-Cache-&-Sync) · [Security](https://github.com/ardennguyen/zalo-agent-cli/wiki/Security)
 
@@ -352,7 +354,7 @@ See also: [Multi-Account & Proxy](https://github.com/ardennguyen/zalo-agent-cli/
 
 - QR login over an auto-started HTTP server (browser + terminal), reporting a **decline on the phone** immediately instead of hanging until the code expires; the QR page says whether the login succeeded or failed, and an expired code has a "Get a new code" button
 - Multi-account with a dedicated proxy (1:1) and a per-account device fingerprint; run **multiple live accounts simultaneously** (one `mcp start` or `listen` process per account with `--account <ID>`, plus `--account <ID>` / `ZALO_ACCOUNT` on any CLI command without mutating `accounts.json`)
-- **315 commands** covering the personal-account Zalo surface plus the official OA and ZBS APIs
+- **321 commands** covering the personal-account Zalo surface plus the official OA, ZBS and Social APIs
 - **Zalo Official Account (OA) API and ZBS Template Message** — OAuth login, consultation messages, users, tags, articles, GMF group chats, voice calls, template messages by phone number or UID, webhook listener, multi-OA
 - **MCP server** (stdio + HTTP/HTTPS + OAuth 2.0) — 36 tools for Claude Code, Gemini and other MCP clients: read, wait for incoming messages (`zalo_wait_for_message`), send (text, local file/image attachments, link previews, contact cards, to My Documents too, marked Important/Urgent), search cached messages, look up users, manage conversation labels (`zalo_label`), friends and friend requests (`zalo_friend`), full group administration (`zalo_group`), conversation settings (`zalo_conversation`), the profile (`zalo_profile`), auto-replies, quick messages, the catalog, bank accounts, the zCloud index, stickers and links, react, recall, forward, delete, reminders, group notes/pins, group polls, list a group's members, list recent conversations, and check how complete the cache is; every personal CLI command has an MCP action
 - **Data encrypted at rest** — the saved login and the small files are sealed, `zalo.db` and the webhook outbox are SQLCipher v4, downloaded media is encrypted; the keys stay with the machine's key provider (DPAPI, the keychain, Secret Service, systemd-creds, a KMS or a passphrase file). Every message carries a **row MAC** for tamper evidence (`db verify`). Bots read through `db query` / `db export` (hidden chats only with the PIN) or the MCP tools — see [docs/security.md](docs/security.md)

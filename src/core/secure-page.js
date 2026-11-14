@@ -10,8 +10,9 @@
  *   listener started on first use (stdio). The link is built from `publicUrl` when set
  *   (resolvePublicUrl, src/core/deploy-policy.js), else from the local address: never from a request's Host header.
  *   The form posts to its own path relatively, so it also works under a base path (`https://example.com/zalo`).
- * - Every answer carries `Cache-Control: no-store` and a CSP that allows no external asset and no script. The form
- *   posts back to the same token path, the token is the only secret in the link, a PIN typed is never written back
+ * - Every answer carries `Cache-Control: no-store` and a CSP that allows no external asset: only the page's own style
+ *   and language script, by a per-response nonce (src/utils/page-kit.js). The pages look like the QR login page and
+ *   speak English and Vietnamese (src/core/secure-page-view.js). The form posts back to the same token path, the token is the only secret in the link, a PIN typed is never written back
  *   into any page, and request logs show the path with the token masked (maskSecurePath).
  * - When the person submits, the ticket becomes "approved" (or "done", for an action the page carried out itself,
  *   like changing the PIN). It holds no PIN. The agent repeats its call with `ticket`, which consumes it.
@@ -24,6 +25,17 @@
 
 import { randomBytes } from "node:crypto";
 import http from "node:http";
+import { newNonce, pageHeaders, requestedLang } from "../utils/page-kit.js";
+import {
+    CHOOSE_NOTICE,
+    NO_CHECK_NOTICE,
+    couldNotNotice,
+    formView,
+    noticeOf,
+    renderView,
+    statusView,
+    successText,
+} from "./secure-page-view.js";
 
 /** How long a ticket lives. */
 export const TICKET_TTL_MS = 5 * 60_000;
@@ -107,6 +119,8 @@ export class TicketStore {
      * @param {string[]} [spec.formActionOrigins] - other origins the form's answer may redirect to (the page's CSP
      *   `form-action` allows them): an OAuth client's callback
      * @param {string|null} [spec.declineRedirect] - where Decline sends the browser, instead of a status page
+     * @param {object|null} [spec.view] - what the page alone shows besides title and description, in both languages
+     *   (src/core/secure-page-view.js): an OAuth request's app, account and return host, or `{heading, lead, done}`
      * @returns {{token: string, claim: string, expiresAt: number}}
      */
     issue({
@@ -122,6 +136,7 @@ export class TicketStore {
         onSubmit,
         formActionOrigins = [],
         declineRedirect = null,
+        view = null,
     }) {
         this.#prune();
         const token = randomBytes(16).toString("base64url");
@@ -140,6 +155,7 @@ export class TicketStore {
             onSubmit,
             formActionOrigins: formActionOrigins.filter((o) => /^https?:\/\/[^\s;,'"]+$/.test(String(o))),
             declineRedirect,
+            view,
             status: "pending",
             message: null,
             outcome: null,
@@ -258,113 +274,38 @@ function refusalMessage(reason) {
 
 // --- the page ---
 
-const STYLE =
-    "body{font:16px/1.5 system-ui,sans-serif;max-width:28rem;margin:2rem auto;padding:0 1rem;color:#1b1b1f;" +
-    "background:#fff}h1{font-size:1.25rem}label{display:block;margin:.75rem 0 .25rem}input{font:inherit;" +
-    "padding:.5rem;width:8rem;letter-spacing:.3em}input.wide{width:16rem;letter-spacing:normal}button{font:inherit;padding:.5rem 1rem;margin:1rem .5rem 0 0}" +
-    ".msg{padding:.5rem .75rem;border-radius:.25rem;background:#fdecea}.ok{background:#e7f5ea}" +
-    "@media (prefers-color-scheme:dark){body{background:#151518;color:#eee}.msg{background:#4a1f1c}" +
-    ".ok{background:#1d3b25}}";
-
-/** Escape text for HTML. */
-function esc(text) {
-    return String(text ?? "").replace(
-        /[&<>"']/g,
-        (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
-    );
-}
-
-function page(title, body) {
-    return (
-        `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
-        `<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer">` +
-        `<title>${esc(title)}</title><style>${STYLE}</style></head><body><h1>${esc(title)}</h1>${body}</body></html>`
-    );
-}
-
-const pinInput = (name, label) =>
-    `<label for="${name}">${esc(label)}</label><input id="${name}" name="${name}" type="password" ` +
-    `inputmode="numeric" pattern="[0-9]{4}" maxlength="4" minlength="4" autocomplete="off" required>`;
-
-/**
- * The form of a pending ticket. The action is the token path itself, relative (the page is `.../zalo/secure/<token>`),
- * so the form only ever posts back to it, under whatever base path the proxy serves the page at.
- */
-function formPage(ticket, notice) {
-    const action = ticket.token;
-    const intro = `<p>${esc(ticket.description)}</p>${notice ? `<p class="msg">${esc(notice)}</p>` : ""}`;
-    let fields;
-    if (ticket.kind === "confirm") {
-        const secret =
-            ticket.secretKind === "pin"
-                ? pinInput("secret", "Hidden-chat PIN (to approve)")
-                : ticket.secretKind === "password"
-                  ? `<label for="secret">Approver password</label><input id="secret" name="secret" type="password" ` +
-                    `class="wide" autocomplete="off" maxlength="256" required>`
-                  : "";
-        fields =
-            secret +
-            `<button type="submit" name="decision" value="approve">Approve</button>` +
-            `<button type="submit" name="decision" value="decline"${secret ? " formnovalidate" : ""}>Decline</button>`;
-    } else if (ticket.kind === "pin-change") {
-        fields =
-            (ticket.hasPin ? pinInput("pin", "Current PIN") : "") +
-            pinInput("newPin", "New PIN (4 digits)") +
-            pinInput("newPin2", "New PIN again") +
-            `<button type="submit" name="decision" value="approve">Save</button>` +
-            `<button type="submit" name="decision" value="decline" formnovalidate>Cancel</button>`;
-    } else {
-        fields =
-            pinInput("pin", "Hidden-chat PIN") +
-            `<button type="submit" name="decision" value="approve">Unlock</button>` +
-            `<button type="submit" name="decision" value="decline" formnovalidate>Cancel</button>`;
-    }
-    const expires = new Date(ticket.expiresAt).toISOString().slice(11, 16);
-    return page(
-        ticket.title,
-        `${intro}<form method="post" action="${esc(action)}" autocomplete="off">${fields}</form>` +
-            `<p><small>This link works once and expires at ${esc(expires)} UTC. Nothing typed here is shown to ` +
-            `the AI agent.</small></p>`,
-    );
-}
-
-function statusPage(title, text, ok = false) {
-    return page(title, `<p class="msg${ok ? " ok" : ""}">${esc(text)}</p><p>You can close this page.</p>`);
-}
-
-const PAGE_HEADERS = {
-    "Content-Type": "text/html; charset=utf-8",
+/** Headers of an answer without a page (a redirect). */
+const BARE_HEADERS = {
     "Cache-Control": "no-store, max-age=0",
     Pragma: "no-cache",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
-    "Content-Security-Policy":
-        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+    "Content-Security-Policy": "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
 };
 
-function send(res, status, html, headers = PAGE_HEADERS) {
-    res.writeHead(status, headers);
-    res.end(html);
+/**
+ * Answer with a page: a fresh nonce for its style and script, and a CSP whose `form-action` also allows the ticket's
+ * other origins (an OAuth client's callback), when a form is shown.
+ *
+ * @param {import("http").ServerResponse} res
+ * @param {number} code
+ * @param {{title: object, body: string, cardClass?: string}} view
+ * @param {{lang?: "en"|"vi"|null, ticket?: object|null}} [o]
+ */
+function send(res, code, view, { lang = null, ticket = null } = {}) {
+    const nonce = newNonce();
+    const formAction = ["'self'", ...(ticket?.formActionOrigins ?? [])];
+    res.writeHead(code, pageHeaders(nonce, { formAction }));
+    res.end(renderView(view, { nonce, lang: lang ?? "en" }));
 }
 
-/** The headers of a ticket's form: its CSP also lets the form's answer redirect to the ticket's other origins. */
-function formHeaders(ticket) {
-    if (!ticket.formActionOrigins?.length) return PAGE_HEADERS;
-    return {
-        ...PAGE_HEADERS,
-        "Content-Security-Policy": PAGE_HEADERS["Content-Security-Policy"].replace(
-            "form-action 'self'",
-            `form-action 'self' ${ticket.formActionOrigins.join(" ")}`,
-        ),
-    };
-}
+/** A status page (see statusView). */
+const statusOf = (title, text, tone = "bad") => statusView({ title, text, tone });
 
 /** Send the browser on (303, so the form's POST becomes a GET there). */
 function redirectTo(res, location) {
-    const headers = { ...PAGE_HEADERS, Location: location };
-    delete headers["Content-Type"];
-    res.writeHead(303, headers);
+    res.writeHead(303, { ...BARE_HEADERS, Location: location });
     res.end();
 }
 
@@ -423,65 +364,67 @@ export async function handleSecureRequest(req, res, { store, accountId, publicUr
     const path = String(req.url ?? "").split("?")[0];
     const m = PATH_SHAPE.exec(path);
     if (!m) return false;
+    // The page opens in the language its link asks for (`?lang=vi`); its script then follows the saved choice or the
+    // browser's language when the link asks none.
+    const lang = requestedLang(req.url);
     if (req.method !== "GET" && req.method !== "POST") {
         res.setHeader("Allow", "GET, POST");
-        send(res, 405, statusPage("Not allowed", "This page takes GET and POST only."));
+        send(res, 405, statusOf("notAllowedTitle", "notAllowedText"), { lang });
         return true;
     }
     const found = store.lookup(m[1]);
     if (found.error) {
-        const titles = { unknown: "Link not found", expired: "Link expired", used: "Link already used" };
-        send(res, found.error === "unknown" ? 404 : 410, statusPage(titles[found.error], refusalMessage(found.error)));
+        const views = {
+            unknown: () => statusOf("notFoundTitle", "notFoundText"),
+            expired: () => statusOf("expiredTitle", "expiredText", "warn"),
+            used: () => statusOf("usedTitle", "usedText", "warn"),
+        };
+        send(res, found.error === "unknown" ? 404 : 410, views[found.error](), { lang });
         return true;
     }
     const { ticket } = found;
     if (ticket.accountId !== String(accountId ?? "")) {
-        send(res, 403, statusPage("Wrong account", refusalMessage("account")));
+        send(res, 403, statusOf("wrongAccountTitle", "wrongAccountText"), { lang });
         return true;
     }
     if (ticket.status !== "pending") {
         const ok = ticket.status === "approved" || ticket.status === "done";
-        send(
-            res,
-            409,
-            statusPage(
-                "Already answered",
-                ok ? "This was already completed; the agent can go on." : "This was already declined.",
-                ok,
-            ),
-        );
+        send(res, 409, statusOf("answeredTitle", ok ? "answeredOk" : "answeredDeclined", ok ? "ok" : "warn"), {
+            lang,
+        });
         return true;
     }
     if (req.method === "GET") {
-        send(res, 200, formPage(ticket), formHeaders(ticket));
+        send(res, 200, formView(ticket, null, { lang }), { lang, ticket });
         return true;
     }
 
     if (!sameOrigin(req, publicUrl)) {
-        send(res, 403, statusPage("Refused", "This form can only be sent from its own page."));
+        send(res, 403, statusOf("refusedTitle", "refusedOrigin"), { lang });
         return true;
     }
     let fields;
     try {
         fields = await formFields(req);
     } catch {
-        send(res, 413, statusPage("Refused", "That request was too large."));
+        send(res, 413, statusOf("refusedTitle", "refusedLarge"), { lang });
         return true;
     }
     if (fields.decision === "decline") {
         store.settle(ticket, "declined", { message: "The person declined on the page; nothing was done." });
         if (ticket.declineRedirect) redirectTo(res, ticket.declineRedirect);
-        else send(res, 200, statusPage("Declined", "Nothing was done. You can close this page."));
+        else send(res, 200, statusOf("declinedTitle", "declinedText", "warn"), { lang });
         return true;
     }
     if (ticket.kind === "confirm") {
         if (fields.decision !== "approve") {
-            send(res, 400, formPage(ticket, "Choose Approve or Decline."), formHeaders(ticket));
+            send(res, 400, formView(ticket, CHOOSE_NOTICE, { lang }), { lang, ticket });
             return true;
         }
         if (!ticket.secretKind) {
             store.settle(ticket, "approved");
-            send(res, 200, statusPage("Approved", "Approved. The agent can go on now.", true));
+            const said = successText(ticket, "approved");
+            send(res, 200, statusOf(said.title, said.text, "ok"), { lang });
             return true;
         }
     }
@@ -489,14 +432,21 @@ export async function handleSecureRequest(req, res, { store, accountId, publicUr
     const typed = { pin: fields.pin, newPin: fields.newPin, newPin2: fields.newPin2, secret: fields.secret };
     fields = null;
     let result;
+    let notice = null;
     try {
-        result = (await ticket.onSubmit?.(typed)) ?? { status: "failed", message: "Nothing to check this with." };
+        result = await ticket.onSubmit?.(typed);
+        if (!result) {
+            notice = NO_CHECK_NOTICE;
+            result = { status: "failed", message: notice.en };
+        }
     } catch (e) {
-        result = { status: "failed", message: `It could not be completed: ${e.message}` };
+        notice = couldNotNotice(e.message);
+        result = { status: "failed", message: notice.en };
     }
     typed.pin = typed.newPin = typed.newPin2 = typed.secret = undefined;
+    notice ??= noticeOf(result);
     if (result.status === "retry") {
-        send(res, 400, formPage(ticket, result.message), formHeaders(ticket));
+        send(res, 400, formView(ticket, notice, { lang }), { lang, ticket });
         return true;
     }
     store.settle(ticket, result.status, { message: result.message ?? null, outcome: result.outcome ?? null });
@@ -505,11 +455,12 @@ export async function handleSecureRequest(req, res, { store, accountId, publicUr
         redirectTo(res, result.redirect);
         return true;
     }
-    send(
-        res,
-        ok ? 200 : 400,
-        statusPage(ok ? "Done" : "Not done", result.message ?? (ok ? "Done. The agent can go on now." : ""), ok),
-    );
+    if (ok) {
+        const said = successText(ticket, result.status, result.message ?? null);
+        send(res, 200, statusOf(said.title, said.text, "ok"), { lang });
+    } else {
+        send(res, 400, statusOf("notDoneTitle", notice), { lang });
+    }
     return true;
 }
 
@@ -520,11 +471,14 @@ export async function handleSecureRequest(req, res, { store, accountId, publicUr
  */
 export class SecurePage {
     /**
-     * @param {{store?: TicketStore, accountId?: string, publicUrl?: string|null}} [opts]
+     * @param {{store?: TicketStore, accountId?: string, publicUrl?: string|null,
+     *   accountName?: string|(() => string)|null}} [opts]
      */
-    constructor({ store = new TicketStore(), accountId = "", publicUrl = null } = {}) {
+    constructor({ store = new TicketStore(), accountId = "", publicUrl = null, accountName = null } = {}) {
         this.store = store;
         this.accountId = String(accountId ?? "");
+        /** The account's display name, or a function that reads it, for a page that says which account it is for. */
+        this.accountName = accountName;
         this.publicUrl = publicUrl;
         /** The local base URL of the server the page is mounted on (`--http`), or of the stdio listener. */
         this.localBaseUrl = null;
@@ -536,10 +490,12 @@ export class SecurePage {
 
     /**
      * Settings from `mcp start`: the account served, the public base URL, the HTTP server's own address, and the
-     * function that queues an `approval_requested` event for the webhook (`(payload) => void`).
+     * function that queues an `approval_requested` event for the webhook (`(payload) => void`), and the account's
+     * display name (a string, or a function that reads the current one) for the pages to show.
      */
-    configure({ accountId, publicUrl, localBaseUrl, notify } = {}) {
+    configure({ accountId, publicUrl, localBaseUrl, notify, accountName } = {}) {
         if (accountId !== undefined) this.accountId = String(accountId ?? "");
+        if (accountName !== undefined) this.accountName = accountName;
         if (notify !== undefined) this.notify = notify;
         if (publicUrl !== undefined) this.publicUrl = publicUrl;
         if (localBaseUrl !== undefined) {
@@ -547,6 +503,19 @@ export class SecurePage {
             this.mounted = Boolean(localBaseUrl);
         }
         return this;
+    }
+
+    /**
+     * The account's display name for a page ("" when unknown): never more than the name.
+     * @returns {string}
+     */
+    accountDisplayName() {
+        try {
+            const name = typeof this.accountName === "function" ? this.accountName() : this.accountName;
+            return typeof name === "string" ? name.trim() : "";
+        } catch {
+            return "";
+        }
     }
 
     /** The request handler, for an HTTP server to mount (src/mcp/mcp-http-transport.js). */
@@ -564,10 +533,10 @@ export class SecurePage {
         const server = http.createServer((req, res) => {
             this.handle(req, res)
                 .then((handled) => {
-                    if (!handled) send(res, 404, statusPage("Not found", "There is nothing here."));
+                    if (!handled) send(res, 404, statusOf("nothingTitle", "nothingText"));
                 })
                 .catch(() => {
-                    if (!res.headersSent) send(res, 500, statusPage("Error", "Something went wrong."));
+                    if (!res.headersSent) send(res, 500, statusOf("errorTitle", "errorText"));
                 });
         });
         await new Promise((resolve, reject) => {

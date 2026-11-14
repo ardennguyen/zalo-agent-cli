@@ -754,6 +754,15 @@ export function mountOAuth(app, ctx) {
             secretKind: a.kind,
             formActionOrigins: [redirectOrigin],
             declineRedirect: back({ error: "access_denied", error_description: "The owner declined" }),
+            // What the page shows, in both languages: who asks, for which account, and where the answer goes.
+            view: {
+                type: "oauth",
+                clientName: client.name && client.name !== client.clientId ? client.name : "",
+                clientId: client.clientId,
+                accountName: securePage.accountDisplayName?.() ?? "",
+                accountId: securePage.accountId,
+                returnHost: new URL(redirectUri).host,
+            },
             onSubmit: async ({ secret: typed }) => {
                 const r = await a.check(typed);
                 if (r.status !== "approved") return r;

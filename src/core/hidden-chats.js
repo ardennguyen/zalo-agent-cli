@@ -294,6 +294,17 @@ export function pinFailureLine(r) {
 }
 
 /**
+ * A failed PIN check as data, for a page to say in each language (src/core/secure-page-view.js): why, how many
+ * failures, and the wait pinFailureLine names.
+ *
+ * @param {{reason: string, retryAfterMs?: number, failures?: number}} r
+ * @returns {{secret: "pin", reason: string, failures?: number, retryAfterMs?: number}}
+ */
+export function pinFailure(r) {
+    return { secret: "pin", reason: r.reason ?? "wrong", failures: r.failures, retryAfterMs: r.retryAfterMs ?? 0 };
+}
+
+/**
  * The conversation ids a raw read (`zalo_read`, `read run`) names in its args (`uid`, `groupId`, `threadId`, `tId`, and the id lists
  * `group`/`oneone`/`items`/`data`), so a hidden conversation can be refused before Zalo is asked.
  *

@@ -99,7 +99,16 @@ describe("the page over HTTP (the stdio listener on 127.0.0.1)", () => {
         const html = await res.text();
         // Relative to the page's own path, so it posts back to it under any base path a proxy serves it at.
         assert.match(html, new RegExp(`<form method="post" action="${token}"`));
-        assert.doesNotMatch(html, /<script|src=|href=|https?:\/\//, "nothing loaded from anywhere");
+        assert.doesNotMatch(html, /\ssrc=|\shref=|https?:\/\/|@import|url\(/, "nothing loaded from anywhere");
+        // Its one style and one script are its own, by this response's nonce; no inline handler, no 'unsafe-inline'.
+        const csp = res.headers.get("content-security-policy");
+        assert.doesNotMatch(csp, /unsafe-inline|unsafe-eval/);
+        const nonce = /script-src 'nonce-([^']+)'/.exec(csp)?.[1];
+        assert.ok(nonce, csp);
+        assert.ok(csp.includes(`style-src 'nonce-${nonce}'`), csp);
+        const tags = html.match(/<(script|style)[ >][^>]*>?/g);
+        assert.deepEqual(tags, [`<style nonce="${nonce}">`, `<script nonce="${nonce}">`]);
+        assert.doesNotMatch(html, /\son[a-z]+=/i, "no inline event handler");
         assert.match(html, /type="password"/);
     });
 

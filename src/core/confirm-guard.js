@@ -730,6 +730,11 @@ export async function gateMcp(
                     kind: "confirm",
                     title: "Approve a Zalo action",
                     description: `${d.action} would ${sentence(d)}.`,
+                    // The page shows the server's sentence as it is (English), labeled, and the account it acts as.
+                    view: {
+                        accountId: expect.accountId,
+                        accountName: page.accountDisplayName?.() ?? "",
+                    },
                 },
                 retryWith: {},
                 deliver: approval.deliver,

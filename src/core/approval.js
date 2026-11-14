@@ -21,7 +21,7 @@ import { readSealedJson, scopeOfDir, writeSealedJson } from "./keystore/index.js
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { writeFileAtomic } from "../zalo/kernel/atomic-file.js";
-import { PIN_FREE_TRIES, pinBackoffMs, pinFailureLine } from "./hidden-chats.js";
+import { PIN_FREE_TRIES, pinBackoffMs, pinFailure, pinFailureLine } from "./hidden-chats.js";
 
 const scrypt = promisify(scryptCb);
 
@@ -218,6 +218,18 @@ export function approverFailureLine(r) {
 }
 
 /**
+ * A failed approver-password check as data, for the page to say in each language (src/core/secure-page-view.js):
+ * which secret, why, how many failures, and the wait the sentence names.
+ *
+ * @param {{reason: string, retryAfterMs?: number, failures?: number}} r
+ * @returns {{secret: "password", reason: string, failures?: number, retryAfterMs?: number}}
+ */
+export function approverFailure(r) {
+    const waits = r.reason === "locked" || (r.failures >= PIN_FREE_TRIES && r.retryAfterMs);
+    return { secret: "password", reason: r.reason, failures: r.failures, retryAfterMs: waits ? r.retryAfterMs : 0 };
+}
+
+/**
  * What the approve page of one request asks besides a click.
  *
  * @param {object} opts
@@ -246,7 +258,11 @@ export function approverFor({ mode = "auto", throughAgent, accountDir = null, hi
             check: async (typed) => {
                 const r = await verifyApproverPassword(accountDir, typed);
                 if (r.ok) return { status: "approved", message: "Approved. The agent can go on now." };
-                return { status: r.reason === "wrong" ? "retry" : "failed", message: approverFailureLine(r) };
+                return {
+                    status: r.reason === "wrong" ? "retry" : "failed",
+                    message: approverFailureLine(r),
+                    failure: approverFailure(r),
+                };
             },
         };
     }
@@ -265,7 +281,11 @@ export function approverFor({ mode = "auto", throughAgent, accountDir = null, hi
         check: async (typed) => {
             const r = set.verifyPin(typed);
             if (r.ok) return { status: "approved", message: "Approved. The agent can go on now." };
-            return { status: r.reason === "locked" ? "failed" : "retry", message: pinFailureLine(r) };
+            return {
+                status: r.reason === "locked" ? "failed" : "retry",
+                message: pinFailureLine(r),
+                failure: pinFailure(r),
+            };
         },
     };
 }

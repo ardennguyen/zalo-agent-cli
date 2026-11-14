@@ -15,7 +15,7 @@
 import { createHash } from "node:crypto";
 import { markThreadGone } from "./db.js";
 import { newestMessageAnchor } from "./conversation-actions.js";
-import { pinFailureLine } from "./hidden-chats.js";
+import { pinFailure, pinFailureLine } from "./hidden-chats.js";
 
 const PIN_SHAPE = /^\d{4}$/;
 
@@ -38,19 +38,37 @@ export async function readHidden(api, set) {
  * @param {object} api
  * @param {import("./hidden-chats.js").HiddenChats} set - refreshed (it knows whether a PIN is set)
  * @param {{pin?: string, newPin?: string, newPin2?: string}} typed
- * @returns {Promise<{ok: true, hadPin: boolean} | {ok: false, retry: boolean, message: string}>}
+ * @returns {Promise<{ok: true, hadPin: boolean} | {ok: false, retry: boolean, message: string, failure: object}>}
+ *   `failure`: the same as data, for the secure page to say in each language
  */
 export async function changeHiddenPin(api, set, { pin, newPin, newPin2 }) {
     const hadPin = set.hasPin;
     if (hadPin) {
         const r = set.verifyPin(pin);
         if (!r.ok) {
-            return { ok: false, retry: r.reason !== "locked", message: `Current PIN: ${pinFailureLine(r)}` };
+            return {
+                ok: false,
+                retry: r.reason !== "locked",
+                message: `Current PIN: ${pinFailureLine(r)}`,
+                failure: { ...pinFailure(r), secret: "current-pin" },
+            };
         }
     }
-    if (!PIN_SHAPE.test(String(newPin ?? ""))) return { ok: false, retry: true, message: "The new PIN is 4 digits." };
+    if (!PIN_SHAPE.test(String(newPin ?? ""))) {
+        return {
+            ok: false,
+            retry: true,
+            message: "The new PIN is 4 digits.",
+            failure: { secret: "new-pin", reason: "shape" },
+        };
+    }
     if (String(newPin) !== String(newPin2 ?? "")) {
-        return { ok: false, retry: true, message: "The two new PINs differ." };
+        return {
+            ok: false,
+            retry: true,
+            message: "The two new PINs differ.",
+            failure: { secret: "new-pin", reason: "differ" },
+        };
     }
     await api.updateHiddenConversPin(String(newPin));
     set.setPinHash(createHash("md5").update(String(newPin)).digest("hex"));

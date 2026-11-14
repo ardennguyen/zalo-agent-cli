@@ -327,6 +327,14 @@ describe("A2: a code only after the owner approves, and only to a registered red
         assert.equal(a.page.status, 200);
         assert.match(a.page.text, /Approver password/);
         assert.match(a.page.text, /connector/);
+        // Which app asks, in both languages, and where the answer goes: the callback's host, never its path.
+        assert.match(a.page.text, /Allow access to your Zalo account\?/);
+        assert.match(a.page.text, /Cho phép truy cập tài khoản Zalo\?/);
+        assert.match(
+            a.page.text,
+            new RegExp(`<span class="host">${new URL(CLAUDE_CB).host.replace(/\./g, "\\.")}</span>`),
+        );
+        assert.ok(!a.page.text.includes(new URL(CLAUDE_CB).pathname), "the host only");
         assert.match(a.page.headers["content-security-policy"], /form-action 'self' https:\/\/claude\.ai/);
         assert.equal(a.answer.status, 400, "a wrong password is asked again");
         assert.equal(a.code, null);

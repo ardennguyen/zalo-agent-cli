@@ -840,7 +840,11 @@ export function registerMCPCommands(program) {
                     .filter(Boolean);
             // The one-time secure input page (src/core/secure-page.js): this process's account, and, over --http,
             // the public address a person's browser reaches it at.
-            const securePage = getSecurePage().configure({ accountId: activeAcc.ownId });
+            const securePage = getSecurePage().configure({
+                accountId: activeAcc.ownId,
+                // The pages say which account they are for: its name and id, nothing else.
+                accountName: () => getAccount(activeAcc.ownId)?.name ?? "",
+            });
             // The QR login page, served on the HTTP port when a login runs in this process (src/utils/qr-http-server.js).
             const qrPage = getQrPage();
             // Renewing the saved login before it ends (src/core/session-renew.js): over --http with a publicUrl, a

@@ -676,9 +676,17 @@ export function renderCaddyfile({ domain, accounts }) {
 `,
         )
         .join("\n");
+    const discovery = accounts
+        .map(
+            ({ ownId }) =>
+                `	rewrite /.well-known/oauth-authorization-server/a/${ownId} /a/${ownId}/.well-known/oauth-authorization-server/a/${ownId}
+	rewrite /.well-known/oauth-protected-resource/a/${ownId}/mcp /a/${ownId}/.well-known/oauth-protected-resource/a/${ownId}/mcp
+`,
+        )
+        .join("");
     return `# Caddyfile: several accounts behind one hostname, one path prefix per account.
-# Each account is its own zalo-mcp@<id> instance on its own loopback port. Bearer-token auth per
-# account; OAuth issuer URLs are awkward behind a path prefix, so use tokens here.
+# Each account is its own zalo-mcp@<id> instance on its own loopback port, with its own bearer token
+# and, for remote connectors, its own OAuth issuer: its public URL, https://${domain}/a/<id>.
 # Only /mcp, /events/wait and the one-time pages and links are meant for outside clients. Each block
 # answers 404 for /metrics and /status (Prometheus, inside your network) and for /zalo/admin/* (the
 # admin API: reach it on loopback, e.g. \`ssh -L 3901:127.0.0.1:3901 <host>\`, or a VPN, never here).
@@ -698,6 +706,9 @@ ${domain} {
 		reverse_proxy 127.0.0.1:18927
 	}
 
+	# OAuth discovery of an issuer with a path (RFC 8414 and RFC 9728 path insertion): a client asks the
+	# host root, e.g. /.well-known/oauth-authorization-server/a/<id>; each goes into its account's block.
+${discovery}
 ${blocks}
 	# A client for an account talks to  https://${domain}/a/<id>/mcp  and  https://${domain}/a/<id>/events/wait
 	respond 404

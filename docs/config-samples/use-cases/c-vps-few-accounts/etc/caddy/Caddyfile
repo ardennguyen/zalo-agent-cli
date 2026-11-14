@@ -1,6 +1,6 @@
 # Caddyfile: several accounts behind one hostname, one path prefix per account.
-# Each account is its own zalo-mcp@<id> instance on its own loopback port. Bearer-token auth per
-# account; OAuth issuer URLs are awkward behind a path prefix, so use tokens here.
+# Each account is its own zalo-mcp@<id> instance on its own loopback port, with its own bearer token
+# and, for remote connectors, its own OAuth issuer: its public URL, https://zalo.example.com/a/<id>.
 # Only /mcp, /events/wait and the one-time pages and links are meant for outside clients. Each block
 # answers 404 for /metrics and /status (Prometheus, inside your network) and for /zalo/admin/* (the
 # admin API: reach it on loopback, e.g. `ssh -L 3901:127.0.0.1:3901 <host>`, or a VPN, never here).
@@ -19,6 +19,13 @@ zalo.example.com {
 	handle /zalo/qr/* {
 		reverse_proxy 127.0.0.1:18927
 	}
+
+	# OAuth discovery of an issuer with a path (RFC 8414 and RFC 9728 path insertion): a client asks the
+	# host root, e.g. /.well-known/oauth-authorization-server/a/<id>; each goes into its account's block.
+	rewrite /.well-known/oauth-authorization-server/a/1000000000000000001 /a/1000000000000000001/.well-known/oauth-authorization-server/a/1000000000000000001
+	rewrite /.well-known/oauth-protected-resource/a/1000000000000000001/mcp /a/1000000000000000001/.well-known/oauth-protected-resource/a/1000000000000000001/mcp
+	rewrite /.well-known/oauth-authorization-server/a/1000000000000000002 /a/1000000000000000002/.well-known/oauth-authorization-server/a/1000000000000000002
+	rewrite /.well-known/oauth-protected-resource/a/1000000000000000002/mcp /a/1000000000000000002/.well-known/oauth-protected-resource/a/1000000000000000002/mcp
 
 	handle_path /a/1000000000000000001/* {
 		@internal path /metrics /status /zalo/admin /zalo/admin/*

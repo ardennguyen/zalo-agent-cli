@@ -43,6 +43,7 @@ A security release for the MCP server's OAuth, the official-API logins and movin
 - `zalo-agent session renew [--account <id>] [--fresh]`: open a renewal link on the account's running server by hand and print it.
 - Settings: `session.renew` `{enabled, daysBefore, linkTtl}` in `mcp-config.json` (and per account), `ZALO_SESSION_RENEW[_<ownId>]=off`, `ZALO_SESSION_RENEW_DAYS[_<ownId>]`, and `session.renew.*` in the runtime policy. Without a public address the event carries `renewHint` instead of a link.
 - `fleet status` shows `renewing` in LOGIN ENDS while a renewal link is open, and `--check` points at the link.
+- The approval, PIN and status pages share the QR login page's design and its English | Tiếng Việt switch. The OAuth approve page says which app asks, for which account, what it will be able to do, and the host it returns to; `?lang=vi` opens any page in Vietnamese, and a choice made on one page is kept for the others. Their style and script carry a per-response nonce: the pages no longer allow inline styles.
 
 ## [3.0.0] — 2026-11-15
 

@@ -38,7 +38,8 @@ import {
     uploadImage,
 } from "../../src/core/zbs/api.js";
 import { hashPhone, normalizePhone } from "../../src/core/zbs/phone.js";
-import { registerZbsCommands, readJsonArg } from "../../src/commands/zbs.js";
+import { registerZbsCommands } from "../../src/commands/zbs.js";
+import { readJsonInput as readJsonArg } from "../../src/utils/json-input.js";
 import { _resetErrorLatch } from "../../src/utils/output.js";
 
 delete process.env.ZALO_OA_DIR;

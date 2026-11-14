@@ -173,10 +173,12 @@ describe("template rules (create / edit)", () => {
         assert.deepEqual(checkTemplate("x"), ["the template must be a JSON object"]);
     });
 
-    it("params: declared for every <placeholder>, type 1-15, sample_value within the type's length", () => {
+    it("params: declared for every <placeholder>, type a number, sample_value within the type's length", () => {
         const t = custom();
         assert.match(checkTemplate({ ...t, params: [] }).join(), /<name> is used in the layout but not declared/);
-        assert.match(checkTemplate({ ...t, params: [{ name: "name", type: "18", sample_value: "a" }] }).join(), /1-15/);
+        assert.match(checkTemplate({ ...t, params: [{ name: "name", type: "x", sample_value: "a" }] }).join(), /1-15/);
+        // The docs' own create/edit example declares types 18 and 19: past the list, left to Zalo, not refused.
+        assert.deepEqual(checkTemplate({ ...t, params: [{ name: "name", type: "18", sample_value: "a" }] }), []);
         assert.match(
             checkTemplate({ ...t, params: [{ name: "name", type: "1", sample_value: "x".repeat(31) }] }).join(),
             /longer than 30/,
@@ -292,6 +294,11 @@ describe("template rules (create / edit)", () => {
         assert.match(r({ option: "ten_stars", items: ratingItems() }), /option must be/);
         assert.match(r({ option: "five_stars", items: ratingItems().slice(0, 4) }), /5 items/);
         assert.match(r({ option: "three_emotions", items: ratingItems() }), /rate must be 1-3/);
+        // "5 objects" vs three_emotions' rates 1-3: three items are let through; a rate given twice is not.
+        assert.doesNotMatch(r({ option: "three_emotions", items: ratingItems().slice(0, 3) }), /items|rate/);
+        const twice = ratingItems();
+        twice[1].rate = 1;
+        assert.match(r({ option: "five_stars", items: twice }), /different rate/);
         const items = ratingItems();
         items[0].answers = ["a", "b", "c", "d", "e", "f"];
         items[1].description = "";

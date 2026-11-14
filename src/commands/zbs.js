@@ -32,34 +32,9 @@ import {
 } from "../core/zbs/api.js";
 import { TEMPLATE_TAGS, TEMPLATE_TYPES } from "../core/zbs/template-check.js";
 import { error, info, output, success } from "../utils/output.js";
+import { readJsonInput } from "../utils/json-input.js";
 
 const OA_OPT = ["--oa-id <id>", "OA identifier (which stored OA token to use, as for `oa`)", "default"];
-
-/**
- * Read a JSON argument: inline JSON (starts with `{` or `[`), or else the path of a JSON file.
- *
- * @param {string} value
- * @param {string} what - for the message
- * @returns {any}
- */
-export function readJsonArg(value, what = "JSON") {
-    const s = String(value ?? "").trim();
-    let text = s;
-    let source = "inline";
-    if (!s.startsWith("{") && !s.startsWith("[")) {
-        try {
-            text = fs.readFileSync(resolve(s), "utf8");
-            source = s;
-        } catch {
-            throw new Error(`${what}: not inline JSON and no such file: ${s}`);
-        }
-    }
-    try {
-        return JSON.parse(text.replace(/^﻿/, ""));
-    } catch (e) {
-        throw new Error(`${what} (${source}) is not valid JSON: ${e.message}`);
-    }
-}
 
 function fmtTime(ms) {
     const n = Number(ms);
@@ -203,7 +178,7 @@ export function registerZbsCommands(program) {
             ),
     ).action(
         run(async (value, opts) => {
-            const body = readJsonArg(value, "template");
+            const body = readJsonInput(value, "template");
             const result = await createTemplate(body, {
                 trackingId: opts.trackingId,
                 check: opts.check,
@@ -222,7 +197,7 @@ export function registerZbsCommands(program) {
             ),
     ).action(
         run(async (id, value, opts) => {
-            const body = readJsonArg(value, "template");
+            const body = readJsonInput(value, "template");
             const result = await editTemplate(id, body, {
                 trackingId: opts.trackingId,
                 check: opts.check,
@@ -337,7 +312,7 @@ export function registerZbsCommands(program) {
                 const result = await sendByPhone({
                     phone,
                     templateId,
-                    data: readJsonArg(dataJson, "template_data"),
+                    data: readJsonInput(dataJson, "template_data"),
                     trackingId: opts.trackingId,
                     mode,
                     sendingMode: opts.sendingMode,
@@ -429,7 +404,7 @@ export function registerZbsCommands(program) {
                 const result = await sendJourney({
                     phone,
                     templateId,
-                    data: readJsonArg(dataJson, "template_data"),
+                    data: readJsonInput(dataJson, "template_data"),
                     journeyToken: opts.token,
                     oaId: opts.oaId,
                 });
@@ -455,7 +430,7 @@ export function registerZbsCommands(program) {
                 const result = await sendByUid({
                     userId,
                     templateId,
-                    data: readJsonArg(dataJson, "template_data"),
+                    data: readJsonInput(dataJson, "template_data"),
                     oaId: opts.oaId,
                 });
                 output(result, json(), () => {

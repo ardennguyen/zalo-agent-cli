@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { resolveBankBin, BIN_TO_DISPLAY, BANK_NAME_TO_BIN } from "../../src/utils/bank-helpers.js";
+import { BIN_CODES } from "../../src/core/zbs/template-check.js";
 
 describe("resolveBankBin", () => {
     it("resolves OCB by name", () => {
@@ -62,5 +63,22 @@ describe("BIN_TO_DISPLAY", () => {
 describe("BANK_NAME_TO_BIN", () => {
     it("has at least 50 aliases", () => {
         assert.ok(Object.keys(BANK_NAME_TO_BIN).length >= 50);
+    });
+});
+
+describe("every bank in Zalo's BIN list resolves", () => {
+    it("each BIN of the ZBS BIN appendix (the PAYMENT component's list) is a known bank here too", () => {
+        // Red if a bank Zalo lists (e.g. LPBank 970449, Citibank, KEB Hana) cannot be named in `bank` or
+        // `msg send-qr-transfer`.
+        const missing = Object.keys(BIN_CODES).filter((bin) => resolveBankBin(bin) !== Number(bin));
+        assert.deepEqual(missing, []);
+    });
+
+    it("the appendix's short names resolve to their BIN", () => {
+        assert.equal(resolveBankBin("LienVietPostBank"), 970449);
+        assert.equal(resolveBankBin("LPBank"), 970449);
+        assert.equal(resolveBankBin("Keb Hana HCM"), 970466);
+        assert.equal(resolveBankBin("BNP Paribas HN"), 963668);
+        assert.equal(resolveBankBin("VietCapitalBank"), 970454);
     });
 });

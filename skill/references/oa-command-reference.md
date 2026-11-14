@@ -12,14 +12,15 @@ Zalo's official APIs (OA OpenAPI v2.0/v3.0 and ZBS Template Message), separate f
 
 ## Guarded commands
 
-These change or delete data on Zalo, or spend money. Without `-y, --yes` nothing is sent and the command exits 2; `--dry-run` says what would happen and sends nothing.
+These change or delete data on Zalo, or spend money. Without `-y, --yes` nothing is sent and the command exits 2; `--dry-run` says what would happen and sends nothing. A JSON argument or option (`--data`, `<json>`, an article, a template, `template_data`) is inline JSON (starting with `{` or `[`), `@file`, or the path of a JSON file.
 
 | Command | What it does |
 |---|---|
 | `oa follower delete-info <user-id>` | Deletes what the OA stores about a user |
 | `oa userfield delete <key>` | Deletes a custom field and every user's value in it |
 | `oa tag remove <tag-name>` | Deletes a tag, untagging every user |
-| `oa purchase create-order`, `oa purchase confirm-order` | Orders, then pays for, an OA product (the Zalo Cloud Account is charged on confirm) |
+| `oa purchase confirm-order <order-id> <verified-token>` | Pays for an OA product ordered with `create-order` (the Zalo Cloud Account is charged); `create-order` itself charges nothing and is not guarded |
+| `oa call consent-request <phone>` | Asks a user for permission to call; Zalo charges each request (440 VND per its OA docs) whatever the answer |
 | `oa article remove <article-id>` | Deletes an article or video post |
 | `oa group remove-members <group-id> <user-ids>` | Removes members from a group chat |
 | `oa group delete <group-id>` | Dissolves a group chat for every member |
@@ -77,7 +78,8 @@ The wizard switches to **agent (non-interactive) mode** as soon as `--app-id` is
 | `--oa-id <id>` | `default` | OA identifier for multi-OA |
 | `--tunnel <type>` | `ngrok` (agent mode) | `ngrok` \| `cloudflared` \| `none` |
 | `--webhook-url <url>` | — | Save an existing webhook URL (VPS, n8n) instead of creating a tunnel |
-| `--verify-code <code>` | — | Zalo domain verification code |
+| `--verify-file <path>` | — | Domain verification: the HTML file downloaded from Zalo, served unchanged by the wizard's listener |
+| `--verify-meta <tag>` | — | Domain verification: the `<meta …>` tag Zalo shows, pasted whole |
 | `--oa-secret <key>` | — | OA Secret Key (the app's Webhook settings): the wizard's listener checks each event's signature |
 | `-p, --port <port>` | `3000` | Local webhook listener port |
 | `--skip-webhook` | `false` | Skip webhook setup entirely |
@@ -162,7 +164,7 @@ zalo-agent oa tag remove <tag-name> --yes
 
 ```bash
 zalo-agent oa form get <form-id> [--from <time>] [--to <time>] [--offset 0] [--limit 200] [--all]
-zalo-agent oa purchase create-order (--product-id <id> | --redeem-code <code>) [--voucher <code>] [--beneficiary OA|APP] --yes
+zalo-agent oa purchase create-order (--product-id <id> | --redeem-code <code>) [--voucher <code>] [--beneficiary OA|APP]
 zalo-agent oa purchase confirm-order <order-id> <verified-token> --yes
 ```
 
@@ -218,14 +220,14 @@ zalo-agent oa group send <group-id> [text] [--mention <user-ids> | --mention-all
 ## Voice calls (`oa call`)
 
 ```bash
-zalo-agent oa call consent-request <phone> --reason <code> [--type audio|video|audio_and_video]
+zalo-agent oa call consent-request <phone> --reason <code> [--type audio|video|audio_and_video] --yes
 zalo-agent oa call consent-check <phone>
 zalo-agent oa call outbound <user-id> --agent <agent-id> [--type audio]
 zalo-agent oa call inbound [--branch <branch-id>] [--agent <agent-id>] [--type audio]
 zalo-agent oa call mcc-info
 ```
 
-- `consent-request` asks a user, by phone number (e.g. `0901234567`), for permission to call: Zalo charges each request, the user has 24 h to answer, an approval lasts 30 days. `--reason`: 101 product/service consultation, 103 order/appointment confirmation, 105 delivery notice, 106 flight notice, 107 order update.
+- `consent-request` asks a user, by phone number (e.g. `0901234567`), for permission to call: Zalo charges each request (440 VND), so it needs `--yes`; the user has 24 h to answer, an approval lasts 30 days. `--reason`: 101 product/service consultation, 103 order/appointment confirmation, 105 delivery notice, 106 flight notice, 107 order update.
 - `outbound` / `inbound` return a call link and QR code (OA calls a user / a user calls the OA); `mcc-info` lists the call center's agents and branches. `--type` defaults to `audio`.
 
 ## ZBS Template Message (`zbs`)
@@ -279,7 +281,8 @@ The OA grants the app these permission groups (the app's Official Account permis
 zalo-agent oa listen -p 3000 -s <OA_SECRET_KEY>          # Check signatures (recommended)
 zalo-agent oa listen -e user_send_text,follow             # Filter events
 zalo-agent oa listen --path /zalo                         # Change the webhook path (default /webhook)
-zalo-agent oa listen --verify-domain <CODE>               # Domain verification file
+zalo-agent oa listen --verify-file zalo_verifierXXXX.html  # Domain verification: the file Zalo gives
+zalo-agent oa listen --verify-meta '<meta …>'             # …or the meta tag Zalo shows
 zalo-agent oa listen --no-verify                          # Skip the signature check (dev)
 zalo-agent --json oa listen                               # One JSON event per line
 ```
@@ -291,9 +294,11 @@ zalo-agent --json oa listen                               # One JSON event per l
 | `--no-verify` | `false` | Skip the signature check even with a secret set (dev only) |
 | `-e, --events <list>` | `all` | Comma-separated event filter |
 | `--path <path>` | `/webhook` | Webhook URL path |
-| `--verify-domain <code>` | — | Serve `/zalo_verifier<code>.html` for domain verification |
+| `--app-id <id>` | saved app id | Zalo App ID, to check events whose body has no `app_id` (`extension_purchased`, `change_template_quality`, `change_oa_daily_quota`) |
+| `--verify-file <path>` | — | Domain verification: the HTML file downloaded from Zalo's "Xác thực domain" page, served unchanged at its own name |
+| `--verify-meta <tag>` | — | Domain verification: the `<meta …>` tag Zalo shows, pasted whole, served in the home page's head |
 
-**Signature.** As Zalo's OA webhook docs give it, each event carries `X-ZEvent-Signature: mac=sha256(app_id + body + timestamp + OA secret key)`: a plain SHA-256 in hex over the concatenation of the body's `app_id`, the raw request body exactly as sent, the body's `timestamp` and the OA secret key — **not** an HMAC. The listener recomputes it and compares in constant time; a missing, malformed or wrong signature is answered 401 and printed as a rejected event.
+**Signature.** As Zalo's OA webhook docs give it, each event carries `X-ZEvent-Signature: mac=sha256(app_id + body + timestamp + OA secret key)`: a plain SHA-256 in hex over the concatenation of the body's `app_id`, the raw request body exactly as sent, the body's `timestamp` and the OA secret key — **not** an HMAC. The listener recomputes it and compares in constant time; a missing, malformed or wrong signature is answered 401 and printed as a rejected event. The three documented events whose body has no `app_id` (`extension_purchased`, `change_template_quality`, `change_oa_daily_quota`) are checked with the app id from `--app-id`, or else the one `oa setup`/`oa init` saved.
 
 Events `--events` accepts (every name Zalo's OA and ZBS docs give; filtering on any other name prints a warning at start, since that filter can never match):
 
@@ -327,11 +332,11 @@ zalo-agent zbs quota --oa-id shop2
 
 Stored: `~/.zalo-agent/oa-credentials.json` (mode 0600, written atomically under a lock; `--oa-dir` / `ZALO_OA_DIR` moves it). Unlike the personal account's files it is **not** sealed by 3.0's at-rest encryption (docs/security.md §1).
 
-One record per `--oa-id`: `appId`, `secretKey`, `accessToken`, `refreshToken`, `expiresIn`, `expiresAt`, `oaId`, `updatedAt`, and `webhookUrl` / `verifyCode` when `oa init` set them.
+One record per `--oa-id`: `appId`, `secretKey`, `accessToken`, `refreshToken`, `expiresIn`, `expiresAt`, `oaId`, `updatedAt`, and `webhookUrl` / `verifyFile` / `verifyMeta` when `oa init` set them.
 
 ## Errors
 
-A Zalo error prints as `OA API error <code>: <Zalo's message> (<what the code means>). <What to do>`, and the command exits 1. With `--json` the error object carries the same text. The meanings come from the error tables in Zalo's OA and ZBS docs (ZBS endpoints read the ZBS table first). The common ones:
+A Zalo error prints as `OA API error <code>: <Zalo's message> (<what the code means>). <What to do>` (`ZBS API error <code>: …` for a ZBS endpoint, send-by-UID included), and the command exits 1. An id too long for a JavaScript number (Zalo types product, beneficiary and ZCA ids as `long`) comes back as its exact digits, a string. With `--json` the error object carries the same text. The meanings come from the error tables in Zalo's OA and ZBS docs (ZBS endpoints read the ZBS table first; send-by-UID reads the OA table first, as the ZBS error page says). The common ones:
 
 | Code | Meaning | What to do |
 |------|---------|------------|
@@ -345,7 +350,7 @@ A Zalo error prints as `OA API error <code>: <Zalo's message> (<what the code me
 | -221 | The OA must be verified for this feature | Verify the OA |
 | -223 | The OA has not granted the app this API (or the article quota is reached) | Grant the permission in the app's OA settings |
 | -224 | The OA's package does not include this feature | Upgrade the OA's package |
-| -230 / -232 | The user has not interacted with the OA in the past 7 days / the interaction expired | See Zalo's OA messaging policy |
+| -230 / -232 | The user has not interacted with the OA in the past 7 days / the interaction expired | The user must have followed the OA, messaged it, accepted a call from it, tapped Message or the call button on its profile, or tapped a menu item with an `oa.query` action; otherwise reach them with ZBS (`zbs uid` / `zbs send`) |
 | -234 | This message type cannot be sent at night (22:00–07:00) | Send in the daytime |
 | -240 | The v2 message API was shut down | Use the v3 message API |
 | -320 / -321 | The app is not linked to a Zalo Cloud Account / the account cannot be charged | Link or top up the ZCA |
@@ -375,5 +380,5 @@ Failures before Zalo answered carry a word instead of a number: `http_<status>` 
 1. Official Account → Callback URL: `http://localhost:3456/callback` (or `<callback-host>/callback` from a VPS)
 2. API registration → Official Account API → turn it on
 3. Official Account → permissions → tick what the commands need (OA management, messaging, articles, GMF, calls; the ZBS groups above) → Save
-4. Domain verification (`oa listen --verify-domain <code>` serves the file)
+4. Domain verification: a DNS TXT record, or serve what Zalo gives (`oa listen --verify-file <file>` or `--verify-meta '<meta …>'`)
 5. Webhook → set the HTTPS URL → turn on the events; copy the OA Secret Key for `oa listen -s`

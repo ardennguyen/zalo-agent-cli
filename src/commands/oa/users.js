@@ -29,18 +29,10 @@ import {
     USER_FIELD_DATETIME_FORMATS,
 } from "../../core/oa/users.js";
 import { guardSubcommand } from "../../core/confirm-guard.js";
+import { readJsonInput } from "../../utils/json-input.js";
 import { success, error, info, warning, output } from "../../utils/output.js";
 
 const OA_ID = ["--oa-id <id>", "OA identifier", "default"];
-
-/** Parse a JSON option or argument, naming it in the error. */
-function parseJson(text, name) {
-    try {
-        return JSON.parse(text);
-    } catch (e) {
-        throw new SyntaxError(`${name} is not valid JSON: ${e.message}`);
-    }
-}
 
 /** "a,b , c" → ["a","b","c"]; undefined stays undefined. */
 function list(text) {
@@ -90,7 +82,7 @@ export function describeFollower(d = {}) {
  * @returns {object}
  */
 export function followerUpdateFields(opts) {
-    const base = opts.data === undefined ? {} : parseJson(opts.data, "--data");
+    const base = opts.data === undefined ? {} : readJsonInput(opts.data, "--data");
     if (base === null || typeof base !== "object" || Array.isArray(base)) {
         throw new TypeError("--data must be a JSON object");
     }
@@ -267,7 +259,7 @@ export function registerUsersCommands(oa) {
         .option(...OA_ID)
         .action(
             run(async (userId, text, opts) => {
-                const result = await updateFollowerCustomInfo(userId, parseJson(text, "the JSON"), opts.oaId);
+                const result = await updateFollowerCustomInfo(userId, readJsonInput(text, "the JSON"), opts.oaId);
                 output(result, json(), () => success(`Custom info of user ${userId} updated`));
             }),
         );
@@ -318,7 +310,7 @@ export function registerUsersCommands(oa) {
                 if (opts.status !== undefined) field.status = opts.status;
                 if (opts.format !== undefined) field.additional_format = opts.format;
                 if (opts.tableFields !== undefined) {
-                    field.additional_fields = parseJson(opts.tableFields, "--table-fields");
+                    field.additional_fields = readJsonInput(opts.tableFields, "--table-fields");
                 }
                 const result = await createUserField(field, opts.oaId);
                 output(result, json(), () => success(`User field "${key}" created`));
@@ -342,7 +334,7 @@ export function registerUsersCommands(oa) {
                 if (opts.status !== undefined) field.status = opts.status;
                 if (opts.format !== undefined) field.additional_format = opts.format;
                 if (opts.tableFields !== undefined) {
-                    field.additional_fields = parseJson(opts.tableFields, "--table-fields");
+                    field.additional_fields = readJsonInput(opts.tableFields, "--table-fields");
                 }
                 const result = await updateUserField(field, opts.oaId);
                 output(result, json(), () => success(`User field "${key}" updated`));
@@ -504,12 +496,6 @@ export function registerUsersCommands(oa) {
             }),
         );
 
-    guardSubcommand(purchase, "create-order", "oa.purchase", {
-        target: (opts) => ({
-            product: opts.productId ? `product ${opts.productId}` : `the product of redeem code ${opts.redeemCode}`,
-            oaId: opts.oaId,
-        }),
-    });
     guardSubcommand(purchase, "confirm-order", "oa.purchase", {
         target: (orderId, _token, opts) => ({ orderId, oaId: opts.oaId }),
     });

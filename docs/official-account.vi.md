@@ -69,7 +69,8 @@ Wizard tự chuyển sang **chế độ agent (non-interactive)** ngay khi có `
 | `--oa-id <id>` | `default` | Định danh OA cho multi-OA |
 | `--tunnel <type>` | `ngrok` (chế độ agent) | `ngrok` \| `cloudflared` \| `none` |
 | `--webhook-url <url>` | — | Dùng webhook URL có sẵn (VPS, n8n…) thay vì tạo tunnel |
-| `--verify-code <code>` | — | Mã xác thực domain của Zalo |
+| `--verify-file <path>` | — | Xác thực domain: file HTML tải từ Zalo, listener của wizard phục vụ nguyên vẹn |
+| `--verify-meta <tag>` | — | Xác thực domain: thẻ `<meta …>` Zalo hiển thị, dán nguyên thẻ |
 | `--oa-secret <key>` | — | OA Secret Key (phần cài đặt Webhook của app): listener của wizard kiểm tra chữ ký từng event |
 | `-p, --port <port>` | `3000` | Port cho webhook listener cục bộ |
 | `--skip-webhook` | `false` | Bỏ qua hoàn toàn bước webhook |
@@ -157,7 +158,7 @@ zalo-agent oa tag remove <tag-name> --yes
 
 ```bash
 zalo-agent oa form get <form-id> --from 2026-11-01 --to 2026-11-13
-zalo-agent oa purchase create-order --product-id <id> --yes         # giá + token dùng một lần, chưa trừ tiền
+zalo-agent oa purchase create-order --product-id <id>               # giá + token dùng một lần, chưa trừ tiền
 zalo-agent oa purchase confirm-order <order-id> <verified-token> --yes   # thanh toán (trong vòng 5 phút)
 ```
 
@@ -184,7 +185,7 @@ zalo-agent oa group members <group-id> --all
 zalo-agent oa group remove-members <group-id> <user-ids> --yes
 zalo-agent oa group delete <group-id> --yes
 
-zalo-agent oa call consent-request 0901234567 --reason 101
+zalo-agent oa call consent-request 0901234567 --reason 101 --yes   # tính phí mỗi yêu cầu
 zalo-agent oa call consent-check 0901234567
 zalo-agent oa call outbound <user-id> --agent <agent-id>
 zalo-agent oa call mcc-info
@@ -218,7 +219,7 @@ zalo-agent zbs quality
 
 ### Lệnh có bảo vệ
 
-`oa follower delete-info`, `oa userfield delete`, `oa tag remove`, `oa purchase create-order`, `oa purchase confirm-order`, `oa article remove`, `oa group remove-members` và `oa group delete` không gửi gì nếu thiếu `-y, --yes` (thoát với mã 2); `--dry-run` cho biết sẽ làm gì.
+`oa follower delete-info`, `oa userfield delete`, `oa tag remove`, `oa purchase confirm-order`, `oa call consent-request` (mỗi yêu cầu đều tính phí), `oa article remove`, `oa group remove-members` và `oa group delete` không gửi gì nếu thiếu `-y, --yes` (thoát với mã 2); `--dry-run` cho biết sẽ làm gì. Tham số hoặc tùy chọn JSON (`--data`, `<json>`, bài viết, template, `template_data`) là JSON viết trực tiếp (bắt đầu bằng `{` hoặc `[`), `@file`, hoặc đường dẫn tới file JSON.
 
 ### Webhook Listener
 
@@ -236,7 +237,8 @@ zalo-agent oa listen -e user_send_text,follow
 zalo-agent oa listen -p 3000 --path /zalo
 
 # Domain verification
-zalo-agent oa listen -p 3000 --verify-domain <ZALO_VERIFY_CODE>
+zalo-agent oa listen -p 3000 --verify-file zalo_verifierXXXX.html   # file Zalo cung cấp
+zalo-agent oa listen -p 3000 --verify-meta '<meta …>'              # hoặc thẻ Zalo hiển thị
 
 # JSON output (pipe)
 zalo-agent --json oa listen | while read -r event; do
@@ -251,7 +253,9 @@ done
 | `--no-verify` | `false` | Bỏ kiểm tra chữ ký dù đã có secret (chỉ dùng khi dev) |
 | `-e, --events <list>` | `all` | Lọc event, phân cách bằng dấu phẩy |
 | `--path <path>` | `/webhook` | Đường dẫn URL của webhook |
-| `--verify-domain <code>` | — | Phục vụ file `/zalo_verifier<code>.html` để xác thực domain |
+| `--app-id <id>` | app id đã lưu | Zalo App ID, để kiểm tra sự kiện không có `app_id` trong body (`extension_purchased`, `change_template_quality`, `change_oa_daily_quota`) |
+| `--verify-file <path>` | — | Xác thực domain: file HTML tải từ trang "Xác thực domain" của Zalo, phục vụ nguyên vẹn đúng tên file |
+| `--verify-meta <tag>` | — | Xác thực domain: thẻ `<meta …>` Zalo hiển thị, dán nguyên thẻ; đặt trong head của trang chủ |
 
 **Chữ ký:** theo tài liệu webhook OA của Zalo, mỗi event có header `X-ZEvent-Signature: mac=sha256(app_id + body + timestamp + OA secret key)` — một SHA-256 thường (hex) trên chuỗi nối `app_id` của body, body thô đúng như được gửi, `timestamp` của body và OA secret key, **không phải** HMAC. Listener tính lại, so sánh thời gian hằng định, và trả 401 cho chữ ký sai hoặc thiếu.
 
@@ -273,7 +277,7 @@ Listener giới hạn body tối đa 1 MB. Listener **trả 200 ngay khi nhận*
 
 ## Mã lỗi thường gặp
 
-Lỗi từ Zalo được in dạng `OA API error <mã>: <thông báo của Zalo> (<ý nghĩa của mã>). <Cách xử lý>` và lệnh thoát với mã 1. Ý nghĩa lấy từ bảng mã lỗi trong tài liệu OA và ZBS của Zalo; danh sách đầy đủ CLI biết có trong [bản tham chiếu](../skill/references/oa-command-reference.md#errors).
+Lỗi từ Zalo được in dạng `OA API error <mã>: <thông báo của Zalo> (<ý nghĩa của mã>). <Cách xử lý>` (`ZBS API error <mã>: …` với endpoint ZBS) và lệnh thoát với mã 1. Ý nghĩa lấy từ bảng mã lỗi trong tài liệu OA và ZBS của Zalo; danh sách đầy đủ CLI biết có trong [bản tham chiếu](../skill/references/oa-command-reference.md#errors).
 
 | Mã | Ý nghĩa | Cách xử lý |
 |------|---------|-----|
@@ -285,7 +289,7 @@ Lỗi từ Zalo được in dạng `OA API error <mã>: <thông báo của Zalo>
 | `-221` | OA phải được xác thực để dùng tính năng này | Xác thực OA |
 | `-223` | OA chưa cấp quyền API này cho app | Cấp quyền trong phần cài đặt OA của app |
 | `-224` | Gói dịch vụ của OA không có tính năng này | Nâng cấp tại [zalo.cloud/oa/pricing](https://zalo.cloud/oa/pricing) |
-| `-230` | Người dùng không tương tác với OA trong 7 ngày qua | Xem chính sách gửi tin của OA |
+| `-230` | Người dùng không tương tác với OA trong 7 ngày qua | Người dùng phải đã quan tâm OA, nhắn tin cho OA, nhận cuộc gọi từ OA, bấm Nhắn tin hoặc nút Gọi trên trang OA, hoặc bấm menu có hành động `oa.query`; nếu không, hãy gửi qua ZBS (`zbs uid` / `zbs send`) |
 | `-240` | API tin nhắn v2 đã bị tắt | Dùng API v3 |
 | `-135` (ZBS) | OA không được gửi tin qua số điện thoại | Xác thực OA / dùng gói trả phí |
 | `-144` (ZBS) | OA đã dùng hết hạn mức gửi tin qua SĐT trong ngày | `zbs quota` |
@@ -307,7 +311,7 @@ Lỗi từ Zalo được in dạng `OA API error <mã>: <thông báo của Zalo>
 1. **Official Account → Callback URL**: đặt `http://localhost:3456/callback` (hoặc `<callback-host>/callback` khi login từ VPS)
 2. **Đăng ký sử dụng API → Official Account API**: bật ON
 3. **Official Account → Chọn quyền**: tick các quyền mà lệnh cần (kể cả các nhóm quyền ZBS cho `zbs`) → Lưu
-4. **Xác thực domain**: serve file verification hoặc meta tag (dùng `oa listen --verify-domain <code>`)
+4. **Xác thực domain**: thêm bản ghi DNS TXT, hoặc phục vụ đúng thứ Zalo cung cấp (`oa listen --verify-file <file>` hoặc `--verify-meta '<meta …>'`)
 5. **Webhook**: đặt URL HTTPS, bật các event cần nhận, và chép OA Secret Key để dùng cho `oa listen -s`
 
 ### Các cách expose webhook
@@ -323,7 +327,7 @@ Lỗi từ Zalo được in dạng `OA API error <mã>: <thông báo của Zalo>
 
 ```bash
 # Terminal 1: listener
-zalo-agent oa listen -p 3000 -s <OA_SECRET_KEY> --verify-domain <CODE>
+zalo-agent oa listen -p 3000 -s <OA_SECRET_KEY> --verify-file zalo_verifierXXXX.html
 
 # Terminal 2: tunnel
 ngrok http 3000

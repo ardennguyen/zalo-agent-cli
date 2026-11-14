@@ -23,7 +23,11 @@ import {
     verifyZaloSignature,
     signatureFromHeaders,
     eventUser,
+    domainVerification,
 } from "../../src/commands/oa-listen.js";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createWebhookServer } from "../../src/commands/oa-init.js";
 import { describeOAProfile } from "../../src/commands/oa.js";
 
@@ -85,6 +89,18 @@ describe("oa listen — the webhook vocabulary", () => {
         assert.equal(eventUser({ event_name: "user_send_text", sender: { id: "14" } }), "14");
         assert.equal(eventUser({ event_name: "user_received_message" }), "N/A");
     });
+
+    it("names the user, not the OA, for what the OA sent or did, and reads users[], tag.user_ids and phone", () => {
+        // Docs: for oa_send_*, user_seen_message, user_received_message and oa_reacted_message `sender.id` is the
+        // OA and `recipient.id` the user. Red if the OA's id is printed as the user again.
+        const oa = { id: "1000000000000000009" };
+        for (const event_name of ["oa_send_text", "user_seen_message", "user_received_message", "oa_reacted_message"]) {
+            assert.equal(eventUser({ event_name, sender: oa, recipient: { id: "21" } }), "21", event_name);
+        }
+        assert.equal(eventUser({ event_name: "user_join_group", users: [{ id: "31" }, { id: "32" }] }), "31, 32");
+        assert.equal(eventUser({ event_name: "add_user_to_tag", tag: { user_ids: ["41"] } }), "41");
+        assert.equal(eventUser({ event_name: "user_submit_call_consent", phone: "84901234567" }), "84901234567");
+    });
 });
 
 describe("the X-ZEvent-Signature check", () => {
@@ -122,6 +138,20 @@ describe("the X-ZEvent-Signature check", () => {
         assert.equal(verifyZaloSignature('{"timestamp":"1"}', GOOD, SECRET).ok, false);
         assert.equal(verifyZaloSignature("not json", GOOD, SECRET).reason, "body is not JSON");
     });
+
+    it("an event whose body has no app_id is checked with the app's own id", () => {
+        // Docs: extension_purchased, change_template_quality and change_oa_daily_quota carry no app_id, yet give
+        // the same formula. Red if such an event is refused when the app id is known (Zalo would redeliver it and
+        // in the end disable the webhook).
+        const body = '{"event_name":"change_oa_daily_quota","oa_id":"1000000000000000004","timestamp":"1700000000001"}';
+        const mac = createHash("sha256")
+            .update("1000000000000000001" + body + "1700000000001" + SECRET, "utf8")
+            .digest("hex");
+        assert.deepEqual(verifyZaloSignature(body, mac, SECRET, { appId: "1000000000000000001" }), { ok: true });
+        assert.match(verifyZaloSignature(body, mac, SECRET).reason, /--app-id/);
+        // The body's own app_id still wins over the one given.
+        assert.equal(verifyZaloSignature(BODY, GOOD, SECRET, { appId: "1000000000000000099" }).ok, true);
+    });
 });
 
 describe("oa init's webhook server", () => {
@@ -152,6 +182,50 @@ describe("oa init's webhook server", () => {
         const big = await fetch(url, { method: "POST", body: "x".repeat(1024 * 1024 + 10) }).catch((e) => e);
         // The server answers 413 and drops the connection; either is a refusal, never a 200.
         assert.ok(big instanceof Error || big.status === 413, `got ${big.status}`);
+    });
+});
+
+describe("domain verification serves what Zalo handed out, unchanged", () => {
+    /** A fake request/response pair: what the handler wrote. */
+    function hit(handler, url, method = "GET") {
+        const res = {
+            status: 0,
+            body: "",
+            writeHead(code) {
+                this.status = code;
+            },
+            end(b) {
+                this.body = String(b ?? "");
+            },
+        };
+        return { handled: handler({ method, url }, res), ...res };
+    }
+
+    it("the downloaded file, byte for byte, at its own name under any path; nothing else", () => {
+        const dir = mkdtempSync(join(tmpdir(), "zv-"));
+        const file = join(dir, "zalo_verifierFAKE123.html");
+        writeFileSync(file, "<html>exactly what Zalo gave</html>");
+        const h = domainVerification({ file });
+        assert.equal(hit(h, "/zalo_verifierFAKE123.html").body, "<html>exactly what Zalo gave</html>");
+        assert.equal(hit(h, "/party/zalo_verifierFAKE123.html").handled, true, "URL-prefix verification");
+        // Red if any zalo_verifier* name answers (the old made-up page did).
+        assert.equal(hit(h, "/zalo_verifierOTHER.html").handled, false);
+        assert.equal(hit(h, "/zalo_verifierFAKE123.html", "POST").handled, false);
+    });
+
+    it("the meta tag Zalo shows, in the head of / and of a URL prefix's home page", () => {
+        const tag = '<meta name="fake-verification" content="FAKE123" />';
+        const h = domainVerification({ meta: tag });
+        assert.ok(hit(h, "/").body.includes(`<head>${tag}</head>`));
+        assert.equal(hit(h, "/party/").handled, true);
+        assert.equal(hit(h, "/webhook").handled, false);
+    });
+
+    it("nothing set is null; a bad tag or a missing file is refused, never served", () => {
+        assert.equal(domainVerification({}), null);
+        assert.throws(() => domainVerification({ meta: "FAKE123" }), /<meta/);
+        assert.throws(() => domainVerification({ meta: '<meta a="1"><script>' }), /<meta/);
+        assert.throws(() => domainVerification({ file: join(tmpdir(), "no-such-zv-file.html") }), /Cannot read/);
     });
 });
 

@@ -14,8 +14,11 @@
  */
 
 import { createServer } from "node:http";
+import { readFileSync } from "node:fs";
+import { basename, resolve } from "node:path";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { success, error, info, warning, output } from "../utils/output.js";
+import { loadOACreds } from "../core/oa/transport.js";
 
 /**
  * Every webhook event Zalo documents for OA (messages, anonymous users, GMF group chat, voice calls, user
@@ -177,12 +180,16 @@ export function signatureFromHeaders(headers) {
  * Check an event's signature. Never throws: an odd header (wrong length, non-hex, non-ASCII) or a body without
  * `app_id`/`timestamp` is simply not valid.
  *
+ * Some documented events carry no `app_id` in their body (extension_purchased, change_template_quality,
+ * change_oa_daily_quota) though their pages give the same formula; for those the app's own id is used.
+ *
  * @param {Buffer|string} rawBody
  * @param {string} mac - from signatureFromHeaders
  * @param {string} secretKey
+ * @param {{ appId?: string }} [opts] - the app's id, for a body without `app_id`
  * @returns {{ ok: boolean, reason?: string }}
  */
-export function verifyZaloSignature(rawBody, mac, secretKey) {
+export function verifyZaloSignature(rawBody, mac, secretKey, { appId: ownAppId } = {}) {
     if (!mac) return { ok: false, reason: "missing signature" };
     if (!/^[0-9a-fA-F]{64}$/.test(mac)) return { ok: false, reason: "malformed signature" };
     let event;
@@ -191,10 +198,13 @@ export function verifyZaloSignature(rawBody, mac, secretKey) {
     } catch {
         return { ok: false, reason: "body is not JSON" };
     }
-    const appId = event?.app_id;
+    const appId = event?.app_id ?? (ownAppId ? String(ownAppId) : undefined);
     const timestamp = event?.timestamp;
     if (appId === undefined || appId === null || timestamp === undefined || timestamp === null) {
-        return { ok: false, reason: "body has no app_id or timestamp to check the signature with" };
+        return {
+            ok: false,
+            reason: "body has no app_id or timestamp to check the signature with (give the app id: --app-id)",
+        };
     }
     const expected = Buffer.from(zaloSignature(appId, rawBody, timestamp, secretKey), "hex");
     const given = Buffer.from(mac.toLowerCase(), "hex");
@@ -203,19 +213,34 @@ export function verifyZaloSignature(rawBody, mac, secretKey) {
 }
 
 /**
- * The user an event is about: `follower.id` for follow/unfollow, `data.user_id` for widget events, else the
- * sender's id or `user_id`.
+ * The user an event is about, per the field tables of Zalo's webhook pages:
+ * - follow/unfollow: `follower.id`; widget events: `data.user_id`;
+ * - what the OA sent or did (oa_send_*, oa_reacted_message, user_seen_message, user_received_message, and ZBS's
+ *   user_received_message, whose `recipient.id` is the phone or its hash): `recipient.id` -- `sender.id` is the OA;
+ * - group membership events: every `users[].id`; tag events: `tag.user_ids`; call consent events: `phone`;
+ * - otherwise the sender's id, or `user_id`.
  *
  * @param {object} event
- * @returns {string} the id, or "N/A"
+ * @returns {string} the id (several joined by ", "), or "N/A"
  */
 export function eventUser(event = {}) {
+    const name = String(event.event_name ?? "");
+    const fromOa =
+        name.startsWith("oa_send_") ||
+        name === "oa_reacted_message" ||
+        name === "user_seen_message" ||
+        name === "user_received_message";
+    const many = (list) => (Array.isArray(list) && list.length ? list.map(String).join(", ") : undefined);
     return (
         event.follower?.id ??
-        (String(event.event_name ?? "").startsWith("widget_") ? event.data?.user_id : undefined) ??
+        (name.startsWith("widget_") ? event.data?.user_id : undefined) ??
+        (fromOa ? (event.recipient?.id ?? event.recipient?.anonymous_id) : undefined) ??
+        many(event.users?.map?.((u) => u?.id).filter(Boolean)) ??
+        many(event.tag?.user_ids) ??
         event.sender?.id ??
         event.user_id ??
         event.data?.user_id ??
+        event.phone ??
         "N/A"
     );
 }
@@ -278,7 +303,18 @@ export function registerOAListenCommand(oaCommand, program) {
             "all",
         )
         .option("--path <path>", "Webhook URL path", "/webhook")
-        .option("--verify-domain <code>", "Zalo domain verification code (serves /zalo_verifier<code>.html)")
+        .option(
+            "--app-id <id>",
+            "Zalo App ID, for checking events whose body has no app_id (default: the one `oa setup`/`oa init` saved)",
+        )
+        .option(
+            "--verify-file <path>",
+            "Domain verification: the HTML file downloaded from Zalo's 'Xác thực domain' page, served as is at its name",
+        )
+        .option(
+            "--verify-meta <tag>",
+            "Domain verification: the <meta …> tag Zalo shows, pasted whole; served in the home page's head",
+        )
         .action(async (opts) => {
             const json = () => program.opts().json;
             const port = Number(opts.port);
@@ -287,6 +323,14 @@ export function registerOAListenCommand(oaCommand, program) {
 
             if (!opts.secret && opts.verify) {
                 warning("No --secret provided: signatures are not checked. Use --secret for security.");
+            }
+            const appId = opts.appId ?? loadOACreds("default")?.appId;
+            let verification;
+            try {
+                verification = domainVerification({ file: opts.verifyFile, meta: opts.verifyMeta });
+            } catch (e) {
+                error(e.message);
+                return;
             }
             const neverSent = eventFilter ? unknownEvents(eventFilter) : [];
             if (neverSent.length) {
@@ -313,7 +357,9 @@ export function registerOAListenCommand(oaCommand, program) {
                     let event;
                     try {
                         if (checking) {
-                            const check = verifyZaloSignature(raw, signatureFromHeaders(req.headers), opts.secret);
+                            const check = verifyZaloSignature(raw, signatureFromHeaders(req.headers), opts.secret, {
+                                appId,
+                            });
                             if (!check.ok) {
                                 output(
                                     {
@@ -357,18 +403,9 @@ export function registerOAListenCommand(oaCommand, program) {
                     return;
                 }
 
-                // Zalo domain verification file
-                if (opts.verifyDomain && req.url?.includes("zalo_verifier")) {
-                    res.writeHead(200, { "Content-Type": "text/html" });
-                    res.end(verificationPage(opts.verifyDomain, "zalo verification"));
+                // Zalo domain verification: the downloaded file, or the home page with the meta tag
+                if (verification?.(req, res)) {
                     if (!json()) info(`Served domain verification for: ${req.url}`);
-                    return;
-                }
-
-                // Root page with meta tag (for meta-based verification)
-                if (req.url === "/" && opts.verifyDomain) {
-                    res.writeHead(200, { "Content-Type": "text/html" });
-                    res.end(verificationPage(opts.verifyDomain, "Zalo OA Webhook"));
                     return;
                 }
 
@@ -401,10 +438,59 @@ export function registerOAListenCommand(oaCommand, program) {
         });
 }
 
-/** The meta-tag page for Zalo's domain verification. */
-function verificationPage(code, body) {
-    const safe = String(code).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-    return `<html><head><meta name="zalo-platform-site-verification" content="${safe}" /></head><body>${body}</body></html>`;
+/**
+ * Zalo's domain verification, served exactly as Zalo hands it out. Zalo's OA docs ("Hướng dẫn xác thực domain")
+ * offer a DNS TXT record (nothing to serve), an HTML file downloaded from the app's "Xác thực domain" page and kept
+ * on the site, or a meta tag Zalo shows, put in the home page's head. The docs show neither the file's content nor
+ * the tag's text -- Zalo's console gives them -- so both come from the user and are never made up here.
+ *
+ * The file is answered at its own name under any path (domain or URL-prefix verification); the meta tag on `/` and
+ * on any path ending in `/` (a URL prefix's home page).
+ *
+ * @param {{ file?: string, meta?: string }} [opts] - the downloaded file's path; the whole `<meta …>` tag
+ * @returns {((req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => boolean)|null}
+ *   a handler that answers a verification request and returns true, else returns false; null when nothing is set
+ * @throws {Error} when the file cannot be read, or the tag is not a single `<meta …>` tag
+ */
+export function domainVerification({ file, meta } = {}) {
+    let fileName;
+    let fileBody;
+    if (file) {
+        try {
+            fileBody = readFileSync(resolve(file));
+        } catch (e) {
+            throw new Error(`Cannot read the domain verification file ${file}: ${e.message}`);
+        }
+        fileName = basename(file);
+    }
+    let tag;
+    if (meta !== undefined && meta !== null && String(meta).trim() !== "") {
+        tag = String(meta).trim();
+        if (!/^<meta\s[^<>]*>$/i.test(tag)) {
+            throw new Error("The verification meta tag must be the one <meta …> tag Zalo shows, pasted whole");
+        }
+    }
+    if (!fileName && !tag) return null;
+    return (req, res) => {
+        if (req.method !== "GET" && req.method !== "HEAD") return false;
+        let path;
+        try {
+            path = new URL(req.url ?? "/", "http://localhost").pathname;
+        } catch {
+            return false;
+        }
+        if (fileName && path.endsWith(`/${fileName}`)) {
+            res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+            res.end(fileBody);
+            return true;
+        }
+        if (tag && path.endsWith("/")) {
+            res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+            res.end(`<!doctype html><html><head>${tag}</head><body>Zalo OA webhook</body></html>`);
+            return true;
+        }
+        return false;
+    };
 }
 
 /** One human line per event. */

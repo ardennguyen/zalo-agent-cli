@@ -348,13 +348,20 @@ export const GUARDS = Object.freeze({
             `delete user field ${t.fieldId ?? t.name} of Official Account ${t.oaId ?? "default"}, with every user's value in it`,
     },
     "oa.purchase": {
-        cli: "oa purchase",
+        cli: "oa purchase confirm-order",
         mcp: null,
         irreversible: true,
         what: (t) =>
-            `buy ${t.product ?? "an OA product"} for Official Account ${t.oaId ?? "default"}` +
-            (t.orderId ? ` (order ${t.orderId})` : "") +
-            ", which is charged",
+            `pay order ${t.orderId ?? "(order)"} of Official Account ${t.oaId ?? "default"}: the product is bought ` +
+            "and the Zalo Cloud Account is charged",
+    },
+    "oa.call.consentRequest": {
+        cli: "oa call consent-request",
+        mcp: null,
+        irreversible: false,
+        what: (t) =>
+            `ask ${t.phone ?? "a user"} for permission to call them from Official Account ${t.oaId ?? "default"}: ` +
+            "Zalo charges each request (440 VND per Zalo's OA docs), whatever the answer",
     },
     "oa.article.remove": {
         cli: "oa article remove",

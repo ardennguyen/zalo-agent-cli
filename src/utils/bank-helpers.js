@@ -9,7 +9,10 @@ import { tmpdir } from "os";
 // no need for the `node-fetch` package, which drags in a deprecated
 // node-domexception polyfill via formdata-polyfill/fetch-blob.
 
-/** Bank name aliases (lowercase, no spaces) → BIN codes. */
+/**
+ * Bank name aliases (lowercase, no spaces) → BIN codes. The BINs follow the "Danh sách BIN CODE" appendix of
+ * Zalo's ZBS docs (each short name there resolves here), plus TNEX and Timo.
+ */
 export const BANK_NAME_TO_BIN = {
     abbank: 970425,
     acb: 970416,
@@ -70,6 +73,28 @@ export const BANK_NAME_TO_BIN = {
     vietinbank: 970415,
     ctg: 970415,
     woori: 970457,
+    // From the ZBS BIN appendix
+    cathay: 168999,
+    cathayunited: 168999,
+    citibank: 533948,
+    citi: 533948,
+    liobank: 963369,
+    bnpparibashcm: 963666,
+    bnpparibashn: 963668,
+    lpbank: 970449,
+    lienvietpostbank: 970449,
+    lienviet: 970449,
+    kebhanahcm: 970466,
+    kebhanahn: 970467,
+    hanahcm: 970466,
+    hanahn: 970467,
+    // The appendix's short names for banks already above
+    dbsbank: 796500,
+    indovinabank: 970434,
+    shinhanbank: 970424,
+    unitedoverseas: 970458,
+    vietcapitalbank: 970454,
+    baovietbank: 970438,
 };
 
 /** BIN → display name. */
@@ -130,6 +155,14 @@ export const BIN_TO_DISPLAY = {
     970436: "Vietcombank",
     970415: "VietinBank",
     970457: "Woori",
+    168999: "Cathay United",
+    533948: "Citibank",
+    963369: "Liobank",
+    963666: "BNP Paribas HCM",
+    963668: "BNP Paribas HN",
+    970449: "LPBank",
+    970466: "KEB Hana HCM",
+    970467: "KEB Hana HN",
 };
 
 /** BIN → SePay short_name for qr.sepay.vn URL. */

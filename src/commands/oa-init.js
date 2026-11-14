@@ -12,11 +12,18 @@
  */
 
 import { createServer } from "node:http";
+import { resolve as resolvePath } from "node:path";
 import { createInterface } from "node:readline";
 import { exec, execFile } from "node:child_process";
 import { saveOACreds, loadOACreds, getOAProfile } from "../core/oa-client.js";
-import { startOAuthLogin, openInBrowser, escapeHtml } from "../core/oa/oauth.js";
-import { readWebhookBody, verifyZaloSignature, signatureFromHeaders, eventUser } from "./oa-listen.js";
+import { startOAuthLogin, openInBrowser } from "../core/oa/oauth.js";
+import {
+    readWebhookBody,
+    verifyZaloSignature,
+    signatureFromHeaders,
+    eventUser,
+    domainVerification,
+} from "./oa-listen.js";
 import { success, error, info, warning, output } from "../utils/output.js";
 
 /** Prompt user for input. In agent mode, returns the provided default. */
@@ -62,15 +69,18 @@ async function runOAuthLogin(appId, secretKey, oaId, callbackPort = 3456) {
  */
 export function createWebhookServer(oaId, { oaSecret } = {}) {
     return createServer(async (req, res) => {
-        // Domain verification file / root meta tag
-        if (req.url?.includes("zalo_verifier") || req.url === "/") {
-            const creds = loadOACreds(oaId);
-            const code = escapeHtml(creds?.verifyCode || (req.url === "/" ? "" : "placeholder"));
-            const body = req.url === "/" ? "Zalo OA Webhook" : "zalo verification";
-            res.writeHead(200, { "Content-Type": "text/html" });
-            res.end(
-                `<html><head><meta name="zalo-platform-site-verification" content="${code}" /></head><body>${body}</body></html>`,
-            );
+        // Domain verification: what Zalo handed out, saved by the wizard (read per request: it may be saved after
+        // the server starts)
+        const creds = loadOACreds(oaId);
+        try {
+            const verification = domainVerification({ file: creds?.verifyFile, meta: creds?.verifyMeta });
+            if (verification?.(req, res)) return;
+        } catch {
+            // a saved file that is gone: answer as if nothing were configured
+        }
+        if (req.method === "GET" && req.url === "/") {
+            res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+            res.end("Zalo OA webhook");
             return;
         }
 
@@ -78,7 +88,9 @@ export function createWebhookServer(oaId, { oaSecret } = {}) {
             const raw = await readWebhookBody(req, res);
             if (raw === null) return;
             if (oaSecret) {
-                const check = verifyZaloSignature(raw, signatureFromHeaders(req.headers), oaSecret);
+                const check = verifyZaloSignature(raw, signatureFromHeaders(req.headers), oaSecret, {
+                    appId: loadOACreds(oaId)?.appId,
+                });
                 if (!check.ok) {
                     warning(`Rejected an event: ${check.reason}`);
                     res.writeHead(401, { "Content-Type": "application/json" });
@@ -154,7 +166,8 @@ export function registerOAInitCommand(oaCommand, program) {
         .option("--secret <key>", "Zalo App Secret Key (non-interactive mode)")
         .option("--tunnel <type>", "Tunnel type: ngrok | cloudflared | none (non-interactive mode)")
         .option("--webhook-url <url>", "Pre-existing webhook URL (VPS, n8n, etc.)")
-        .option("--verify-code <code>", "Zalo domain verification code")
+        .option("--verify-file <path>", "Domain verification: the HTML file downloaded from Zalo, served as is")
+        .option("--verify-meta <tag>", "Domain verification: the <meta …> tag Zalo shows, pasted whole")
         .option("--oa-secret <key>", "OA Secret Key (app's Webhook settings): checks each event's X-ZEvent-Signature")
         .option("-p, --port <port>", "Webhook listener port", "3000")
         .option("--skip-webhook", "Skip webhook setup entirely")
@@ -241,7 +254,7 @@ export function registerOAInitCommand(oaCommand, program) {
                     result.steps.push("oauth_login_ok");
                     result.expiresIn = tokenData.expires_in;
                     if (!agentMode) {
-                        success(`Logged in! Token expires in ${Math.round((tokenData.expires_in || 86400) / 3600)}h`);
+                        success(`Logged in! Token expires in ${Math.round((tokenData.expires_in || 90000) / 3600)}h`);
                     }
                 } catch (e) {
                     result.ok = false;
@@ -290,7 +303,7 @@ export function registerOAInitCommand(oaCommand, program) {
             } else if (opts.webhookUrl) {
                 // Pre-existing URL (VPS, n8n, etc.)
                 saveOACreds({ webhookUrl: opts.webhookUrl }, opts.oaId);
-                if (opts.verifyCode) saveOACreds({ verifyCode: opts.verifyCode }, opts.oaId);
+                saveVerification(opts, result);
                 result.steps.push("webhook_url_saved");
                 result.webhookUrl = opts.webhookUrl;
                 if (!agentMode) {
@@ -353,16 +366,11 @@ export function registerOAInitCommand(oaCommand, program) {
                             saveOACreds({ webhookUrl: serverUrl }, opts.oaId);
                             result.webhookUrl = serverUrl;
                             success(`Saved: ${serverUrl}`);
-                            const wantVerify = await ask("  Domain verification help? (y/N) ", false, "n");
-                            if (wantVerify.toLowerCase() === "y") {
-                                const vc = await ask("  Verification code: ", false);
-                                if (vc) {
-                                    console.log(
-                                        `\n  Meta tag: <meta name="zalo-platform-site-verification" content="${vc}" />`,
-                                    );
-                                    console.log(`  Or serve at: /zalo_verifier${vc}.html\n`);
-                                }
-                            }
+                            info(
+                                "Domain verification: on that server, serve what Zalo's 'Xác thực domain' page " +
+                                    "gives you (oa listen --verify-file <file> or --verify-meta '<meta …>'), or add " +
+                                    "its DNS TXT record.",
+                            );
                         }
                     }
                     result.steps.push("server_configured");
@@ -413,15 +421,20 @@ export function registerOAInitCommand(oaCommand, program) {
                             console.log(`  2. Webhook URL: ${webhookUrl}`);
                             console.log("  3. Bật events: user_send_text, follow, etc\n");
 
-                            const verifyCode = await ask("  Verification code: ", false);
-                            if (verifyCode) {
-                                saveOACreds({ verifyCode }, opts.oaId);
-                                success("Code saved — click 'Xác thực' in Zalo");
+                            const given = await ask(
+                                "  Domain verification: path of the HTML file Zalo gives, or its <meta …> tag " +
+                                    "(Enter to skip): ",
+                                false,
+                            );
+                            if (given) {
+                                const asked = given.trim().startsWith("<")
+                                    ? { verifyMeta: given, oaId: opts.oaId }
+                                    : { verifyFile: given, oaId: opts.oaId };
+                                if (saveVerification(asked, result)) success("Saved — click 'Xác thực' in Zalo");
                             }
                             await waitForEnter("Webhook setup done? Press Enter...", false);
-                        } else if (opts.verifyCode) {
-                            saveOACreds({ verifyCode: opts.verifyCode }, opts.oaId);
-                            result.steps.push("verify_code_saved");
+                        } else {
+                            saveVerification(opts, result);
                         }
                     } catch (e) {
                         error(`Tunnel failed: ${e.message}`);
@@ -463,4 +476,27 @@ export function registerOAInitCommand(oaCommand, program) {
                 }
             }
         });
+}
+
+/**
+ * Check and save the domain verification the user handed over (the file Zalo gives, or its meta tag), so the
+ * wizard's webhook server serves it. A bad one is reported and not saved.
+ *
+ * @param {{ verifyFile?: string, verifyMeta?: string, oaId?: string }} given
+ * @param {{ steps: string[] }} result
+ * @returns {boolean} true when something was saved
+ */
+function saveVerification(given, result) {
+    if (!given.verifyFile && !given.verifyMeta) return false;
+    const verifyFile = given.verifyFile ? resolvePath(given.verifyFile) : undefined;
+    try {
+        domainVerification({ file: verifyFile, meta: given.verifyMeta });
+    } catch (e) {
+        warning(e.message);
+        result.steps.push("verification_invalid");
+        return false;
+    }
+    saveOACreds({ verifyFile, verifyMeta: given.verifyMeta }, given.oaId ?? "default");
+    result.steps.push("verification_saved");
+    return true;
 }

@@ -22,6 +22,7 @@ import {
     loadOACreds,
     mimeTypeOf,
     oaRequest,
+    readZaloJson,
     saveOACreds,
     tokenFields,
     uploadForm,
@@ -180,6 +181,32 @@ describe("how the answer is read", () => {
         );
     });
 
+    it("a ZBS endpoint's error is labeled ZBS, including send-by-UID on the OA host", async () => {
+        m = mockFetch(() => ({ json: { error: -100, message: "Unknown error" } }));
+        for (const url of [`${ZBS_BASE}/message/template`, `${OPENAPI_V3}/oa/message/template`]) {
+            await assert.rejects(
+                () => oaRequest({ method: "POST", url, body: {} }),
+                (e) => /^ZBS API error -100/.test(e.message),
+                url,
+            );
+        }
+        // Red if the OA's own endpoints start saying ZBS.
+        await assert.rejects(
+            () => oaRequest({ method: "POST", url: `${OPENAPI_V3}/oa/message/cs`, body: {} }),
+            (e) => /^OA API error -100/.test(e.message),
+        );
+    });
+
+    it("a long id in a reply keeps its exact digits (Zalo types product/beneficiary/ZCA ids as long)", async () => {
+        const text = '{"error":0,"data":{"product_id":1000000000000000001,"amount":10,"rate":1.5}}';
+        const res = new Response(text, { headers: { "content-type": "application/json" } });
+        const r = await readZaloJson(res, `${OPENAPI_V3}/oa/purchase/create_order`);
+        // Red if JSON.parse rounds it to 1000000000000000000.
+        assert.equal(r.data.product_id, "1000000000000000001");
+        assert.equal(r.data.amount, 10);
+        assert.equal(r.data.rate, 1.5);
+    });
+
     it("a -32 carries the rate-limit headers", async () => {
         m = mockFetch(() => ({
             json: { error: -32, message: "Your application reached limit call api" },
@@ -194,6 +221,8 @@ describe("how the answer is read", () => {
     it("reads ZBS codes from the ZBS table, and OA codes from the OA table (-100 differs)", () => {
         assert.match(describeOAError(-100, `${OPENAPI_V2}/oa/upload/image`).meaning, /attachment_id expired/);
         assert.match(describeOAError(-100, `${ZBS_BASE}/message/template`).meaning, /unknown error/);
+        // Send-by-UID: ZBS's table sends its sending-condition errors to the OA table, so the OA meaning wins.
+        assert.match(describeOAError(-100, `${OPENAPI_V3}/oa/message/template`).meaning, /attachment_id expired/);
         assert.match(describeOAError(-124, `${ZBS_BASE}/message/template`).meaning, /access token is invalid/);
         // A ZBS UID send answers with OA codes: the OA table is the fallback.
         assert.match(describeOAError(-213, `${ZBS_BASE}/message/template`).meaning, /does not follow/);

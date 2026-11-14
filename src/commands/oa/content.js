@@ -2,7 +2,6 @@
  * `oa article`: OA articles and video posts (Zalo's OA docs "Nội dung", the Article API on `v2.0/article/*`).
  */
 
-import fs from "node:fs";
 import {
     ARTICLE_LIMITS,
     ARTICLE_VIDEO_STATUS,
@@ -19,6 +18,7 @@ import {
     waitForArticleVideo,
 } from "../../core/oa/content.js";
 import { guardSubcommand } from "../../core/confirm-guard.js";
+import { readJsonInput } from "../../utils/json-input.js";
 import { success, error, info, output, warning } from "../../utils/output.js";
 
 const BODY_HELP =
@@ -28,16 +28,6 @@ const BODY_HELP =
     `{"type":"video","title":"…","description":"…","video_id":"…","avatar":"<image url>"}. Limits: title ≤ ` +
     `${ARTICLE_LIMITS.title}, author ≤ ${ARTICLE_LIMITS.author}, description ≤ ${ARTICLE_LIMITS.description} ` +
     `characters; images ≤ 1 MB.`;
-
-/** Inline JSON, or `@path` to read it from a file. */
-function readJsonArg(arg) {
-    const text = arg.startsWith("@") ? fs.readFileSync(arg.slice(1), "utf8") : arg;
-    try {
-        return JSON.parse(text);
-    } catch (e) {
-        throw new Error(`Not valid JSON${arg.startsWith("@") ? ` in ${arg.slice(1)}` : ""}: ${e.message}`);
-    }
-}
 
 /** A positive number of seconds, as milliseconds. */
 function seconds(value, name) {
@@ -96,7 +86,7 @@ export function registerContentCommands(oa) {
         .option("--oa-id <id>", "OA identifier", "default")
         .action(async (articleJson, opts) => {
             try {
-                await submit(createArticle, readJsonArg(articleJson), opts, "submitted");
+                await submit(createArticle, readJsonInput(articleJson, "the article"), opts, "submitted");
             } catch (e) {
                 error(e.message);
             }
@@ -125,7 +115,7 @@ export function registerContentCommands(oa) {
         .option("--oa-id <id>", "OA identifier", "default")
         .action(async (articleId, articleJson, opts) => {
             try {
-                const body = readJsonArg(articleJson);
+                const body = readJsonInput(articleJson, "the article");
                 if (body === null || typeof body !== "object" || Array.isArray(body)) {
                     throw new Error("The article must be a JSON object");
                 }

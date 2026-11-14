@@ -12,6 +12,7 @@ import {
     getCallCenterInfo,
     requestCallConsent,
 } from "../../core/oa/calls.js";
+import { guardSubcommand } from "../../core/confirm-guard.js";
 import { error, info, output, success, warning } from "../../utils/output.js";
 
 const REASONS_HELP = Object.entries(CONSENT_REASONS)
@@ -60,6 +61,10 @@ export function registerCallsCommands(oa) {
                 });
             }),
         );
+
+    guardSubcommand(call, "consent-request", "oa.call.consentRequest", {
+        target: (phone, opts) => ({ phone, oaId: opts.oaId }),
+    });
 
     call.command("consent-check <phone>")
         .description("Whether a user allowed the OA to call their phone number")

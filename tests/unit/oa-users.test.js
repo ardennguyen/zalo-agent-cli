@@ -39,6 +39,7 @@ import {
     createPurchaseOrder,
     confirmPurchaseOrder,
     normalizeInteractionPeriod,
+    checkDob,
 } from "../../src/core/oa/users.js";
 import { registerUsersCommands, describeFollower } from "../../src/commands/oa/users.js";
 import { enforceCliGuard } from "../../src/core/confirm-guard.js";
@@ -100,6 +101,16 @@ beforeEach(() => {
 afterEach(() => m?.restore());
 
 // ─── Users ───────────────────────────────────────────────────────────
+
+describe("birth dates go out as dd/MM/yyyy", () => {
+    it("pads day and month, keeps a valid padded date, refuses a bad one", () => {
+        // Docs: "định dạng dd/MM/yyyy". Red if 1/2/1999 is sent unpadded.
+        assert.equal(checkDob("1/2/1999"), "01/02/1999");
+        assert.equal(checkDob("31/12/1970"), "31/12/1970");
+        assert.throws(() => checkDob("31/02/1999"), /dd\/MM\/yyyy/);
+        assert.throws(() => checkDob("01/01/1969"), /1970/);
+    });
+});
 
 describe("oa follower: user list and details (v3.0/oa/user/*)", () => {
     it("info: GET v3.0/oa/user/detail?data={user_id}", async () => {
@@ -506,7 +517,6 @@ const GUARDED = [
     ["oa", "follower", "delete-info", USER],
     ["oa", "userfield", "delete", "ma_don_hang"],
     ["oa", "tag", "remove", "VIP"],
-    ["oa", "purchase", "create-order", "--product-id", PRODUCT],
     ["oa", "purchase", "confirm-order", "22ffed32d17738296161", "30fVkXZd9j9zWmqQrBhO"],
 ];
 
@@ -696,7 +706,8 @@ describe("command options become the documented requests", () => {
                 data: { order_id: "ORD1", product_name: "P", amount: 10, final_amount: 9, verified_token: "OTT1" },
             },
         }));
-        const r = await cli(["oa", "purchase", "create-order", "--redeem-code", "GIFT", "--yes"]);
+        // Not guarded: create-order charges nothing (confirm-order pays), so it goes out without --yes.
+        const r = await cli(["oa", "purchase", "create-order", "--redeem-code", "GIFT"]);
         assert.equal(r.code, 0, r.out);
         assert.deepEqual(bodyOf(m.calls[0]), { beneficiary: "OA", redeem_code: "GIFT" });
         assert.match(r.out, /confirm-order ORD1 OTT1 --yes/);

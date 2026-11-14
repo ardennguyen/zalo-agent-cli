@@ -244,9 +244,19 @@ describe("`oa call` commands", () => {
 
     it("consent-request needs --reason and sends it as a number", async () => {
         m = mockFetch();
-        const { exitCode } = await run(["consent-request", PHONE, "--reason", "107", "--type", "audio"]);
+        const { exitCode } = await run(["consent-request", PHONE, "--reason", "107", "--type", "audio", "--yes"]);
         assert.equal(exitCode, undefined);
         assert.deepEqual(only(m.calls).body, { phone: PHONE, call_type: "audio", reason_code: 107 });
+    });
+
+    it("consent-request is guarded (each request is charged); consent-check is not", () => {
+        const root = new Command();
+        registerCallsCommands(root.command("oa"));
+        const call = root.commands[0].commands.find((c) => c.name() === "call");
+        const byName = (n) => call.commands.find((c) => c.name() === n);
+        // Red if the charged request can go out without --yes, or the free check starts asking for it.
+        assert.equal(byName("consent-request").zaloGuard?.key, "oa.call.consentRequest");
+        assert.equal(byName("consent-check").zaloGuard, undefined);
     });
 
     it("consent-check prints the state with consented false and exits 0", async () => {

@@ -429,8 +429,9 @@ export function buildGroupMessage(kind, spec = {}) {
         case "image": {
             const text = spec.text === undefined || spec.text === null ? "" : String(spec.text);
             if (!text.trim()) throw invalid("an image message needs a caption (the docs require `text`)");
-            if (text.length > MAX_IMAGE_CAPTION) {
-                throw invalid(`the caption is ${text.length} characters; the limit is ${MAX_IMAGE_CAPTION}`);
+            const chars = [...text].length; // characters, not UTF-16 units: an emoji counts once
+            if (chars > MAX_IMAGE_CAPTION) {
+                throw invalid(`the caption is ${chars} characters; the limit is ${MAX_IMAGE_CAPTION}`);
             }
             if (Boolean(spec.url) === Boolean(spec.attachmentId)) {
                 throw invalid("give exactly one of an image URL or an attachment id");

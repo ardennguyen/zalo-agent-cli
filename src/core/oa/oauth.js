@@ -90,7 +90,10 @@ async function postToken(secretKey, fields) {
     } catch (e) {
         throw new OAError(`${OAUTH_TOKEN_URL} could not be reached: ${e.message}`, { code: "network" });
     }
-    return readZaloJson(res, OAUTH_TOKEN_URL);
+    const reply = await readZaloJson(res, OAUTH_TOKEN_URL);
+    // The docs' examples say `expires_in`, their field tables `expire_in`: read either.
+    if (reply.expires_in === undefined && reply.expire_in !== undefined) reply.expires_in = reply.expire_in;
+    return reply;
 }
 
 /**

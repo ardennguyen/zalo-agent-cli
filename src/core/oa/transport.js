@@ -73,7 +73,13 @@ export const OA_ERRORS = Object.freeze({
     ],
     "-224": ["the OA's package does not include this feature", "upgrade the OA's service package"],
     "-227": ["the user is banned or inactive for more than 45 days", ""],
-    "-230": ["the user has not interacted with the OA in the past 7 days", "see Zalo's OA messaging policy"],
+    "-230": [
+        "the user has not interacted with the OA in the past 7 days",
+        // Zalo's OA docs, "Các tương tác của người dùng với OA"
+        "the OA may message a user only after the user follows it, messages it, accepts a call from it, taps " +
+            "Message on its profile, taps its call button, or taps a menu item with an oa.query action; to reach " +
+            "them now, send a ZBS template (zbs uid / zbs send)",
+    ],
     "-232": [
         "the user has not interacted with the OA, or the last interaction expired",
         "see Zalo's OA messaging policy",
@@ -207,14 +213,21 @@ export class OAError extends Error {
  */
 export function describeOAError(code, url = "") {
     const key = String(code);
-    // ZBS's template-send errors also apply to the send-by-UID template endpoint on the OA API.
-    const zbsTable = isZbsUrl(url) || String(url).startsWith(`${OPENAPI_V3}/oa/message/template`);
-    const row = (zbsTable && ZBS_ERRORS[key]) || OA_ERRORS[key];
+    // Send-by-UID sits on the OA API, and ZBS's error table sends its sending-condition errors to the OA table:
+    // there the OA meaning wins, the ZBS table only fills in codes the OA table lacks.
+    const row = isZbsUrl(url)
+        ? ZBS_ERRORS[key] || OA_ERRORS[key]
+        : OA_ERRORS[key] || (isZbsEndpoint(url) ? ZBS_ERRORS[key] : undefined);
     return row ? { meaning: row[0], hint: row[1] } : null;
 }
 
 function isZbsUrl(url) {
     return String(url).startsWith(ZBS_BASE);
+}
+
+/** A ZBS endpoint: the ZBS host, or the send-by-UID template endpoint ZBS documents on the OA API. */
+function isZbsEndpoint(url) {
+    return isZbsUrl(url) || String(url).startsWith(`${OPENAPI_V3}/oa/message/template`);
 }
 
 /** The endpoint's path for messages: never the query, which may carry data. */
@@ -238,6 +251,22 @@ function rateLimitOf(res) {
 }
 
 /**
+ * JSON.parse reviver: an integer too large for a JS number (Zalo's docs type product, beneficiary and ZCA ids as
+ * `long`) is kept as its exact digits, a string, instead of being rounded.
+ *
+ * @param {string} _key
+ * @param {any} value
+ * @param {{ source?: string }} [context] - the value's source text (JSON.parse source access)
+ * @returns {any}
+ */
+export function keepLongIntegers(_key, value, context) {
+    if (typeof value === "number" && !Number.isSafeInteger(value) && /^-?\d+$/.test(context?.source ?? "")) {
+        return context.source;
+    }
+    return value;
+}
+
+/**
  * Read a fetch Response as Zalo JSON: a non-2xx status, an HTML/non-JSON body or an unparsable body throws
  * OAError `http_<status>` naming the endpoint (so a wrong path reads "HTTP 404", not a JSON SyntaxError).
  *
@@ -254,7 +283,7 @@ export async function readZaloJson(res, url) {
     let parsedOk = false;
     if (!/html|xml/i.test(type)) {
         try {
-            parsed = JSON.parse(text);
+            parsed = JSON.parse(text, keepLongIntegers);
             parsedOk = parsed !== null && typeof parsed === "object";
         } catch {
             parsedOk = false;
@@ -480,7 +509,7 @@ async function sendOnce({ method, url, data, query, body, form, token, extra }) 
         const doc = describeOAError(code, url);
         const said = json.message || json.error_description || json.error_name || "";
         const text =
-            `OA API error ${code}` +
+            `${isZbsEndpoint(url) ? "ZBS" : "OA"} API error ${code}` +
             (said ? `: ${said}` : "") +
             (doc ? ` (${doc.meaning})` : "") +
             (doc?.hint ? `. ${doc.hint[0].toUpperCase()}${doc.hint.slice(1)}` : "");

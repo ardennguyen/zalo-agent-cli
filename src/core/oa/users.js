@@ -137,7 +137,8 @@ export function checkDob(value, name = "user_dob") {
     if (!d || d.getUTCDate() !== +m[1] || d.getUTCMonth() !== +m[2] - 1 || +m[3] < 1970) {
         throw new RangeError(`${name} must be a dd/MM/yyyy date from 01/01/1970 on (got ${value})`);
     }
-    return String(value);
+    // dd/MM/yyyy as the docs write it: 1/2/1999 goes out as 01/02/1999.
+    return `${m[1].padStart(2, "0")}/${m[2].padStart(2, "0")}/${m[3]}`;
 }
 
 // ─── Users ───────────────────────────────────────────────────────────
@@ -250,7 +251,7 @@ export function buildFollowerUpdate(userId, fields) {
     for (const k of ["city_id", "district_id"]) {
         if (shared[k] !== undefined) shared[k] = intIn(shared[k], k, 0);
     }
-    if (shared.user_dob !== undefined) checkDob(shared.user_dob);
+    if (shared.user_dob !== undefined) shared.user_dob = checkDob(shared.user_dob);
     for (const k of ["name", "phone", "address"]) {
         if (shared[k] !== undefined) shared[k] = String(shared[k]);
     }
@@ -336,7 +337,9 @@ export function buildCustomInfoUpdate(userId, fields) {
         );
     }
     if (fields.custom_info !== undefined) plainObject(fields.custom_info, "custom_info");
-    return { user_id: String(userId), ...fields };
+    const body = { user_id: String(userId), ...fields };
+    if (body.user_dob !== undefined) body.user_dob = checkDob(body.user_dob);
+    return body;
 }
 
 /**

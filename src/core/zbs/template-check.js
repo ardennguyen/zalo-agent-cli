@@ -217,8 +217,12 @@ export function checkTemplate(body, { edit = false } = {}) {
             continue;
         }
         if (!param.name) p(`${at}.name is required`);
+        // The docs list types 1-15, yet their own create/edit example uses 18 and 19: a type past the list is left
+        // to Zalo (no length check), only a non-number is refused here.
         const pt = PARAM_TYPES[Number(param.type)];
-        if (!pt) p(`${at}.type must be 1-15 (see the param type list), not ${JSON.stringify(param.type)}`);
+        if (!Number.isInteger(Number(param.type)) || Number(param.type) < 1 || String(param.type).trim() === "") {
+            p(`${at}.type must be a param type number (1-15 in the docs' list), not ${JSON.stringify(param.type)}`);
+        }
         if (param.sample_value === undefined || param.sample_value === "") p(`${at}.sample_value is required`);
         else if (pt && len(param.sample_value) > pt[1]) {
             p(`${at}.sample_value is longer than ${pt[1]} characters (type ${param.type}, ${pt[0]})`);
@@ -414,10 +418,14 @@ function checkComponent(name, c, at, p, used) {
             if (c.rating_type !== undefined && c.rating_type !== "csat") p(`${where}.rating_type must be "csat"`);
             const maxRate = { three_emotions: 3, five_emotions: 5, five_stars: 5 }[c.option];
             if (!maxRate) p(`${where}.option must be three_emotions, five_emotions or five_stars`);
-            if (!Array.isArray(c.items) || c.items.length !== 5) {
-                p(`${where}.items must hold 5 items`);
+            // "Bao gồm 5 objects", yet three_emotions rates only 1-3: that option may hold 3 or 5 items.
+            const counts = c.option === "three_emotions" ? [3, 5] : [5];
+            if (!Array.isArray(c.items) || !counts.includes(c.items.length)) {
+                p(`${where}.items must hold ${counts.join(" or ")} items`);
                 break;
             }
+            const rates = c.items.map((it) => Number(it?.rate));
+            if (new Set(rates).size !== rates.length) p(`${where}.items must each have a different rate`);
             c.items.forEach((it, i) => {
                 const ia = `${where}.items[${i}]`;
                 const r = Number(it?.rate);

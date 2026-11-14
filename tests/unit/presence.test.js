@@ -377,6 +377,39 @@ describe("presence: waits, metering, yield", () => {
         assert.equal(clock.pending(), 0, "no timer is left running");
     });
 
+    it("a renewed login brings a signed-out daemon back: always-on wakes and connects, holds are taken again", async () => {
+        const { p, host } = build({ mode: "always-on" });
+        p.start();
+        p.noteSocketState("connected");
+        p.noteSignedOut();
+        assert.equal(p.hold("tool").refused, "SIGNED_OUT");
+        assert.equal(p.noteSignedIn(), true);
+        assert.equal(p.state, "waking", "the always-on hold wakes it at once");
+        assert.equal(p.refusal(), null);
+        assert.deepEqual(host.calls, ["wake:always-on", "wake:always-on"]);
+        p.noteSocketState("connected");
+        assert.equal(p.state, "connected");
+        assert.equal(p.hold("tool").held, true);
+    });
+
+    it("a renewed login brings a yielded on-demand daemon back through its start-up catch-up, then it parks", async () => {
+        const { p, host } = build({ mode: "on-demand", onKick: "yield", connectOnStart: true });
+        p.start();
+        p.noteSocketState("connected");
+        assert.equal(p.noteKicked(), "yield");
+        assert.equal(p.state, "yielded");
+        assert.equal(p.noteSignedIn(), true);
+        assert.equal(p.state, "waking");
+        assert.equal(host.calls.at(-1), "wake:start");
+    });
+
+    it("noteSignedIn does nothing unless signed out or yielded", () => {
+        const { p } = build({ mode: "always-on" });
+        p.start();
+        assert.equal(p.noteSignedIn(), false);
+        assert.equal(p.state, "waking");
+    });
+
     it("waitReady: resolves on connect (and on the catch-up when asked), false after the timeout", async () => {
         const { p, clock } = build({ idleTimeoutMs: 5 * MIN, warmWaitMs: 10_000 });
         p.start();

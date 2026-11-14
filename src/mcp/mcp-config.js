@@ -117,6 +117,16 @@ export function getDefaultConfig() {
             waitHoldsSocket: null, // true: a pending wait holds the socket (a tier may turn it off)
             onKick: null, // "yield" (on-demand: let the account go until someone asks) or "exit" (code 3)
         },
+        // Renewing the saved login before it ends (src/core/session-renew.js): an `mcp start --http` server with a
+        // publicUrl opens a one-time QR login link within `daysBefore` days of the end. Unset (null) keys take the
+        // defaults beside them; ZALO_SESSION_RENEW[_<ownId>] / ZALO_SESSION_RENEW_DAYS[_<ownId>] and the policy beat them.
+        session: {
+            renew: {
+                enabled: null, // true; "off" in ZALO_SESSION_RENEW turns it off
+                daysBefore: null, // 7 days before the end (1-14)
+                linkTtl: null, // "24h": a new link (and event) when one runs out (10m-7d)
+            },
+        },
         httpPort: null,
         host: null,
     };
@@ -151,6 +161,11 @@ export function mergeMCPConfigLayer(base, layer) {
         approval: { ...base.approval, ...(layer.approval || {}) },
         admin: { ...base.admin, ...(layer.admin || {}) },
         presence: { ...base.presence, ...(layer.presence || {}) },
+        session: {
+            ...base.session,
+            ...(layer.session || {}),
+            renew: { ...base.session?.renew, ...(layer.session?.renew || {}) },
+        },
         oauth: {
             ...base.oauth,
             ...(layer.oauth || {}),

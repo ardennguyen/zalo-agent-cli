@@ -30,6 +30,7 @@ import { TOOL_PRESENCE, gateToolsByPresence, presenceClassOf } from "../../src/m
 import { PARK_RETRY_MS, createPresence } from "../../src/core/presence.js";
 import { createDaemonHealth, renderPrometheus } from "../../src/core/daemon-health.js";
 import { ACCOUNT_STATES, accountStateOfHealth, describeAccountState } from "../../src/core/account-state.js";
+import { switchToRenewedSession } from "../../src/core/session-renew.js";
 
 const OWN = "1000000000000000911";
 const SEC = 1000;
@@ -362,6 +363,47 @@ describe("daemon presence: yielded (another session of the same login took the s
         a.made[0].up();
         a.made[0].emit("kicked", { via: "frame-3000" });
         assert.deepEqual(a.ended, ["kicked"]);
+    });
+});
+
+describe("daemon presence: a renewal's new login (src/core/session-renew.js)", () => {
+    const refused = () => Object.assign(new Error("session refused"), { code: 102 });
+
+    it("signed out: the renewal brings it back to connected on the new session, and requests are taken again", async () => {
+        const d = daemon({ presence: { mode: "always-on" }, relogin: [refused(), refused(), refused()] });
+        d.dp.start({ id: "old" });
+        d.made[0].up();
+        d.made[0].emit("session-invalid", { kind: "session-invalid", code: 102 });
+        await until(() => d.dp.presence.state === "signed-out", "signed-out");
+        assert.equal(switchToRenewedSession({ id: "renewed" }, d.dp, d.host), "signed-in");
+        await tick();
+        const sup = d.made.at(-1);
+        assert.equal(sup.api.id, "renewed", "the socket opened on the renewed session");
+        sup.up();
+        assert.equal(d.dp.presence.state, "connected");
+        assert.ok(d.notes.includes("sup:connected"), "account_state says connected");
+        (await d.dp.admit({ cls: "socket" })).release();
+    });
+
+    it("parked on-demand: the new session is kept for the next wake, no socket opens for it", async () => {
+        const d = daemon();
+        d.dp.start({ id: "old" });
+        assert.equal(d.dp.presence.state, "parked");
+        assert.equal(switchToRenewedSession({ id: "renewed" }, d.dp, d.host), "adopted");
+        assert.equal(d.made.length, 0, "a parked daemon stays parked");
+        (await d.dp.admit()).release();
+        await tick();
+        assert.equal(d.made[0].api.id, "renewed", "the wake uses the renewed session");
+    });
+
+    it("connected: the socket moves to the new session, and the old one is closed", async () => {
+        const d = daemon({ presence: { mode: "always-on" } });
+        d.dp.start({ id: "old" });
+        d.made[0].up();
+        assert.equal(switchToRenewedSession({ id: "renewed" }, d.dp, d.host), "started");
+        await tick();
+        assert.deepEqual(d.made[0].calls, ["start", "stop", "dispose"]);
+        assert.equal(d.made[1].api.id, "renewed");
     });
 });
 

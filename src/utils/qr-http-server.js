@@ -20,7 +20,17 @@ import { info } from "./output.js";
  * device is asked to scan), who scanned it, whether it expired (and what asks for a new one), and how the login
  * ended. Set by the login as the events arrive.
  */
-const newQrState = () => ({ layer: 1, scanned: null, expired: false, refresh: null, outcome: null, message: "" });
+// `processLogin`: the status may read this process's own session to say "logged in" (a `login`); a page whose login
+// is not the process's (a renewal inside a running daemon) says so only from its own outcome.
+const newQrState = ({ processLogin = true } = {}) => ({
+    layer: 1,
+    scanned: null,
+    expired: false,
+    refresh: null,
+    outcome: null,
+    message: "",
+    processLogin,
+});
 // The process's own login (`login`, `account login`, a login inside `mcp start --http`); a fleet controller's flows
 // each have their own (QrPage `state`), so two at once never share a "scanned" or an outcome.
 const qrState = newQrState();
@@ -114,6 +124,7 @@ button:disabled{opacity:.6;cursor:default}
 .lang span{margin:0 8px}
 .lang a{color:#5b6b7c;text-decoration:none}
 .lang a.on{color:#0068ff;font-weight:600}
+.acct{margin:-12px 0 16px;color:#081c36;font-size:14px;font-weight:600;overflow-wrap:anywhere}
 `;
 
 /**
@@ -143,6 +154,7 @@ export const PAGE_TEXT = Object.freeze({
         goneTitle: "The login command has ended",
         goneSub: "See the command line for how it went.",
         qrAlt: "QR code",
+        accountLine: "Account: {account}",
     }),
     vi: Object.freeze({
         documentTitle: "Đăng nhập Zalo",
@@ -166,6 +178,7 @@ export const PAGE_TEXT = Object.freeze({
         goneTitle: "Lệnh đăng nhập đã kết thúc",
         goneSub: "Xem kết quả ở dòng lệnh.",
         qrAlt: "Mã QR",
+        accountLine: "Tài khoản: {account}",
     }),
 });
 
@@ -183,8 +196,24 @@ function waitingPage(nonce) {
 <p class="sub">${PAGE_TEXT.vi.preparing}</p></div></body></html>`;
 }
 
-function loginPage(version, paths, nonce) {
-    const en = PAGE_TEXT.en;
+/**
+ * The page's texts with a variant's overrides (a renewal says what it renews), as JSON safe inside a script element.
+ * @param {{text?: {en?: object, vi?: object}}|null} variant
+ * @returns {{text: {en: object, vi: object}, json: string}}
+ */
+function variantText(variant) {
+    const text = {
+        en: { ...PAGE_TEXT.en, ...(variant?.text?.en ?? {}) },
+        vi: { ...PAGE_TEXT.vi, ...(variant?.text?.vi ?? {}) },
+    };
+    return { text, json: JSON.stringify(text).replace(/</g, "\\u003c") };
+}
+
+function loginPage(version, paths, nonce, variant = null) {
+    const { text, json } = variantText(variant);
+    const en = text.en;
+    // A name is set with textContent by the script, never written into the markup.
+    const account = JSON.stringify(variant?.account ?? "").replace(/</g, "\\u003c");
     const imageUrl = `${paths.image}?v=${version}`;
     return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><title>${en.documentTitle}</title>
@@ -195,6 +224,7 @@ function loginPage(version, paths, nonce) {
 <div class="card" id="login">
 <h1 id="title">${en.title}</h1>
 <p class="sub" id="sub">${en.sub}</p>
+<p class="acct hidden" id="acct"></p>
 <div class="frame" id="frame"><i></i><i></i><i></i><i></i><img id="qr" src="${imageUrl}" alt="${en.qrAlt}">
 <div class="expired hidden" id="expired"><span id="expiredTitle">${en.expiredTitle}</span><button type="button" id="refresh">${en.refresh}</button></div></div>
 <p class="note" id="note">${en.note}</p>
@@ -206,7 +236,8 @@ ${LANGUAGE_SWITCH}
 <p class="sub" id="failedMsg"></p><p class="note" id="failedSub">${en.failedSub}</p></div>
 <script nonce="${nonce}">
 // Poll /status: swap in each new QR, say which one this is, offer a new code when it expires, and say how it ended.
-const TEXT=${JSON.stringify(PAGE_TEXT)};
+const TEXT=${json};
+const ACCOUNT=${account};
 let version=${JSON.stringify(version)},layer=1,scanned=null,expired=false,canRefresh=false,ended=null,why='',misses=0,timer=null;
 const $=(id)=>document.getElementById(id);
 const saved=()=>{try{return localStorage.getItem('zalo-agent-lang')}catch{return null}};
@@ -217,6 +248,8 @@ function render(){
   document.documentElement.lang=lang;
   document.title=t.documentTitle;
   $('qr').alt=t.qrAlt;
+  $('acct').textContent=ACCOUNT?t.accountLine.replace('{account}',()=>ACCOUNT):'';
+  $('acct').classList.toggle('hidden',!ACCOUNT||ended!==null);
   $('doneTitle').textContent=t.doneTitle;
   $('doneSub').textContent=t.doneSub;
   $('login').classList.toggle('hidden',ended!==null);
@@ -316,7 +349,11 @@ const DATA_HEADERS = Object.freeze({
  * @param {{qrImagePath: string, paths: {image: string, status: string, refresh: string}, method?: string,
  *   onOutcomeRead?: () => void}} ctx
  */
-async function answerQr(res, what, { qrImagePath, paths, method = "GET", onOutcomeRead, state = qrState }) {
+async function answerQr(
+    res,
+    what,
+    { qrImagePath, paths, method = "GET", onOutcomeRead, state = qrState, variant = null },
+) {
     const qrState = state;
     if (what === "page") {
         const nonce = randomBytes(16).toString("base64");
@@ -326,7 +363,7 @@ async function answerQr(res, what, { qrImagePath, paths, method = "GET", onOutco
             return;
         }
         // The image is fetched by URL (the same one the poll swaps in), so the page stays small.
-        res.end(loginPage(qrVersion(qrImagePath), paths, nonce));
+        res.end(loginPage(qrVersion(qrImagePath), paths, nonce, variant));
     } else if (what === "image") {
         // Raw PNG image endpoint — for agents to send direct image link
         if (!existsSync(qrImagePath)) {
@@ -345,7 +382,7 @@ async function answerQr(res, what, { qrImagePath, paths, method = "GET", onOutco
     } else if (what === "status") {
         // Login status endpoint for browser polling
         let loggedIn = qrState.outcome === "done";
-        if (qrState.outcome === null) {
+        if (qrState.outcome === null && qrState.processLogin !== false) {
             try {
                 const { isLoggedIn } = await import("../core/zalo-client.js");
                 loggedIn = isLoggedIn();
@@ -441,10 +478,16 @@ export function maskQrPath(url) {
  * dies `QR_LINK_TTL_MS` after the last code appeared (`extend`), or when the login ends.
  */
 export class QrPage {
-    /** @param {{now?: () => number, state?: object}} [opts] - `state`: the page's own login state (default: a new one) */
-    constructor({ now = Date.now, state = newQrState() } = {}) {
+    /**
+     * @param {{now?: () => number, state?: object, processLogin?: boolean, variant?: object|null}} [opts] - `state`: the
+     *   page's own login state (default: a new one); `processLogin: false`: its login is not this process's session
+     *   (a renewal in a running daemon), so only its own outcome says "logged in"; `variant`: `{text: {en, vi},
+     *   account}`, texts that replace the login page's own and the account the page is for (shown, never as markup)
+     */
+    constructor({ now = Date.now, processLogin = true, state = newQrState({ processLogin }), variant = null } = {}) {
         this.now = now;
         this.state = state;
+        this.variant = variant;
         this.publicUrl = null;
         this.localBaseUrl = null;
         /** True when an HTTP server serves this page (`mcp start --http`), so a login there needs no server of its own. */
@@ -522,6 +565,11 @@ export class QrPage {
         this.state.refresh = typeof refresh === "function" ? refresh : null;
     }
 
+    /** A new login on the same link: the page starts over (no outcome, first code, nothing scanned). */
+    noteRestart() {
+        Object.assign(this.state, newQrState({ processLogin: this.state.processLogin !== false }));
+    }
+
     noteOutcome(outcome, message = "") {
         this.state.outcome = outcome;
         this.state.message = String(message || "");
@@ -595,6 +643,7 @@ export class QrPage {
             method: req.method,
             onOutcomeRead: () => watch?.outcomeRead(),
             state: this.state,
+            variant: this.variant,
         });
         return true;
     }

@@ -11,7 +11,10 @@
  * `session-notice.json` in the account folder. A new QR login moves the end, so the thresholds count again for it.
  * The check reads the saved cookie jar: no Zalo traffic, cheap enough to run hourly.
  *
- * The event carries ids and dates only, never a name or a cookie value.
+ * The event carries ids and dates only, never a name or a cookie value. While a renewal link is open
+ * (./session-renew.js, `mcp start --http` with a publicUrl) it also carries `renewUrl` and `renewExpiresAt`, and a
+ * new link (one per `session.renew.linkTtl`, a day by default) sends one more event with it; within the renewal
+ * window a daemon that cannot open one says why in `renewHint`.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -58,10 +61,17 @@ export function reloginCommand(accountId) {
  * @param {string} accountId
  * @param {{expiresAt: string, daysLeft: number, expired: boolean}} expiry
  * @param {number} [at] - milliseconds
+ * @param {{fields?: {renewUrl: string, renewExpiresAt: string}|null, hint?: string|null}|null} [renew] - an open
+ *   renewal link (./session-renew.js), or why none can be opened
  * @returns {{event: "session_expiring", accountId: string, expiresAt: string, daysLeft: number, expired: boolean,
- *   threshold: number, command: string, at: string}}
+ *   threshold: number, command: string, at: string, renewUrl?: string, renewExpiresAt?: string, renewHint?: string}}
  */
-export function sessionExpiringEvent(accountId, expiry, at = Date.now()) {
+export function sessionExpiringEvent(accountId, expiry, at = Date.now(), renew = null) {
+    const link = renew?.fields?.renewUrl
+        ? { renewUrl: renew.fields.renewUrl, renewExpiresAt: renew.fields.renewExpiresAt }
+        : renew?.hint
+          ? { renewHint: renew.hint }
+          : {};
     return {
         event: "session_expiring",
         accountId: String(accountId),
@@ -71,16 +81,33 @@ export function sessionExpiringEvent(accountId, expiry, at = Date.now()) {
         threshold: sessionThreshold(expiry),
         command: reloginCommand(accountId),
         at: new Date(at).toISOString(),
+        ...link,
     };
 }
 
 /**
- * One line for a person.
+ * One line for a person. It never carries the renewal link itself (it goes to the log): only that one is open.
  *
- * @param {{accountId: string, expiresAt: string, daysLeft: number, expired?: boolean}} e
+ * @param {{accountId: string, expiresAt: string, daysLeft: number, expired?: boolean, renewUrl?: string,
+ *   renewExpiresAt?: string, renewHint?: string}} e
  * @returns {string}
  */
 export function describeSessionExpiring(e) {
+    return describeExpiry(e) + describeRenewal(e);
+}
+
+/** The renewal part of {@link describeSessionExpiring}. */
+function describeRenewal(e) {
+    if (e.renewUrl) {
+        return (
+            `. A renewal link is open until ${String(e.renewExpiresAt).replace("T", " ").slice(0, 16)} UTC (renewUrl): ` +
+            "open it and scan the code with this account's phone, and the daemon switches to the new login by itself"
+        );
+    }
+    return e.renewHint ? `. No renewal link: ${e.renewHint}` : "";
+}
+
+function describeExpiry(e) {
     const date = String(e.expiresAt).slice(0, 10);
     const how =
         `a QR login (\`${reloginCommand(e.accountId)}\`, \`za --account ${e.accountId} login\` on a server, or the ` +
@@ -207,6 +234,8 @@ export function fileNoticeStore(file) {
  * @param {string} args.ownId
  * @param {string} args.accountDir
  * @param {(event: object) => void} args.emit
+ * @param {{tick: Function, setWake?: Function}|null} [args.renewal] - the daemon's renewal (./session-renew.js
+ *   `createSessionRenewal`): looked at on every check; a link it opens sends an event even when no threshold is due
  * @param {() => ({expiresAt: string, daysLeft: number, expired: boolean}|null)} [args.read] - the saved session's end
  * @param {() => number} [args.now]
  * @param {number} [args.everyMs]
@@ -216,6 +245,7 @@ export function startSessionExpiryWatch({
     ownId,
     accountDir,
     emit,
+    renewal = null,
     read = () => sessionExpiryFor(ownId),
     now = Date.now,
     everyMs = SESSION_CHECK_EVERY_MS,
@@ -228,8 +258,15 @@ export function startSessionExpiryWatch({
         } catch {
             expiry = null;
         }
-        if (!notices.due(ownId, expiry)) return null;
-        const event = sessionExpiringEvent(ownId, expiry, now());
+        const due = notices.due(ownId, expiry);
+        let renew = null;
+        try {
+            renew = renewal?.tick(expiry) ?? null;
+        } catch {
+            renew = null;
+        }
+        if (!due && !renew?.issued) return null;
+        const event = sessionExpiringEvent(ownId, expiry, now(), renew);
         try {
             emit(event);
         } catch {
@@ -237,6 +274,7 @@ export function startSessionExpiryWatch({
         }
         return event;
     };
+    renewal?.setWake?.(() => check());
     check();
     const timer = everyMs > 0 ? setInterval(check, everyMs) : null;
     timer?.unref?.();

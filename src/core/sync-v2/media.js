@@ -38,9 +38,13 @@ import {
     getDownloadedMediaBefore,
     clearMessageLocalPath,
     getThreadNames,
+    markMediaGone,
 } from "../db.js";
 import { lookupCloudBackup, messageZKey } from "./zcloud.js";
+import { pastCdnWindow } from "./media-age.js";
 import { createDownloadFetch } from "../../zalo/download-fetch.js";
+import { fetchCloudBlob } from "../../zalo/zcloud.js";
+import { ALGO_BLOCK, CloudKeyError, decryptCloudBlob } from "../../zalo/zcloud-e2ee.js";
 import { readSealedJson, writeSealedJson } from "../keystore/index.js";
 import { scopeOfDir } from "../keystore/keyring.js";
 import { mediaPlainSize, writeSealedMedia } from "../keystore/media-seal.js";
@@ -158,6 +162,14 @@ export const DOWNLOAD_REASONS = {
     network: { verdict: "unknown", label: "no response at all" },
     timeout: { verdict: "unknown", label: "no answer before the deadline" },
     dead: { verdict: "dead", label: "known dead (404/410 on an earlier run)" },
+    // Sorted by the clock, with no request: past the CDN's window (./media-age.js).
+    "old-in-zcloud": { verdict: "old", label: "past the CDN's window, kept in zCloud" },
+    "old-gone": { verdict: "old", label: "past the CDN's window, not in zCloud" },
+    // The zCloud source (opt-in, with the account's cloud key).
+    "cloud-no-key": { verdict: "cloud", label: "in zCloud, but no cloud key was given" },
+    "cloud-not-found": { verdict: "cloud", label: "zCloud has no download for it" },
+    "cloud-decrypt": { verdict: "cloud", label: "did not open with the cloud key" },
+    "cloud-unsupported": { verdict: "cloud", label: "a block-encrypted zCloud item, not supported" },
 };
 
 /**
@@ -167,7 +179,7 @@ export const DOWNLOAD_REASONS = {
  * instead of inferring a cause the classifier never established.
  *
  * @param {Record<string, number>} [reasons] - `stats.reasons` from a download run
- * @param {"expired"|"throttled"|"unknown"|"failed"|"dead"} verdict
+ * @param {"expired"|"throttled"|"unknown"|"failed"|"dead"|"old"|"cloud"} verdict
  * @returns {string} e.g. `HTTP 403 ×3, no response at all ×2`; empty when nothing matched
  */
 export function describeDownloadReasons(reasons, verdict) {
@@ -431,6 +443,111 @@ function pause(ms, signal) {
     });
 }
 
+/**
+ * Run `task(signal)` under a deadline and the run's stop signal. The wait races the deadline, so a task that ignores
+ * its signal still returns on time.
+ *
+ * @template T
+ * @param {(signal: AbortSignal) => Promise<T>} task
+ * @param {number} timeoutMs
+ * @param {AbortSignal} [runSignal]
+ * @returns {Promise<{value?: T, error?: any, timedOut?: boolean, aborted?: boolean}>}
+ */
+async function bounded(task, timeoutMs, runSignal) {
+    if (runSignal?.aborted) return { aborted: true };
+    const ctl = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+        timedOut = true;
+        ctl.abort(Object.assign(new Error(`timed out after ${timeoutMs}ms`), { name: "TimeoutError" }));
+    }, timeoutMs);
+    const onStop = () => ctl.abort(Object.assign(new Error("stopped"), { name: "AbortError" }));
+    runSignal?.addEventListener("abort", onStop, { once: true });
+    const deadline = new Promise((_, reject) => {
+        ctl.signal.addEventListener("abort", () => reject(ctl.signal.reason), { once: true });
+    });
+    deadline.catch(() => {});
+    try {
+        const work = Promise.resolve().then(() => task(ctl.signal));
+        work.catch(() => {});
+        return { value: await Promise.race([work, deadline]) };
+    } catch (e) {
+        if (runSignal?.aborted && !timedOut) return { aborted: true };
+        if (timedOut) return { timedOut: true };
+        return { error: e };
+    } finally {
+        clearTimeout(timer);
+        runSignal?.removeEventListener("abort", onStop);
+    }
+}
+
+/**
+ * Fetch one file from zCloud and open it: the item's download URL, its blob, and the blob decrypted with the account's
+ * cloud key (`algoversion` 1). The key is used here and nowhere else; it is never written or logged.
+ *
+ * @param {object} args
+ * @param {object} args.item - the local zCloud index row (`cloud_items`)
+ * @param {boolean} args.cloudConversation - My Cloud: the item is not encrypted
+ * @param {{privateKey?: import("node:crypto").KeyObject|null, fetchBlob: Function}} args.cloud
+ * @param {number} args.timeoutMs
+ * @param {AbortSignal} [args.signal]
+ * @returns {Promise<{ok: true, buf: Buffer, contentType: string|null} |
+ *   {ok: false, aborted?: boolean, code: string, reason: string}>}
+ */
+async function fetchFromCloud({ item, cloudConversation, cloud, timeoutMs, signal }) {
+    let raw = {};
+    try {
+        raw = JSON.parse(item?.raw_data || "{}");
+    } catch {
+        raw = {};
+    }
+    const fromRow = item?.encryptKey
+        ? { encryptKey: item.encryptKey, algoVersion: item.algoVersion ?? undefined }
+        : null;
+    const encryptInfo = raw.encryptInfo ? { algoVersion: item?.algoVersion ?? undefined, ...raw.encryptInfo } : fromRow;
+    const encrypted = !cloudConversation && Boolean(encryptInfo?.encryptKey);
+    if (encrypted && String(encryptInfo.algoVersion ?? "") === ALGO_BLOCK) {
+        return { ok: false, code: "cloud-unsupported", reason: "zCloud: block-encrypted item (algoversion 2)" };
+    }
+    if (encrypted && !cloud.privateKey) {
+        return { ok: false, code: "cloud-no-key", reason: "zCloud: encrypted, and no cloud key was given" };
+    }
+    const r = await bounded(
+        (sig) => cloud.fetchBlob({ noiseId: item.noiseId, encryptInfo, cloudConversation }, { signal: sig }),
+        timeoutMs,
+        signal,
+    );
+    if (r.aborted) return { ok: false, aborted: true, code: "stopped", reason: "stopped" };
+    if (r.timedOut) return { ok: false, code: "timeout", reason: `zCloud: timed out after ${timeoutMs}ms` };
+    if (r.error) {
+        const e = r.error;
+        const notFound = e?.code === 404 || /NOT_FOUND_DOWNLOAD_URL/.test(String(e?.message));
+        return {
+            ok: false,
+            code: notFound ? "cloud-not-found" : "network",
+            reason: `zCloud: ${e?.message || String(e)}`,
+        };
+    }
+    const blob = r.value;
+    let buf = Buffer.from(blob?.bytes ?? []);
+    if (blob?.encrypted) {
+        if (String(blob.algoVersion ?? "") === ALGO_BLOCK) {
+            return { ok: false, code: "cloud-unsupported", reason: "zCloud: block-encrypted item (algoversion 2)" };
+        }
+        try {
+            buf = decryptCloudBlob(buf, blob.wrappedKey, blob.algoVersion, cloud.privateKey);
+        } catch (e) {
+            return {
+                ok: false,
+                code: "cloud-decrypt",
+                reason: `zCloud: ${e instanceof CloudKeyError ? e.message : "the item did not decrypt"}`,
+            };
+        }
+    }
+    if (!buf.length) return { ok: false, code: "cloud-not-found", reason: "zCloud: an empty blob" };
+    return { ok: true, buf, contentType: blob?.contentType ?? null };
+}
+
 /** The sealed-file spec of the conversation index. */
 const MEDIA_INDEX_SPEC = Object.freeze({ kind: "media-index", use: "data" });
 
@@ -495,6 +612,16 @@ function writeConversationIndex(mediaRoot, names, scope) {
  *   0 disables the pause (tests)
  * @param {number} [opts.timeoutMs=60000] - per-request deadline over the whole exchange; without one a stalled
  *   connection blocks its worker indefinitely
+ * @param {boolean} [opts.allAges=false] - ask the CDN for files past its window too. By default a file whose message
+ *   is older than the window (./media-age.js: 14 days, 7 for a file over 100 MB; My Cloud exempt) gets no request: it
+ *   is counted `oldInCloud` when the local zCloud index lists it, else `oldGone` (and its row is marked gone, so the
+ *   automatic queue skips it from then on)
+ * @param {{privateKey?: import("node:crypto").KeyObject|null, fetchBlob?: Function}|null} [opts.cloud] - the zCloud
+ *   source, opt-in: a file past the window that the index lists is fetched from zCloud and decrypted with
+ *   `privateKey`; a fresh file whose CDN download failed is tried there too. `fetchBlob(item, {signal})` is the
+ *   blob fetch (tests); default: the account's own. Rows already marked gone are looked at again
+ * @param {string} [opts.ownId] - the account (its chat with itself is My Cloud); default: the account folder's id
+ * @param {number} [opts.now] - the clock (tests)
  * @param {boolean} [opts.retryDead=false] - ask again for links remembered as dead (404/410 on an earlier run);
  *   by default they are skipped without a request and counted in `dead`
  * @param {object} [opts.deadLinks] - the dead-link list to use (tests); default: the account's own
@@ -536,8 +663,11 @@ export async function downloadSyncedMedia(opts = {}) {
         backoffBaseMs = 1000,
         signal,
         retryDead = false,
+        allAges = false,
+        cloud = null,
         onProgress = () => {},
     } = opts;
+    const now = Number.isFinite(opts.now) ? opts.now : Date.now();
     const kinds = opts.kinds ? new Set(opts.kinds) : DOWNLOADABLE_KINDS;
 
     // One definition of a conversation's folder. A caller holding a fresher map
@@ -546,7 +676,17 @@ export async function downloadSyncedMedia(opts = {}) {
     // (sender name / thread id / real name).
     const names = threadNames || getThreadNames();
 
-    const rows = getAttachmentMessages({ threadId, msgIds, since, until, limit, onlyMissing: true, includePruned });
+    const rows = getAttachmentMessages({
+        threadId,
+        msgIds,
+        since,
+        until,
+        limit,
+        onlyMissing: true,
+        includePruned,
+        // A row sorted as gone is looked at again only by a run that can say something new about it.
+        includeGone: allAges || Boolean(cloud),
+    });
     const jobs = [];
     for (const row of rows) {
         let index = 0;
@@ -580,6 +720,12 @@ export async function downloadSyncedMedia(opts = {}) {
         failed: 0,
         // Links remembered as dead (404/410 on an earlier run): skipped without a request, not counted as failed.
         dead: 0,
+        // Past the CDN's window by the clock, sorted with no request: listed in the zCloud index, or not (gone).
+        oldInCloud: 0,
+        oldGone: 0,
+        // Saved from zCloud (the opt-in source), and zCloud attempts that failed.
+        fromCloud: 0,
+        cloudFailed: 0,
         expired: 0,
         // Of the files that are gone, the ones the local zCloud index lists: the cloud holds a copy this client cannot open.
         cloudBacked: 0,
@@ -624,6 +770,26 @@ export async function downloadSyncedMedia(opts = {}) {
     writeConversationIndex(mediaRoot, names, scope);
     // Always the account's own media folder, never a shared override root: the list is the account's alone.
     const deadLinks = opts.deadLinks ?? openDeadLinks(resolve(accountDir, "media"), scope);
+    const ownId = opts.ownId ?? scope.id;
+    const cloudSource = cloud
+        ? {
+              privateKey: cloud.privateKey ?? null,
+              fetchBlob:
+                  cloud.fetchBlob ??
+                  ((item, o = {}) => fetchCloudBlob(api, item, { fetch: download, signal: o.signal })),
+          }
+        : null;
+    const cloudItemOf = (row) => {
+        try {
+            const hit = (opts.cloudLookup ?? lookupCloudBackup)(row.msgId, messageZKey(row));
+            return hit?.found ? (hit.item ?? {}) : null;
+        } catch {
+            return null; // no local index to ask: not a verdict
+        }
+    };
+    const tally = (code) => {
+        stats.reasons[code] = (stats.reasons[code] || 0) + 1;
+    };
     let cursor = 0;
     // Consecutive throttled responses across all workers. Zalo starts dropping
     // connections under sustained load, and charging on through nine thousand
@@ -673,6 +839,8 @@ export async function downloadSyncedMedia(opts = {}) {
                 downloaded: stats.downloaded,
                 failed: stats.failed,
                 dead: stats.dead,
+                oldInCloud: stats.oldInCloud,
+                oldGone: stats.oldGone,
                 bytes: stats.bytes,
             });
         }
@@ -691,22 +859,94 @@ export async function downloadSyncedMedia(opts = {}) {
             // id -> name mapping a human needs to find anything.
             const dir = join(mediaRoot, String(row.threadId));
 
-            // Answered 404/410 on an earlier run: gone, so not asked again. Keyed by the link, so a new link a
-            // later sync hands out for the same message is tried normally.
-            if (!retryDead && deadLinks.has(url)) {
-                stats.dead++;
-                stats.skipped++;
-                stats.reasons.dead = (stats.reasons.dead || 0) + 1;
-                return;
+            const primary = !att.isThumb && job.index === 0;
+            const myCloud = String(row.threadId) === String(ownId);
+            const cloudFail = (r) => {
+                stats.cloudFailed++;
+                stats.failed++;
+                tally(r.code);
+                if (stats.failures.length < 20) {
+                    stats.failures.push({
+                        msgId: row.msgId,
+                        kind: att.kind,
+                        reason: r.reason,
+                        code: r.code,
+                        status: null,
+                    });
+                }
+                onProgress({ phase: "fail", msgId: row.msgId, kind: att.kind, detail: r.reason });
+            };
+
+            let got;
+            let source = "cdn";
+            if (!allAges && pastCdnWindow(row, att, { now, ownId })) {
+                // Past the CDN's window: no request to it, as Zalo sends none. Sorted locally.
+                const item = cloudItemOf(row);
+                if (!item) {
+                    stats.oldGone++;
+                    stats.skipped++;
+                    tally("old-gone");
+                    if (primary) {
+                        try {
+                            markMediaGone(row.msgId, now);
+                        } catch {
+                            /* a missing row is not worth failing the run over */
+                        }
+                    }
+                    return;
+                }
+                if (!cloudSource) {
+                    stats.oldInCloud++;
+                    stats.skipped++;
+                    tally("old-in-zcloud");
+                    return;
+                }
+                got = await fetchFromCloud({ item, cloudConversation: myCloud, cloud: cloudSource, timeoutMs, signal });
+                if (got.aborted) return "stopped";
+                if (!got.ok) {
+                    cloudFail(got);
+                    return;
+                }
+                source = "cloud";
+            } else {
+                // Answered 404/410 on an earlier run: gone, so not asked again. Keyed by the link, so a new link a
+                // later sync hands out for the same message is tried normally.
+                if (!retryDead && deadLinks.has(url)) {
+                    stats.dead++;
+                    stats.skipped++;
+                    tally("dead");
+                    return;
+                }
+                got = await fetchBytes(url, timeoutMs, download, signal);
+                // Stopped mid-request: not a failure, and the row stays pending.
+                if (got.aborted) return "stopped";
+                // Only a status that says the object no longer exists is remembered; a lapsed-signature body, a
+                // timeout or a 5xx says nothing that lasts.
+                if (got.code === "not-found") deadLinks.add(url);
+                // The CDN failed a fresh file: zCloud next, when the run has the source and the index lists the file.
+                if (!got.ok && cloudSource) {
+                    const item = cloudItemOf(row);
+                    if (item) {
+                        const fromCloud = await fetchFromCloud({
+                            item,
+                            cloudConversation: myCloud,
+                            cloud: cloudSource,
+                            timeoutMs,
+                            signal,
+                        });
+                        if (fromCloud.aborted) return "stopped";
+                        if (fromCloud.ok) {
+                            got = fromCloud;
+                            source = "cloud";
+                        } else {
+                            stats.cloudFailed++;
+                            tally(fromCloud.code);
+                        }
+                    }
+                }
             }
-            const got = await fetchBytes(url, timeoutMs, download, signal);
-            // Stopped mid-request: not a failure, and the row stays pending.
-            if (got.aborted) return "stopped";
             const wasGone = !got.ok && Boolean(got.expired);
             if (wasGone) stats.expired++;
-            // Only a status that says the object no longer exists is remembered; a lapsed-signature body, a
-            // timeout or a 5xx says nothing that lasts.
-            if (got.code === "not-found") deadLinks.add(url);
 
             if (!got.ok) {
                 if (wasGone && isInCloudIndex(row)) stats.cloudBacked++;
@@ -777,6 +1017,7 @@ export async function downloadSyncedMedia(opts = {}) {
             }
             throttleStreak = 0;
             stats.downloaded++;
+            if (source === "cloud") stats.fromCloud++;
             stats.bytes += got.buf.length;
             onProgress({
                 phase: "saved",
@@ -785,6 +1026,7 @@ export async function downloadSyncedMedia(opts = {}) {
                 bytes: got.buf.length,
                 done: stats.downloaded,
                 total: jobs.length,
+                source,
                 path,
             });
         }

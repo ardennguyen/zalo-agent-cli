@@ -94,7 +94,8 @@ export function initDb(dbPath) {
       localPath TEXT,
       has_attachment INTEGER DEFAULT 0,
       msgStatus INTEGER,
-      mediaPrunedAt INTEGER
+      mediaPrunedAt INTEGER,
+      mediaGoneAt INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS threads (
@@ -312,6 +313,12 @@ export function initDb(dbPath) {
     // the decision so automatic fetches skip it.
     try {
         db.exec("ALTER TABLE messages ADD COLUMN mediaPrunedAt INTEGER");
+    } catch {}
+    // When a media download sorted a row's file as gone: past the CDN's window by its age and not in the local zCloud
+    // index. Like mediaPrunedAt it keeps the row out of the automatic queue, so a later run spends nothing on it; a
+    // run that re-checks (zCloud, every age) still sees it.
+    try {
+        db.exec("ALTER TABLE messages ADD COLUMN mediaGoneAt INTEGER");
     } catch {}
     // The rows that point at a downloaded file, a few hundred of several hundred thousand: what the media migration
     // (media-store.js referencedMedia) and the retention purge (getDownloadedMediaBefore) read, on a daemon's own
@@ -1630,10 +1637,21 @@ export function getThreadNames(limit = null) {
  */
 export function getAttachmentMessages(opts = {}) {
     if (!db) throw new Error("Database not initialized");
-    const { threadId, msgIds, since, until, onlyMissing = true, includePruned = false, limit = 500 } = opts;
+    const {
+        threadId,
+        msgIds,
+        since,
+        until,
+        onlyMissing = true,
+        includePruned = false,
+        includeGone = false,
+        limit = 500,
+    } = opts;
     const where = ["has_attachment = 1"];
     const params = [];
     if (onlyMissing) where.push("localPath IS NULL");
+    // A file a download already sorted as gone costs nothing again unless the caller asks to look once more.
+    if (!includeGone) where.push("mediaGoneAt IS NULL");
     // A deliberate prune is a decision, not a gap to be refilled. Automatic
     // fetches respect it; an explicit re-fetch can opt back in.
     if (!includePruned) where.push("mediaPrunedAt IS NULL");
@@ -2197,15 +2215,39 @@ export function clearMessageLocalPath(msgId, prunedAt = null) {
 export function setMessageLocalPath(msgId, localPath) {
     if (!db) throw new Error("Database not initialized");
     return db
-        .prepare("UPDATE messages SET localPath = ?, mediaPrunedAt = NULL WHERE msgId = ?")
+        .prepare("UPDATE messages SET localPath = ?, mediaPrunedAt = NULL, mediaGoneAt = NULL WHERE msgId = ?")
         .run(localPath, String(msgId));
+}
+
+/**
+ * Record that a message's file is gone: past the CDN's window by its age and not in the local zCloud index. Set by
+ * the media downloader only; a later download that saves the file clears it ({@link setMessageLocalPath}).
+ *
+ * @param {string} msgId
+ * @param {number} [at=Date.now()]
+ */
+export function markMediaGone(msgId, at = Date.now()) {
+    if (!db) throw new Error("Database not initialized");
+    return db
+        .prepare("UPDATE messages SET mediaGoneAt = ? WHERE msgId = ? AND localPath IS NULL")
+        .run(Number(at), String(msgId));
+}
+
+/** How many attachment-bearing messages a download already sorted as gone. */
+export function countGoneAttachments(threadId = null) {
+    if (!db) throw new Error("Database not initialized");
+    const sql =
+        "SELECT count(*) AS n FROM messages WHERE has_attachment = 1 AND localPath IS NULL AND mediaGoneAt IS NOT NULL" +
+        (threadId ? " AND threadId = ?" : "");
+    return (threadId ? db.prepare(sql).get(String(threadId)) : db.prepare(sql).get()).n;
 }
 
 /** How many attachment-bearing messages are still undownloaded. */
 export function countPendingAttachments(threadId = null) {
     if (!db) throw new Error("Database not initialized");
     const sql =
-        "SELECT count(*) AS n FROM messages WHERE has_attachment = 1 AND localPath IS NULL AND mediaPrunedAt IS NULL" +
+        "SELECT count(*) AS n FROM messages WHERE has_attachment = 1 AND localPath IS NULL AND mediaPrunedAt IS NULL " +
+        "AND mediaGoneAt IS NULL" +
         (threadId ? " AND threadId = ?" : "");
     return (threadId ? db.prepare(sql).get(String(threadId)) : db.prepare(sql).get()).n;
 }

@@ -1790,6 +1790,22 @@ export function registerTools(
                         mediaRoot: process.env.ZALO_MEDIA_DIR || mediaConfig.downloadDir || undefined,
                     });
                     localPath = getMessageById(msgId)?.localPath || null;
+                    // Past Zalo's keeping window: nothing was asked of its servers. A file kept in zCloud opens only
+                    // with the account's cloud key, which this tool never takes: the answer names the command that does.
+                    if (!localPath && stats.oldInCloud) {
+                        return err(
+                            `The media of ${msgId} is past Zalo's keeping window (14 days) but kept in zCloud. It opens ` +
+                                "only with the account's cloud key, which this tool does not take. Run in a terminal: " +
+                                `zalo-agent sync-media --account ${accountId} --thread ${msgThread} --from-zcloud --key-prompt ` +
+                                "(or `zalo-agent cloud get <noiseId> --key-prompt -o <file>`), then call zalo_view_media again.",
+                        );
+                    }
+                    if (!localPath && stats.oldGone) {
+                        return err(
+                            `The media of ${msgId} is past Zalo's keeping window (14 days, 7 for a file over 100 MB) and ` +
+                                "not in zCloud: it is no longer on Zalo's servers. Only a device that saved it still has it.",
+                        );
+                    }
                     if (!localPath) {
                         return err(
                             `Could not fetch media for ${msgId} (${stats.expired} expired, ` +

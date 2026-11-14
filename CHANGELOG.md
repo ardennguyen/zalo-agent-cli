@@ -47,6 +47,13 @@ A security release for the MCP server's OAuth, the official-API logins and movin
 - Settings: `session.renew` `{enabled, daysBefore, linkTtl}` in `mcp-config.json` (and per account), `ZALO_SESSION_RENEW[_<ownId>]=off`, `ZALO_SESSION_RENEW_DAYS[_<ownId>]`, and `session.renew.*` in the runtime policy. Without a public address the event carries `renewHint` instead of a link.
 - `fleet status` shows `renewing` in LOGIN ENDS while a renewal link is open, and `--check` points at the link.
 - The approval, PIN and status pages share the QR login page's design and its English | Tiếng Việt switch. The OAuth approve page says which app asks, for which account, what it will be able to do, and the host it returns to; `?lang=vi` opens any page in Vietnamese, and a choice made on one page is kept for the others. Their style and script carry a per-response nonce: the pages no longer allow inline styles.
+- **`sync-media` and the media step of `sync` no longer ask Zalo's servers for files they no longer keep.** A file is kept about 14 days after its message (7 days for a file over 100 MB); past that, a file gets no request and is sorted locally: *kept in zCloud* when the local zCloud index lists it, else *gone*, recorded so later runs skip it for free. My Cloud is exempt. A run over months of restored history now takes seconds instead of hours of 404s. `--all-ages` asks anyway; the summary and progress lines count `old in zCloud` and `old gone`.
+- `sync-media --from-zcloud`: fetch the files kept in zCloud from there (those past the window first, and a fresh file whose link failed), decrypted with the account's cloud key, which is read at run time (`--key-stdin` or `--key-prompt`) and held for that run only — never written, logged or put in `--json` output. Only on a zCloud plan. Files land in the usual `media/<threadId>/` folder. `zalo_view_media` never takes the key: for such a file it names the command to run.
+
+#### Known limits
+
+- The zCloud source of `sync-media --from-zcloud` is tested offline only: a live test needs the account's cloud key, which only the owner's phone holds. Getting the key from the phone, as Zalo does, needs this tool to be an end-to-end-encryption device of the account, which it is not; the key has to be given by hand.
+
 
 ## [3.0.0] — 2026-11-15
 

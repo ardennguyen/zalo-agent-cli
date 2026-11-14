@@ -60,6 +60,9 @@ let hits;
 /** The request headers of every request the server saw, in order. */
 let heads = [];
 
+/** A recent send time: inside the CDN's window (src/core/sync-v2/media-age.js), so the CDN path is what runs. */
+const T0 = Date.now() - 3_600_000;
+
 const PHOTO_BYTES = Buffer.from("\xff\xd8\xff\xe0JFIF-pretend-jpeg", "binary");
 /**
  * A 149-byte CSV, the size and shape of the two `data.csv` attachments that
@@ -220,7 +223,7 @@ function row(over = {}, attachments = []) {
         senderId: "u1",
         senderName: "",
         text: "[photo]",
-        timestamp: 1_750_000_000_000,
+        timestamp: T0,
         type: "photo",
         has_attachment: attachments.some((a) => a.url || a.thumbUrl),
         raw_data: { src: "sync-v2", msgType: 3, cliMsgId: "999", attachments },
@@ -527,8 +530,8 @@ describe("downloadSyncedMedia — filtering", () => {
 
     it("fetches a message asked for by id, however many newer ones are pending (zalo_view_media)", async () => {
         // The old view_media scan took the thread's 50 newest pending rows: an older message never downloaded.
-        const old = row({ timestamp: 1_600_000_000_000 }, [photo("/ok.jpg")]);
-        for (let i = 0; i < 60; i++) row({ timestamp: 1_750_000_000_000 + i }, [photo("/ok.jpg")]);
+        const old = row({ timestamp: T0 - 600_000 }, [photo("/ok.jpg")]);
+        for (let i = 0; i < 60; i++) row({ timestamp: T0 + i }, [photo("/ok.jpg")]);
         const stats = await downloadSyncedMedia({ accountDir: dir, threadId: "t1", msgIds: [old], limit: 1 });
         assert.equal(stats.considered, 1);
         assert.equal(stats.downloaded, 1);
@@ -537,9 +540,9 @@ describe("downloadSyncedMedia — filtering", () => {
     });
 
     it("honours a time window", async () => {
-        row({ timestamp: 1_700_000_000_000 }, [photo("/ok.jpg")]);
-        row({ timestamp: 1_750_000_000_000 }, [photo("/ok.jpg")]);
-        const stats = await downloadSyncedMedia({ accountDir: dir, since: 1_740_000_000_000 });
+        row({ timestamp: T0 - 600_000 }, [photo("/ok.jpg")]);
+        row({ timestamp: T0 }, [photo("/ok.jpg")]);
+        const stats = await downloadSyncedMedia({ accountDir: dir, since: T0 - 300_000 });
         assert.equal(stats.considered, 1);
     });
 
@@ -934,8 +937,8 @@ describe("every wait is bounded, and the run keeps going", () => {
     });
 
     it("stops promptly on abort, mid-request, and leaves what was not saved pending", async () => {
-        row({ timestamp: 1_750_000_000_003 }, [photo("/ok.jpg")]);
-        for (let i = 0; i < 5; i++) row({ timestamp: 1_750_000_000_000 - i }, [mute(`s${i}`)]);
+        row({ timestamp: T0 + 3 }, [photo("/ok.jpg")]);
+        for (let i = 0; i < 5; i++) row({ timestamp: T0 - i }, [mute(`s${i}`)]);
         const ctl = new AbortController();
         const t0 = Date.now();
         const run = downloadSyncedMedia({
@@ -1281,7 +1284,7 @@ describe("the summary reports what was observed, not what it assumes", () => {
         for (const [code, spec] of Object.entries(DOWNLOAD_REASONS)) {
             assert.ok(spec.label, `${code} has no label`);
             assert.ok(
-                ["expired", "throttled", "unknown", "failed", "dead"].includes(spec.verdict),
+                ["expired", "throttled", "unknown", "failed", "dead", "old", "cloud"].includes(spec.verdict),
                 `${code} has verdict ${spec.verdict}`,
             );
         }
@@ -1359,7 +1362,7 @@ describe("pruneDownloadedMedia", () => {
     /** A row whose media is already on disk, aged `daysAgo`. */
     const downloaded = async (daysAgo) => {
         const id = row({ timestamp: NOW - daysAgo * DAY }, [photo("/ok.jpg")]);
-        await downloadSyncedMedia({ accountDir: dir, limit: 50 });
+        await downloadSyncedMedia({ accountDir: dir, allAges: true, limit: 50 });
         return id;
     };
 
@@ -1421,7 +1424,7 @@ describe("pruneDownloadedMedia", () => {
         upsertThread({ threadId: "t2", type: "dm", name: "Other", lastUpdate: 1 });
         await downloaded(40);
         row({ threadId: "t2", timestamp: NOW - 40 * DAY }, [photo("/ok.jpg")]);
-        await downloadSyncedMedia({ accountDir: dir, limit: 50 });
+        await downloadSyncedMedia({ accountDir: dir, allAges: true, limit: 50 });
         const s = await pruneDownloadedMedia({ olderThanDays: 30, now: NOW, threadId: "t2" });
         assert.equal(s.deleted, 1, "only the named thread");
     });
@@ -1441,7 +1444,7 @@ describe("pruning is a decision, not a gap to refill", () => {
 
     const downloadedThenPruned = async () => {
         row({ timestamp: NOW - 40 * DAY }, [photo("/ok.jpg")]);
-        await downloadSyncedMedia({ accountDir: dir, limit: 50 });
+        await downloadSyncedMedia({ accountDir: dir, allAges: true, limit: 50 });
         await pruneDownloadedMedia({ olderThanDays: 30, now: NOW });
     };
 
@@ -1449,7 +1452,7 @@ describe("pruning is a decision, not a gap to refill", () => {
         // Prune clears localPath to requeue the row, so without a marker the
         // very next sync silently undoes the cleanup.
         await downloadedThenPruned();
-        const again = await downloadSyncedMedia({ accountDir: dir, limit: 50 });
+        const again = await downloadSyncedMedia({ accountDir: dir, allAges: true, limit: 50 });
         assert.equal(again.considered, 0, "a pruned attachment must stay pruned");
         assert.equal(again.downloaded, 0);
     });
@@ -1461,23 +1464,23 @@ describe("pruning is a decision, not a gap to refill", () => {
 
     it("re-fetches only when explicitly asked", async () => {
         await downloadedThenPruned();
-        const back = await downloadSyncedMedia({ accountDir: dir, limit: 50, includePruned: true });
+        const back = await downloadSyncedMedia({ accountDir: dir, allAges: true, limit: 50, includePruned: true });
         assert.equal(back.downloaded, 1, "--include-pruned should bring it back");
     });
 
     it("clears the marker once the file is downloaded again", async () => {
         await downloadedThenPruned();
-        await downloadSyncedMedia({ accountDir: dir, limit: 50, includePruned: true });
+        await downloadSyncedMedia({ accountDir: dir, allAges: true, limit: 50, includePruned: true });
         // The file is back, so the earlier removal no longer applies: an
         // ordinary run must now treat it like any other downloaded row.
-        const after = await downloadSyncedMedia({ accountDir: dir, limit: 50 });
+        const after = await downloadSyncedMedia({ accountDir: dir, allAges: true, limit: 50 });
         assert.equal(after.considered, 0, "already downloaded, nothing to do");
         assert.ok(getMessages("t1")[0].localPath, "and it has a path again");
     });
 
     it("leaves never-pruned media fetchable as normal", async () => {
         row({ timestamp: NOW - 40 * DAY }, [photo("/ok.jpg")]);
-        const s = await downloadSyncedMedia({ accountDir: dir, limit: 50 });
+        const s = await downloadSyncedMedia({ accountDir: dir, allAges: true, limit: 50 });
         assert.equal(s.downloaded, 1);
     });
 });
@@ -1488,7 +1491,7 @@ describe("pruneDownloadedMedia — all mode", () => {
 
     const seedAges = async (...daysAgo) => {
         for (const d of daysAgo) row({ timestamp: NOW - d * DAY }, [photo("/ok.jpg")]);
-        await downloadSyncedMedia({ accountDir: dir, limit: 100 });
+        await downloadSyncedMedia({ accountDir: dir, allAges: true, limit: 100 });
     };
 
     it("deletes every downloaded file regardless of age", async () => {
@@ -1529,7 +1532,7 @@ describe("pruneDownloadedMedia — all mode", () => {
         upsertThread({ threadId: "t2", type: "dm", name: "Other", lastUpdate: 1 });
         await seedAges(1);
         row({ threadId: "t2", timestamp: NOW }, [photo("/ok.jpg")]);
-        await downloadSyncedMedia({ accountDir: dir, limit: 100 });
+        await downloadSyncedMedia({ accountDir: dir, allAges: true, limit: 100 });
         const s = await pruneDownloadedMedia({ all: true, now: NOW, threadId: "t2" });
         assert.equal(s.deleted, 1, "only the named thread");
     });
@@ -1537,7 +1540,7 @@ describe("pruneDownloadedMedia — all mode", () => {
     it("all mode still records the prune, so a sync does not undo it", async () => {
         await seedAges(1);
         await pruneDownloadedMedia({ all: true, now: NOW });
-        const again = await downloadSyncedMedia({ accountDir: dir, limit: 100 });
+        const again = await downloadSyncedMedia({ accountDir: dir, allAges: true, limit: 100 });
         assert.equal(again.considered, 0);
     });
 });

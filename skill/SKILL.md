@@ -186,6 +186,8 @@ zalo-agent sync-media --prune 90 --dry-run   # Delete downloaded media older tha
 zalo-agent sync-media --prune all            # ...every downloaded file, regardless of age
 zalo-agent sync-media --prune-orphans        # ...media of conversations the account no longer has
 zalo-agent sync-media --include-pruned       # Re-fetch media you previously pruned
+zalo-agent sync-media --from-zcloud --key-prompt  # Files past Zalo's 14-day window, from zCloud (cloud key asked, never stored)
+zalo-agent sync-media --all-ages             # ...or ask Zalo's servers for them anyway
 zalo-agent conv pin <threadId>               # Pin to the top of the list
 zalo-agent conv unpin <threadId>             # Unpin
 zalo-agent conv archive <threadId>           # Move to Zalo's Other tab

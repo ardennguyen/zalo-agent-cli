@@ -216,7 +216,7 @@ export function registerSyncCommands(program) {
         .description(
             "Download the attachments a mobile sync recorded. transfer-sync carries only CDN " +
                 "references, never file bytes, so this is the separate fetch step. Needs no phone " +
-                "confirmation. Expired links are retried once through Zalo's renewlink endpoint",
+                "confirmation. A link that is gone is reported, not retried; Ctrl+C stops cleanly and a re-run resumes",
         )
         .option("-T, --thread <threadId>", "Only this conversation")
         .option(
@@ -427,41 +427,42 @@ async function runMediaDownload(activeAcc, opts) {
     }
     info(`${pending} attachment(s) not yet downloaded.`);
 
-    // Media lives behind the same session as everything else, but only the
-    // renewal of an expired URL actually needs it — so a missing session
-    // degrades to "fetch what is still live" rather than failing outright.
+    // The session gives the downloads the account's proxy and User-Agent. The
+    // media links are signed, so a missing session degrades to the plain fetch
+    // rather than failing outright.
     let api = null;
     try {
         api = getApi();
     } catch {
-        warning("No active session — expired links cannot be renewed on this run.");
+        warning("No active session — downloading without the account's proxy and identity.");
     }
 
-    let last = 0;
-    const stats = await downloadSyncedMedia({
-        api,
-        accountDir,
-        threadId: opts.thread,
-        kinds,
-        limit: opts.limit,
-        since,
-        concurrency: opts.concurrency,
-        maxFiles: opts.mediaLimit,
-        maxBytes: opts.maxSize ? opts.maxSize * MB : undefined,
-        timeoutMs: (opts.timeout || 60) * 1000,
-        thumbs: Boolean(opts.thumbs),
-        includePruned: Boolean(opts.includePruned),
-        dryRun: Boolean(opts.dryRun),
-        threadNames: getThreadNames(),
-        onProgress: (p) => {
-            if (p.phase === "dry-run") info(p.detail);
-            // One line per 25 files keeps a 10k-file run readable.
-            if (p.phase === "saved" && (p.done === p.total || p.done - last >= 25)) {
-                last = p.done;
-                info(`  ${p.done}/${p.total} downloaded`);
-            }
-        },
-    });
+    const progress = mediaProgressPrinter();
+    const stats = await whileInterruptible(
+        (signal) =>
+            downloadSyncedMedia({
+                api,
+                accountDir,
+                threadId: opts.thread,
+                kinds,
+                limit: opts.limit,
+                since,
+                concurrency: opts.concurrency,
+                maxFiles: opts.mediaLimit,
+                maxBytes: opts.maxSize ? opts.maxSize * MB : undefined,
+                timeoutMs: (opts.timeout || 60) * 1000,
+                thumbs: Boolean(opts.thumbs),
+                includePruned: Boolean(opts.includePruned),
+                dryRun: Boolean(opts.dryRun),
+                threadNames: getThreadNames(),
+                signal,
+                onProgress: (p) => {
+                    if (p.phase === "dry-run") info(p.detail);
+                    progress(p);
+                },
+            }),
+        { onStop: mediaStoppingNotice },
+    );
 
     if (opts.dryRun) {
         success(`Dry run: ${stats.considered} attachment(s) would be fetched.`);
@@ -469,14 +470,18 @@ async function runMediaDownload(activeAcc, opts) {
         process.exit(0);
     }
     success(`Downloaded ${stats.downloaded}/${stats.considered} attachment(s) (${formatBytes(stats.bytes)}).`);
+    if (stats.interrupted) {
+        warning(
+            `Stopped after ${stats.attempted} of ${stats.considered}; the rest are still pending — run it again to continue.`,
+        );
+    }
     if (stats.deferred) {
         info(
             `${stats.deferred} more attachment(s) are waiting (this run was capped at ${opts.mediaLimit}); run it again to continue.`,
         );
     }
-    if (stats.renewed) info(`Renewed ${stats.renewed} expired link(s).`);
     if (stats.expired) {
-        warning(`${stats.expired} link(s) are gone (HTTP 404/410 or a lapsed signature).`);
+        warning(`${stats.expired} link(s) are gone (${describeDownloadReasons(stats.reasons, "expired")}).`);
         if (stats.cloudBacked) {
             info(
                 `${stats.cloudBacked} of the files that are gone are listed in your zCloud index: the cloud holds a copy ` +
@@ -1601,6 +1606,46 @@ export function reportRestore(res, win, ctx = {}) {
     return { status: "ok", reason: `${res.messagesSaved} message(s) from ${res.conversations} conversation(s)` };
 }
 
+/** How often a media run prints a progress line: every this many files finished, or this often, whichever is first. */
+const MEDIA_PROGRESS_EVERY = 50;
+const MEDIA_PROGRESS_MS = 30000;
+
+/**
+ * The progress printer of a media run. It counts files *finished* (saved or failed), not only saved ones: a run
+ * that walks through a stretch of links that are all gone used to print nothing for an hour and look frozen.
+ *
+ * @param {object} [o]
+ * @param {number} [o.every] - files between lines
+ * @param {number} [o.everyMs] - longest silence between lines while files keep finishing
+ * @param {() => number} [o.now]
+ * @param {(line: string) => void} [o.print]
+ * @returns {(p: object) => void} the `onProgress` to hand the downloader
+ */
+export function mediaProgressPrinter({
+    every = MEDIA_PROGRESS_EVERY,
+    everyMs = MEDIA_PROGRESS_MS,
+    now = Date.now,
+    print = info,
+} = {}) {
+    let lastCount = 0;
+    let lastAt = now();
+    return (p) => {
+        if (p?.phase !== "attempted") return;
+        const t = now();
+        if (p.attempted !== p.total && p.attempted - lastCount < every && t - lastAt < everyMs) return;
+        lastCount = p.attempted;
+        lastAt = t;
+        print(
+            `  ${p.attempted}/${p.total} files — ${p.downloaded} saved, ${p.failed} failed (${formatBytes(p.bytes)})`,
+        );
+    };
+}
+
+/** What the first Ctrl+C during a media run says. */
+function mediaStoppingNotice() {
+    warning("Stopping the download: nothing half-written is kept. Press Ctrl+C again to quit at once.");
+}
+
 /**
  * Download everything the restore just recorded.
  *
@@ -1624,42 +1669,41 @@ async function fetchMediaAfterRestore(accountDir, api, since, { limit } = {}) {
         `Downloading ${capped ? `up to ${limit} of ${pending}` : pending} attachment(s) — no phone confirmation needed. ` +
             "Ctrl-C is safe; it resumes.",
     );
-    let last = 0;
-    // Tallied here rather than read off the result: the result does not exist
-    // until the whole download resolves, so progress lines would all read 0 B.
-    let bytes = 0;
-    const stats = await downloadSyncedMedia({
-        api,
-        accountDir,
-        limit: Number.MAX_SAFE_INTEGER,
-        // Only media inside the window this run actually covered, and never
-        // anything deliberately pruned. Without both, a sync silently undoes a
-        // `sync-media --prune`: pruning clears localPath to requeue the row, so
-        // an unscoped fetch re-downloads exactly what was just deleted.
-        since: Number.isFinite(since) && since > 0 ? since : undefined,
-        includePruned: false,
-        // Two at a time, as Zalo fetches: a burst is what the CDN answers with 403 and 429.
-        concurrency: 2,
-        maxFiles: limit,
-        threadNames: getThreadNames(),
-        onProgress: (p) => {
-            if (p.phase !== "saved") return;
-            bytes += p.bytes || 0;
-            if (p.done === p.total || p.done - last >= 50) {
-                last = p.done;
-                info(`  ${p.done}/${p.total} files (${formatBytes(bytes)})`);
-            }
-        },
-    });
+    const progress = mediaProgressPrinter();
+    const stats = await whileInterruptible(
+        (signal) =>
+            downloadSyncedMedia({
+                api,
+                accountDir,
+                limit: Number.MAX_SAFE_INTEGER,
+                // Only media inside the window this run actually covered, and never
+                // anything deliberately pruned. Without both, a sync silently undoes a
+                // `sync-media --prune`: pruning clears localPath to requeue the row, so
+                // an unscoped fetch re-downloads exactly what was just deleted.
+                since: Number.isFinite(since) && since > 0 ? since : undefined,
+                includePruned: false,
+                // Two at a time, as Zalo fetches: a burst is what the CDN answers with 403 and 429.
+                concurrency: 2,
+                maxFiles: limit,
+                threadNames: getThreadNames(),
+                signal,
+                onProgress: progress,
+            }),
+        { onStop: mediaStoppingNotice },
+    );
     success(`Downloaded ${stats.downloaded}/${stats.considered} file(s) (${formatBytes(stats.bytes)}).`);
+    if (stats.interrupted) {
+        warning(
+            `Stopped after ${stats.attempted} of ${stats.considered}; the rest are still pending — \`zalo-agent sync-media\` continues.`,
+        );
+    }
     if (stats.deferred) {
         info(
             `${stats.deferred} more file(s) are waiting (this run was capped at ${limit}); run \`zalo-agent sync-media\` to continue.`,
         );
     }
-    if (stats.renewed) info(`Renewed ${stats.renewed} expired link(s).`);
     if (stats.expired) {
-        warning(`${stats.expired} link(s) are gone and could not be renewed.`);
+        warning(`${stats.expired} link(s) are gone (${describeDownloadReasons(stats.reasons, "expired")}).`);
         if (stats.cloudBacked) {
             info(
                 `${stats.cloudBacked} of the files that are gone are listed in your zCloud index: the cloud holds a copy ` +

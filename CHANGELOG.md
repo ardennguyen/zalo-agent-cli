@@ -9,6 +9,10 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+#### Documentation
+
+- Documented, under `cloud get`'s Known limits, that the account's zCloud cloud key **cannot be fetched from the phone by this engine**: the phone delivers it as an end-to-end-encryption message addressed to a registered encrypted-chat device's identity, which this engine does not register, so the reply could not be opened. The key is supplied at run time instead (`cloud get` / `sync-media --from-zcloud` with `--key-stdin` or `--key-prompt`) and is never stored. Internal request/wait/receive scaffolding is in place behind a clear "needs an end-to-end-encryption device" error, ready for the day such a device is supported; no command or tool was added.
+
 ## [3.0.1] — 2026-11-15
 
 A security release for the MCP server's OAuth, the official-API logins and moving an account between machines, and the saved login renewed from the running server.

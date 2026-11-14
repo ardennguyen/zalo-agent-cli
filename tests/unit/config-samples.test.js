@@ -41,6 +41,7 @@ import { createWebhookDispatcher, openOutbox } from "../../src/core/webhook-outb
 import { createDaemonHealth, renderPrometheus } from "../../src/core/daemon-health.js";
 import { PRESENCE_KEYS, resolvePresenceSettings } from "../../src/core/presence-config.js";
 import { generateFleetFiles } from "../../src/core/fleet.js";
+import { RENEW_DEFAULTS, resolveRenewSettings } from "../../src/core/session-renew.js";
 import { USE_CASES, generateFor } from "../helpers/use-case-manifest.js";
 
 before(() => {
@@ -148,6 +149,24 @@ describe("mcp-config samples", () => {
         const internet = mergeMCPConfigLayer(defaults, JSON.parse(read("mcp-config", "internet.json")));
         assert.deepEqual(resolveMediaDelivery({ config: internet, env: {} }).allowDeliver, ["inline", "link"]);
         assert.deepEqual(resolveTrustedProxies({ config: internet, env: {} }), ["127.0.0.1"]);
+    });
+
+    it("every sample sets session.renew explicitly, at the defaults the docs give; the env samples resolve per account", () => {
+        for (const file of list("mcp-config", ".json")) {
+            const raw = JSON.parse(read("mcp-config", file));
+            const cfg = mergeMCPConfigLayer(defaults, raw);
+            for (const key of ["enabled", "daysBefore", "linkTtl"])
+                assert.notEqual(cfg.session.renew[key], null, `${file}: session.renew.${key} is set`);
+            const r = resolveRenewSettings({ config: cfg, env: {}, policy: () => undefined });
+            assert.deepEqual(r.warnings, [], file);
+            assert.deepEqual([r.enabled, r.daysBefore, r.linkTtlMs], Object.values(RENEW_DEFAULTS), file);
+            assert.equal(validatePolicy({ session: raw.session }).errors.length, 0, file);
+        }
+        const env = parseEnv(read("env", "multi-account.env"));
+        const days = (id) => resolveRenewSettings({ accountId: id, env, policy: () => undefined }).daysBefore;
+        assert.deepEqual([days("1000000000000000001"), days("1000000000000000002")], [7, 10]);
+        const crm = parseEnv(read("env", "crm-backend.env"));
+        assert.equal(resolveRenewSettings({ env: crm, policy: () => undefined }).enabled, true);
     });
 
     it("every sample sets each presence key explicitly; backends are on-demand, the local agent always-on", () => {
@@ -596,6 +615,8 @@ describe("use-case sample sets (docs/config-samples/use-cases/)", () => {
                 for (const key of Object.keys(cfg)) assert.ok(key in defaults || key === "accounts", key);
                 const merged = mergeMCPConfigLayer(defaults, cfg);
                 for (const key of Object.keys(PRESENCE_KEYS)) assert.notEqual(merged.presence[key], null, key);
+                for (const key of ["enabled", "daysBefore", "linkTtl"])
+                    assert.notEqual(merged.session.renew[key], null, `session.renew.${key}`);
                 assert.equal(merged.media.downloadDir, null, "media under the account folder, inside ReadWritePaths");
             });
         }

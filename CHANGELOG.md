@@ -11,7 +11,7 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [3.0.1] — unreleased
 
-A security release for the MCP server's OAuth, the official-API logins and moving an account between machines.
+A security release for the MCP server's OAuth, the official-API logins and moving an account between machines, and the saved login renewed from the running server.
 
 #### Breaking changes
 
@@ -36,6 +36,13 @@ A security release for the MCP server's OAuth, the official-API logins and movin
 - `oa login` and `social login` no longer end on a stray request to their callback (wrong `state`, no code): it gets 400 and the login keeps waiting. `social login` requires `state`. Both wait 5 minutes by default (`--timeout`), and a token request gives up after 30 seconds.
 - `oa login`, `oa init`, `social setup` and `social login` take the app secret from `ZALO_OA_APP_SECRET` / `ZALO_SOCIAL_APP_SECRET` or a prompt that does not echo, so it stays out of the process list. The OA data folder is created readable by its owner only, and DPoP proofs carry a random `jti`.
 - A keyring protected with `account security provider passphrase --passphrase-file <file>` and moved to another machine now opens with the systemd credential there when the recorded file does not exist.
+
+#### Added
+
+- **The saved login renews itself from the running server, with one scan.** A QR login lasts about 90 days and Zalo never renews it. An `mcp start --http` server with a public address (`publicUrl` / `ZALO_MCP_PUBLIC_URL`) now opens a one-time renewal link 7 days before the end, `<publicUrl>/zalo/qr/<token>`, and sends it in `session_expiring` as `renewUrl` and `renewExpiresAt`; when a link runs out (24 hours) a new one is sent, until the login is renewed. Opening the link shows a fresh QR code and the account it renews; the account's phone scans and confirms, and the server saves the new login (keeping the device id, so the offline queue survives) and switches to it **without a restart**, also out of `signed_out`. A new `session_renewed` event (`expiresAt`, `daysLeft`, `deviceKept`) follows, on the log, the webhook and the MCP buffer. A scan by another account is refused and changes nothing; a link works once, dies on a restart, and is never written to a log.
+- `zalo-agent session renew [--account <id>] [--fresh]`: open a renewal link on the account's running server by hand and print it.
+- Settings: `session.renew` `{enabled, daysBefore, linkTtl}` in `mcp-config.json` (and per account), `ZALO_SESSION_RENEW[_<ownId>]=off`, `ZALO_SESSION_RENEW_DAYS[_<ownId>]`, and `session.renew.*` in the runtime policy. Without a public address the event carries `renewHint` instead of a link.
+- `fleet status` shows `renewing` in LOGIN ENDS while a renewal link is open, and `--check` points at the link.
 
 ## [3.0.0] — 2026-11-15
 

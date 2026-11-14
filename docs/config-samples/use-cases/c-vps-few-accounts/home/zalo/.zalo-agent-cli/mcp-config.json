@@ -51,5 +51,12 @@
         "1000000000000000002": {
             "watchThreads": ["dm:*"]
         }
+    },
+    "session": {
+        "renew": {
+            "enabled": true,
+            "daysBefore": 7,
+            "linkTtl": "24h"
+        }
     }
 }

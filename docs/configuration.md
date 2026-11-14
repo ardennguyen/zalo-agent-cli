@@ -57,7 +57,7 @@ Files and the environment are read once at start; the policy is read again on ev
 The policy takes `confirmMode`, `hiddenChats`, `allowPinArgument`, `approval.*`, `media.deliver`, `media.inlineMaxBytes`,
 `media.allowDeliver`, `media.linkTtl`, `media.tempfileTtl`, `media.linkAuth`, `media.linkRateLimit`,
 `media.capability.*`, `media.autoOpen`, `webhook`, `webhookBatchSize`, `webhookMaxAge`, `quota.*`, `retention.*`,
-`groups.onLeave` and `presence.*` (`presence.alwaysOn.*` only in a tenant's or a user's policy; `quota.tenant.*` only
+`groups.onLeave`, `presence.*` and `session.renew.*` (`presence.alwaysOn.*` only in a tenant's or a user's policy; `quota.tenant.*` only
 in a tenant's).
 A key read only at start (`httpPort`, `host`, `publicUrl`, `tls`, `oauth`, `trustedProxies`, `admin`,
 `media.downloadDir`, the key provider and its options, `accounts`) and every secret (`webhookSecret`) is refused with
@@ -237,6 +237,36 @@ at most 60 s; `ZALO_CONNECT_SLOT_WAIT` (seconds, default `120`) is how long a wa
 Both take an `_<ownId>` form. `/status` and `/metrics` carry `lastWakeMs` / `lastCatchUpMs`
 (`zalo_presence_last_wake_seconds`, `zalo_presence_last_catch_up_seconds`) and the metered connected time.
 
+### Renewing the saved login (`session.renew`)
+
+A QR login lasts about 90 days and Zalo never renews it: only a new QR scan by the account's phone does. An
+`mcp start --http` server with a public address (`publicUrl`, `--public-url`, `ZALO_MCP_PUBLIC_URL[_<ownId>]`) does
+the asking itself. Within `daysBefore` days of the end it opens a **renewal link**, a one-time QR login page at
+`<publicUrl>/zalo/qr/<token>` on its own HTTP port, and puts it in its `session_expiring` events as `renewUrl` (with
+`renewExpiresAt`). A link lives `linkTtl`; when it runs out a new one is opened and one more `session_expiring` goes
+out with it, every day by default, until the login is renewed. The 14-day threshold event still goes out without a link.
+
+| Key (`session.renew.*`) | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | `false` (or `ZALO_SESSION_RENEW[_<ownId>]=off`): no link is opened; the events stay as they were |
+| `daysBefore` | `7` | open a link this many days before the end (1-14; `ZALO_SESSION_RENEW_DAYS[_<ownId>]`), and after it has ended |
+| `linkTtl` | `"24h"` | how long one link lives (10m-7d) |
+
+Layers: `mcp-config.json` `session.renew` < `accounts.<ownId>.session.renew` < the environment < the runtime policy
+(`session.renew.*`, applied at once). `zalo-agent session renew [--account <id>] [--fresh]` opens a link by hand.
+Without a public address no link can reach a phone: the events carry `renewHint` instead. `listen` serves no page,
+so it opens no link.
+
+The page asks Zalo for a fresh code when it is opened, shows which account it renews (its name and id), and needs
+nothing but the scan and the confirmation on that account's phone. The login keeps the account's saved device id, so
+Zalo's offline queue carries on. A scan by **another account** is refused before its session is opened, and the page
+says so. On success the server saves the new login sealed under the account's keyring, switches to it **in place** (no
+restart; a `signed_out` or `yielded` daemon comes back, a parked one keeps it for its next wake) and sends
+`session_renewed` `{event, accountId, expiresAt, daysLeft, deviceKept, at}`; the link is then used up. The token is
+128 random bits held in memory only (a restart opens a new link and the old one is dead) and never logged; the page is
+`no-store`, `nosniff`, `no-referrer`, unframeable, with a nonce CSP, at most 120 requests a minute (then 429) and
+12 QR logins an hour. `fleet status` shows `renewing` in LOGIN ENDS while a link is open.
+
 ---
 
 ## 2. Reference
@@ -287,6 +317,7 @@ Both take an `_<ownId>` form. `/status` and `/metrics` carry `lastWakeMs` / `las
 | `ZALO_LOGIN_SLOTS` | yes | at most this many daemons on the machine logging in and loading their lists at once (0–64; default 0, no cap); the rest wait for a slot. `ZALO_LOGIN_SLOT_WAIT` (seconds, default 900) is how long one waits before going ahead anyway | | |
 | `ZALO_CONNECT_SLOTS` | yes | at most this many daemons on the machine waking their parked socket at once (on-demand presence; 0–64, default 0, no cap; fleet samples 16): a wake holds its slot until its first catch-up ends, at most 60 s. `ZALO_CONNECT_SLOT_WAIT` (seconds, default 120) is how long one waits before going ahead anyway | | |
 | `ZALO_EXIT_ON_SIGNED_OUT` | yes | `1`: a login Zalo keeps refusing ends the daemon with exit 4, as before 3.0 (`ZALO_EXIT_ON_SIGNED_OUT_<ownId>` for one account). Default: the daemon stays up in `signed_out` and refuses requests until the account is added again by QR | | |
+| `ZALO_SESSION_RENEW`, `ZALO_SESSION_RENEW_DAYS` | yes | `off` turns the renewal link off; the days before the login's end a link opens (1-14, default 7). Between the files and the runtime policy (see [renewing the saved login](#renewing-the-saved-login-sessionrenew)) | | `session.renew.enabled`, `session.renew.daysBefore` |
 | `ZALO_PRESENCE_MODE`, `ZALO_PRESENCE_IDLE_TIMEOUT` | yes | `on-demand` or `always-on`; the idle time before the socket parks (`5m`, at least `30s`). Between the files and the runtime policy (see [on-demand presence](#users-the-always-on-cap-and-on-demand-presence)) | | `presence.mode`, `presence.idleTimeout` |
 | `ZALO_FLEET_CONTROLLER_PORT` |  | the port `fleet serve` binds when `--http` is not given. Default `3899` | `fleet serve --http` | |
 | `ZALO_FLEET_DOMAIN` |  | the proxy host of `fleet generate --domain`: an account added by QR through `fleet serve` gets `ZALO_MCP_PUBLIC_URL=https://<host>/a/<ownId>` in its env file | `fleet serve --domain` | |
@@ -358,6 +389,7 @@ The official APIs take no `mcp-config.json` key; their only environment variable
 | `admin.tokenFile` | `null` | see `ZALO_MCP_ADMIN_TOKEN_FILE` |
 | `admin.clientCa` | `null` | see `ZALO_MCP_ADMIN_CLIENT_CA` |
 | `presence.mode`, `.idleTimeout`, `.minConnected`, `.maxWakesPerHour`, `.warmWait`, `.connectOnStart`, `.catchUpEvery`, `.maxLeases`, `.leaseTtl`, `.leaseTtlMax`, `.waitHoldsSocket`, `.onKick` | see [Users, the always-on cap and on-demand presence](#users-the-always-on-cap-and-on-demand-presence) | on-demand presence of an `mcp start --http` / `listen --daemon`; per account in `accounts.<ownId>.presence`; the runtime policy beats it |
+| `session.renew.enabled`, `.daysBefore`, `.linkTtl` | unset (= `true`, `7`, `"24h"`) | the renewal link an `mcp start --http` server with a `publicUrl` opens before the saved login ends (see [renewing the saved login](#renewing-the-saved-login-sessionrenew)) |
 | `accounts.<ownId>` | | any of the above, for one account |
 
 A key that is not in this table is ignored without a message. (The `mode` key in older files is accepted and never read.)
@@ -480,7 +512,7 @@ A CRM needs three things from an account: to **hear** new messages, to **send**,
 - **Delivery is durable, ordered and at least once.** Each event is written to `webhook-outbox.db` in the account directory before anything sends it, so a receiver that is down, slow (a POST has 10 seconds) or answering anything but 2xx costs a backlog, not messages: the sender retries with waits of 1 s doubling to 5 min, holds everything behind a failing event so order is kept, and carries on after a restart or crash. A payload the receiver refuses as malformed (400, 413, 422) is parked as a **dead letter**, and so is any event still undelivered after `ZALO_WEBHOOK_MAX_AGE` (24 h). Watch it with `zalo-agent mcp webhook status`, look with `mcp webhook list --dead`, and put events back with `mcp webhook retry`.
 - **Acknowledge with 2xx at once, do the work afterwards, and de-duplicate on the message id.** At least once means a message can arrive twice (a crash after your reply, before the sender noted it). Every POST has `X-Zalo-Attempt`, and `X-Zalo-Delivery: <first>-<last>` (outbox numbers).
 - **Batching.** With `ZALO_WEBHOOK_BATCH_SIZE=10` up to ten queued events go in one POST as `{"event":"batch","accountId":…,"count":N,"events":[…]}`, signed over the whole body; a lone event is still the plain payload. The sample receivers handle both. Turn it on when a backlog or many accounts make one POST per message too many.
-- **System events** go through the same webhook (ids and counts only, never a name): `account_state` (the account's state: `stopped`, `idle`, `connecting`, `connected`, `kicked`, `yielded`, `login_needed`, `signed_out`, `maintenance`; see [on-demand presence](#users-the-always-on-cap-and-on-demand-presence)), `storage_quota` ([quotas](#storage-quotas-and-retention)), `group_gone` ([leaving a group](#leaving-a-group-groupsonleave)), `queue_overflow` (Zalo dropped part of the offline queue: `{event, accountId, fromTs, toTs, queues, direct, groups, pending, command}`; group messages are read back from the groups' cloud store, a 1-1 gap stays pending with the `sync --from` command that restores it), `session_expiring` (the saved login ends by itself about 90 days after its QR login, and nothing renews it: `{event, accountId, expiresAt, daysLeft, expired, threshold, command, at}`, once per threshold crossed, 14, 7, 3 and 1 days left and `threshold: 0` once ended, remembered across restarts; renew with a QR login, `zalo-agent --account <id> login` then a restart, or the fleet controller's QR add, which keeps the device id; once it has ended `account_state` `signed_out` follows) and, with `approval.deliver: "webhook"`, `approval_requested`. A message that arrives while the socket is parked is delivered on the next connect with `catchUp: true`. Route on `event` and ignore one you do not know.
+- **System events** go through the same webhook (ids and counts only, never a name): `account_state` (the account's state: `stopped`, `idle`, `connecting`, `connected`, `kicked`, `yielded`, `login_needed`, `signed_out`, `maintenance`; see [on-demand presence](#users-the-always-on-cap-and-on-demand-presence)), `storage_quota` ([quotas](#storage-quotas-and-retention)), `group_gone` ([leaving a group](#leaving-a-group-groupsonleave)), `queue_overflow` (Zalo dropped part of the offline queue: `{event, accountId, fromTs, toTs, queues, direct, groups, pending, command}`; group messages are read back from the groups' cloud store, a 1-1 gap stays pending with the `sync --from` command that restores it), `session_expiring` (the saved login ends by itself about 90 days after its QR login, and nothing renews it: `{event, accountId, expiresAt, daysLeft, expired, threshold, command, at}`, once per threshold crossed, 14, 7, 3 and 1 days left and `threshold: 0` once ended, remembered across restarts; renew with a QR login, `zalo-agent --account <id> login` then a restart, or the fleet controller's QR add, which keeps the device id; once it has ended `account_state` `signed_out` follows; with a `publicUrl`, from 7 days before the end it carries a one-time renewal link, `renewUrl` with `renewExpiresAt`, and goes out again with each new link, see [renewing the saved login](#renewing-the-saved-login-sessionrenew)), `session_renewed` (the phone renewed the login through that link and the server uses it now: `{event, accountId, expiresAt, daysLeft, deviceKept, at}`) and, with `approval.deliver: "webhook"`, `approval_requested`. A message that arrives while the socket is parked is delivered on the next connect with `catchUp: true`. Route on `event` and ignore one you do not know.
 
 **Hear: pull.** `GET /events/wait?timeout=55&since=<cursor>` returns every message already waiting in the buffer (`&limit=<n>` caps how many), or `{"status":"timeout"}`, with a cursor to resume from. The reply has `messages` (in order), `count`, `hasMore` and `cursor`, the **last** message's, so `since=<cursor>` continues exactly where the batch ended; `message` is the first. **Breaking in 3.0.0:** the default was one message per call; a client that reads only `message` and continues from `cursor` now skips the rest of the batch: read `messages`, or send `limit=1`. With a `limit`, drain a backlog by calling again at once while `hasMore` is true; `settle=200` (ms, at most 5000) waits that long after the first message so a burst lands in one reply. The same `limit` and `settleMs` exist on the `zalo_wait_for_message` tool and as `mcp wait --limit --settle`. The buffer behind it holds up to `limits.bufferMaxSize` messages per thread for `limits.bufferMaxAge` (the CRM sample raises both to 2,000 and 6 h). Past that, read the cache with `zalo_get_history` / `zalo_get_messages`.
 

@@ -57,7 +57,7 @@ máy chủ đang chạy. Tệp và biến môi trường chỉ được đọc m
 Chính sách nhận `confirmMode`, `hiddenChats`, `allowPinArgument`, `approval.*`, `media.deliver`, `media.inlineMaxBytes`,
 `media.allowDeliver`, `media.linkTtl`, `media.tempfileTtl`, `media.linkAuth`, `media.linkRateLimit`,
 `media.capability.*`, `media.autoOpen`, `webhook`, `webhookBatchSize`, `webhookMaxAge`, `quota.*`, `retention.*`,
-`groups.onLeave` và `presence.*` (`presence.alwaysOn.*` chỉ có trong chính sách của tenant hoặc người dùng;
+`groups.onLeave`, `presence.*` và `session.renew.*` (`presence.alwaysOn.*` chỉ có trong chính sách của tenant hoặc người dùng;
 `quota.tenant.*` chỉ có trong chính sách của tenant). Khóa chỉ đọc khi khởi động (`httpPort`, `host`, `publicUrl`, `tls`,
 `oauth`, `trustedProxies`, `admin`, `media.downloadDir`, bộ cung cấp khóa và các tùy chọn của nó, `accounts`) và mọi bí
 mật (`webhookSecret`) bị từ chối với `restartRequired`; khóa khác bị từ chối vì không biết. Các tệp được niêm phong bằng
@@ -236,6 +236,38 @@ xong, tối đa 60 giây; `ZALO_CONNECT_SLOT_WAIT` (giây, mặc định `120`) 
 tiếp tục. Cả hai có dạng `_<ownId>`. `/status` và `/metrics` có `lastWakeMs` / `lastCatchUpMs`
 (`zalo_presence_last_wake_seconds`, `zalo_presence_last_catch_up_seconds`) và thời gian kết nối được tính.
 
+### Gia hạn phiên đăng nhập đã lưu (`session.renew`)
+
+Một lần đăng nhập QR kéo dài khoảng 90 ngày và Zalo không bao giờ tự gia hạn: chỉ một lần quét QR mới bằng điện thoại
+của tài khoản mới gia hạn được. Một máy chủ `mcp start --http` có địa chỉ công khai (`publicUrl`, `--public-url`,
+`ZALO_MCP_PUBLIC_URL[_<ownId>]`) tự lo việc này. Trong vòng `daysBefore` ngày trước khi hết hạn, nó mở một **liên kết
+gia hạn**, trang đăng nhập QR dùng một lần tại `<publicUrl>/zalo/qr/<token>` trên chính cổng HTTP của nó, và đưa liên
+kết vào các sự kiện `session_expiring` dưới tên `renewUrl` (kèm `renewExpiresAt`). Một liên kết sống `linkTtl`; khi hết,
+một liên kết mới được mở và thêm một `session_expiring` mang nó được gửi, mặc định mỗi ngày, cho đến khi đăng nhập được
+gia hạn. Sự kiện mốc 14 ngày vẫn được gửi, không kèm liên kết.
+
+| Khóa (`session.renew.*`) | Mặc định | Ý nghĩa |
+|---|---|---|
+| `enabled` | `true` | `false` (hoặc `ZALO_SESSION_RENEW[_<ownId>]=off`): không mở liên kết; các sự kiện giữ như cũ |
+| `daysBefore` | `7` | mở liên kết từ bấy nhiêu ngày trước khi hết hạn (1-14; `ZALO_SESSION_RENEW_DAYS[_<ownId>]`), và cả sau khi đã hết hạn |
+| `linkTtl` | `"24h"` | thời gian sống của một liên kết (10m-7d) |
+
+Các lớp: `mcp-config.json` `session.renew` < `accounts.<ownId>.session.renew` < biến môi trường < chính sách chạy
+(`session.renew.*`, áp dụng ngay). `zalo-agent session renew [--account <id>] [--fresh]` mở một liên kết bằng tay.
+Không có địa chỉ công khai thì không liên kết nào đến được điện thoại: sự kiện mang `renewHint` thay vào đó. `listen`
+không phục vụ trang nào nên không mở liên kết.
+
+Trang xin Zalo một mã mới khi được mở, cho biết nó gia hạn tài khoản nào (tên và id), và chỉ cần quét rồi xác nhận
+trên điện thoại của tài khoản đó. Lần đăng nhập giữ device id đã lưu của tài khoản, nên hàng đợi offline của Zalo vẫn
+tiếp tục. Một lần quét bằng **tài khoản khác** bị từ chối trước khi phiên của nó được mở, và trang nói rõ điều đó. Khi
+thành công, máy chủ lưu lần đăng nhập mới, được niêm phong bằng keyring của tài khoản, chuyển sang nó **ngay tại chỗ**
+(không khởi động lại; daemon đang `signed_out` hoặc `yielded` quay lại, daemon đang tạm nghỉ giữ nó cho lần thức kế
+tiếp) và gửi `session_renewed` `{event, accountId, expiresAt, daysLeft, deviceKept, at}`; liên kết khi đó đã dùng xong.
+Token là 128 bit ngẫu nhiên chỉ nằm trong bộ nhớ (khởi động lại thì mở liên kết mới, liên kết cũ chết) và không bao giờ
+được ghi log; trang có `no-store`, `nosniff`, `no-referrer`, không cho nhúng khung, CSP theo nonce, tối đa 120 yêu cầu
+mỗi phút (sau đó 429) và 12 lần đăng nhập QR mỗi giờ. `fleet status` hiện `renewing` ở cột LOGIN ENDS khi có liên kết
+đang mở.
+
 ---
 
 ## 2. Tra cứu
@@ -285,6 +317,7 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 | `ZALO_START_JITTER` | có | chờ một khoảng ngẫu nhiên tối đa chừng này giây (0–600, mặc định 0) trước khi đăng nhập, để một đội daemon khởi động lại cùng lúc không đăng nhập cùng lúc | | |
 | `ZALO_CONNECT_SLOTS` | có | tối đa chừng này daemon trên máy cùng đánh thức socket đang tạm nghỉ một lúc (hiện diện on-demand; 0–64, mặc định 0, không giới hạn; mẫu fleet 16): một lần thức giữ suất cho đến khi lần bắt kịp đầu tiên xong, tối đa 60 giây. `ZALO_CONNECT_SLOT_WAIT` (giây, mặc định 120) là thời gian chờ tối đa trước khi cứ tiếp tục | | |
 | `ZALO_EXIT_ON_SIGNED_OUT` | có | `1`: lần đăng nhập Zalo liên tục từ chối sẽ dừng daemon với mã 4, như trước 3.0 (`ZALO_EXIT_ON_SIGNED_OUT_<ownId>` cho riêng một tài khoản). Mặc định: daemon vẫn chạy ở trạng thái `signed_out` và từ chối yêu cầu cho đến khi tài khoản được thêm lại bằng QR | | |
+| `ZALO_SESSION_RENEW`, `ZALO_SESSION_RENEW_DAYS` | có | `off` tắt liên kết gia hạn; số ngày trước khi đăng nhập hết hạn thì mở liên kết (1-14, mặc định 7). Nằm giữa các tệp và chính sách chạy (xem [gia hạn phiên đăng nhập đã lưu](#gia-hạn-phiên-đăng-nhập-đã-lưu-sessionrenew)) | | `session.renew.enabled`, `session.renew.daysBefore` |
 | `ZALO_PRESENCE_MODE`, `ZALO_PRESENCE_IDLE_TIMEOUT` | có | `on-demand` hoặc `always-on`; thời gian rảnh trước khi socket tạm đóng (`5m`, tối thiểu `30s`). Nằm giữa các tệp và chính sách chạy (xem [hiện diện theo nhu cầu](#người-dùng-giới-hạn-luôn-kết-nối-và-hiện-diện-theo-nhu-cầu)) | | `presence.mode`, `presence.idleTimeout` |
 | `ZALO_LOGIN_SLOTS` | có | tối đa chừng này daemon trên máy cùng đăng nhập và nạp danh sách một lúc (0–64; mặc định 0, không giới hạn); phần còn lại chờ một slot. `ZALO_LOGIN_SLOT_WAIT` (giây, mặc định 900) là thời gian chờ tối đa trước khi cứ tiếp tục | | |
 | `ZALO_FLEET_CONTROLLER_PORT` |  | port mà `fleet serve` dùng khi không có `--http`. Mặc định `3899` | `fleet serve --http` | |
@@ -357,6 +390,7 @@ Các API chính thức không có khóa `mcp-config.json` nào; biến môi trư
 | `admin.tokenFile` | `null` | xem `ZALO_MCP_ADMIN_TOKEN_FILE` |
 | `admin.clientCa` | `null` | xem `ZALO_MCP_ADMIN_CLIENT_CA` |
 | `presence.mode`, `.idleTimeout`, `.minConnected`, `.maxWakesPerHour`, `.warmWait`, `.connectOnStart`, `.catchUpEvery`, `.maxLeases`, `.leaseTtl`, `.leaseTtlMax`, `.waitHoldsSocket`, `.onKick` | xem [Người dùng, giới hạn luôn-kết-nối và hiện diện theo nhu cầu](#người-dùng-giới-hạn-luôn-kết-nối-và-hiện-diện-theo-nhu-cầu) | hiện diện theo nhu cầu của `mcp start --http` / `listen --daemon`; theo từng tài khoản trong `accounts.<ownId>.presence`; chính sách chạy thắng nó |
+| `session.renew.enabled`, `.daysBefore`, `.linkTtl` | không đặt (= `true`, `7`, `"24h"`) | liên kết gia hạn mà máy chủ `mcp start --http` có `publicUrl` mở trước khi phiên đăng nhập đã lưu hết hạn (xem [gia hạn phiên đăng nhập đã lưu](#gia-hạn-phiên-đăng-nhập-đã-lưu-sessionrenew)) |
 | `accounts.<ownId>` | | bất kỳ khóa nào ở trên, cho một tài khoản |
 
 Khóa không có trong bảng này bị bỏ qua mà không báo. (Khóa `mode` trong các tệp cũ được chấp nhận nhưng không bao giờ được đọc.)
@@ -479,7 +513,7 @@ CRM cần ba thứ từ một tài khoản: **nghe** tin mới, **gửi**, và *
 - **Giao nhận bền vững, đúng thứ tự, ít nhất một lần.** Mỗi sự kiện được ghi vào `webhook-outbox.db` trong thư mục tài khoản trước khi gửi, nên bên nhận hỏng, chậm (mỗi POST có 10 giây) hoặc trả khác 2xx chỉ tạo ra tồn đọng chứ không mất tin: bên gửi thử lại với thời gian chờ 1 giây nhân đôi đến 5 phút, giữ mọi sự kiện phía sau sự kiện đang lỗi để không đảo thứ tự, và tiếp tục sau khi khởi động lại hoặc bị sập. Payload bị bên nhận từ chối vì sai định dạng (400, 413, 422) được chuyển vào **dead-letter**, sự kiện chưa giao quá `ZALO_WEBHOOK_MAX_AGE` (24 giờ) cũng vậy. Theo dõi bằng `zalo-agent mcp webhook status`, xem bằng `mcp webhook list --dead`, đưa trở lại hàng đợi bằng `mcp webhook retry`.
 - **Trả 2xx ngay, xử lý sau, và loại trùng theo id tin nhắn.** Ít nhất một lần nghĩa là một tin có thể đến hai lần (sập sau khi bạn trả lời nhưng trước khi bên gửi kịp ghi nhận). Mỗi POST có `X-Zalo-Attempt` và `X-Zalo-Delivery: <đầu>-<cuối>` (số thứ tự trong outbox).
 - **Gộp (batch).** Với `ZALO_WEBHOOK_BATCH_SIZE=10`, tối đa mười sự kiện đang chờ đi chung một POST dạng `{"event":"batch","accountId":…,"count":N,"events":[…]}`, chữ ký tính trên toàn bộ body; một sự kiện đơn lẻ vẫn là payload thường. Các bộ nhận mẫu xử lý được cả hai. Bật khi tồn đọng hoặc nhiều tài khoản khiến một POST mỗi tin là quá nhiều.
-- **Sự kiện hệ thống** đi qua cùng webhook (chỉ id và số đếm, không bao giờ có tên): `account_state` (trạng thái của tài khoản: `stopped`, `idle`, `connecting`, `connected`, `kicked`, `yielded`, `login_needed`, `signed_out`, `maintenance`; xem [hiện diện theo nhu cầu](#người-dùng-giới-hạn-luôn-kết-nối-và-hiện-diện-theo-nhu-cầu)), `storage_quota` ([hạn mức](#hạn-mức-dung-lượng-và-thời-gian-lưu-giữ)), `group_gone` ([rời nhóm](#rời-nhóm-groupsonleave)), `queue_overflow` (Zalo đã bỏ một phần hàng đợi offline: `{event, accountId, fromTs, toTs, queues, direct, groups, pending, command}`; tin nhắn nhóm được đọc lại từ kho cloud của nhóm, khoảng trống 1-1 vẫn chờ xử lý kèm lệnh `sync --from` để khôi phục), `session_expiring` (phiên đăng nhập đã lưu tự hết hạn khoảng 90 ngày sau lần đăng nhập QR và không gì gia hạn nó: `{event, accountId, expiresAt, daysLeft, expired, threshold, command, at}`, gửi một lần cho mỗi mốc vượt qua, còn 14, 7, 3 và 1 ngày, và `threshold: 0` khi đã hết hạn, được nhớ qua các lần khởi động lại; gia hạn bằng một lần đăng nhập QR, `zalo-agent --account <id> login` rồi khởi động lại daemon, hoặc thêm bằng QR qua fleet controller, vẫn giữ device id; khi đã hết hạn thì `account_state` `signed_out` theo sau) và, với `approval.deliver: "webhook"`, `approval_requested`. Tin nhắn đến khi socket đang tạm nghỉ được gửi ở lần kết nối kế tiếp với `catchUp: true`. Hãy định tuyến theo `event` và bỏ qua sự kiện bạn không biết.
+- **Sự kiện hệ thống** đi qua cùng webhook (chỉ id và số đếm, không bao giờ có tên): `account_state` (trạng thái của tài khoản: `stopped`, `idle`, `connecting`, `connected`, `kicked`, `yielded`, `login_needed`, `signed_out`, `maintenance`; xem [hiện diện theo nhu cầu](#người-dùng-giới-hạn-luôn-kết-nối-và-hiện-diện-theo-nhu-cầu)), `storage_quota` ([hạn mức](#hạn-mức-dung-lượng-và-thời-gian-lưu-giữ)), `group_gone` ([rời nhóm](#rời-nhóm-groupsonleave)), `queue_overflow` (Zalo đã bỏ một phần hàng đợi offline: `{event, accountId, fromTs, toTs, queues, direct, groups, pending, command}`; tin nhắn nhóm được đọc lại từ kho cloud của nhóm, khoảng trống 1-1 vẫn chờ xử lý kèm lệnh `sync --from` để khôi phục), `session_expiring` (phiên đăng nhập đã lưu tự hết hạn khoảng 90 ngày sau lần đăng nhập QR và không gì gia hạn nó: `{event, accountId, expiresAt, daysLeft, expired, threshold, command, at}`, gửi một lần cho mỗi mốc vượt qua, còn 14, 7, 3 và 1 ngày, và `threshold: 0` khi đã hết hạn, được nhớ qua các lần khởi động lại; gia hạn bằng một lần đăng nhập QR, `zalo-agent --account <id> login` rồi khởi động lại daemon, hoặc thêm bằng QR qua fleet controller, vẫn giữ device id; khi đã hết hạn thì `account_state` `signed_out` theo sau; khi có `publicUrl`, từ 7 ngày trước khi hết hạn nó mang một liên kết gia hạn dùng một lần, `renewUrl` kèm `renewExpiresAt`, và được gửi lại với mỗi liên kết mới, xem [gia hạn phiên đăng nhập đã lưu](#gia-hạn-phiên-đăng-nhập-đã-lưu-sessionrenew)), `session_renewed` (điện thoại đã gia hạn đăng nhập qua liên kết đó và máy chủ đang dùng nó: `{event, accountId, expiresAt, daysLeft, deviceKept, at}`) và, với `approval.deliver: "webhook"`, `approval_requested`. Tin nhắn đến khi socket đang tạm nghỉ được gửi ở lần kết nối kế tiếp với `catchUp: true`. Hãy định tuyến theo `event` và bỏ qua sự kiện bạn không biết.
 
 **Nghe: kéo.** `GET /events/wait?timeout=55&since=<cursor>` trả về mọi tin đang chờ trong bộ đệm (`&limit=<n>` giới hạn số tin), hoặc `{"status":"timeout"}`, kèm cursor để tiếp tục. Phản hồi có `messages` (đúng thứ tự), `count`, `hasMore` và `cursor` là của tin **cuối**, nên `since=<cursor>` tiếp tục đúng chỗ lô vừa kết thúc; `message` là tin đầu. **Thay đổi không tương thích ở 3.0.0:** trước đây mặc định là một tin mỗi lần gọi; client chỉ đọc `message` rồi đi tiếp từ `cursor` giờ sẽ bỏ sót phần còn lại của lô: hãy đọc `messages`, hoặc gửi `limit=1`. Khi có `limit`, để xả một đống tồn, gọi lại ngay khi `hasMore` còn true; `settle=200` (ms, tối đa 5000) chờ thêm chừng đó sau tin đầu tiên để một đợt tin đến dồn vào một phản hồi. `limit` và `settleMs` cũng có ở tool `zalo_wait_for_message` và ở `mcp wait --limit --settle`. Bộ đệm phía sau giữ tối đa `limits.bufferMaxSize` tin cho mỗi thread trong `limits.bufferMaxAge` (mẫu CRM nâng cả hai lên 2.000 và 6 giờ). Quá mức đó, đọc cache bằng `zalo_get_history` / `zalo_get_messages`.
 

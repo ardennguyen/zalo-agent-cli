@@ -15,6 +15,9 @@
  *   the async-file path and read `oriUrl`/`hdUrl` from it; this sends it as a photo and reads the same names.
  * - Limits from the login's `settings.features.sharefile`, all checked before the first request (the caption
  *   included): `max_file` (count), `max_size_share_file_v3` (MB), `restricted_ext_file` (denied extensions).
+ * - A photo's embedded metadata (EXIF with its GPS position, camera and times, XMP, comments, text chunks) is
+ *   removed before upload, as Zalo's own apps do (`stripImageMetadata`, src/zalo/strip-metadata.js); the photo is
+ *   held in memory and the stripped bytes are what goes up, `totalSize` included. A GIF and a file go up untouched.
  * - Upload: `POST {file}/api/{message|group}/{photo_original|asyncfile}/upload?zpw_ver&zpw_type&params&type`, `type`
  *   2 for a user and 11 for a group, a multipart body with one part `chunkContent` (the chunk's bytes, named after
  *   the file). `params` per chunk: `{totalChunk, fileName, clientId, totalSize, imei, chunkId, toid|grid}`, without
@@ -44,11 +47,12 @@
  * Waits read the session clock (`s.now()`), checked every {@link TICK_MS}, so a test moves them by moving the clock.
  */
 import { createHash } from "node:crypto";
-import { open, stat } from "node:fs/promises";
+import { open, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { imageSizeFromFile } from "image-size/fromFile";
 import { THREAD_TYPE } from "../enums.js";
 import { ZaloApiError } from "../errors.js";
+import { stripImageMetadata } from "../strip-metadata.js";
 
 /** The chunk size when the server names none we can use. */
 export const DEFAULT_CHUNK_SIZE = 256000;
@@ -232,7 +236,8 @@ async function readRange(file, start, length) {
  * @param {string[]} files
  * @param {ReturnType<typeof uploadSettings>} cfg
  * @returns {Promise<Array<{file: string, fileName: string, ext: string, size: number, route: string,
- *   fileType: string, width?: number, height?: number}>>}
+ *   fileType: string, width?: number, height?: number, bytes?: Buffer, metadataStripped?: boolean}>>} a photo
+ *   carries its `bytes` with the metadata stripped, and `size` is theirs
  * @throws {ZaloApiError} for the first file that fails
  */
 async function inspect(ctx, files, cfg) {
@@ -261,6 +266,12 @@ async function inspect(ctx, files, cfg) {
             throw new ZaloApiError(`File ${fileName} size exceed maximum size of ${cfg.maxMb}MB`);
         }
         if (item.size === 0) throw new ZaloApiError(`File ${fileName} is empty`);
+        if (route === "photo") {
+            const clean = stripImageMetadata(await readFile(file));
+            item.bytes = clean.bytes;
+            item.size = clean.bytes.length;
+            item.metadataStripped = clean.stripped;
+        }
         out.push(item);
     }
     return out;
@@ -611,7 +622,10 @@ async function uploadChunks(s, item, { group, threadId, cfg, signal }) {
     };
     const argsOf = async (chunkId) => {
         const start = (chunkId - 1) * cfg.chunkSize;
-        const bytes = await readRange(item.file, start, Math.min(cfg.chunkSize, item.size - start));
+        const length = Math.min(cfg.chunkSize, item.size - start);
+        const bytes = item.bytes
+            ? item.bytes.subarray(start, start + length)
+            : await readRange(item.file, start, length);
         return { params: { ...base, chunkId }, fileName: item.fileName, bytes };
     };
     // Chunks are read one after another, so they go out in chunkId order however the reads interleave.

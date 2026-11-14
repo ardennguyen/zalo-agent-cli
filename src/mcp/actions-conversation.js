@@ -21,7 +21,7 @@ import {
     setConversationPinned,
 } from "../core/conversation-actions.js";
 import { confirmInput, dryRunInput, ticketInput } from "./action-tool.js";
-import { pinFailureLine, withoutHidden } from "../core/hidden-chats.js";
+import { pinFailure, pinFailureLine, withoutHidden } from "../core/hidden-chats.js";
 import { changeHiddenPin, readHidden, resetHiddenPinAndDelete } from "../core/hidden-chat-actions.js";
 import { askOnSecurePage } from "../core/secure-page.js";
 import { resolveAllowPinArgument, resolveApproval } from "../core/deploy-policy.js";
@@ -68,7 +68,7 @@ const PIN_INPUT_OFF =
  *
  * @returns {Promise<{ok: true} | {error: string} | {needsReply: object}>}
  */
-async function pinGate(a, ctx, extra, { action, target, description }) {
+async function pinGate(a, ctx, extra, { action, target, description, lead = null }) {
     const set = ctx.hidden();
     await set.refresh(ctx.api);
     if (!set.hasPin) return { error: pinFailureLine({ reason: "no-pin" }) };
@@ -97,10 +97,15 @@ async function pinGate(a, ctx, extra, { action, target, description }) {
             kind: "pin",
             title: "Zalo hidden chats",
             description,
+            ...(lead && { view: { lead } }),
             onSubmit: ({ pin }) => {
                 const r = set.verifyPin(pin);
                 if (r.ok) return { status: "approved", message: "Unlocked. The agent can go on now." };
-                return { status: r.reason === "locked" ? "failed" : "retry", message: pinFailureLine(r) };
+                return {
+                    status: r.reason === "locked" ? "failed" : "retry",
+                    message: pinFailureLine(r),
+                    failure: pinFailure(r),
+                };
             },
         },
     });
@@ -286,6 +291,10 @@ export const CONVERSATION_ACTIONS = {
                 target: {},
                 description:
                     "An agent asks to list this account's hidden conversations. Type the PIN to allow it once.",
+                lead: {
+                    en: "An agent asks to list this account's hidden conversations. Type the PIN to allow it once.",
+                    vi: "Trợ lý AI muốn xem danh sách các cuộc trò chuyện ẩn của tài khoản này. Nhập mã PIN để cho phép một lần.",
+                },
             });
             if (held.needsReply) return needs({ ...held.needsReply, count: listed.count, hasPin: true });
             if (held.error) throw new Error(held.error);
@@ -325,6 +334,10 @@ export const CONVERSATION_ACTIONS = {
                 action: "conv.unhide",
                 target: { threadIds: a.threadIds },
                 description: `An agent asks to unhide ${a.threadIds.length} hidden conversation(s). Type the PIN to allow it.`,
+                lead: {
+                    en: `An agent asks to unhide ${a.threadIds.length} hidden conversation(s). Type the PIN to allow it.`,
+                    vi: `Trợ lý AI muốn bỏ ẩn ${a.threadIds.length} cuộc trò chuyện ẩn. Nhập mã PIN để cho phép.`,
+                },
             });
             if (held.needsReply) return held;
             if (held.error) throw new Error(held.error);
@@ -374,7 +387,7 @@ export const CONVERSATION_ACTIONS = {
                         const r = await changeHiddenPin(ctx.api, set, typed);
                         if (r.ok)
                             return { status: "done", message: "The PIN was saved.", outcome: { hadPin: r.hadPin } };
-                        return { status: r.retry ? "retry" : "failed", message: r.message };
+                        return { status: r.retry ? "retry" : "failed", message: r.message, failure: r.failure };
                     },
                 },
             });

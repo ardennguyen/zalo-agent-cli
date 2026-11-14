@@ -253,7 +253,10 @@ export function sessionCheck(row) {
     const s = row.session;
     if (!s?.expiresAt) return null;
     const date = s.expiresAt.slice(0, 10);
-    const how = fleetReloginCommand(row.accountId);
+    // An open renewal link (src/core/session-renew.js) is the easier way: its link went out in session_expiring.
+    const how = s.renewal?.open
+        ? `open the renewal link sent in session_expiring (or: za --account ${row.accountId} session renew)`
+        : fleetReloginCommand(row.accountId);
     if (s.expired) {
         return { level: "fail", line: `${row.accountId}: session ended on ${date} - log in again now: ${how}` };
     }
@@ -330,15 +333,17 @@ function age(sec) {
 }
 
 /**
- * The LOGIN ENDS cell: the days the saved login has left, `!` from {@link EXPIRY_WARN_DAYS} days, `ended` once over.
+ * The LOGIN ENDS cell: the days the saved login has left, `!` from {@link EXPIRY_WARN_DAYS} days, `ended` once over;
+ * `renewing` while its daemon has a renewal link open (src/core/session-renew.js).
  *
- * @param {{daysLeft: number, expired: boolean}|null|undefined} session
+ * @param {{daysLeft: number, expired: boolean, renewal?: {open: boolean}|null}|null|undefined} session
  * @returns {string}
  */
 function sessionCell(session) {
     if (!session) return "-";
-    if (session.expired) return "ended";
-    return `${session.daysLeft}d${session.daysLeft <= EXPIRY_WARN_DAYS ? "!" : ""}`;
+    const renewing = session.renewal?.open ? " renewing" : "";
+    if (session.expired) return `ended${renewing}`;
+    return `${session.daysLeft}d${session.daysLeft <= EXPIRY_WARN_DAYS ? "!" : ""}${renewing}`;
 }
 
 /**

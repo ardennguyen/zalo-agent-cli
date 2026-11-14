@@ -21,6 +21,8 @@ import {
 } from "../../src/core/social/client.js";
 import { createDpopKey, dpopProof } from "../../src/core/social/dpop.js";
 import { describeMe, loginStatus } from "../../src/commands/social.js";
+import { resolveAppSecret } from "../../src/utils/secret-input.js";
+import { EventEmitter } from "node:events";
 
 const OA_DIR = join(SANDBOX_HOME, ".zalo-agent");
 const realFetch = globalThis.fetch;
@@ -68,7 +70,35 @@ describe("DPoP proof", () => {
         assert.equal(header.typ, "dpop+jwt");
         assert.equal(header.alg, "ES256");
         assert.deepEqual(Object.keys(header.jwk).sort(), ["crv", "kty", "x", "y"], "no private part leaks");
-        assert.deepEqual(payload, { htu: "https://graph.zalo.me/v2.0/me", htm: "GET", iat: 1751877103 });
+        const { jti, ...rest } = payload;
+        assert.deepEqual(rest, { htu: "https://graph.zalo.me/v2.0/me", htm: "GET", iat: 1751877103 });
+        // jti (RFC 9449): random per proof, so two proofs of the same request differ.
+        assert.match(jti, /^[A-Za-z0-9_-]{22}$/);
+        const again = readProof(dpopProof({ method: "get", url: `${GRAPH_V2}/me`, key, now: 1751877103000 }));
+        assert.notEqual(again.payload.jti, jti);
+    });
+});
+
+describe("app secrets without a flag (oa login, oa init, social setup)", () => {
+    it("the flag, else the variable, else a hidden prompt on a terminal, else nothing", async () => {
+        const noTty = { input: { isTTY: false } };
+        const env = { ZALO_SOCIAL_APP_SECRET: " from-env " };
+        const name = "ZALO_SOCIAL_APP_SECRET";
+        assert.equal(await resolveAppSecret({ flag: "from-flag", envName: name, env, io: noTty }), "from-flag");
+        assert.equal(await resolveAppSecret({ envName: name, env, io: noTty, prompt: "x" }), "from-env");
+        assert.equal(await resolveAppSecret({ envName: "ZALO_OA_APP_SECRET", env: {}, io: noTty, prompt: "x" }), null);
+        // A terminal: asked, with raw mode on (no echo), and nothing typed is written back.
+        const input = new EventEmitter();
+        const raw = [];
+        Object.assign(input, { isTTY: true, setRawMode: (on) => raw.push(on), resume() {}, pause() {} });
+        let shown = "";
+        const output = { write: (t) => (shown += t) };
+        const asked = resolveAppSecret({ envName: name, env: {}, prompt: "Secret: ", io: { input, output } });
+        await new Promise((r) => setImmediate(r));
+        input.emit("data", Buffer.from("typed-secret\r"));
+        assert.equal(await asked, "typed-secret");
+        assert.deepEqual(raw, [true, false]);
+        assert.ok(!shown.includes("typed-secret"));
     });
 });
 
@@ -109,6 +139,27 @@ describe("social login", () => {
         const loginEnd = Date.parse(saved.refreshExpiresAt) - before;
         assert.ok(Math.abs(loginEnd - 30 * 24 * 3600 * 1000) < 60_000, saved.refreshExpiresAt);
         assert.equal(loadSocialCreds().refreshToken, "RT1");
+    });
+
+    it("a callback without state is refused (Social requires it) and the login keeps waiting for its own", async () => {
+        const calls = mockFetch(() => ({ json: { access_token: "AT1", refresh_token: "RT1", expires_in: "3600" } }));
+        const port = 40000 + Math.floor(Math.random() * 20000);
+        const flow = startSocialLogin({ appId: "1000000000000000001", secretKey: "sek", port });
+        let settled = false;
+        flow.done.then(
+            () => (settled = true),
+            () => (settled = true),
+        );
+        await new Promise((r) => setTimeout(r, 50));
+        const stray = await fetch(`http://127.0.0.1:${port}/callback?code=CODE1`);
+        assert.equal(stray.status, 400);
+        await new Promise((r) => setTimeout(r, 20));
+        assert.equal(settled, false);
+        assert.equal(calls.length, 0, "no token request for a callback without state");
+        const state = new URL(flow.authUrl).searchParams.get("state");
+        assert.equal((await fetch(`http://127.0.0.1:${port}/callback?code=CODE1&state=${state}`)).status, 200);
+        const { saved } = await flow.done;
+        assert.equal(saved.accessToken, "AT1");
     });
 
     it("--dpop: the exchange carries a proof for the token URL and the key is kept with the login", async () => {

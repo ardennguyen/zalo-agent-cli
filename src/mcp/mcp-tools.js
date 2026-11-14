@@ -624,7 +624,8 @@ const SYSTEM_EVENTS_NOTE =
     "`account_state`: the account's connection state changed (`state` idle, connecting, connected, kicked, yielded, login_needed, signed_out or maintenance, `previous`, `detail`); yielded and signed_out refuse every call until a person acts, as `text` says; a park and the wake that ends it are not in the buffer. " +
     "`group_gone`: the account left, was removed or blocked from, or saw the disbanding of the group in `threadId` (`reason`, `leftAt`, `mode` purge or keep, `purged` counts). " +
     "`queue_overflow`: Zalo's offline queue overflowed and messages from `fromTs` to `toTs` were dropped (`queues`, `groups` repair counts, `pending`; when pending, `command` is the sync the owner runs, which taps the phone). " +
-    "`session_expiring`: the account's saved login ends by itself on `expiresAt` (`daysLeft`, `threshold` 14, 7, 3, 1 or 0 once `expired`); the owner renews it with a QR login (`command`), and once it ends every call is refused until then. " +
+    "`session_expiring`: the account's saved login ends by itself on `expiresAt` (`daysLeft`, `threshold` 14, 7, 3, 1 or 0 once `expired`); the owner renews it with a QR login (`command`), or, while `renewUrl` is set (until `renewExpiresAt`), by scanning that one-time link with the account's phone; once it ends every call is refused until then. " +
+    "`session_renewed`: the saved login was renewed by QR and the server switched to it (`expiresAt`, `daysLeft`, `deviceKept`). " +
     "`storage_quota`: this account's storage on the server is near or over its quota, or was purged, or is back within it (`level` warn, over, grace_ending, purged or ok; `usedBytes`, `limitBytes`, `purgeAt`); zalo_profile 'usage' reads the current usage. ";
 
 /**
@@ -779,7 +780,7 @@ export function registerTools(
                 // An explicit cursor is honored as given; 0 starts after what this consumer marked read.
                 const from = since > 0 ? since : buffer.readCursor(consumer);
                 const result = buffer.read(threadId, from, limit);
-                // A system event (account_state, group_gone, queue_overflow, session_expiring, storage_quota) is passed on as it is.
+                // A system event (account_state, group_gone, queue_overflow, session_expiring, session_renewed, storage_quota) is passed on as it is.
                 const order = result.messages;
                 const system = new Map(order.filter((m) => m?.system).map((m) => [m._cursor, m]));
                 result.messages = order.filter((m) => !m?.system);
@@ -1789,6 +1790,22 @@ export function registerTools(
                         mediaRoot: process.env.ZALO_MEDIA_DIR || mediaConfig.downloadDir || undefined,
                     });
                     localPath = getMessageById(msgId)?.localPath || null;
+                    // Past Zalo's keeping window: nothing was asked of its servers. A file kept in zCloud opens only
+                    // with the account's cloud key, which this tool never takes: the answer names the command that does.
+                    if (!localPath && stats.oldInCloud) {
+                        return err(
+                            `The media of ${msgId} is past Zalo's keeping window (14 days) but kept in zCloud. It opens ` +
+                                "only with the account's cloud key, which this tool does not take. Run in a terminal: " +
+                                `zalo-agent sync-media --account ${accountId} --thread ${msgThread} --from-zcloud --key-prompt ` +
+                                "(or `zalo-agent cloud get <noiseId> --key-prompt -o <file>`), then call zalo_view_media again.",
+                        );
+                    }
+                    if (!localPath && stats.oldGone) {
+                        return err(
+                            `The media of ${msgId} is past Zalo's keeping window (14 days, 7 for a file over 100 MB) and ` +
+                                "not in zCloud: it is no longer on Zalo's servers. Only a device that saved it still has it.",
+                        );
+                    }
                     if (!localPath) {
                         return err(
                             `Could not fetch media for ${msgId} (${stats.expired} expired, ` +

@@ -5,13 +5,14 @@
  * the same key pair (a refresh too), so the key is kept with the login.
  *
  * - header: `{ "typ": "dpop+jwt", "alg": "ES256", "jwk": { "kty": "EC", "crv": "P-256", "x", "y" } }`
- * - payload: `{ "htu": <the full URL called, with its path>, "htm": <the method>, "iat": <Unix seconds> }`
+ * - payload: `{ "jti": <random, per proof>, "htu": <the full URL called, with its path>, "htm": <the method>,
+ *   "iat": <Unix seconds> }` (`jti` is RFC 9449's replay guard; the docs' example omits it)
  * - signature: ES256 over `base64url(header) + "." + base64url(payload)`, no padding.
  *
  * `htu` is the URL without its query string (RFC 9449; the docs' examples carry none).
  */
 
-import { createPrivateKey, generateKeyPairSync, sign } from "node:crypto";
+import { createPrivateKey, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 
 const b64url = (value) => Buffer.from(typeof value === "string" ? value : JSON.stringify(value)).toString("base64url");
 
@@ -44,7 +45,13 @@ export function dpopProof({ method, url, key, now = Date.now() }) {
     const u = new URL(url);
     const htu = `${u.origin}${u.pathname}`;
     const header = { typ: "dpop+jwt", alg: "ES256", jwk: publicJwk(key) };
-    const payload = { htu, htm: String(method).toUpperCase(), iat: Math.floor(now / 1000) };
+    // jti (RFC 9449 §4.2): a fresh random id per proof, so a server can refuse a replayed one.
+    const payload = {
+        jti: randomBytes(16).toString("base64url"),
+        htu,
+        htm: String(method).toUpperCase(),
+        iat: Math.floor(now / 1000),
+    };
     const input = `${b64url(header)}.${b64url(payload)}`;
     const signature = sign("sha256", Buffer.from(input), {
         key: createPrivateKey({ key, format: "jwk" }),

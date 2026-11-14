@@ -17,6 +17,9 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { jpegWithMetadata } from "../helpers/metadata-images.js";
+import { stripImageMetadata } from "../../src/zalo/strip-metadata.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { openSession } from "../../src/zalo/kernel/cipher.js";
 import { FAKE, expectGolden, openWire } from "../helpers/wire-diff/index.js";
@@ -31,6 +34,11 @@ const AUTH_HOST = "wpa.chat.zalo.me";
 const IMAGE_BYTES = Buffer.from("fake-jpeg-bytes-for-the-avatar-upload-0123456789");
 const IMAGE_PATH = join(SANDBOX_HOME, "avatar.jpg");
 const IMAGE_META = Object.freeze({ width: 640, height: 480, size: IMAGE_BYTES.length });
+
+/** A phone-like JPEG (EXIF with GPS, make, model, a thumbnail; XMP; a comment) and the bytes it must go up as. */
+const CAMERA = jpegWithMetadata().bytes;
+const CAMERA_CLEAN = stripImageMetadata(CAMERA).bytes;
+const sha256 = (b) => createHash("sha256").update(b).digest("hex");
 
 /** The answers every method is run against for the error part, and what each must throw. */
 const ERROR_ANSWERS = [
@@ -134,6 +142,19 @@ describe("wire: profile (src/zalo/api/profile.js)", () => {
             );
             assert.equal(req.parts[0].size, IMAGE_BYTES.length);
             assert.deepEqual(rec.own.result, { avatar: "a" });
+        });
+
+        it("a photo goes up without its metadata, and the size it names is the stripped bytes'", async () => {
+            const file = join(SANDBOX_HOME, "avatar-camera.jpg");
+            writeFileSync(file, CAMERA);
+            for (const source of [file, { data: CAMERA, metadata: { totalSize: CAMERA.length } }]) {
+                const rec = await run("changeAccountAvatar", [source], { reply: {} });
+                assert.equal(rec.own.error, null);
+                const [req] = rec.own.requests;
+                // Red if the original bytes went up, or metaData named their size.
+                assert.deepEqual([req.parts[0].size, req.parts[0].sha256], [CAMERA_CLEAN.length, sha256(CAMERA_CLEAN)]);
+                assert.equal(JSON.parse(req.params.metaData).processed.size, CAMERA_CLEAN.length);
+            }
         });
 
         it("an attachment object: its bytes and metadata, 1080 when the size is unknown", async () => {

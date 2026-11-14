@@ -1,4 +1,4 @@
-import { join } from "path";
+import { basename, join } from "path";
 import { getApi } from "../core/zalo-client.js";
 import { getActive, updateAccountName } from "../core/accounts.js";
 import { getAccountDir } from "../core/credentials.js";
@@ -6,6 +6,9 @@ import { acquireLock, releaseLock, checkLock } from "../core/lock.js";
 import { error, info, success, warning, output } from "../utils/output.js";
 import { parseIntAtLeast, parseIntOption } from "../utils/parse-options.js";
 import { whileInterruptible } from "../utils/interrupt.js";
+import { promptSecret, readSecretFromStream } from "../utils/secret-input.js";
+import { importCloudPrivateKey } from "../zalo/zcloud-e2ee.js";
+import { zcloudState } from "../core/account-status.js";
 import { SyncManager } from "../core/sync.js";
 import { SyncV2, resolveSyncWindow, FULL_HISTORY_FROM } from "../core/sync-v2/index.js";
 import { CONFIRM_WAIT_MS } from "../zalo/transfer-sync/transfer.js";
@@ -28,6 +31,7 @@ import {
     initDb,
     getThreadNames,
     countPendingAttachments,
+    countGoneAttachments,
     getSyncState,
     setSyncState,
     getOrphanThreads,
@@ -216,7 +220,7 @@ export function registerSyncCommands(program) {
         .description(
             "Download the attachments a mobile sync recorded. transfer-sync carries only CDN " +
                 "references, never file bytes, so this is the separate fetch step. Needs no phone " +
-                "confirmation. Expired links are retried once through Zalo's renewlink endpoint",
+                "confirmation. A link that is gone is reported, not retried; Ctrl+C stops cleanly and a re-run resumes",
         )
         .option("-T, --thread <threadId>", "Only this conversation")
         .option(
@@ -265,6 +269,26 @@ export function registerSyncCommands(program) {
             "--include-pruned",
             "Also re-fetch media you previously pruned. Pruning is treated as a decision, so it is " +
                 "skipped by automatic fetches until you ask for it back",
+        )
+        .option(
+            "--all-ages",
+            "Also ask Zalo's servers for files past their keeping window (14 days after the message, 7 for a file " +
+                "over 100 MB). By default such a file gets no request: it is counted as kept in zCloud, or as gone",
+        )
+        .option(
+            "--from-zcloud",
+            "Fetch the files kept in zCloud from there, decrypted with the account's cloud key (asked for at run time, " +
+                "never stored). Needs a zCloud plan; a file still on Zalo's servers is tried there first",
+        )
+        .option(
+            "--key-stdin",
+            "With --from-zcloud: read the account's cloud key (base64 PKCS#8 RSA) from standard input",
+        )
+        .option("--key-prompt", "With --from-zcloud: type the account's cloud key at a prompt that does not echo")
+        .option(
+            "--retry-dead",
+            "Ask again for links that answered 404/410 on an earlier run. They are remembered and skipped " +
+                "without a request by default; a new link a later sync hands out is always tried",
         )
         .option("--dry-run", "Report what would be fetched without downloading anything")
         .action(async (opts) => {
@@ -419,49 +443,73 @@ async function runMediaDownload(activeAcc, opts) {
     }
 
     const pending = countPendingAttachments(opts.thread || null);
-    if (!pending) {
+    // Files sorted as gone are looked at again only by a run that can say something new about them.
+    const recheck = opts.fromZcloud || opts.allAges ? countGoneAttachments(opts.thread || null) : 0;
+    if (!pending && !recheck) {
         success("No attachments waiting to be downloaded.");
         info("Run `zalo-agent sync-mobile --transfer` first if you have not synced yet.");
         jsonResult({ pending: 0, considered: 0, downloaded: 0, ...(opts.dryRun && { dryRun: true }) });
         process.exit(0);
     }
     info(`${pending} attachment(s) not yet downloaded.`);
+    const goneBefore = countGoneAttachments(opts.thread || null);
+    if (goneBefore) {
+        info(
+            `${goneBefore} more are past Zalo's keeping window and were sorted as gone by an earlier run ` +
+                "(`--from-zcloud` or `--all-ages` looks at them again).",
+        );
+    }
 
-    // Media lives behind the same session as everything else, but only the
-    // renewal of an expired URL actually needs it — so a missing session
-    // degrades to "fetch what is still live" rather than failing outright.
+    // The session gives the downloads the account's proxy and User-Agent. The
+    // media links are signed, so a missing session degrades to the plain fetch
+    // rather than failing outright.
     let api = null;
     try {
         api = getApi();
     } catch {
-        warning("No active session — expired links cannot be renewed on this run.");
+        warning("No active session — downloading without the account's proxy and identity.");
     }
 
-    let last = 0;
-    const stats = await downloadSyncedMedia({
-        api,
-        accountDir,
-        threadId: opts.thread,
-        kinds,
-        limit: opts.limit,
-        since,
-        concurrency: opts.concurrency,
-        maxFiles: opts.mediaLimit,
-        maxBytes: opts.maxSize ? opts.maxSize * MB : undefined,
-        timeoutMs: (opts.timeout || 60) * 1000,
-        thumbs: Boolean(opts.thumbs),
-        includePruned: Boolean(opts.includePruned),
-        dryRun: Boolean(opts.dryRun),
-        threadNames: getThreadNames(),
-        onProgress: (p) => {
-            if (p.phase === "dry-run") info(p.detail);
-            // One line per 25 files keeps a 10k-file run readable.
-            if (p.phase === "saved" && (p.done === p.total || p.done - last >= 25)) {
-                last = p.done;
-                info(`  ${p.done}/${p.total} downloaded`);
-            }
-        },
-    });
+    // The zCloud source: only on a plan that has zCloud, and only with the cloud key given now. The key lives in this
+    // variable for this run and nowhere else: never written, never logged, never in the JSON result.
+    let cloud = null;
+    if (opts.fromZcloud) {
+        cloud = await openCloudSource(api, opts, activeAcc.ownId);
+        if (!cloud) process.exit(1);
+    } else if (opts.keyStdin || opts.keyPrompt) {
+        error("--key-stdin and --key-prompt go with --from-zcloud.");
+        process.exit(1);
+    }
+
+    const progress = mediaProgressPrinter();
+    const stats = await whileInterruptible(
+        (signal) =>
+            downloadSyncedMedia({
+                api,
+                accountDir,
+                threadId: opts.thread,
+                kinds,
+                limit: opts.limit,
+                since,
+                concurrency: opts.concurrency,
+                maxFiles: opts.mediaLimit,
+                maxBytes: opts.maxSize ? opts.maxSize * MB : undefined,
+                timeoutMs: (opts.timeout || 60) * 1000,
+                thumbs: Boolean(opts.thumbs),
+                includePruned: Boolean(opts.includePruned),
+                retryDead: Boolean(opts.retryDead),
+                allAges: Boolean(opts.allAges),
+                cloud,
+                dryRun: Boolean(opts.dryRun),
+                threadNames: getThreadNames(),
+                signal,
+                onProgress: (p) => {
+                    if (p.phase === "dry-run") info(p.detail);
+                    progress(p);
+                },
+            }),
+        { onStop: mediaStoppingNotice },
+    );
 
     if (opts.dryRun) {
         success(`Dry run: ${stats.considered} attachment(s) would be fetched.`);
@@ -469,18 +517,29 @@ async function runMediaDownload(activeAcc, opts) {
         process.exit(0);
     }
     success(`Downloaded ${stats.downloaded}/${stats.considered} attachment(s) (${formatBytes(stats.bytes)}).`);
+    if (stats.interrupted) {
+        warning(
+            `Stopped after ${stats.attempted} of ${stats.considered}; the rest are still pending — run it again to continue.`,
+        );
+    }
     if (stats.deferred) {
         info(
             `${stats.deferred} more attachment(s) are waiting (this run was capped at ${opts.mediaLimit}); run it again to continue.`,
         );
     }
-    if (stats.renewed) info(`Renewed ${stats.renewed} expired link(s).`);
+    if (stats.dead) {
+        info(
+            `${stats.dead} link(s) known dead from an earlier run (HTTP 404/410) were skipped without a request; ` +
+                "`zalo-agent sync-media --retry-dead` asks again.",
+        );
+    }
+    reportAgeAndCloud(stats, activeAcc.ownId);
     if (stats.expired) {
-        warning(`${stats.expired} link(s) are gone (HTTP 404/410 or a lapsed signature).`);
+        warning(`${stats.expired} link(s) are gone (${describeDownloadReasons(stats.reasons, "expired")}).`);
         if (stats.cloudBacked) {
             info(
-                `${stats.cloudBacked} of the files that are gone are listed in your zCloud index: the cloud holds a copy ` +
-                    "this tool cannot open (it is end-to-end encrypted under the account's cloud key, which this tool never holds).",
+                `${stats.cloudBacked} of the files that are gone are listed in your zCloud index: ` +
+                    "`zalo-agent sync-media --from-zcloud` fetches them with the account's cloud key.",
             );
         }
         info("Zalo only keeps media for a limited time; past that the file exists only on the sending device.");
@@ -1601,6 +1660,136 @@ export function reportRestore(res, win, ctx = {}) {
     return { status: "ok", reason: `${res.messagesSaved} message(s) from ${res.conversations} conversation(s)` };
 }
 
+/** How often a media run prints a progress line: every this many files finished, or this often, whichever is first. */
+const MEDIA_PROGRESS_EVERY = 50;
+const MEDIA_PROGRESS_MS = 30000;
+
+/**
+ * The progress printer of a media run. It counts files *finished* (saved or failed), not only saved ones: a run
+ * that walks through a stretch of links that are all gone used to print nothing for an hour and look frozen.
+ *
+ * @param {object} [o]
+ * @param {number} [o.every] - files between lines
+ * @param {number} [o.everyMs] - longest silence between lines while files keep finishing
+ * @param {() => number} [o.now]
+ * @param {(line: string) => void} [o.print]
+ * @returns {(p: object) => void} the `onProgress` to hand the downloader
+ */
+export function mediaProgressPrinter({
+    every = MEDIA_PROGRESS_EVERY,
+    everyMs = MEDIA_PROGRESS_MS,
+    now = Date.now,
+    print = info,
+} = {}) {
+    let lastCount = 0;
+    let lastAt = now();
+    return (p) => {
+        if (p?.phase !== "attempted") return;
+        const t = now();
+        if (p.attempted !== p.total && p.attempted - lastCount < every && t - lastAt < everyMs) return;
+        lastCount = p.attempted;
+        lastAt = t;
+        const dead =
+            (p.dead ? `, ${p.dead} known dead` : "") +
+            (p.oldInCloud ? `, ${p.oldInCloud} old in zCloud` : "") +
+            (p.oldGone ? `, ${p.oldGone} old gone` : "");
+        print(
+            `  ${p.attempted}/${p.total} files — ${p.downloaded} saved, ${p.failed} failed${dead} (${formatBytes(p.bytes)})`,
+        );
+    };
+}
+
+/**
+ * Say what the clock rule sorted (files past Zalo's keeping window, with no request) and what the zCloud source did.
+ *
+ * @param {object} stats - a download run's result
+ * @param {string} ownId - the account, for the command it names
+ */
+function reportAgeAndCloud(stats, ownId) {
+    if (stats.oldGone) {
+        info(
+            `${stats.oldGone} file(s) are past Zalo's keeping window (14 days, 7 for a file over 100 MB) and not in ` +
+                "zCloud: no longer on Zalo's servers. They were not asked for, and later runs skip them " +
+                "(`--all-ages` asks anyway).",
+        );
+    }
+    if (stats.oldInCloud) {
+        info(
+            `${stats.oldInCloud} file(s) are past Zalo's keeping window but kept in zCloud: ` +
+                `\`zalo-agent sync-media --account ${ownId} --from-zcloud --key-prompt\` fetches them with the account's cloud key.`,
+        );
+    }
+    if (stats.fromCloud) info(`${stats.fromCloud} file(s) came from zCloud.`);
+    if (stats.cloudFailed) {
+        warning(`${stats.cloudFailed} zCloud fetch(es) failed (${describeDownloadReasons(stats.reasons, "cloud")}).`);
+    }
+}
+
+/** zCloud plans whose files a download may take from zCloud: paid, and the grace period after it. */
+const CLOUD_PLAN_STATES = new Set(["paid", "grace"]);
+
+/** How long the plan check may take. */
+const PLAN_CHECK_MS = 30_000;
+
+/**
+ * The zCloud source of a `sync-media --from-zcloud` run: the plan checked (zCloud must be on), then the account's
+ * cloud key read from standard input or a prompt. The key is held in the returned object for this run only.
+ *
+ * @param {object|null} api
+ * @param {{keyStdin?: boolean, keyPrompt?: boolean}} opts
+ * @param {string} ownId
+ * @param {object} [deps] - stand-ins (tests): `usage()`, `readStdin()`, `prompt()`, `isTTY`
+ * @returns {Promise<{privateKey: import("node:crypto").KeyObject}|null>} null after saying why
+ */
+export async function openCloudSource(api, opts, ownId, deps = {}) {
+    if (!api && !deps.usage) {
+        error("--from-zcloud needs the account's session: log in first.");
+        return null;
+    }
+    let planCode = null;
+    try {
+        const usage = await Promise.race([
+            (deps.usage ?? (() => getCloudUsage(api)))(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("no answer in 30 s")), PLAN_CHECK_MS).unref()),
+        ]);
+        planCode = summarizeCloudQuota(usage ?? {}, {}).planCode;
+    } catch (e) {
+        error(`Could not read the account's zCloud plan: ${e.message}`);
+        return null;
+    }
+    const state = zcloudState(planCode);
+    if (!CLOUD_PLAN_STATES.has(state)) {
+        error(
+            `This account's zCloud plan is ${state} (${planCode ?? "none"}): Zalo serves files from zCloud only on a ` +
+                "zCloud plan, so there is nothing to fetch from there.",
+        );
+        return null;
+    }
+    const isTTY = deps.isTTY ?? Boolean(process.stdin.isTTY);
+    let text;
+    try {
+        if (opts.keyStdin) text = await (deps.readStdin ?? readSecretFromStream)();
+        else if (opts.keyPrompt || isTTY) {
+            text = await (deps.prompt ?? promptSecret)("The account's zCloud key (not shown): ");
+        } else {
+            error("--from-zcloud needs the account's cloud key: --key-stdin, or --key-prompt in a terminal.");
+            return null;
+        }
+        const privateKey = importCloudPrivateKey(text);
+        text = null;
+        info(`Fetching files kept in zCloud for account ${ownId} with the key given (held for this run only).`);
+        return { privateKey };
+    } catch (e) {
+        error(e.message);
+        return null;
+    }
+}
+
+/** What the first Ctrl+C during a media run says. */
+function mediaStoppingNotice() {
+    warning("Stopping the download: nothing half-written is kept. Press Ctrl+C again to quit at once.");
+}
+
 /**
  * Download everything the restore just recorded.
  *
@@ -1624,46 +1813,52 @@ async function fetchMediaAfterRestore(accountDir, api, since, { limit } = {}) {
         `Downloading ${capped ? `up to ${limit} of ${pending}` : pending} attachment(s) — no phone confirmation needed. ` +
             "Ctrl-C is safe; it resumes.",
     );
-    let last = 0;
-    // Tallied here rather than read off the result: the result does not exist
-    // until the whole download resolves, so progress lines would all read 0 B.
-    let bytes = 0;
-    const stats = await downloadSyncedMedia({
-        api,
-        accountDir,
-        limit: Number.MAX_SAFE_INTEGER,
-        // Only media inside the window this run actually covered, and never
-        // anything deliberately pruned. Without both, a sync silently undoes a
-        // `sync-media --prune`: pruning clears localPath to requeue the row, so
-        // an unscoped fetch re-downloads exactly what was just deleted.
-        since: Number.isFinite(since) && since > 0 ? since : undefined,
-        includePruned: false,
-        // Two at a time, as Zalo fetches: a burst is what the CDN answers with 403 and 429.
-        concurrency: 2,
-        maxFiles: limit,
-        threadNames: getThreadNames(),
-        onProgress: (p) => {
-            if (p.phase !== "saved") return;
-            bytes += p.bytes || 0;
-            if (p.done === p.total || p.done - last >= 50) {
-                last = p.done;
-                info(`  ${p.done}/${p.total} files (${formatBytes(bytes)})`);
-            }
-        },
-    });
+    const progress = mediaProgressPrinter();
+    const stats = await whileInterruptible(
+        (signal) =>
+            downloadSyncedMedia({
+                api,
+                accountDir,
+                limit: Number.MAX_SAFE_INTEGER,
+                // Only media inside the window this run actually covered, and never
+                // anything deliberately pruned. Without both, a sync silently undoes a
+                // `sync-media --prune`: pruning clears localPath to requeue the row, so
+                // an unscoped fetch re-downloads exactly what was just deleted.
+                since: Number.isFinite(since) && since > 0 ? since : undefined,
+                includePruned: false,
+                // Two at a time, as Zalo fetches: a burst is what the CDN answers with 403 and 429.
+                concurrency: 2,
+                maxFiles: limit,
+                threadNames: getThreadNames(),
+                signal,
+                onProgress: progress,
+            }),
+        { onStop: mediaStoppingNotice },
+    );
     success(`Downloaded ${stats.downloaded}/${stats.considered} file(s) (${formatBytes(stats.bytes)}).`);
+    if (stats.interrupted) {
+        warning(
+            `Stopped after ${stats.attempted} of ${stats.considered}; the rest are still pending — \`zalo-agent sync-media\` continues.`,
+        );
+    }
     if (stats.deferred) {
         info(
             `${stats.deferred} more file(s) are waiting (this run was capped at ${limit}); run \`zalo-agent sync-media\` to continue.`,
         );
     }
-    if (stats.renewed) info(`Renewed ${stats.renewed} expired link(s).`);
+    if (stats.dead) {
+        info(
+            `${stats.dead} link(s) known dead from an earlier run (HTTP 404/410) were skipped without a request; ` +
+                "`zalo-agent sync-media --retry-dead` asks again.",
+        );
+    }
+    reportAgeAndCloud(stats, basename(accountDir));
     if (stats.expired) {
-        warning(`${stats.expired} link(s) are gone and could not be renewed.`);
+        warning(`${stats.expired} link(s) are gone (${describeDownloadReasons(stats.reasons, "expired")}).`);
         if (stats.cloudBacked) {
             info(
-                `${stats.cloudBacked} of the files that are gone are listed in your zCloud index: the cloud holds a copy ` +
-                    "this tool cannot open (it is end-to-end encrypted under the account's cloud key, which this tool never holds).",
+                `${stats.cloudBacked} of the files that are gone are listed in your zCloud index: ` +
+                    "`zalo-agent sync-media --from-zcloud` fetches them with the account's cloud key.",
             );
         }
         info("Zalo keeps media for a limited time; past that the file exists only on the sending device.");

@@ -25,6 +25,7 @@ import {
 } from "./keystore/media-seal.js";
 import { readKeyring, scopeOfDir } from "./keystore/keyring.js";
 import { dbFileState, openDatabase } from "./sqlite.js";
+import { DEAD_LINKS_FILE } from "./sync-v2/dead-links.js";
 import { loadMCPConfig, resolveAccountMCPConfig } from "../mcp/mcp-config.js";
 
 /** The conversation index beside the thread folders: sealed JSON, never media. */
@@ -86,7 +87,7 @@ export function* walkMedia(root) {
                 continue;
             }
             if (!e.isFile()) continue;
-            if (dir === root && e.name.startsWith(MEDIA_INDEX_FILE)) continue;
+            if (dir === root && (e.name.startsWith(MEDIA_INDEX_FILE) || e.name.startsWith(DEAD_LINKS_FILE))) continue;
             if (e.name.endsWith(".tmp")) continue;
             if (isSealLeftover(e.name)) {
                 const target = leftoverTarget(e.name);

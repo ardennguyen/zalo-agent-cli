@@ -15,6 +15,7 @@ import {
 } from "../core/social/client.js";
 import { openInBrowser } from "../core/oa/oauth.js";
 import { success, error, info, warning, output } from "../utils/output.js";
+import { resolveAppSecret } from "../utils/secret-input.js";
 
 const PROFILE = ["--profile <name>", "Which stored user login to use (several users or apps)", "default"];
 
@@ -69,11 +70,25 @@ export function registerSocialCommands(program) {
         .command("setup")
         .description("Save the app's ID and secret key for user logins (from developers.zalo.me → the app)")
         .requiredOption("--app-id <id>", "Zalo App ID")
-        .requiredOption("--secret <key>", "Zalo App Secret Key")
+        .option(
+            "--secret <key>",
+            "Zalo App Secret Key (else ZALO_SOCIAL_APP_SECRET, else asked at a hidden prompt; a flag shows in the process list)",
+        )
         .option(...PROFILE)
-        .action((opts) => {
+        .action(async (opts) => {
             try {
-                saveSocialCreds({ appId: opts.appId, secretKey: opts.secret }, opts.profile);
+                const secretKey = await resolveAppSecret({
+                    flag: opts.secret,
+                    envName: "ZALO_SOCIAL_APP_SECRET",
+                    prompt: "Zalo App Secret Key: ",
+                });
+                if (!secretKey) {
+                    error(
+                        "No app secret: set ZALO_SOCIAL_APP_SECRET, run this on a terminal to be asked, or pass --secret.",
+                    );
+                    return;
+                }
+                saveSocialCreds({ appId: opts.appId, secretKey }, opts.profile);
                 output({ ok: true, profile: opts.profile }, json(), () =>
                     success(`App saved for profile "${opts.profile}". Next: zalo-agent social login`),
                 );
@@ -90,18 +105,25 @@ export function registerSocialCommands(program) {
                 "http://localhost:<port>/callback, or <callback-host>/callback",
         )
         .option("--app-id <id>", "Zalo App ID (default: the one `social setup` saved)")
-        .option("--secret <key>", "Zalo App Secret Key (default: the saved one)")
+        .option("--secret <key>", "Zalo App Secret Key (default: ZALO_SOCIAL_APP_SECRET, else the saved one)")
         .option("-p, --port <port>", "Callback server port", "3457")
         .option("--callback-host <host>", "Public callback base for a VPS (e.g. https://your-vps.com)")
         .option("--dpop", "Bind the tokens to a new key pair (DPoP): a stolen token is useless without the key")
+        .option("--timeout <seconds>", "How long to wait for the callback", "300")
         .option(...PROFILE)
         .action(async (opts) => {
+            const timeoutSec = Number(opts.timeout);
+            if (!Number.isInteger(timeoutSec) || timeoutSec < 10 || timeoutSec > 3600) {
+                error("--timeout must be a whole number of seconds from 10 to 3600");
+                return;
+            }
             const saved = loadSocialCreds(opts.profile) ?? {};
             const appId = opts.appId ?? saved.appId;
-            const secretKey = opts.secret ?? saved.secretKey;
+            const secretKey =
+                opts.secret?.trim() || process.env.ZALO_SOCIAL_APP_SECRET?.trim() || saved.secretKey || null;
             if (!appId || !secretKey) {
                 error(
-                    "No app: pass --app-id and --secret, or run: zalo-agent social setup --app-id <id> --secret <key>",
+                    "No app: pass --app-id (and --secret or ZALO_SOCIAL_APP_SECRET), or run: zalo-agent social setup --app-id <id>",
                 );
                 return;
             }
@@ -109,6 +131,7 @@ export function registerSocialCommands(program) {
                 appId,
                 secretKey,
                 profile: opts.profile,
+                timeoutMs: timeoutSec * 1000,
                 port: Number(opts.port),
                 callbackHost: opts.callbackHost,
                 dpop: Boolean(opts.dpop),

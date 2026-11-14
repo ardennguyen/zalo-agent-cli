@@ -54,5 +54,12 @@
         "leaseTtlMax": "600s",
         "waitHoldsSocket": true,
         "onKick": "yield"
+    },
+    "session": {
+        "renew": {
+            "enabled": true,
+            "daysBefore": 7,
+            "linkTtl": "24h"
+        }
     }
 }

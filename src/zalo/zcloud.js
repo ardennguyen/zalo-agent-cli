@@ -497,7 +497,8 @@ export async function fetchCloudDownloadUrl(api, noiseIds) {
  *
  * @param {object} api
  * @param {{noiseId: string, encryptInfo?: object|null, cloudConversation?: boolean}} item
- * @param {{fetch?: typeof fetch}} [opts] - the transport (tests); the account's download fetch otherwise
+ * @param {{fetch?: typeof fetch, signal?: AbortSignal}} [opts] - the transport (tests; the account's download fetch
+ *   otherwise), and a signal that ends the blob request (its headers and body)
  * @returns {Promise<{bytes: Buffer, encrypted: boolean, wrappedKey: string|null, algoVersion: string|null,
  *   contentType: string|null}>}
  * @throws {ZCloudError} for no URL, a viewer key that cannot be had, or an HTTP failure (`.http`, the status as
@@ -517,7 +518,11 @@ export async function fetchCloudBlob(api, item, opts = {}) {
         cloudConversation: Boolean(item.cloudConversation),
     });
     const fetchFn = opts.fetch ?? createDownloadFetch(api);
-    const res = await fetchFn(req.url, { method: "GET", headers: req.headers });
+    const res = await fetchFn(req.url, {
+        method: "GET",
+        headers: req.headers,
+        ...(opts.signal ? { signal: opts.signal } : {}),
+    });
     if (!res?.ok) {
         throw new ZCloudError(`zCloud download failed with HTTP ${res?.status}`, res?.status ?? null, { http: true });
     }

@@ -572,6 +572,24 @@ export function createPresence({
         },
 
         /**
+         * A new login of this account arrived in the running daemon (a renewal's QR login): signed out or yielded, it
+         * is back, as at start: parked, then the always-on hold (or on-demand's start-up catch-up) wakes it.
+         *
+         * @returns {boolean} whether presence came back (false: it was not signed out or yielded)
+         */
+        noteSignedIn() {
+            if (state !== "signed-out" && state !== "yielded") return false;
+            yieldedAt = null;
+            parkedAt = now();
+            setState("parked", { reason: "login renewed" });
+            log("presence: a new login arrived; the account is back");
+            applyMode();
+            if (cfg.mode !== "always-on" && cfg.connectOnStart) catchUpHold("start");
+            armPulse(true);
+            return true;
+        },
+
+        /**
          * Another session took the account. In on-demand mode with `onKick: "yield"` the socket is let go and the
          * daemon stays up; otherwise the caller ends the daemon (exit 3) as always.
          *

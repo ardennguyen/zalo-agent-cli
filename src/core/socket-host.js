@@ -110,6 +110,9 @@ const sleepFor = (ms, signal) =>
  *   (./presence.js `noteKicked`): true lets the socket go and keeps the daemon up (`yielded`) instead of `onKicked`
  * @param {() => void} [opts.onParking] - called once a park is past the point of no return, before the supervisor
  *   stops: the daemon marks the coming close as planned (`lifecycle.noteParking()`, health `idle`)
+ * @param {(api: object|null) => boolean} [opts.expectKick] - given the kicked socket's session: true when this daemon's
+ *   own new login (a renewal, ./session-renew.js) replaced it, so the kick only lets that socket go (the daemon switches
+ *   to the new session itself) instead of ending the daemon or yielding
  * @returns {{start: (api: object) => object, adopt: (api: object) => void, halt: () => Promise<void>,
  *   stop: () => Promise<void>, current: () => object|null, reloginNow: (why: string) => Promise<void>,
  *   park: Function, wake: Function, isParked: () => boolean, isParking: () => boolean}}
@@ -130,6 +133,7 @@ export function createSocketHost({
     kickReasonWaitMs = KICK_REASON_WAIT_MS,
     yieldOnKick = null,
     onParking = null,
+    expectKick = null,
 }) {
     let supervisor = null;
     // The session the last supervisor ran on: a wake starts the next one on it (a relogin replaces it).
@@ -144,6 +148,8 @@ export function createSocketHost({
     // A 71 from the gate while logging in: the next supervisor keeps asking, as Zalo's own app does.
     let noticeWindow = null;
     let reloginRunning = false;
+    // The session each supervisor runs on (a renewal's expected kick is the old session's only).
+    const apiOf = new WeakMap();
     const abort = new AbortController();
 
     // One history for the whole life of the daemon: a new login builds a new supervisor, and the
@@ -169,6 +175,12 @@ export function createSocketHost({
         });
         sup.on("kicked", ({ via, reason }) => {
             if (isStopping()) return;
+            if (kickExpected(apiOf.get(sup) ?? null)) {
+                log("info", `The renewal's new login replaced the old session (${via}); switching to it.`);
+                if (supervisor === sup) supervisor = null;
+                sup.dispose?.();
+                return;
+            }
             log(
                 "error",
                 `Another Zalo session took this account (${via}). Not reconnecting: that would evict it in turn.`,
@@ -217,6 +229,15 @@ export function createSocketHost({
         sup.on("resume", () => log("info", "The machine woke up; checking the socket."));
     }
 
+    /** Whether a kick now is this daemon's own renewal (never throws). */
+    function kickExpected(api = null) {
+        try {
+            return Boolean(expectKick?.(api));
+        } catch {
+            return false;
+        }
+    }
+
     /**
      * On-demand: let the socket go after a kick instead of ending the daemon, when presence says so. The kicked
      * supervisor is disposed (it never retries a kick anyway); nothing reconnects until a wake.
@@ -263,6 +284,7 @@ export function createSocketHost({
             kickoutInfo: () => lookupKickout(api),
             ...supervisorOptions,
         });
+        apiOf.set(supervisor, api);
         wire(supervisor);
         supervisor.start();
         if (noticeWindow) {
@@ -295,6 +317,10 @@ export function createSocketHost({
                     return;
                 } catch (err) {
                     const kind = classifyLoginFailure(err);
+                    if (kind === "kicked" && kickExpected()) {
+                        log("info", "The login met the renewal's new login; the renewal switches to it.");
+                        return;
+                    }
                     if (kind === "kicked") {
                         log("error", "Zalo answered the login with a kick: another session holds the account.");
                         if (yieldTo({ via: "login", reason: null }, null)) return;

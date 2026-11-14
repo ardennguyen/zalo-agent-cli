@@ -28,7 +28,7 @@ import {
 import { openSealed, seal, unwrapKey, wrapKey } from "../../src/core/keystore/container.js";
 import { createProviders, defaultProvider, inTestSandbox } from "../../src/core/keystore/providers.js";
 import { createKmsBackends, runKmsTask } from "../../src/core/keystore/kms.js";
-import { currentKey, lockAll, readKeyring } from "../../src/core/keystore/keyring.js";
+import { currentKey, lockAll, readKeyring, ringOptions } from "../../src/core/keystore/keyring.js";
 import { createTrustStore } from "../../src/zalo/trust-store.js";
 import { loadTranscripts, voiceTextFile } from "../../src/core/voice-text.js";
 
@@ -461,6 +461,48 @@ describe("the passphrase, env and test providers", () => {
                 (e) => e.code === "UNAVAILABLE" && /no passphrase file/.test(e.message),
             );
         }
+    });
+
+    it("passphrase: a recorded file missing on this machine gives way to the systemd credential; settings do not", () => {
+        // The keyring was made elsewhere with --passphrase-file <a path of that machine>; here the passphrase comes
+        // from the service's credential ($CREDENTIALS_DIRECTORY/zalo-storage-passphrase), as docs/deployment.md §4.9 says.
+        const credDir = join(SANDBOX_HOME, "credentials-moved");
+        mkdirSync(credDir, { recursive: true });
+        writeFileSync(join(credDir, "zalo-storage-passphrase"), "correct horse battery\n");
+        const origin = join(SANDBOX_HOME, "pass-origin.txt");
+        writeFileSync(origin, "correct horse battery\n");
+        const { wrapped, state } = createProviders().passphrase.wrap(mk, ctx({ options: { file: origin } }));
+        const gone = join(SANDBOX_HOME, "no-such-dir", "passphrase.txt");
+        const ring = { provider: { name: "passphrase", options: { file: gone } }, account: "a1" };
+
+        const recorded = ringOptions(ring, { options: {} });
+        assert.equal(recorded.file, gone);
+        assert.equal(recorded.recordedFile, true);
+        const here = createProviders({ env: { CREDENTIALS_DIRECTORY: credDir } }).passphrase;
+        assert.deepEqual(here.unwrap(wrapped, ctx({ options: recorded, state })), mk, "the credential unwraps it");
+
+        // Without the credential, the recorded path is still what is tried (and its absence is the error).
+        assert.throws(
+            () => createProviders({ env: {} }).passphrase.unwrap(wrapped, ctx({ options: recorded, state })),
+            (e) => e.code === "UNAVAILABLE" && /cannot read the passphrase file/.test(e.message),
+        );
+        // A file named by today's settings wins over both, even when it does not exist.
+        const fromSettings = ringOptions(ring, { options: { passphrase: { file: gone } } });
+        assert.equal(fromSettings.recordedFile, undefined);
+        assert.throws(
+            () =>
+                createProviders({ env: { CREDENTIALS_DIRECTORY: credDir } }).passphrase.unwrap(
+                    wrapped,
+                    ctx({ options: fromSettings, state }),
+                ),
+            (e) => e.code === "UNAVAILABLE",
+        );
+        // And a recorded file that does exist is still used as is.
+        const kept = ringOptions(
+            { ...ring, provider: { name: "passphrase", options: { file: origin } } },
+            { options: {} },
+        );
+        assert.deepEqual(createProviders({ env: {} }).passphrase.unwrap(wrapped, ctx({ options: kept, state })), mk);
     });
 
     it("env: works only with the variable set, warns once on stderr, and a different key is a wrong-key error", () => {

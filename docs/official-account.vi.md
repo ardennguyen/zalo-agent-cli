@@ -52,7 +52,7 @@ Tổng cộng **94 lệnh**: 70 lệnh trong nhóm `oa`, 18 lệnh trong nhóm `
 | Lệnh | Mô tả |
 |-------|--------|
 | `oa init [flags]` | Guided setup wizard (interactive + non-interactive) — xem bảng flag bên dưới |
-| `oa login --app-id <id> --secret <key> [-p, --port <port>]` | OAuth v4 login với PKCE (`code_challenge` + `state`; đổi code lấy token kèm `code_verifier`). Mở browser; callback server chạy ở `127.0.0.1:<port>`, mặc định port `3456`. Timeout 2 phút |
+| `oa login --app-id <id> --secret <key> [-p, --port <port>]` | OAuth v4 login với PKCE (`code_challenge` + `state`; đổi code lấy token kèm `code_verifier`). Mở browser; callback server chạy ở `127.0.0.1:<port>`, mặc định port `3456`. Chờ 5 phút (`--timeout <giây>`); request lạc tới `/callback` (`state` khác, không có code) nhận 400 và lần đăng nhập vẫn chờ tiếp. Có thể bỏ `--secret`: dùng `ZALO_OA_APP_SECRET`, nếu không thì hỏi tại dấu nhắc không hiện ký tự |
 | `oa login ... --callback-host <url>` | OAuth login từ VPS — bind `0.0.0.0`, không tự mở browser, in URL để mở thủ công trên máy local |
 | `oa refresh` | Làm mới access token bằng refresh token đã lưu. Zalo chỉ cho dùng refresh token một lần, nên việc làm mới chạy tuần tự dưới khóa file và cặp token mới được lưu trước khi dùng |
 | `oa setup <access-token>` | Set token thủ công (bỏ qua OAuth; không làm mới được) |
@@ -397,7 +397,8 @@ zalo-agent zbs quota --oa-id shop2
 - Lệnh xóa dữ liệu hoặc trả tiền cần `--yes`
 - Webhook body size limit: tối đa 1 MB
 - OAuth: PKCE kèm `state`; callback bind `127.0.0.1` (local) hoặc `0.0.0.0` (VPS mode)
-- Không hardcode secret — tất cả lấy từ CLI flag hoặc file credential
+- Không hardcode secret — tất cả lấy từ CLI flag, `ZALO_OA_APP_SECRET` / `ZALO_SOCIAL_APP_SECRET`, dấu nhắc không hiện ký tự, hoặc file credential; thư mục OA được tạo với quyền `0700`
+- Request lấy token bỏ cuộc sau 30 giây; đăng nhập Social bắt buộc callback có `state`, và DPoP proof của nó mang một `jti` ngẫu nhiên
 - Không được niêm phong: mã hóa trên đĩa mà 3.0 áp dụng cho các file của tài khoản cá nhân ([security.vi.md](security.vi.md)) không bao gồm `oa-credentials.json`. Hãy để thư mục OA trên ổ đã mã hóa và chỉ cho tài khoản dịch vụ đọc.
 
 ---
@@ -415,8 +416,8 @@ zalo-agent social status
 
 | Lệnh | Mô tả |
 |------|-------|
-| `setup --app-id <id> --secret <key> [--profile <name>]` | Lưu App ID và secret key của ứng dụng. |
-| `login [--app-id <id>] [--secret <key>] [-p, --port <port>] [--callback-host <host>] [--dpop] [--profile <name>]` | Mở trang cấp quyền của Zalo (`oauth.zaloapp.com/v4/permission`, PKCE và `state`), chờ callback trên 127.0.0.1 (0.0.0.0 khi có `--callback-host`), kiểm tra `state`, đổi code lấy token bằng verifier, lưu token rồi hiện người dùng. Cổng mặc định 3457. `--dpop` gắn token với một cặp khóa P-256 mới (DPoP, ES256): mọi lệnh gọi và lần làm mới sau đều kèm bằng chứng ký bằng khóa đó, nên token bị lộ một mình là vô dụng. |
+| `setup --app-id <id> [--secret <key>] [--profile <name>]` | Lưu App ID và secret key của ứng dụng (không có `--secret` thì dùng `ZALO_SOCIAL_APP_SECRET`, nếu không thì hỏi tại dấu nhắc không hiện ký tự). |
+| `login [--app-id <id>] [--secret <key>] [-p, --port <port>] [--callback-host <host>] [--dpop] [--timeout <giây>] [--profile <name>]` | Mở trang cấp quyền của Zalo (`oauth.zaloapp.com/v4/permission`, PKCE và `state`), chờ callback trên 127.0.0.1 (0.0.0.0 khi có `--callback-host`), kiểm tra `state`, đổi code lấy token bằng verifier, lưu token rồi hiện người dùng. Cổng mặc định 3457; `--timeout` mặc định 300 giây. Callback bắt buộc có `state`: request lạc nhận 400 và lần đăng nhập vẫn chờ tiếp. `--dpop` gắn token với một cặp khóa P-256 mới (DPoP, ES256): mọi lệnh gọi và lần làm mới sau đều kèm bằng chứng ký bằng khóa đó, nên token bị lộ một mình là vô dụng. |
 | `refresh [--profile <name>]` | Làm mới access token ngay (refresh token chỉ dùng một lần; chạy tuần tự dưới khóa). Bị từ chối, không gửi gì, khi phiên đăng nhập 30 ngày đã hết. |
 | `me [--fields <list>] [--picture small\|normal\|large] [--profile <name>]` | `GET graph.zalo.me/v2.0/me`: `id` (ID của người dùng trong riêng ứng dụng này), `name`, `picture` (nhỏ nhất nếu không có `--picture`), và `is_sensitive` khi được hỏi (người dùng cần xử lý dữ liệu theo quy định riêng của pháp luật). Trường khác bị từ chối trước khi gửi. |
 | `status [--profile <name>]` | Có người dùng đăng nhập không, khi nào access token và phiên đăng nhập hết hạn, DPoP bật hay tắt. Không bao giờ hiện token. |
@@ -436,7 +437,7 @@ zalo-agent social status
 | Credentials | `~/.zalo-agent-cli/` | `~/.zalo-agent/` (không có hậu tố `-cli`) |
 | Disclaimer khi chạy | Có | Không (API chính thức) |
 | Auto-login trước lệnh | Có | Không — `oa` tự quản lý token riêng |
-| Số lệnh | 227 (trong tổng 321 lệnh CLI) | 94 (70 `oa` + 18 `zbs` + 6 `social`) |
+| Số lệnh | 228 (trong tổng 322 lệnh CLI) | 94 (70 `oa` + 18 `zbs` + 6 `social`) |
 | Realtime | WebSocket (`listen`) | Webhook HTTP (`oa listen`) |
 | Qua MCP | 36 tool (xem [mcp-guide](../skill/references/mcp-guide.md)) | Tool `zalo_official` (mọi lệnh trừ đăng nhập và `oa listen`) |
 

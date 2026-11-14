@@ -1,6 +1,6 @@
 # Hướng dẫn Zalo MCP Server
 
-Model Context Protocol (MCP) cho phép Claude Code, Google Gemini và các MCP client tương tác với Zalo (tài khoản cá nhân) trực tiếp qua **36 tools**.
+Model Context Protocol (MCP) cho phép Claude Code, Google Gemini và các MCP client tương tác với Zalo (tài khoản cá nhân) trực tiếp qua **37 tools**.
 
 Từ 3.0, **mọi lệnh CLI của tài khoản cá nhân đều có một hành động MCP** (bạn bè, nhóm, hội thoại, hồ sơ, auto-reply, quick-msg, catalog, ngân hàng, zCloud, sticker, link, các read/write thô của Zalo, và mọi stage sync qua `zalo_sync` / `zalo_sync_status`). Chỉ còn Official Account (`oa …`, API chính thức riêng), đăng nhập/đăng xuất, quản lý tài khoản trên máy, `listen`, `mcp start`, `fleet`, `policy`, `presence status|wake|park` và các lệnh `db` (trừ `db usage`, có ở `zalo_profile` `usage`) là chỉ có trên CLI; agent gọi chúng bằng CLI với `--json` khi được phép. Xem bảng [Phạm vi tool](#phạm-vi-tool--cái-gì-có-cái-gì-phải-gọi-cli).
 
@@ -14,12 +14,12 @@ Tool nào mô phỏng một lệnh CLI (`zalo_react` ↔ `msg react`, `zalo_undo
 |------|----------|--------|
 | `--account <id>` | Active lúc khởi động, sau đó ghim | ID số đầy đủ của tài khoản đã đăng ký; giữ nguyên qua reconnect/retry, không đổi active chung. [Chi tiết](../../docs/account-pinning.vi.md) |
 | `--http <port>` | *(stdio)* | Dùng HTTP/HTTPS transport trên port này (`ZALO_MCP_HTTP_PORT[_<ownId>]` hoặc `httpPort` trong `mcp-config.json`). Bỏ trống = stdio |
-| `--auth <token>` | `ZALO_MCP_AUTH_TOKEN[_<ownId>]` | Yêu cầu header `Authorization: Bearer <token>` (hoặc OAuth 2.0 `access_token`) cho mọi endpoint trừ `/health`, `/ready` và các endpoint OAuth discovery/handshake |
+| `--auth <token>` | `ZALO_MCP_AUTH_TOKEN[_<ownId>]` | Yêu cầu header `Authorization: Bearer <token>` (hoặc một access token OAuth do server cấp) cho mọi endpoint trừ `/health`, `/ready` và các endpoint OAuth. Một mình nó **không** bật OAuth (từ 3.0.1) |
 | `--host <address>` | `127.0.0.1` | Địa chỉ bind cho HTTP/HTTPS mode (`ZALO_MCP_HOST[_<ownId>]` hoặc `host`). Đặt `0.0.0.0` để nhận kết nối từ ngoài |
 | `--cert <path>` | `tls.cert` / `ZALO_MCP_TLS_CERT[_<ownId>]` | Đường dẫn chứng chỉ PEM để phục vụ HTTPS trực tiếp (cần `--http` và `--key`; khi chạy trên port khác 443 sẽ tự thử bind thêm port 443 song song) |
 | `--key <path>` | `tls.key` / `ZALO_MCP_TLS_KEY[_<ownId>]` | Đường dẫn private key PEM để phục vụ HTTPS trực tiếp |
-| `--client-id <id>` | `zalo-mcp` / `ZALO_MCP_OAUTH_CLIENT_ID[_<ownId>]` | OAuth 2.0 Client ID cho các remote MCP client (Gemini Connected Apps, Claude Custom Connectors, …) |
-| `--client-secret <secret>` | `--auth` / `ZALO_MCP_OAUTH_CLIENT_SECRET[_<ownId>]` | OAuth 2.0 Client Secret cho bước đổi token tại `/token` |
+| `--client-id <id>` | `zalo-mcp` / `ZALO_MCP_OAUTH_CLIENT_ID[_<ownId>]` | OAuth Client ID cho các remote MCP client (Gemini Connected Apps, Claude Custom Connectors, …) |
+| `--client-secret <secret>` | *(không có)* / `ZALO_MCP_OAUTH_CLIENT_SECRET[_<ownId>]` | OAuth Client Secret của client đó, chỉ dùng tại `/token` (không phải bearer token, không mặc định lấy `--auth`). Đặt nó là bật OAuth; callback URL của client đặt ở `ZALO_MCP_OAUTH_REDIRECT_URIS[_<ownId>]` / `oauth.redirectUris`. Mỗi lần kết nối phải được duyệt bằng mật khẩu người duyệt (`mcp approver set`). Xem "OAuth cho connector từ xa" trong `docs/configuration.vi.md` §3.4 |
 | `--public-url <url>` | *(địa chỉ của chính server)* | Địa chỉ công khai duy nhất khi đứng sau reverse proxy/TLS (`ZALO_MCP_PUBLIC_URL[_<ownId>]`, `publicUrl`): endpoint MCP, OAuth issuer, link trang bảo mật `/zalo/secure/<token>` và trang QR `/zalo/qr/<token>`. `https` (chỉ `http` cho localhost), có thể kèm base path, không query/fragment. Không đặt: link dùng địa chỉ local, OAuth suy issuer từ header `Host` |
 | `--issuer-url <url>` | *(deprecated)* | Tên cũ của `--public-url` (`ZALO_MCP_ISSUER_URL[_<ownId>]`, `oauth.issuerUrl`), vẫn dùng được, in một ghi chú |
 | `-w, --webhook <url>` | `webhook` / `ZALO_WEBHOOK_URL[_<ownId>]` | POST mỗi tin nhắn mới (đã lọc theo `watchThreads`) dạng JSON tới URL này |
@@ -34,7 +34,7 @@ Tool nào mô phỏng một lệnh CLI (`zalo_react` ↔ `msg react`, `zalo_undo
 | `--status` | `false` | Xem trạng thái daemon chạy ngầm (PID, cổng channel, đường dẫn log) |
 
 > [!WARNING]
-> Bind `--host 0.0.0.0` mà không có token (`ZALO_MCP_AUTH_TOKEN` hoặc `--client-secret`) là để lộ toàn bộ phiên Zalo của bạn cho bất kỳ ai truy cập được port đó. Luôn đặt token khi mở ra ngoài loopback, và đặt nó qua biến môi trường chứ không qua cờ `--auth` (cờ lộ trong danh sách tiến trình).
+> Bind `--host 0.0.0.0` mà không có token (`ZALO_MCP_AUTH_TOKEN`, hoặc OAuth đã cấu hình) là để lộ toàn bộ phiên Zalo của bạn cho bất kỳ ai truy cập được port đó. Luôn đặt token khi mở ra ngoài loopback, và đặt nó qua biến môi trường chứ không qua cờ `--auth` (cờ lộ trong danh sách tiến trình).
 
 ---
 
@@ -59,21 +59,26 @@ Thêm vào `.claude/settings.json` (yêu cầu `zalo-agent` đã cài global ho�
 }
 ```
 
-### Chế độ HTTP / HTTPS & OAuth 2.0 (VPS — Remote / Gemini Connected Apps)
+### Chế độ HTTP / HTTPS & OAuth 2.1 (VPS — Remote / Gemini Connected Apps)
 
 ```bash
 # HTTP + Bearer token (token đặt qua biến môi trường: cờ --auth lộ trong danh sách tiến trình)
 export ZALO_MCP_AUTH_TOKEN=your-secret
 zalo-agent mcp start --http 3847 --host 192.168.1.10   # một địa chỉ LAN, không phải 0.0.0.0
 
-# HTTPS gốc + OAuth 2.0 (tự thử bind song song cả port 3100 lẫn 443)
-zalo-agent mcp start --http 3100 --host 0.0.0.0 \
+# HTTPS gốc + OAuth 2.1 cho một connector (tự thử bind song song cả port 3100 lẫn 443).
+# OAuth chỉ bật khi có client; nghe ngoài loopback thì phải có --public-url; mỗi kết nối được duyệt
+# bằng mật khẩu người duyệt.
+zalo-agent mcp approver set
+export ZALO_MCP_OAUTH_CLIENT_ID=zalo-connector ZALO_MCP_OAUTH_CLIENT_SECRET="$(openssl rand -hex 20)"
+export ZALO_MCP_OAUTH_REDIRECT_URIS=https://claude.ai/api/mcp/auth_callback
+zalo-agent mcp start --http 3100 --host 0.0.0.0 --public-url https://your-vps.example.com:3100 \
   --cert /path/to/fullchain.pem --key /path/to/privkey.pem -d
 ```
 
 Trên VPS, nên đặt server sau reverse proxy (Caddy) với `--public-url https://<domain>/a/<id>` và bind `127.0.0.1`; `zalo-agent fleet generate --domain <domain>` tạo sẵn bộ tệp đó (xem `docs/deployment.vi.md`). Chế độ HTTP mặc định chạy on-demand: xem [Hiện diện on-demand](#zalo_get_messages).
 
-Endpoint MCP là **`POST /mcp`** (hỗ trợ cả `HEAD`, `GET`, `POST`, `DELETE` cho Streamable HTTP; đồng thời cung cấp máy chủ OAuth 2.0 / 2.1 tích hợp sẵn tại `/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`, `/register`, `/authorize`, `/token`, `/revoke`). Thêm vào cấu hình MCP client:
+Endpoint MCP là **`POST /mcp`** (hỗ trợ cả `HEAD`, `GET`, `POST`, `DELETE` cho Streamable HTTP; khi OAuth bật, có thêm máy chủ OAuth 2.1 tích hợp tại `/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`, `/authorize` (mở trang duyệt dùng một lần), `/token`, `/revoke`, và `/register` khi bật đăng ký động; PKCE S256 bắt buộc, access token 1 giờ, refresh token 30 ngày xoay vòng mỗi lần dùng; server chỉ có `--auth` trả 404 cho mọi route OAuth). Thêm vào cấu hình MCP client:
 
 ```json
 {
@@ -102,13 +107,14 @@ curl -s -H "Authorization: Bearer $TOKEN" http://localhost:3847/status
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:3847/metrics
 
 # Chờ tin nhắn tiếp theo (tối đa 300s) hoặc trả về ngay nếu đã có tin sau cursor `since`
-curl -s "http://localhost:3847/events/wait?timeout=300&since=0"
+# Cần bearer token như /status (chỉ /health và /ready không cần)
+curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:3847/events/wait?timeout=300&since=0"
 # → {"status":"message","message":{...},"cursor":1762400000001}
 ```
 
 ### Qua wrapper `zalo-mcp`
 
-Dự án [`zalo-mcp`](https://github.com/ardennguyen/zalo-mcp) (v2.0.0+) là bộ cài đặt và CLI launcher mỏng: cài lệnh global `zalo-mcp` (hoặc chạy `node mcp-server.js`). Khi không kèm lệnh con, nó chạy `zalo-agent mcp start`; khi kèm lệnh con (`zalo-mcp login`, `zalo-mcp status`, `zalo-mcp --account <ID> conv recent --json`, `zalo-mcp sync`, …), nó chuyển tiếp nguyên vẹn sang CLI. **Danh sách 36 MCP tool hoàn toàn giống nhau** — tool surface do `src/mcp/mcp-tools.js` của `zalo-agent-cli` quyết định.
+Dự án [`zalo-mcp`](https://github.com/ardennguyen/zalo-mcp) (v2.0.0+) là bộ cài đặt và CLI launcher mỏng: cài lệnh global `zalo-mcp` (hoặc chạy `node mcp-server.js`). Khi không kèm lệnh con, nó chạy `zalo-agent mcp start`; khi kèm lệnh con (`zalo-mcp login`, `zalo-mcp status`, `zalo-mcp --account <ID> conv recent --json`, `zalo-mcp sync`, …), nó chuyển tiếp nguyên vẹn sang CLI. **Danh sách 37 MCP tool hoàn toàn giống nhau** — tool surface do `src/mcp/mcp-tools.js` của `zalo-agent-cli` quyết định.
 
 - **Forward đầy đủ mọi flag của `mcp start` và global storage flags:** `--account <id>` (`ZALO_ACCOUNT`), `--http [port]`, `--auth <token>`, `--host <addr>`, `--cert <path>`, `--key <path>`, `--client-id <id>`, `--client-secret <secret>`, `--public-url <url>`, `--issuer-url <url>`, `-w`/`--webhook <url>`, `--webhook-secret <secret>`, `--config <path>`, `--no-self-heal`, `--no-delivered-receipts`, `-d`/`--daemon`, `--stop`, `--status`, cùng `--env-file`, `--config-dir`, `--credentials-dir`, `--data-dir`, `--media-dir`, `--oa-dir`.
 - **Phiên bản engine:** Wrapper chạy phiên bản `@ardennguyen/zalo-agent-cli` được cài trong `node_modules/` của nó (cập nhật lên bản mới nhất bằng `zalo-mcp.ps1 update` / `./zalo-mcp.sh update`). Kiểm tra phiên bản engine hiện tại bằng:
@@ -257,7 +263,7 @@ Lấy tin nhắn đã buffer mà consumer này chưa đánh dấu đã đọc (x
 
 Một tin bị thu hồi cũng xuất hiện trong danh sách này (và đánh thức `zalo_wait_for_message`) dưới dạng một mục có `type` là `"undo"`: `msgId` là tin đã bị thu hồi (`null` nếu Zalo chỉ cho biết `cliMsgId`), `text` rỗng, và tin cũ không còn trong cache. Thu hồi do chính tài khoản làm (qua `zalo_undo`) không được đưa vào.
 
-**Sự kiện hệ thống.** Không phải client MCP nào cũng là agent: người dùng cũng cần thấy dung lượng của mình. Khi dung lượng của tài khoản trên server gần chạm hoặc vượt hạn mức, đã bị dọn bớt, hay trở lại trong hạn mức, một mục có `system: true`, `threadId` và `msgId` là `null`, `type` là `"storage_quota"` xuất hiện trong cùng danh sách (và đánh thức `zalo_wait_for_message`, cả `GET /events/wait`), theo đúng thứ tự với các tin: `level` (`warn`, `over`, `grace_ending`, `purged`, `ok`), `scope` (`account` hoặc `tenant`, kèm `tenantId`), `usedBytes`, `limitBytes`, `overSince`, `purgeAt`, `daysLeft` (với `grace_ending`), `freedBytes`/`media`/`messages` (với `purged`), và `text` là một câu để hiển thị cho người dùng. Chỉ một lần đọc hay chờ không nêu `threadId` mới nhận được nó; nó không hiện trong `zalo_list_threads`. Dung lượng hiện tại đọc bằng `zalo_profile` `usage`. Tương tự, mỗi khi trạng thái tài khoản đổi, một mục hệ thống `type: "account_state"` xuất hiện: `state` (`idle`, `connecting`, `connected`, `kicked`, `yielded`, `login_needed`, `signed_out`, `maintenance`), `previous`, `at`, `detail` (`presence`: `on-demand` hoặc `always-on`), và `text`; chỉ có id, không có tên. Hai loại mục hệ thống nữa cũng đi theo cùng đường này (và tới webhook): `type: "queue_overflow"` khi Zalo báo đã bỏ một phần hàng đợi offline (`fromTs`, `toTs`, `queues`, `direct` — tin 1-1 có thể thiếu, `groups` — kết quả tự sửa từ kho tin nhắn của nhóm, `pending`, `command` — lệnh `zalo-agent sync --from <ngày>` cần chạy khi còn thiếu), và `type: "group_gone"` khi tài khoản rời nhóm, bị xóa hay bị chặn khỏi nhóm, hoặc nhóm bị giải tán (`threadId` của nhóm, `reason`: `leave`/`removed`/`blocked`/`disbanded`, `leftAt`, `mode`: `purge`/`keep`, `purged` — số tin và tệp đã xóa). Mặc định (`groups.onLeave: "purge"`) lịch sử cục bộ của nhóm bị xóa ngay, như ứng dụng Zalo; với `"keep"` nhóm vẫn đọc được và được liệt kê kèm `gone: true`, `leftAt`, `goneReason` trong `zalo_list_conversations`, `zalo_list_threads`, `zalo_search_threads`, còn gửi tin vào đó bị từ chối kèm lý do. Cuối cùng, `type: "session_expiring"` báo phiên đăng nhập đã lưu sắp hết hạn: cookie phiên được đặt một lần lúc đăng nhập QR, sống khoảng 90 ngày và Zalo không gia hạn, nên mục này xuất hiện một lần cho mỗi mốc còn 14, 7, 3, 1 ngày và một lần khi đã hết hạn (`expiresAt`, `daysLeft`, `expired`, `threshold`, `command` — lệnh `zalo-agent --account <id> login`, `text`; daemon kiểm tra lúc khởi động và mỗi giờ, nhớ mốc đã gửi qua các lần khởi động lại). Hãy báo người dùng đăng nhập lại bằng QR trước ngày đó (trên server: `za --account <id> login` rồi `za fleet restart <id>`; CRM: thêm lại bằng QR qua fleet controller); đăng nhập lại giữ device id nên hàng đợi offline không mất. Khi đã hết hạn, mọi lệnh gọi bị từ chối với `SIGNED_OUT` cho tới lần đăng nhập mới.
+**Sự kiện hệ thống.** Không phải client MCP nào cũng là agent: người dùng cũng cần thấy dung lượng của mình. Khi dung lượng của tài khoản trên server gần chạm hoặc vượt hạn mức, đã bị dọn bớt, hay trở lại trong hạn mức, một mục có `system: true`, `threadId` và `msgId` là `null`, `type` là `"storage_quota"` xuất hiện trong cùng danh sách (và đánh thức `zalo_wait_for_message`, cả `GET /events/wait`), theo đúng thứ tự với các tin: `level` (`warn`, `over`, `grace_ending`, `purged`, `ok`), `scope` (`account` hoặc `tenant`, kèm `tenantId`), `usedBytes`, `limitBytes`, `overSince`, `purgeAt`, `daysLeft` (với `grace_ending`), `freedBytes`/`media`/`messages` (với `purged`), và `text` là một câu để hiển thị cho người dùng. Chỉ một lần đọc hay chờ không nêu `threadId` mới nhận được nó; nó không hiện trong `zalo_list_threads`. Dung lượng hiện tại đọc bằng `zalo_profile` `usage`. Tương tự, mỗi khi trạng thái tài khoản đổi, một mục hệ thống `type: "account_state"` xuất hiện: `state` (`idle`, `connecting`, `connected`, `kicked`, `yielded`, `login_needed`, `signed_out`, `maintenance`), `previous`, `at`, `detail` (`presence`: `on-demand` hoặc `always-on`), và `text`; chỉ có id, không có tên. Hai loại mục hệ thống nữa cũng đi theo cùng đường này (và tới webhook): `type: "queue_overflow"` khi Zalo báo đã bỏ một phần hàng đợi offline (`fromTs`, `toTs`, `queues`, `direct` — tin 1-1 có thể thiếu, `groups` — kết quả tự sửa từ kho tin nhắn của nhóm, `pending`, `command` — lệnh `zalo-agent sync --from <ngày>` cần chạy khi còn thiếu), và `type: "group_gone"` khi tài khoản rời nhóm, bị xóa hay bị chặn khỏi nhóm, hoặc nhóm bị giải tán (`threadId` của nhóm, `reason`: `leave`/`removed`/`blocked`/`disbanded`, `leftAt`, `mode`: `purge`/`keep`, `purged` — số tin và tệp đã xóa). Mặc định (`groups.onLeave: "purge"`) lịch sử cục bộ của nhóm bị xóa ngay, như ứng dụng Zalo; với `"keep"` nhóm vẫn đọc được và được liệt kê kèm `gone: true`, `leftAt`, `goneReason` trong `zalo_list_conversations`, `zalo_list_threads`, `zalo_search_threads`, còn gửi tin vào đó bị từ chối kèm lý do. Cuối cùng, `type: "session_expiring"` báo phiên đăng nhập đã lưu sắp hết hạn: cookie phiên được đặt một lần lúc đăng nhập QR, sống khoảng 90 ngày và Zalo không gia hạn, nên mục này xuất hiện một lần cho mỗi mốc còn 14, 7, 3, 1 ngày và một lần khi đã hết hạn (`expiresAt`, `daysLeft`, `expired`, `threshold`, `command` — lệnh `zalo-agent --account <id> login`, `text`; daemon kiểm tra lúc khởi động và mỗi giờ, nhớ mốc đã gửi qua các lần khởi động lại). Hãy báo người dùng đăng nhập lại bằng QR trước ngày đó (trên server: `za --account <id> login` rồi `za fleet restart <id>`; CRM: thêm lại bằng QR qua fleet controller); đăng nhập lại giữ device id nên hàng đợi offline không mất. Khi máy chủ chạy `mcp start --http` có `publicUrl`, từ 7 ngày trước khi hết hạn (`session.renew.daysBefore`) mục này còn mang `renewUrl` và `renewExpiresAt`: một liên kết đăng nhập QR dùng một lần để gia hạn; mỗi liên kết mới (mặc định mỗi ngày) đến kèm một mục `session_expiring` nữa. Hãy chuyển `renewUrl` cho người dùng: họ mở nó và quét bằng điện thoại của đúng tài khoản đó, máy chủ tự chuyển sang lần đăng nhập mới mà không khởi động lại (quét bằng tài khoản khác bị từ chối). Không mở được liên kết thì mục mang `renewHint` cho biết lý do. Khi gia hạn xong, một mục `type: "session_renewed"` xuất hiện (`expiresAt`, `daysLeft`, `deviceKept`, `text`). Khi đã hết hạn, mọi lệnh gọi bị từ chối với `SIGNED_OUT` cho tới lần đăng nhập mới (hoặc tới khi liên kết gia hạn được quét).
 
 **Hiện diện on-demand (3.0, thay đổi không tương thích).** `mcp start --http` mặc định chạy on-demand (stdio luôn always-on, vì nó sống cùng client): socket chỉ mở khi có việc cần (một lệnh gọi công cụ, `zalo_wait_for_message`, `GET /events/wait`, một lease của CRM, một yêu cầu CLI chuyển qua daemon, `zalo-agent presence wake`) và tạm nghỉ sau `presence.idleTimeout` (5 phút, không bao giờ sớm hơn `presence.minConnected`, 60 giây, kể từ lúc kết nối) không có việc gì. Lần bắt kịp lúc khởi động chạy một lần rồi socket nghỉ. Tin đến khi đang tạm nghỉ được lấy lại từ hàng đợi offline ở lần kết nối kế tiếp, gắn `catchUp: true`, nên webhook và lệnh chờ nhận chúng lúc đó chứ không tức thì. **Cần thời gian thực thì đặt `presence.mode: "always-on"`** (chính sách chạy, khối `presence` trong `mcp-config.json`, hoặc `ZALO_PRESENCE_MODE[_<ownId>]`). `--no-self-heal` cùng on-demand bị từ chối khi khởi động. Mỗi công cụ có một lớp (`src/mcp/tool-presence.js`): gửi tin không kèm tệp, tra cứu và mọi lời gọi HTTP thường chạy ngay, việc đánh thức socket chạy song song; công cụ đọc cache (`zalo_get_messages`, `zalo_get_history`, `zalo_search_messages`, `zalo_list_conversations`, `zalo_coverage`) chờ tối đa `presence.warmWait` (10 giây) rồi trả lời kèm khối `presence: {state, catchUp, coveredUntil}` nếu socket vẫn đang thức; công cụ cần socket (`zalo_sync`, `zalo_forward_message`, gửi kèm tệp) trả lỗi có thể thử lại `Error: WARMING: … (retryAfterSec N)`: gọi lại sau N giây. Hai trạng thái không tự hồi phục, daemon vẫn chạy nhưng **từ chối mọi lệnh gọi**:
 
@@ -1065,6 +1071,7 @@ Claude Code / Gemini / MCP Client
 
 ## Giới hạn đã biết
 
+- Biểu mẫu custom connector của Claude từng cắt ngắn client secret dài 64 ký tự (khi đó yêu cầu token thất bại với `invalid_client`): hãy giữ `ZALO_MCP_OAUTH_CLIENT_SECRET` từ 40 ký tự trở xuống, ví dụ `openssl rand -hex 20`.
 - `zalo_get_history` và `msg history` chỉ lấy được từ Zalo các tin **kể từ lần đăng nhập này**; lịch sử cũ hơn cần `zalo-agent sync` (bấm xác nhận trên điện thoại).
 - Chưa được xác nhận trên tài khoản thật (phản hồi có `verified: false` khi có trường đó): `zalo_cloud` `apply`, `zalo_quick_message` `enable` / `disable`, bước `react_seen` của `zalo_conversation` `read`, `hiddenBy` của `zalo_friend` `last_online`, gửi video từ tệp cục bộ.
 - `zalo_conversation` `block_sharing` cần tài khoản zBusiness Max; tài khoản cá nhân nhận mã 829.

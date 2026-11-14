@@ -203,6 +203,82 @@ export async function loginWithQR(proxyUrl = null, onQrEvent = null) {
     return { api, ownId };
 }
 
+/** A QR scan by another account than the one a renewal is for. Nothing was opened or saved. */
+export class QrLoginWrongAccount extends Error {
+    constructor() {
+        super("the phone that scanned is logged in to another Zalo account; nothing was changed");
+        this.name = "QrLoginWrongAccount";
+        this.code = "WRONG_ACCOUNT";
+    }
+}
+
+/**
+ * A trust store that keeps only one account's device identity: a scan by any other account neither reads nor
+ * changes what is kept for it.
+ *
+ * @param {string} ownId
+ * @param {{load: Function, save: Function, clear: Function}} store
+ * @returns {{load: Function, save: Function, clear: Function}}
+ */
+function trustStoreOnlyFor(ownId, store) {
+    const mine = (uid) => String(uid ?? "") === ownId;
+    return {
+        load: (uid, ...rest) => (mine(uid) ? store.load(uid, ...rest) : null),
+        save: (trusted) => (mine(trusted?.uid) ? store.save(trusted) : undefined),
+        clear: (uid) => (mine(uid) ? store.clear(uid) : undefined),
+    };
+}
+
+/**
+ * A QR login that renews one account's saved login from inside its running daemon: the same sequence as
+ * {@link loginWithQR}, presenting this account's saved browser and device id (so Zalo's offline queue survives), but
+ * it never becomes this process's session and nothing is saved here. A scan by another account is refused before its
+ * session is opened ({@link QrLoginWrongAccount}), and its saved device id and trust identity are not touched.
+ *
+ * @param {object} p
+ * @param {string} p.ownId - the account being renewed
+ * @param {string|null} [p.proxy]
+ * @param {(event: object) => void} [p.onEvent] - every QR event (generated, scanned, declined, expired)
+ * @returns {Promise<{ownId: string, creds: {imei: string, cookie: object, userAgent: string, language: string}}>}
+ *   the credentials to save
+ */
+export async function renewLoginWithQR({ ownId, proxy = null, onEvent = null }) {
+    resolveQrFlow();
+    const id = String(ownId);
+    const zaloOptions = buildOptions(proxy);
+    const saved = savedDeviceOf(id);
+    const userAgent = saved?.userAgent ?? generateDeviceFingerprint().userAgent;
+    const api = await openQrSession({
+        zaloOptions,
+        userAgent,
+        onEvent,
+        trustStore: trustStoreOnlyFor(id, createTrustStore(getAccountDir)),
+        drStoreFor,
+        deviceFor: (uid) => (String(uid) === id ? savedDeviceOf(id) : null),
+        accept: (uid) => {
+            if (String(uid ?? "") !== id) throw new QrLoginWrongAccount();
+        },
+    });
+    try {
+        const got = String(api.getOwnId?.() ?? "");
+        if (got !== id) throw new QrLoginWrongAccount();
+        const ctx = api.getContext();
+        return {
+            ownId: id,
+            // The jar as it is saved (its JSON), taken now: the session is stopped below.
+            creds: {
+                imei: ctx.imei,
+                cookie: JSON.parse(JSON.stringify(ctx.cookie)),
+                userAgent: ctx.userAgent,
+                language: ctx.language,
+            },
+        };
+    } finally {
+        // The daemon logs in again with what is saved; this session's timers must not outlive it.
+        stopUpkeep(api);
+    }
+}
+
 /**
  * Extract credentials from current session for saving.
  * @returns {object} - {imei, cookie, userAgent, language}

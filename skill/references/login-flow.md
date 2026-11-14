@@ -74,6 +74,9 @@ The saved credentials record **`deviceSince`**: when this device id came into us
 
 **What the phone shows:** each QR login adds a new entry to the phone's list of logged-in devices, and the older entries of this CLI are logged out. That is expected: the offline queue survives a re-login because the device id is kept, not because the list entry is.
 
+### Renewing the login from a running daemon
+A QR login lasts about 90 days and only a new QR scan renews it. An `mcp start --http` daemon with a public address renews it **without stopping**: from 7 days before the end (`session.renew.daysBefore`) it opens a one-time QR login page at `<publicUrl>/zalo/qr/<token>` and sends it in `session_expiring` as `renewUrl` (a new link every `session.renew.linkTtl`, 24h, until renewed); `zalo-agent session renew` prints one at any time. Hand the link to the account's owner: opening it shows a fresh code and which account it renews; they scan with **that account's phone** and confirm. The login keeps the saved device id (as above), the daemon saves it sealed and switches to it in place, then sends `session_renewed`. A scan by another account is refused and nothing is saved. With a daemon running, prefer the link: a `zalo-agent login` beside it takes the account from the daemon (exit 3, or yielded) until the daemon is restarted.
+
 ### Troubleshooting
 | Issue | Fix |
 |-------|-----|

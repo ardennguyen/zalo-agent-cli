@@ -5,7 +5,11 @@
     "oauth": {
         "clientId": "zalo-connector",
         "clientSecret": null,
-        "clients": []
+        "redirectUris": ["https://claude.ai/api/mcp/auth_callback", "https://claude.com/api/mcp/auth_callback"],
+        "clients": [],
+        "allowDynamicRegistration": false,
+        "accessTokenTtl": "1h",
+        "refreshTokenTtl": "30d"
     },
     "limits": {
         "bufferMaxAge": "2h",
@@ -49,5 +53,12 @@
         "leaseTtlMax": "600s",
         "waitHoldsSocket": true,
         "onKick": "yield"
+    },
+    "session": {
+        "renew": {
+            "enabled": true,
+            "daysBefore": 7,
+            "linkTtl": "24h"
+        }
     }
 }

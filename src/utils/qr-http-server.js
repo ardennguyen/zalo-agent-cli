@@ -14,13 +14,24 @@ import http from "http";
 import { randomBytes, timingSafeEqual } from "crypto";
 import { readFileSync, existsSync, statSync } from "fs";
 import { info } from "./output.js";
+import { LANGUAGE_SWITCH, bi, newNonce, pageHeaders, renderPage } from "./page-kit.js";
 
 /**
  * Where the login is, for the page: which QR is on screen (the first, or the second an account with a trusted
  * device is asked to scan), who scanned it, whether it expired (and what asks for a new one), and how the login
  * ended. Set by the login as the events arrive.
  */
-const newQrState = () => ({ layer: 1, scanned: null, expired: false, refresh: null, outcome: null, message: "" });
+// `processLogin`: the status may read this process's own session to say "logged in" (a `login`); a page whose login
+// is not the process's (a renewal inside a running daemon) says so only from its own outcome.
+const newQrState = ({ processLogin = true } = {}) => ({
+    layer: 1,
+    scanned: null,
+    expired: false,
+    refresh: null,
+    outcome: null,
+    message: "",
+    processLogin,
+});
 // The process's own login (`login`, `account login`, a login inside `mcp start --http`); a fleet controller's flows
 // each have their own (QrPage `state`), so two at once never share a "scanned" or an outcome.
 const qrState = newQrState();
@@ -84,36 +95,25 @@ export function qrVersion(qrImagePath) {
     }
 }
 
+/** The QR page's own style, on top of the shared one (src/utils/page-kit.js). */
 const PAGE_STYLE = `
-*{box-sizing:border-box}
-html,body{height:100%}
-body{margin:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;
-  background:#f0f3f7;color:#081c36;font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
-.brand{font-size:20px;font-weight:600;letter-spacing:-.2px;color:#0068ff}
-.card{width:min(380px,92vw);padding:28px 28px 24px;background:#fff;border:1px solid #dfe4ea;border-radius:8px;text-align:center}
-h1{margin:0 0 4px;font-size:18px;font-weight:600}
-.sub{margin:0 0 20px;color:#5b6b7c;font-size:14px}
-.frame{position:relative;width:240px;height:240px;margin:0 auto 18px;padding:10px;background:#fff}
-.frame i{position:absolute;width:22px;height:22px;border:3px solid #0068ff}
+.frame{position:relative;width:240px;height:240px;max-width:100%;margin:0 auto 18px;padding:10px;background:#fff;
+  border-radius:6px}
+.frame i{position:absolute;width:22px;height:22px;border:3px solid var(--brand)}
 .frame i:nth-of-type(1){top:0;left:0;border-right:0;border-bottom:0}
 .frame i:nth-of-type(2){top:0;right:0;border-left:0;border-bottom:0}
 .frame i:nth-of-type(3){bottom:0;left:0;border-right:0;border-top:0}
 .frame i:nth-of-type(4){bottom:0;right:0;border-left:0;border-top:0}
 .frame img{display:block;width:100%;height:100%;image-rendering:pixelated}
-.note{min-height:42px;margin:0;color:#5b6b7c;font-size:14px}
-.note b{color:#081c36;font-weight:600}
-.done h1{color:#0a7d33}
+#note,#failedSub{min-height:42px;margin:0}
+.note b{color:var(--text);font-weight:600}
+.done h1{color:var(--ok)}
 .frame .expired{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;
-  background:rgba(255,255,255,.93);font-weight:600}
+  background:rgba(255,255,255,.93);color:#081c36;font-weight:600}
 .frame.off img{filter:blur(3px);opacity:.35}
-button{padding:8px 18px;border:0;border-radius:6px;background:#0068ff;color:#fff;font:inherit;font-weight:600;cursor:pointer}
-button:disabled{opacity:.6;cursor:default}
-.failed h1{color:#c4271b}
+.failed h1{color:var(--bad)}
 .hidden{display:none!important}
-.lang{margin:14px 0 0;font-size:13px;color:#8593a3}
-.lang span{margin:0 8px}
-.lang a{color:#5b6b7c;text-decoration:none}
-.lang a.on{color:#0068ff;font-weight:600}
+.acct{margin:-12px 0 16px;color:var(--text);font-size:14px;font-weight:600;overflow-wrap:anywhere}
 `;
 
 /**
@@ -143,6 +143,7 @@ export const PAGE_TEXT = Object.freeze({
         goneTitle: "The login command has ended",
         goneSub: "See the command line for how it went.",
         qrAlt: "QR code",
+        accountLine: "Account: {account}",
     }),
     vi: Object.freeze({
         documentTitle: "Đăng nhập Zalo",
@@ -166,35 +167,51 @@ export const PAGE_TEXT = Object.freeze({
         goneTitle: "Lệnh đăng nhập đã kết thúc",
         goneSub: "Xem kết quả ở dòng lệnh.",
         qrAlt: "Mã QR",
+        accountLine: "Tài khoản: {account}",
     }),
 });
-
-const LANGUAGE_SWITCH = `<p class="lang"><a href="#" data-lang="en">English</a><span>&middot;</span><a href="#" data-lang="vi">Tiếng Việt</a></p>`;
 
 /** Where the page fetches its image, status and refresh on the local server (`/qr`). */
 const LOCAL_PATHS = Object.freeze({ image: "/qr.png", status: "/status", refresh: "/refresh" });
 
 function waitingPage(nonce) {
-    return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
-<meta http-equiv="refresh" content="2">
-<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer">
-<title>${PAGE_TEXT.en.documentTitle}</title><style nonce="${nonce}">${PAGE_STYLE}</style></head>
-<body><div class="brand">zalo-agent-cli</div><div class="card"><h1>${PAGE_TEXT.en.preparing}</h1>
-<p class="sub">${PAGE_TEXT.vi.preparing}</p></div></body></html>`;
+    return renderPage({
+        nonce,
+        title: { en: PAGE_TEXT.en.documentTitle, vi: PAGE_TEXT.vi.documentTitle },
+        head: `<meta http-equiv="refresh" content="2">`,
+        style: PAGE_STYLE,
+        body: `<h1>${bi(PAGE_TEXT.en.preparing, PAGE_TEXT.vi.preparing)}</h1>`,
+    });
 }
 
-function loginPage(version, paths, nonce) {
-    const en = PAGE_TEXT.en;
+/**
+ * The page's texts with a variant's overrides (a renewal says what it renews), as JSON safe inside a script element.
+ * @param {{text?: {en?: object, vi?: object}}|null} variant
+ * @returns {{text: {en: object, vi: object}, json: string}}
+ */
+function variantText(variant) {
+    const text = {
+        en: { ...PAGE_TEXT.en, ...(variant?.text?.en ?? {}) },
+        vi: { ...PAGE_TEXT.vi, ...(variant?.text?.vi ?? {}) },
+    };
+    return { text, json: JSON.stringify(text).replace(/</g, "\\u003c") };
+}
+
+function loginPage(version, paths, nonce, variant = null) {
+    const { text, json } = variantText(variant);
+    const en = text.en;
+    // A name is set with textContent by the script, never written into the markup.
+    const account = JSON.stringify(variant?.account ?? "").replace(/</g, "\\u003c");
     const imageUrl = `${paths.image}?v=${version}`;
-    return `<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><title>${en.documentTitle}</title>
-<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer">
-<style nonce="${nonce}">${PAGE_STYLE}</style></head>
-<body>
-<div class="brand">zalo-agent-cli</div>
-<div class="card" id="login">
+    return renderPage({
+        nonce,
+        title: { en: text.en.documentTitle, vi: text.vi.documentTitle },
+        style: PAGE_STYLE,
+        bare: true,
+        body: `<div class="card" id="login">
 <h1 id="title">${en.title}</h1>
 <p class="sub" id="sub">${en.sub}</p>
+<p class="acct hidden" id="acct"></p>
 <div class="frame" id="frame"><i></i><i></i><i></i><i></i><img id="qr" src="${imageUrl}" alt="${en.qrAlt}">
 <div class="expired hidden" id="expired"><span id="expiredTitle">${en.expiredTitle}</span><button type="button" id="refresh">${en.refresh}</button></div></div>
 <p class="note" id="note">${en.note}</p>
@@ -203,20 +220,20 @@ ${LANGUAGE_SWITCH}
 <div class="card done hidden" id="done"><h1 id="doneTitle">${en.doneTitle}</h1>
 <p class="sub" id="doneSub">${en.doneSub}</p></div>
 <div class="card failed hidden" id="failed"><h1 id="failedTitle">${en.failedTitle}</h1>
-<p class="sub" id="failedMsg"></p><p class="note" id="failedSub">${en.failedSub}</p></div>
-<script nonce="${nonce}">
-// Poll /status: swap in each new QR, say which one this is, offer a new code when it expires, and say how it ended.
-const TEXT=${JSON.stringify(PAGE_TEXT)};
+<p class="sub" id="failedMsg"></p><p class="note" id="failedSub">${en.failedSub}</p></div>`,
+        script: `// Poll /status: swap in each new QR, say which one this is, offer a new code when it expires, and say how it ended.
+const TEXT=${json};
+const ACCOUNT=${account};
 let version=${JSON.stringify(version)},layer=1,scanned=null,expired=false,canRefresh=false,ended=null,why='',misses=0,timer=null;
 const $=(id)=>document.getElementById(id);
-const saved=()=>{try{return localStorage.getItem('zalo-agent-lang')}catch{return null}};
-const asked=new URLSearchParams(location.search).get('lang');
-let lang=[asked,saved(),(navigator.language||'').toLowerCase().startsWith('vi')?'vi':'en'].find((l)=>l==='vi'||l==='en');
+// The language comes from the shared switch (src/utils/page-kit.js), which runs after this and on every change.
+let lang=document.documentElement.lang==='vi'?'vi':'en';
 function render(){
   const t=TEXT[lang];
-  document.documentElement.lang=lang;
   document.title=t.documentTitle;
   $('qr').alt=t.qrAlt;
+  $('acct').textContent=ACCOUNT?t.accountLine.replace('{account}',()=>ACCOUNT):'';
+  $('acct').classList.toggle('hidden',!ACCOUNT||ended!==null);
   $('doneTitle').textContent=t.doneTitle;
   $('doneSub').textContent=t.doneSub;
   $('login').classList.toggle('hidden',ended!==null);
@@ -247,13 +264,8 @@ function render(){
     $('sub').textContent=t.sub;
     $('note').textContent=t.note;
   }
-  document.querySelectorAll('[data-lang]').forEach((a)=>a.classList.toggle('on',a.dataset.lang===lang));
 }
-document.querySelectorAll('[data-lang]').forEach((a)=>a.addEventListener('click',(e)=>{
-  e.preventDefault();lang=a.dataset.lang;
-  try{localStorage.setItem('zalo-agent-lang',lang)}catch{}
-  render();
-}));
+document.addEventListener('zalo-lang',(e)=>{lang=e.detail;render()});
 $('refresh').addEventListener('click',async()=>{
   $('refresh').disabled=true;
   try{await fetch('${paths.refresh}',{method:'POST'})}catch{}
@@ -280,25 +292,14 @@ async function poll(){
   if(ended&&timer){clearInterval(timer);timer=null}
 }
 poll();
-timer=setInterval(poll,1500);
-</script>
-</body></html>`;
+timer=setInterval(poll,1500);`,
+    });
 }
 
 /** Headers of the page: nothing cached, nothing framed, no referrer, and a CSP that allows the page's own image,
  * its polls, and its one inline style and script (by nonce). */
-function pageHeaders(nonce) {
-    return {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store, max-age=0",
-        Pragma: "no-cache",
-        "X-Content-Type-Options": "nosniff",
-        "X-Frame-Options": "DENY",
-        "Referrer-Policy": "no-referrer",
-        "Content-Security-Policy":
-            `default-src 'none'; img-src 'self'; connect-src 'self'; style-src 'nonce-${nonce}'; ` +
-            `script-src 'nonce-${nonce}'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'`,
-    };
+function qrPageHeaders(nonce) {
+    return pageHeaders(nonce, { img: true, connect: true, formAction: ["'none'"] });
 }
 
 const DATA_HEADERS = Object.freeze({
@@ -316,17 +317,21 @@ const DATA_HEADERS = Object.freeze({
  * @param {{qrImagePath: string, paths: {image: string, status: string, refresh: string}, method?: string,
  *   onOutcomeRead?: () => void}} ctx
  */
-async function answerQr(res, what, { qrImagePath, paths, method = "GET", onOutcomeRead, state = qrState }) {
+async function answerQr(
+    res,
+    what,
+    { qrImagePath, paths, method = "GET", onOutcomeRead, state = qrState, variant = null },
+) {
     const qrState = state;
     if (what === "page") {
-        const nonce = randomBytes(16).toString("base64");
-        res.writeHead(200, pageHeaders(nonce));
+        const nonce = newNonce();
+        res.writeHead(200, qrPageHeaders(nonce));
         if (!existsSync(qrImagePath)) {
             res.end(waitingPage(nonce));
             return;
         }
         // The image is fetched by URL (the same one the poll swaps in), so the page stays small.
-        res.end(loginPage(qrVersion(qrImagePath), paths, nonce));
+        res.end(loginPage(qrVersion(qrImagePath), paths, nonce, variant));
     } else if (what === "image") {
         // Raw PNG image endpoint — for agents to send direct image link
         if (!existsSync(qrImagePath)) {
@@ -345,7 +350,7 @@ async function answerQr(res, what, { qrImagePath, paths, method = "GET", onOutco
     } else if (what === "status") {
         // Login status endpoint for browser polling
         let loggedIn = qrState.outcome === "done";
-        if (qrState.outcome === null) {
+        if (qrState.outcome === null && qrState.processLogin !== false) {
             try {
                 const { isLoggedIn } = await import("../core/zalo-client.js");
                 loggedIn = isLoggedIn();
@@ -441,10 +446,16 @@ export function maskQrPath(url) {
  * dies `QR_LINK_TTL_MS` after the last code appeared (`extend`), or when the login ends.
  */
 export class QrPage {
-    /** @param {{now?: () => number, state?: object}} [opts] - `state`: the page's own login state (default: a new one) */
-    constructor({ now = Date.now, state = newQrState() } = {}) {
+    /**
+     * @param {{now?: () => number, state?: object, processLogin?: boolean, variant?: object|null}} [opts] - `state`: the
+     *   page's own login state (default: a new one); `processLogin: false`: its login is not this process's session
+     *   (a renewal in a running daemon), so only its own outcome says "logged in"; `variant`: `{text: {en, vi},
+     *   account}`, texts that replace the login page's own and the account the page is for (shown, never as markup)
+     */
+    constructor({ now = Date.now, processLogin = true, state = newQrState({ processLogin }), variant = null } = {}) {
         this.now = now;
         this.state = state;
+        this.variant = variant;
         this.publicUrl = null;
         this.localBaseUrl = null;
         /** True when an HTTP server serves this page (`mcp start --http`), so a login there needs no server of its own. */
@@ -522,6 +533,11 @@ export class QrPage {
         this.state.refresh = typeof refresh === "function" ? refresh : null;
     }
 
+    /** A new login on the same link: the page starts over (no outcome, first code, nothing scanned). */
+    noteRestart() {
+        Object.assign(this.state, newQrState({ processLogin: this.state.processLogin !== false }));
+    }
+
     noteOutcome(outcome, message = "") {
         this.state.outcome = outcome;
         this.state.message = String(message || "");
@@ -595,6 +611,7 @@ export class QrPage {
             method: req.method,
             onOutcomeRead: () => watch?.outcomeRead(),
             state: this.state,
+            variant: this.variant,
         });
         return true;
     }

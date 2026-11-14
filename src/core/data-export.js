@@ -22,7 +22,7 @@ import { dirname, join, resolve } from "node:path";
 import { copyDatabase } from "./db-tools.js";
 import { encryptExportFile, passwordProblem } from "./export-crypt.js";
 import { shredFile } from "./sqlite.js";
-import { hiddenKey, pinFailureLine } from "./hidden-chats.js";
+import { hiddenKey, pinFailure, pinFailureLine } from "./hidden-chats.js";
 import { GUARDS } from "./confirm-guard.js";
 import { isLoopbackIp, normalizeIp } from "./media-route.js";
 import { audit } from "./policy-store.js";
@@ -526,6 +526,18 @@ export function createExportApi({
                 "Enter your hidden-chat PIN to include your hidden conversations in one data export. The PIN is " +
                 "checked here and never sent to the application that asked.",
             separateClaim: true,
+            view: {
+                heading: { en: "Include hidden chats in your export", vi: "Đưa trò chuyện ẩn vào bản xuất dữ liệu" },
+                lead: {
+                    en:
+                        "Enter your hidden-chat PIN to include your hidden conversations in one data export. The PIN " +
+                        "is checked here and never sent to the application that asked.",
+                    vi:
+                        "Nhập mã PIN trò chuyện ẩn để đưa các cuộc trò chuyện ẩn vào một lần xuất dữ liệu. Mã PIN " +
+                        "được kiểm tra tại đây và không bao giờ được gửi cho ứng dụng đã yêu cầu.",
+                },
+                done: { en: "Unlocked for one export.", vi: "Đã mở khóa cho một lần xuất dữ liệu." },
+            },
             onSubmit: ({ pin }) => {
                 const r = set.verifyPin(pin);
                 if (r.ok) {
@@ -535,7 +547,11 @@ export function createExportApi({
                         outcome: { grantExpiresAt: now() + GRANT_TTL_MS },
                     };
                 }
-                return { status: r.reason === "locked" ? "failed" : "retry", message: pinFailureLine(r) };
+                return {
+                    status: r.reason === "locked" ? "failed" : "retry",
+                    message: pinFailureLine(r),
+                    failure: pinFailure(r),
+                };
             },
         });
         audit({ actor: `admin-api ${who} ${ip}`, target: `export:${ownId}`, op: "hidden-access", result: "issued" });

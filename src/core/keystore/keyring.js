@@ -154,11 +154,23 @@ const PINNED_OPTIONS = Object.freeze({ kms: ["backend", "key"] });
  * @param {object} config
  * @returns {object}
  */
-function ringOptions(ring, config) {
+/**
+ * The options a keyring's provider is used with: what was recorded when it was made, under today's settings
+ * (storage.json, the environment), with the pinned ones kept as recorded. A passphrase file that came only from the
+ * record is marked `recordedFile`, so the provider can fall back to the systemd credential when that path does not
+ * exist on this machine (an account moved from another one); a file named by today's settings is never second-guessed.
+ *
+ * @param {{provider: {name: string, options?: object}, account?: string}} ring
+ * @param {object} config - loadStorageConfig()
+ * @returns {object}
+ */
+export function ringOptions(ring, config) {
     const name = ring.provider.name;
     const recorded = ring.provider.options ?? {};
-    const options = { ...recorded, ...providerOptionsFor(config, name, ring.account) };
+    const current = providerOptionsFor(config, name, ring.account);
+    const options = { ...recorded, ...current };
     for (const k of PINNED_OPTIONS[name] ?? []) if (recorded[k] !== undefined) options[k] = recorded[k];
+    if (name === "passphrase" && recorded.file !== undefined && current.file === undefined) options.recordedFile = true;
     return options;
 }
 

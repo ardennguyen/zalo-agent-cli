@@ -264,11 +264,17 @@ export function createProviders({
     };
 
     const passphraseOf = (options, { confirm = false } = {}) => {
-        const file =
-            options.file ??
-            (env.CREDENTIALS_DIRECTORY && existsSync(join(env.CREDENTIALS_DIRECTORY, "zalo-storage-passphrase"))
+        const credential =
+            env.CREDENTIALS_DIRECTORY && existsSync(join(env.CREDENTIALS_DIRECTORY, "zalo-storage-passphrase"))
                 ? join(env.CREDENTIALS_DIRECTORY, "zalo-storage-passphrase")
-                : null);
+                : null;
+        // A file named by today's settings (storage.json, ZALO_STORAGE_PASSPHRASE_FILE) wins. A file known only from
+        // the keyring's record (`recordedFile`, keyring.js ringOptions) that does not exist here, as after moving the
+        // account from another machine, gives way to the systemd credential.
+        const file =
+            options.file && options.recordedFile && !existsSync(options.file) && credential
+                ? credential
+                : (options.file ?? credential);
         const key = file ?? "<prompt>";
         if (passphrases.has(key)) return passphrases.get(key);
         let pass;

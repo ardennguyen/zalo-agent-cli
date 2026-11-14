@@ -82,7 +82,7 @@ export function getSocialCredsFile() {
  */
 export function saveSocialCreds(data, profile = "default") {
     const file = getSocialCredsFile();
-    fs.mkdirSync(getOADataDir(), { recursive: true });
+    fs.mkdirSync(getOADataDir(), { recursive: true, mode: 0o700 });
     withFileLock(`${file}.lock`, () => {
         const all = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
         const next = { ...all[profile], ...data, updatedAt: new Date().toISOString() };
@@ -162,6 +162,8 @@ export function startSocialLogin({ appId, secretKey, profile = "default", port =
         port,
         callbackHost,
         permissionUrl: SOCIAL_PERMISSION_URL,
+        // A user login always gets `state` back (Zalo's Social docs): a callback without one is not this login's.
+        requireState: true,
         tokenEndpoint: () => tokenEndpoint(dpopKey),
         save: (tokenData) => {
             const saved = { appId, secretKey, ...socialTokenFields(tokenData), dpopKey };

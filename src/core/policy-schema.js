@@ -223,6 +223,10 @@ export const POLICY_KEYS = Object.freeze({
     // The always-on cap (owner decision 1: over it, the oldest always-on account is demoted to on-demand).
     "presence.alwaysOn.maxPerUser": { check: wholeNumber(0, 10_000), scopes: ["tenant", "user"] },
     "presence.alwaysOn.maxPerTenant": { check: wholeNumber(0, 1_000_000), scopes: ["tenant"] },
+    // Renewing the saved login before it ends (src/core/session-renew.js): read at each hourly look, no restart.
+    "session.renew.enabled": { check: bool },
+    "session.renew.daysBefore": { check: wholeNumber(1, 14) },
+    "session.renew.linkTtl": { check: duration(10 * 60_000) },
 });
 
 /**

@@ -306,6 +306,14 @@ describe("classifyAccount", () => {
             assert.match(row(at(45)), /\s45d$/);
             assert.match(row(at(10)), /\s10d!$/);
             assert.match(row(at(-1, true)), /\sended$/);
+            // An open renewal link (src/core/session-renew.js) shows, and --check points at it.
+            const renewing = (s) => ({ ...s, renewal: { open: true, expiresAt: "2026-12-02T00:00:00.000Z" } });
+            assert.match(row(renewing(at(5))), /\s5d! renewing$/);
+            assert.match(row(renewing(at(-1, true))), /\sended renewing$/);
+            assert.match(
+                sessionCheck({ accountId: "605", session: renewing(at(5)) }).line,
+                /open the renewal link sent in session_expiring \(or: za --account 605 session renew\)$/,
+            );
         });
     });
 

@@ -55,3 +55,27 @@ export function promptSecret(prompt, { input = process.stdin, output = process.s
         input.on("data", onData);
     });
 }
+
+/**
+ * An app secret for a command that takes one (`oa login`, `oa init`, `social setup`, `social login`): the flag, else
+ * the environment variable `envName`, else, on a terminal, a prompt that does not echo. A flag is visible in the
+ * process list and the shell history, so the variable or the prompt is the better way.
+ *
+ * @param {object} opts
+ * @param {string|undefined|null} opts.flag - the `--secret` value
+ * @param {string} opts.envName - e.g. ZALO_OA_APP_SECRET
+ * @param {string} [opts.prompt] - shown when it asks; nothing is asked when it is not given
+ * @param {NodeJS.ProcessEnv} [opts.env]
+ * @param {{input?: NodeJS.ReadStream, output?: NodeJS.WritableStream}} [opts.io]
+ * @returns {Promise<string|null>} null when there is none and no terminal to ask on
+ */
+export async function resolveAppSecret({ flag, envName, prompt, env = process.env, io = {} }) {
+    const given = typeof flag === "string" ? flag.trim() : "";
+    if (given) return given;
+    const fromEnv = typeof env?.[envName] === "string" ? env[envName].trim() : "";
+    if (fromEnv) return fromEnv;
+    const input = io.input ?? process.stdin;
+    if (!prompt || !input.isTTY || typeof input.setRawMode !== "function") return null;
+    const typed = await promptSecret(prompt, { input, output: io.output ?? process.stderr });
+    return typed || null;
+}

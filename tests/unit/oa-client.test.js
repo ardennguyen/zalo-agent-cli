@@ -36,7 +36,8 @@ import {
     startOAuthLogin,
     OAError,
 } from "../../src/core/oa-client.js";
-import { browserCommand, escapeHtml } from "../../src/core/oa/oauth.js";
+import { LOGIN_TIMEOUT_MS, TOKEN_REQUEST_TIMEOUT_MS, browserCommand, escapeHtml } from "../../src/core/oa/oauth.js";
+import http from "node:http";
 
 const OA_DIR = join(SANDBOX_HOME, ".zalo-agent");
 const OA_FILE = join(OA_DIR, "oa-credentials.json");
@@ -113,6 +114,8 @@ describe("saveOACreds / loadOACreds", () => {
         () => {
             saveOACreds({ accessToken: "a" });
             assert.equal(statSync(OA_FILE).mode & 0o777, 0o600);
+            // The folder that holds the app secret is the owner's only (it is made fresh by beforeEach).
+            assert.equal(statSync(OA_DIR).mode & 0o777, 0o700);
         },
     );
 
@@ -313,16 +316,83 @@ describe("the login callback (oa login / oa init)", () => {
         await assert.rejects(() => fetch(`http://127.0.0.1:${port}/callback`), "the server is closed after success");
     });
 
-    it("refuses a callback whose state is not this login's, before any token request", async () => {
+    it("refuses a callback whose state is not this login's, before any token request, and keeps waiting", async () => {
         const port = await freePort();
-        m = mockFetch((url) => (url.startsWith("https://oauth.zaloapp.com/") ? { access_token: "x" } : undefined));
+        m = mockFetch((url) =>
+            url.startsWith("https://oauth.zaloapp.com/") ? { access_token: "x", refresh_token: "r" } : undefined,
+        );
         const flow = startOAuthLogin({ appId: "123", secretKey: "sek", port });
-        const rejected = assert.rejects(flow.done, /state mismatch/);
+        let settled = false;
+        flow.done.then(
+            () => (settled = true),
+            () => (settled = true),
+        );
         await tick();
         const page = await fetch(`http://127.0.0.1:${port}/callback?code=c1&state=someone-elses`);
         assert.equal(page.status, 400);
-        await rejected;
+        // Strays: no code, an error with no state, garbage. None ends the login (in VPS mode anyone can reach it).
+        for (const stray of ["", "?error_description=nope", "?foo=bar", "?code=&state="]) {
+            assert.equal((await fetch(`http://127.0.0.1:${port}/callback${stray}`)).status, 400, stray);
+        }
+        await tick();
+        assert.equal(settled, false, "the login is still waiting");
         assert.equal(m.calls.filter((c) => c.url.startsWith("https://oauth.zaloapp.com/")).length, 0);
+        // Its own answer still completes it.
+        const state = new URL(flow.authUrl).searchParams.get("state");
+        assert.equal((await fetch(`http://127.0.0.1:${port}/callback?code=c2&state=${state}`)).status, 200);
+        const { tokenData } = await flow.done;
+        assert.equal(tokenData.access_token, "x");
+    });
+
+    it("an OA callback without state is still taken (Zalo's OA docs' example has none); a failed one keeps waiting", async () => {
+        const port = await freePort();
+        let n = 0;
+        m = mockFetch((url) =>
+            url.startsWith("https://oauth.zaloapp.com/")
+                ? ++n === 1
+                    ? { error: -14019, error_name: "invalid code" }
+                    : { access_token: "acc2", refresh_token: "r" }
+                : undefined,
+        );
+        const flow = startOAuthLogin({ appId: "123", secretKey: "sek", port });
+        await tick();
+        // A stray with a made-up code and no state: the exchange fails, the login goes on.
+        assert.equal((await fetch(`http://127.0.0.1:${port}/callback?code=forged`)).status, 500);
+        assert.equal(
+            (await fetch(`http://127.0.0.1:${port}/callback?code=real&oa_id=1000000000000000001`)).status,
+            200,
+        );
+        const { tokenData, oaId } = await flow.done;
+        assert.equal(tokenData.access_token, "acc2");
+        assert.equal(oaId, "1000000000000000001");
+    });
+
+    it("the login waits 5 minutes by default", () => {
+        assert.equal(LOGIN_TIMEOUT_MS, 300_000);
+    });
+
+    it("a token request that hangs is abandoned after its timeout (default 30 s, under the refresh lock's 120 s)", async () => {
+        assert.ok(TOKEN_REQUEST_TIMEOUT_MS <= 30_000);
+        const sockets = new Set();
+        const hang = http.createServer(() => {
+            /* never answers */
+        });
+        hang.on("connection", (s) => sockets.add(s));
+        await new Promise((r) => hang.listen(0, "127.0.0.1", r));
+        try {
+            const started = Date.now();
+            await assert.rejects(
+                exchangeCode("c", "123", "sek", "v", {
+                    url: `http://127.0.0.1:${hang.address().port}/token`,
+                    timeoutMs: 200,
+                }),
+                (e) => e.code === "network" && /did not answer/.test(e.message),
+            );
+            assert.ok(Date.now() - started < 5_000);
+        } finally {
+            for (const s of sockets) s.destroy();
+            hang.close();
+        }
     });
 
     it("HTML-escapes the error text it reflects on the callback page", async () => {

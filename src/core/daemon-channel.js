@@ -311,6 +311,9 @@ function readJsonBody(req, reply) {
  * @param {(params: {action: "status"|"wake"|"park"|"resume"}) => object|Promise<object>} [args.onPresence] -
  *   on-demand presence (`presence status|wake|park|resume`, the fleet controller's relay; `POST /presence`). Without
  *   it the route answers 503 and the CLI says the socket stays connected.
+ * @param {(params: {action: "renew", fresh?: boolean}) => object|Promise<object>} [args.onSession] - the saved
+ *   login's renewal (`session renew`; `POST /session`): opens a one-time QR login link on this daemon's HTTP port
+ *   (src/core/session-renew.js). Without it the route answers 503.
  * @param {(o: {kind: string, cls: "socket"|"wait"}) => Promise<{release: () => void}>} [args.presenceGate] - the
  *   daemon's presence door (src/core/daemon-presence.js `admit`): an upload, a sync stage and a wait each hold the
  *   socket for their duration; a refusal (`code` YIELDED, SIGNED_OUT or WARMING) is answered with that code
@@ -330,6 +333,7 @@ export function startDaemonChannel({
     onPolicy = null,
     onPurge = null,
     onPresence = null,
+    onSession = null,
     presenceGate = null,
 }) {
     const token = randomBytes(24).toString("hex");
@@ -601,6 +605,7 @@ export function startDaemonChannel({
             req.url !== "/policy" &&
             req.url !== "/purge" &&
             req.url !== "/presence" &&
+            req.url !== "/session" &&
             !stage
         ) {
             return reply(404, { error: "not found" });
@@ -617,6 +622,7 @@ export function startDaemonChannel({
         if (req.url === "/policy") return serveCall(onPolicy, "policy", body, reply);
         if (req.url === "/purge") return serveCall(onPurge, "purge", body, reply);
         if (req.url === "/presence") return serveCall(onPresence, "presence", body, reply);
+        if (req.url === "/session") return serveCall(onSession, "session", body, reply);
         return stage ? serveStage(stage, body, res, reply) : serveAttachments(body, reply);
     });
 

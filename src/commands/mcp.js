@@ -8,12 +8,12 @@
 import { createHmac } from "crypto";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { getApi, clearSession } from "../core/zalo-client.js";
+import { getApi, clearSession, renewLoginWithQR } from "../core/zalo-client.js";
 import { liveApi } from "../core/live-api.js";
 import { quotedReply, resolveReplyTo } from "../core/cached-message.js";
 import { parseAccountId, selectDaemonAccount, loginDaemonAccount } from "../core/daemon-account.js";
-import { updateAccountName } from "../core/accounts.js";
-import { CONFIG_DIR, getAccountDir, MEDIA_DIR } from "../core/credentials.js";
+import { getAccount, updateAccountName } from "../core/accounts.js";
+import { CONFIG_DIR, getAccountDir, MEDIA_DIR, readSavedDevice, saveCredentials } from "../core/credentials.js";
 import { createStartupGate, resolveStartupSettings } from "../core/startup-gate.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
 import { startMediaMigration } from "../core/media-store.js";
@@ -56,7 +56,7 @@ import {
 import { getMediaLinks, linkForCachedMessage, startTempfileSweeper } from "../core/media-deliver.js";
 import { ensureMediaServed } from "../core/media-route.js";
 import { scopeOfDir } from "../core/keystore/keyring.js";
-import { approverStatus } from "../core/approval.js";
+import { approverFor, approverStatus } from "../core/approval.js";
 import { resolveConfirmMode } from "../core/confirm-guard.js";
 import { getSecurePage } from "../core/secure-page.js";
 import { getQrPage } from "../utils/qr-http-server.js";
@@ -116,24 +116,36 @@ import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
 import { describeSessionExpiry, sessionExpiryFor } from "../core/session-expiry.js";
 import {
     describeSessionExpiring,
+    sessionExpiringEvent,
     sessionExpiringSystemEvent,
+    sessionThreshold,
     startSessionExpiryWatch,
 } from "../core/session-notice.js";
+import {
+    createSessionRenewal,
+    describeSessionRenewed,
+    resolveRenewSettings,
+    saveRenewedLogin,
+    sessionRenewedEvent,
+    switchToRenewedSession,
+    sessionRenewedSystemEvent,
+} from "../core/session-renew.js";
 import { createSocketHost, EXIT_CODE } from "../core/socket-host.js";
-import { kickFile } from "../core/kick-marker.js";
+import { clearKickMarker, kickFile } from "../core/kick-marker.js";
 import { DEBUG_MARK, LOG_LEVELS } from "../core/log-sink.js";
 import { registerMCPWebhookCommands } from "./mcp-webhook.js";
 import { registerMCPApproverCommand } from "./mcp-approver.js";
 import { createMCPServer } from "../mcp/mcp-server.js";
 import { registerTools } from "../mcp/mcp-tools.js";
 import { createHTTPServer } from "../mcp/mcp-http-transport.js";
+import { oauthStartCheck } from "../mcp/mcp-oauth.js";
 import { createAdminApi, resolveAdminCredentials } from "../core/admin-api.js";
 import { createExportApi } from "../core/data-export.js";
 import { servePolicyRequest, startPolicyRuntime, touches } from "../core/policy-store.js";
 import { describeQuotaEvent, describeStorage, quotaSystemEvent, startStorageJobs } from "../core/storage-quota.js";
 import { applyGroupExit, describeGroupGone, groupGoneSystemEvent, setGroupGoneSink } from "../core/group-exit.js";
 import { ZaloNotifier } from "../mcp/notifier.js";
-import { deviceSinceOf } from "../core/device-since.js";
+import { deviceSinceOf, loginDeviceChange } from "../core/device-since.js";
 import { describeQueueOverflow, queueOverflowSystemEvent } from "../core/overflow-repair.js";
 import { ThreadNameCache } from "../mcp/thread-name-cache.js";
 import { senderNameFields, startDaemonAliases } from "../core/contact-names.js";
@@ -309,6 +321,82 @@ export function warnApprovalPolicy({ config, accountId, accountDir, hasWebhook, 
     return lines;
 }
 
+/** A yes/no setting: true for 1/true/yes/on, false for 0/false/no/off, else null (unset or not understood). */
+function flagValue(value) {
+    if (typeof value === "boolean") return value;
+    const v = String(value ?? "")
+        .trim()
+        .toLowerCase();
+    if (["1", "true", "yes", "on"].includes(v)) return true;
+    if (["0", "false", "no", "off"].includes(v)) return false;
+    return null;
+}
+
+/**
+ * The static bearer token and the OAuth settings of one HTTP server (src/mcp/mcp-oauth.js), from the flags, the
+ * environment (`NAME_<ownId>` first) and mcp-config.json. Since 3.0.1 an OAuth client secret is no longer the bearer
+ * token, `--auth` alone no longer turns OAuth on, and a client secret never defaults to `--auth`.
+ *
+ * @param {object} args
+ * @param {object} args.opts - `mcp start`'s options (`auth`, `clientId`, `clientSecret`)
+ * @param {object} args.config - the resolved MCP config
+ * @param {string} args.accountId
+ * @param {string|null} args.publicUrl
+ * @param {NodeJS.ProcessEnv} [args.env]
+ * @returns {{authToken: string|null, oauth: object, warnings: string[]}}
+ */
+export function resolveOAuthOptions({ opts = {}, config = {}, accountId, publicUrl, env = process.env }) {
+    const warnings = [];
+    const authToken = opts.auth?.trim() || envForAccount("ZALO_MCP_AUTH_TOKEN", accountId, env) || null;
+    const redirectEnv = envForAccount("ZALO_MCP_OAUTH_REDIRECT_URIS", accountId, env);
+    const list = (v) =>
+        (Array.isArray(v) ? v : String(v ?? "").split(",")).map((s) => String(s).trim()).filter(Boolean);
+    const durationSec = (value, name) => {
+        if (value === undefined || value === null || value === "") return null;
+        const ms = parseDuration(value);
+        if (ms >= 60_000) return Math.floor(ms / 1000);
+        warnings.push(`${name} "${value}" is not a duration of at least 1m (e.g. 1h, 30d); using the default`);
+        return null;
+    };
+    const flag = (envName, configValue, name) => {
+        const raw = envForAccount(envName, accountId, env) ?? configValue;
+        const v = flagValue(raw);
+        if (v === null && raw !== undefined && raw !== null && raw !== "") {
+            warnings.push(`${name} "${raw}" is not true or false; using false`);
+        }
+        return v === true;
+    };
+    const oauth = {
+        clientId:
+            opts.clientId?.trim() ||
+            envForAccount("ZALO_MCP_OAUTH_CLIENT_ID", accountId, env) ||
+            config?.oauth?.clientId?.trim() ||
+            "zalo-mcp",
+        clientSecret:
+            opts.clientSecret?.trim() ||
+            envForAccount("ZALO_MCP_OAUTH_CLIENT_SECRET", accountId, env) ||
+            config?.oauth?.clientSecret?.trim() ||
+            null,
+        redirectUris: list(redirectEnv ?? config?.oauth?.redirectUris),
+        clients: Array.isArray(config?.oauth?.clients) ? config.oauth.clients : [],
+        issuerUrl: publicUrl || null,
+        allowDynamicRegistration: flag(
+            "ZALO_MCP_OAUTH_DYNAMIC_REGISTRATION",
+            config?.oauth?.allowDynamicRegistration,
+            "oauth.allowDynamicRegistration",
+        ),
+        secretsAsBearer: flag(
+            "ZALO_MCP_OAUTH_SECRETS_AS_BEARER",
+            config?.oauth?.secretsAsBearer,
+            "oauth.secretsAsBearer",
+        ),
+        accessTokenTtlSec: durationSec(config?.oauth?.accessTokenTtl, "oauth.accessTokenTtl"),
+        refreshTokenTtlSec: durationSec(config?.oauth?.refreshTokenTtl, "oauth.refreshTokenTtl"),
+        accountId: String(accountId ?? ""),
+    };
+    return { authToken, oauth, warnings };
+}
+
 /**
  * Validate and load TLS certificate & private key buffers from paths.
  * @param {string|null|undefined} rawCert
@@ -369,7 +457,7 @@ export function registerMCPCommands(program) {
         )
         .option(
             "--client-secret <key>",
-            "OAuth 2.0 Client Secret (defaults to --auth / ZALO_MCP_AUTH_TOKEN, or ZALO_MCP_OAUTH_CLIENT_SECRET)",
+            "OAuth 2.0 Client Secret of that client (or ZALO_MCP_OAUTH_CLIENT_SECRET); setting it turns OAuth on. Its callback URLs go in ZALO_MCP_OAUTH_REDIRECT_URIS / oauth.redirectUris",
         )
         .option(
             "--public-url <url>",
@@ -548,6 +636,23 @@ export function registerMCPCommands(program) {
                   })
                 : { publicUrl: null, source: "default", error: null };
             if (publicUrl.error) failStart(`Refusing to start: ${publicUrl.error}.`);
+            // OAuth (src/mcp/mcp-oauth.js): checked here, before a daemon is spawned, so a server that would infer its
+            // issuer from a request's Host header off loopback (or has nothing to sign tokens with) never starts.
+            if (effectiveHttpPort) {
+                const resolved = resolveOAuthOptions({
+                    opts,
+                    config,
+                    accountId: activeAcc.ownId,
+                    publicUrl: publicUrl.publicUrl,
+                });
+                const check = oauthStartCheck({
+                    oauth: resolved.oauth,
+                    authToken: resolved.authToken,
+                    host: opts.host || envForAccount("ZALO_MCP_HOST", activeAcc.ownId) || config?.host || "127.0.0.1",
+                    publicUrl: publicUrl.publicUrl,
+                });
+                if (check.problem) failStart(`Refusing to start: ${check.problem}.`);
+            }
 
             if (!tlsOptions) {
                 const acctCert = envForAccount("ZALO_MCP_TLS_CERT", activeAcc.ownId) ?? config?.tls?.cert;
@@ -735,9 +840,37 @@ export function registerMCPCommands(program) {
                     .filter(Boolean);
             // The one-time secure input page (src/core/secure-page.js): this process's account, and, over --http,
             // the public address a person's browser reaches it at.
-            const securePage = getSecurePage().configure({ accountId: activeAcc.ownId });
+            const securePage = getSecurePage().configure({
+                accountId: activeAcc.ownId,
+                // The pages say which account they are for: its name and id, nothing else.
+                accountName: () => getAccount(activeAcc.ownId)?.name ?? "",
+            });
             // The QR login page, served on the HTTP port when a login runs in this process (src/utils/qr-http-server.js).
             const qrPage = getQrPage();
+            // Renewing the saved login before it ends (src/core/session-renew.js): over --http with a publicUrl, a
+            // one-time QR login link on this port, within session.renew.daysBefore days of the end; its new login is
+            // saved and this daemon switches to it in place (renewSession, below).
+            const renewSettings = () => resolveRenewSettings({ config, accountId: activeAcc.ownId });
+            for (const w of renewSettings().warnings) console.error(`[mcp] ${w}`);
+            const renewal = createSessionRenewal({
+                ownId: activeAcc.ownId,
+                accountDir,
+                publicUrl: effectiveHttpPort ? publicUrl.publicUrl : null,
+                settings: renewSettings,
+                // The page says which account it renews: its name and id, nothing else.
+                accountLabel: () => {
+                    const name = getAccount(activeAcc.ownId)?.name;
+                    return name && name !== activeAcc.ownId ? `${name} (${activeAcc.ownId})` : activeAcc.ownId;
+                },
+                login: ({ onEvent }) =>
+                    renewLoginWithQR({ ownId: activeAcc.ownId, proxy: activeAcc.proxy || null, onEvent }),
+                onRenewed: ({ creds }) => renewSession(creds),
+                // The phone scanned: from now the current session's kick is the new login's (renewedApi, below).
+                onConfirming: () => {
+                    renewedApi = null;
+                },
+                log: (line) => console.error(`[mcp] ${line}`),
+            });
             // Media links (src/core/media-deliver.js): the policy they are issued under. Over --http they are served
             // on its port and point at publicUrl (below); under stdio a 127.0.0.1 listener serves them on first use.
             let mediaPolicy = resolveMediaDelivery({ config, accountId: activeAcc.ownId });
@@ -855,7 +988,12 @@ export function registerMCPCommands(program) {
             // Planned idle windows (on-demand presence) are not worth a warning; everything else is.
             health.setSource("gaps", () => alarmingGapCount(getPendingSyncGaps()));
             health.setSource("stage", () => stageLock.current());
-            health.setSource("session", () => sessionExpiryFor(activeAcc.ownId));
+            // The saved login's end, and an open renewal link (never its address): `fleet status` shows it.
+            health.setSource("session", () => {
+                const expiry = sessionExpiryFor(activeAcc.ownId);
+                const open = renewal.status();
+                return expiry && open ? { ...expiry, renewal: open } : expiry;
+            });
             health.setSource("presence", () => daemonPresence?.snapshot() ?? null);
             const sessionLine = describeSessionExpiry(sessionExpiryFor(activeAcc.ownId));
             if (sessionLine) console.error(`[mcp] ${sessionLine}`);
@@ -944,40 +1082,44 @@ export function registerMCPCommands(program) {
                         syncJobs,
                         health,
                         securePage,
-                        qrPage,
+                        // The process's own QR login page, and the renewal's link before it (both /zalo/qr/<token>).
+                        qrPage: {
+                            handle: async (req, res) =>
+                                (await renewal.handle(req, res)) || (await qrPage.handle(req, res)),
+                        },
                         hiddenEvents,
                         mediaLinks,
                         trustedProxies,
                         presence: presenceDoor,
                         leases: leaseDoor,
                     };
-                    const authToken =
-                        opts.auth?.trim() ||
-                        envForAccount("ZALO_MCP_AUTH_TOKEN", activeAcc.ownId) ||
-                        envForAccount("ZALO_MCP_OAUTH_CLIENT_SECRET", activeAcc.ownId) ||
-                        config?.oauth?.clientSecret?.trim() ||
-                        null;
-                    const oauthClientId =
-                        opts.clientId?.trim() ||
-                        envForAccount("ZALO_MCP_OAUTH_CLIENT_ID", activeAcc.ownId) ||
-                        config?.oauth?.clientId?.trim() ||
-                        "zalo-mcp";
-                    const oauthClientSecret =
-                        opts.clientSecret?.trim() ||
-                        envForAccount("ZALO_MCP_OAUTH_CLIENT_SECRET", activeAcc.ownId) ||
-                        config?.oauth?.clientSecret?.trim() ||
-                        authToken;
-                    const oauthIssuerUrl = publicUrl.publicUrl;
-                    const oauthClients = Array.isArray(config?.oauth?.clients) ? config.oauth.clients : [];
-                    const oauthOptions =
-                        oauthClientSecret || oauthClients.length > 0
-                            ? {
-                                  clientId: oauthClientId,
-                                  clientSecret: oauthClientSecret,
-                                  issuerUrl: oauthIssuerUrl,
-                                  clients: oauthClients,
-                              }
-                            : null;
+                    // The static bearer token and OAuth (src/mcp/mcp-oauth.js): OAuth only with a configured client or
+                    // dynamic registration; its approve page asks for the approver password (or the PIN).
+                    const {
+                        authToken,
+                        oauth: oauthOptions,
+                        warnings: oauthWarnings,
+                    } = resolveOAuthOptions({
+                        opts,
+                        config,
+                        accountId: activeAcc.ownId,
+                        publicUrl: publicUrl.publicUrl,
+                    });
+                    const oauthCheck = oauthStartCheck({
+                        oauth: oauthOptions,
+                        authToken,
+                        host,
+                        publicUrl: publicUrl.publicUrl,
+                    });
+                    for (const w of [...oauthWarnings, ...oauthCheck.warnings]) console.error(`[mcp] WARNING: ${w}`);
+                    const approvalSecret = resolveApproval({ config, accountId: activeAcc.ownId }).secret;
+                    deps.oauthApprover = () =>
+                        approverFor({
+                            mode: approvalSecret === "pin" ? "pin" : "password",
+                            throughAgent: true,
+                            accountDir,
+                            hidden: () => hidden,
+                        });
                     const scheme = tlsOptions ? "HTTPS" : "HTTP";
                     httpServer = createHTTPServer(
                         registerTools,
@@ -988,6 +1130,25 @@ export function registerMCPCommands(program) {
                         tlsOptions && adminCa ? { ...tlsOptions, ca: adminCa } : tlsOptions,
                         oauthOptions,
                     );
+                    if (oauthCheck.enabled) {
+                        console.error(
+                            `[mcp] OAuth: on (${[
+                                oauthOptions.clientSecret || oauthOptions.redirectUris.length
+                                    ? "a configured client"
+                                    : null,
+                                oauthOptions.clients.length
+                                    ? `${oauthOptions.clients.length} more in oauth.clients`
+                                    : null,
+                                oauthOptions.allowDynamicRegistration ? "dynamic registration" : null,
+                            ]
+                                .filter(Boolean)
+                                .join(", ")}); each connection is approved with the ` +
+                                `${approvalSecret === "pin" ? "hidden-chat PIN" : "approver password"}` +
+                                (approvalSecret !== "pin" && !approverStatus(accountDir).set
+                                    ? " (none is set: run `zalo-agent mcp approver set` before connecting an app)"
+                                    : ""),
+                        );
+                    }
                     // The secure page (/zalo/secure/<token>) and the QR login page (/zalo/qr/<token>) are served on this
                     // port; their links use publicUrl (behind a reverse proxy or TLS) or else this server's own address,
                     // never a request's Host header.
@@ -998,7 +1159,7 @@ export function registerMCPCommands(program) {
                     mediaLinks.configure({
                         publicUrl: publicUrl.publicUrl,
                         localBaseUrl,
-                        bearerAvailable: Boolean(authToken || oauthClientSecret || oauthClients.length > 0),
+                        bearerAvailable: Boolean(authToken || oauthCheck.enabled),
                     });
                     console.error(
                         `[mcp] Media links: ${mediaLinks.linkAuth} (${mediaAuth.source}), ${Math.round(mediaPolicy.linkTtlMs / 60_000)} min` +
@@ -1010,7 +1171,7 @@ export function registerMCPCommands(program) {
                         `[mcp] Public address: ${publicUrl.publicUrl ? `${publicUrl.publicUrl} (${publicUrl.source})` : `none set: links use ${localBaseUrl} (set publicUrl behind a proxy)`}`,
                     );
                     console.error(`[mcp] ${scheme} server started on port ${port}`);
-                    if (!authToken && !oauthClientSecret && oauthClients.length === 0) {
+                    if (!authToken && !oauthCheck.enabled) {
                         console.error(
                             `[mcp] WARNING: no --auth token. Anyone who can reach ${host}:${port} can read this ` +
                                 "account's messages and send as it.",
@@ -1134,14 +1295,18 @@ export function registerMCPCommands(program) {
             health.setSource("accountState", () => accountState.current());
             // session_expiring (src/core/session-notice.js): the saved login ends by itself; once per threshold (14, 7,
             // 3, 1 days, ended) to the log, the webhook and the live buffer, the same as `listen`.
+            // With an open renewal link the event carries it (renewUrl, renewExpiresAt), and a new link sends one more;
+            // the log line never has the link.
+            const emitSessionExpiring = (event) => {
+                console.error(`[mcp] ${describeSessionExpiring(event)}`);
+                webhookDelivery?.enqueue(null, event);
+                buffer.pushSystem(sessionExpiringSystemEvent(event));
+            };
             const sessionWatch = startSessionExpiryWatch({
                 ownId: activeAcc.ownId,
                 accountDir,
-                emit: (event) => {
-                    console.error(`[mcp] ${describeSessionExpiring(event)}`);
-                    webhookDelivery?.enqueue(null, event);
-                    buffer.pushSystem(sessionExpiringSystemEvent(event));
-                },
+                emit: emitSessionExpiring,
+                renewal,
             });
             // A policy change (admin API, `policy set`, a file drop) counts from the next tool call: the per-call readers
             // (confirm mode, approval, delivery modes) read the live policy themselves; what was set up at start is set
@@ -1149,6 +1314,8 @@ export function registerMCPCommands(program) {
             onPolicyChanged = (changed) => {
                 const id = activeAcc.ownId;
                 console.error(`[mcp] Policy changed: ${changed.join(", ")}`);
+                // session.renew.*: looked at again now (a link opens, or closes when renewal was turned off).
+                if (touches(changed, ["session"])) sessionWatch.check();
                 if (touches(changed, ["hiddenChats"])) {
                     hiddenPolicy = resolveHiddenChats({ config, accountId: id });
                     if (hiddenPolicy.mode !== "include") {
@@ -1616,6 +1783,7 @@ export function registerMCPCommands(program) {
                 policyRuntime.stop();
                 storageJobs.stop();
                 sessionWatch.stop();
+                renewal.stop();
                 webhookDelivery?.stop();
                 mediaLinks.revokeAll("the server stopped");
                 httpServer?.close();
@@ -1623,8 +1791,58 @@ export function registerMCPCommands(program) {
                 process.exit(0);
             };
 
+            /**
+             * A renewal's new login (src/core/session-renew.js): saved as `login` saves it, then this daemon switches to
+             * it in place, the way its relogin does (a new session object the listener handlers, the tools and the
+             * channel follow through getApi()). Signed out or yielded, presence comes back; parked, the next wake
+             * uses it. The old session's kick, which the new login causes, is expected (socket host `expectKick`).
+             *
+             * @param {object} creds
+             */
+            // The session a renewal switched to: a kick of it is another session's again, even within the grace.
+            let renewedApi = null;
+            async function renewSession(creds) {
+                renewedApi = null;
+                const { deviceKept } = saveRenewedLogin({
+                    ownId: activeAcc.ownId,
+                    creds,
+                    deps: {
+                        saveCredentials,
+                        readSavedDevice,
+                        loginDeviceChange,
+                        clearKickMarker,
+                        kickFile,
+                        getAccountDir,
+                    },
+                });
+                console.error("[mcp] Renewal: the new login is saved; switching this daemon to it.");
+                const refused = Boolean(daemonPresence.presence.refusal());
+                try {
+                    clearSession();
+                    await loginDaemonAccount(activeAcc);
+                    const api = getApi();
+                    renewedApi = api;
+                    attachListenerHandlers(api);
+                    const how = switchToRenewedSession(api, daemonPresence, socketHost);
+                    console.error(`[mcp] Renewal: switched to the new session (${how}).`);
+                } catch (e) {
+                    if (refused) throw e;
+                    // The saved login is the new one: the socket host's relogin keeps asking with it.
+                    console.error(`[mcp] Renewal: the first login with it failed (${e.message}); logging in again.`);
+                    void socketHost.reloginNow("renewed");
+                }
+                // The marker and the thresholds follow the new end.
+                sessionWatch.check();
+                const event = sessionRenewedEvent(activeAcc.ownId, sessionExpiryFor(activeAcc.ownId), { deviceKept });
+                console.error(`[mcp] ${describeSessionRenewed(event)}`);
+                webhookDelivery?.enqueue(null, event);
+                buffer.pushSystem(sessionRenewedSystemEvent(event));
+            }
+
             // The one place that keeps the socket alive, shared with `listen`.
             const socketHost = createSocketHost({
+                // The renewal's own new login replaces the old session: that kick is expected, not another session's.
+                expectKick: (api) => renewal.expectingKick() && (renewedApi === null || api !== renewedApi),
                 log: (_level, message) => console.error(`[mcp] ${message}`),
                 // The supervisor's states reach presence, health and account_state through one place.
                 health: { noteSocketState: (state) => daemonPresence.noteSocketState(state) },
@@ -1697,6 +1915,19 @@ export function registerMCPCommands(program) {
                         onPurge: ({ dryRun }) => ({ report: storageJobs.runNow({ dryRun: dryRun !== false }) }),
                         // `presence status|wake|park|resume`, and the fleet controller's relay.
                         onPresence: (p) => daemonPresence.serve(p),
+                        // `session renew`: a renewal link opened by hand (on this port, under publicUrl).
+                        onSession: (p) => {
+                            if (p?.action !== "renew") throw new Error(`unknown session action "${p?.action}" (renew)`);
+                            const r = renewal.openNow({ fresh: Boolean(p.fresh) });
+                            const expiry = sessionExpiryFor(activeAcc.ownId);
+                            // Due, the new link goes where the automatic one goes (the webhook, the buffer).
+                            if (r.issued && sessionThreshold(expiry) !== null) {
+                                emitSessionExpiring(
+                                    sessionExpiringEvent(activeAcc.ownId, expiry, Date.now(), { fields: r }),
+                                );
+                            }
+                            return { accountId: activeAcc.ownId, ...r, session: expiry };
+                        },
                         // An upload, a sync stage, a wait: each holds the socket (refused while yielded or signed out).
                         presenceGate: (o) => daemonPresence.admit(o),
                         // `msg media --deliver link`: a link this daemon serves (on its HTTP port, or 127.0.0.1).
@@ -1885,7 +2116,7 @@ export function registerMCPCommands(program) {
                 () => {
                     if (res.status === "message" && res.messages?.length) {
                         for (const m of res.messages) {
-                            // A system event (account_state, group_gone, queue_overflow, session_expiring, storage_quota) is no message.
+                            // A system event (account_state, group_gone, queue_overflow, session_expiring, session_renewed, storage_quota) is no message.
                             if (m.system) {
                                 info(`[cursor ${m._cursor}] ${m.type}: ${m.text ?? ""}`);
                                 continue;

@@ -175,6 +175,9 @@ export function openSession(creds, { zaloOptions, ownId = null, drStoreFor = nul
  * @param {((ownId: string|null) => object|null)|null} [opts.drStoreFor] - see {@link openSession}
  * @param {((uid: string) => ({imei: string, userAgent: string}|null))|null} [opts.deviceFor] - the device id already
  *   used here for an account, to log in with again (see `qrLogin`)
+ * @param {((uid: string|null) => void)|null} [opts.accept] - called with the account that confirmed the QR, before
+ *   its session is opened; throwing refuses it (nothing is opened, the error is the result). A renewal uses it to
+ *   refuse a scan by another account than the one it renews.
  * @returns {Promise<object>} the session object
  */
 export async function openQrSession({
@@ -184,6 +187,7 @@ export async function openQrSession({
     trustStore,
     drStoreFor = null,
     deviceFor = null,
+    accept = null,
 }) {
     const session = await qrLogin({
         userAgent,
@@ -194,6 +198,7 @@ export async function openQrSession({
         trustStore,
         deviceFor,
     });
+    if (typeof accept === "function") accept(session.uid);
     return loginWithSession(
         { imei: session.imei, cookie: session.cookies, userAgent: session.userAgent, language: session.language },
         {

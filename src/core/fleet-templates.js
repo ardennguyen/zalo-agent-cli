@@ -424,15 +424,40 @@ export const ZA_TEMPLATE = `#!/bin/sh
 # It asks for sudo (systemd-run starts a one-off service as zalo). Give paths absolute: the command
 # runs in /home/zalo, a file it reads must be readable by zalo, and a file it writes is owned by zalo.
 # Never \`za mcp start\` for an account whose unit runs: two copies of one login kick each other.
+# Ctrl+C and a stop reach the command: systemd-run does not pass a signal on to the service it
+# started, so the one-off service gets a name of its own and the signal is sent to it by name. The
+# command's exit code is za's (a refused or guarded command still exits 2).
 set -eu
 if [ -t 0 ] && [ -t 1 ]; then io=--pty; else io=--pipe; fi
-exec sudo systemd-run --quiet --wait --collect "$io" \\
+unit="za-$(date +%s)-$$"
+signaled=
+forward() {
+    signaled=1
+    sudo systemctl kill --signal="$1" "$unit.service" 2>/dev/null || :
+}
+trap 'forward INT' INT
+trap 'forward TERM' TERM
+exec 3<&0
+set +e
+sudo systemd-run --quiet --wait --collect "$io" --unit="$unit" \\
     --property=User=zalo --property=Group=zalo \\
     --property=WorkingDirectory=/home/zalo --property=UMask=0077 \\
     --property=EnvironmentFile=-/etc/zalo-mcp/common.env \\
     --property=LoadCredentialEncrypted=zalo-storage-passphrase:/etc/zalo-mcp/storage-passphrase.cred \\
     --setenv=NODE_ENV=production --setenv=ZALO_AGENT_NO_UPDATE_CHECK=1 \\
-    /usr/bin/zalo-agent "$@"
+    /usr/bin/zalo-agent "$@" 0<&3 3<&- &
+run=$!
+# A trapped signal ends \`wait\` early: wait again until systemd-run itself is gone.
+while :; do
+    wait "$run"
+    rc=$?
+    kill -0 "$run" 2>/dev/null || break
+done
+# systemd-run may give up first when it is signaled too: let the command finish stopping.
+if [ -n "$signaled" ]; then
+    while sudo systemctl is-active --quiet "$unit.service" 2>/dev/null; do sleep 1; done
+fi
+exit "$rc"
 `;
 
 /**
@@ -676,9 +701,17 @@ export function renderCaddyfile({ domain, accounts }) {
 `,
         )
         .join("\n");
+    const discovery = accounts
+        .map(
+            ({ ownId }) =>
+                `	rewrite /.well-known/oauth-authorization-server/a/${ownId} /a/${ownId}/.well-known/oauth-authorization-server/a/${ownId}
+	rewrite /.well-known/oauth-protected-resource/a/${ownId}/mcp /a/${ownId}/.well-known/oauth-protected-resource/a/${ownId}/mcp
+`,
+        )
+        .join("");
     return `# Caddyfile: several accounts behind one hostname, one path prefix per account.
-# Each account is its own zalo-mcp@<id> instance on its own loopback port. Bearer-token auth per
-# account; OAuth issuer URLs are awkward behind a path prefix, so use tokens here.
+# Each account is its own zalo-mcp@<id> instance on its own loopback port, with its own bearer token
+# and, for remote connectors, its own OAuth issuer: its public URL, https://${domain}/a/<id>.
 # Only /mcp, /events/wait and the one-time pages and links are meant for outside clients. Each block
 # answers 404 for /metrics and /status (Prometheus, inside your network) and for /zalo/admin/* (the
 # admin API: reach it on loopback, e.g. \`ssh -L 3901:127.0.0.1:3901 <host>\`, or a VPN, never here).
@@ -698,6 +731,9 @@ ${domain} {
 		reverse_proxy 127.0.0.1:18927
 	}
 
+	# OAuth discovery of an issuer with a path (RFC 8414 and RFC 9728 path insertion): a client asks the
+	# host root, e.g. /.well-known/oauth-authorization-server/a/<id>; each goes into its account's block.
+${discovery}
 ${blocks}
 	# A client for an account talks to  https://${domain}/a/<id>/mcp  and  https://${domain}/a/<id>/events/wait
 	respond 404

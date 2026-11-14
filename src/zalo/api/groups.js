@@ -26,6 +26,7 @@
  */
 import { readFile } from "node:fs/promises";
 import { ZaloApiError } from "../errors.js";
+import { stripImageMetadata } from "../strip-metadata.js";
 import { CallUsageError } from "../kernel/endpoint.js";
 
 /** Groups per `getmg-v2` request. */
@@ -297,7 +298,8 @@ function requireName(name) {
 }
 
 /**
- * The bytes and the dimensions of an avatar given as a file path or as `{data, metadata: {width, height}}`.
+ * The bytes and the dimensions of an avatar given as a file path or as `{data, metadata: {width, height}}`, its
+ * embedded metadata stripped (src/zalo/strip-metadata.js).
  *
  * @param {object} ctx - the session (`options.imageMetadataGetter` reads a file's dimensions)
  * @param {string|{data: Uint8Array, metadata?: {width?: number, height?: number}}} source
@@ -322,7 +324,7 @@ async function avatarOf(ctx, source) {
         throw new CallUsageError("changeGroupAvatar needs a file path or {data, metadata}");
     }
     return {
-        bytes,
+        bytes: stripImageMetadata(bytes).bytes,
         width: meta.width || DEFAULT_AVATAR_EDGE,
         height: meta.height || DEFAULT_AVATAR_EDGE,
     };

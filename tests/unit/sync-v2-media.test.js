@@ -11,7 +11,8 @@ import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from "node:fs";
+import { createServer as createTcpServer } from "node:net";
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -36,7 +37,8 @@ import {
 } from "../../src/core/sync-v2/media.js";
 import { extractRenewedUrls } from "../../src/zalo/custom/renewlink.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { readSealedJson } from "../../src/core/keystore/index.js";
+import { fileState, readSealedJson } from "../../src/core/keystore/index.js";
+import { DEAD_LINKS_FILE, deadLinkKey, openDeadLinks } from "../../src/core/sync-v2/dead-links.js";
 import { scopeOfDir } from "../../src/core/keystore/keyring.js";
 import { mediaFileState, readMediaFile } from "../../src/core/keystore/media-seal.js";
 
@@ -53,10 +55,13 @@ const ROOT = mkdtempSync(join(tmpdir(), "zalo-media-test-"));
 const opened = [];
 let server;
 let base;
-/** Counts requests per path so tests can assert a renewal actually re-fetched. */
+/** Counts requests per path so tests can assert how often a URL was asked for. */
 let hits;
 /** The request headers of every request the server saw, in order. */
 let heads = [];
+
+/** A recent send time: inside the CDN's window (src/core/sync-v2/media-age.js), so the CDN path is what runs. */
+const T0 = Date.now() - 3_600_000;
 
 const PHOTO_BYTES = Buffer.from("\xff\xd8\xff\xe0JFIF-pretend-jpeg", "binary");
 /**
@@ -81,7 +86,7 @@ before(async () => {
             res.writeHead(200, { "content-type": "image/jxl" });
             return res.end(Buffer.from("pretend-jxl"));
         }
-        if (path === "/ok.jpg" || path === "/renewed.jpg") {
+        if (path === "/ok.jpg") {
             res.writeHead(200, { "content-type": "image/jpeg" });
             return res.end(PHOTO_BYTES);
         }
@@ -129,6 +134,10 @@ before(async () => {
         if (path === "/gone.jpg") {
             res.writeHead(404);
             return res.end("nope");
+        }
+        if (path === "/gone410.jpg") {
+            res.writeHead(410);
+            return res.end("gone");
         }
         if (path === "/empty.jpg") {
             res.writeHead(200, { "content-type": "image/jpeg" });
@@ -214,7 +223,7 @@ function row(over = {}, attachments = []) {
         senderId: "u1",
         senderName: "",
         text: "[photo]",
-        timestamp: 1_750_000_000_000,
+        timestamp: T0,
         type: "photo",
         has_attachment: attachments.some((a) => a.url || a.thumbUrl),
         raw_data: { src: "sync-v2", msgType: 3, cliMsgId: "999", attachments },
@@ -396,26 +405,32 @@ describe("downloadSyncedMedia — expiry", () => {
         assert.equal(stats.failed, 1);
     });
 
-    it("retries through renewlink and succeeds on the fresh url", async () => {
+    it("asks once for an expired link and moves on: no renewal call, no second request", async () => {
+        // A per-download renewal answered "invalid parameters" every time, and
+        // with no deadline of its own one hung call held its worker forever.
         row({}, [photo("/expired.jpg")]);
-        let asked = null;
+        row({}, [photo("/gone.jpg")]);
+        let other = 0;
         const stats = await downloadSyncedMedia({
             accountDir: dir,
-            // Injected rather than round-tripping Zalo's request crypto.
-            renewLink: async (req) => {
-                asked = req;
-                return { data: { normalUrl: `${base}/renewed.jpg` } };
+            limit: 50,
+            api: {
+                getContext: () => ({ userAgent: "Test-UA/1.0", options: {} }),
+                // Anything that reached for the session's request machinery would land here.
+                get zpwServiceMap() {
+                    other++;
+                    return { file: ["http://127.0.0.1:9"] };
+                },
             },
         });
-        assert.equal(stats.expired, 1);
-        assert.equal(stats.renewed, 1);
-        assert.equal(stats.downloaded, 1);
-        assert.equal(hits["/renewed.jpg"], 1);
-        // The renewal request must describe the message well enough for Zalo
-        // to find it: thread, numeric msgType and the stale URL.
-        assert.equal(asked.threadId, "t1");
-        assert.equal(asked.msgType, 3);
-        assert.ok(asked.msgInfo.normalUrl.endsWith("/expired.jpg"));
+        assert.equal(stats.expired, 2);
+        assert.equal(stats.failed, 2);
+        assert.equal(stats.attempted, 2);
+        assert.equal(stats.renewed, 0);
+        assert.equal(hits["/expired.jpg"], 1);
+        assert.equal(hits["/gone.jpg"], 1);
+        assert.equal(other, 0, "no renewal endpoint is consulted");
+        assert.deepEqual(stats.reasons, { "lapsed-signature": 1, "not-found": 1 });
     });
 
     it("counts a gone file that the local zCloud index lists as cloud-backed, and one it does not list as not", async () => {
@@ -456,17 +471,6 @@ describe("downloadSyncedMedia — expiry", () => {
         assert.equal(stats.cloudBacked, 0);
     });
 
-    it("does not count a file the renewal brought back, even if the index lists it", async () => {
-        row({ msgId: "m-renewed" }, [photo("/expired.jpg")]);
-        const stats = await downloadSyncedMedia({
-            accountDir: dir,
-            renewLink: async () => ({ data: { normalUrl: `${base}/renewed.jpg` } }),
-            cloudLookup: () => ({ found: true }),
-        });
-        assert.equal(stats.downloaded, 1);
-        assert.equal(stats.cloudBacked, 0);
-    });
-
     it("takes a lookup that cannot run for no verdict, not for a failure of the download pass", async () => {
         row({ msgId: "m1" }, [photo("/expired.jpg")]);
         const stats = await downloadSyncedMedia({
@@ -477,29 +481,6 @@ describe("downloadSyncedMedia — expiry", () => {
         });
         assert.equal(stats.expired, 1);
         assert.equal(stats.cloudBacked, 0);
-    });
-
-    it("gives up cleanly when renewal yields nothing usable", async () => {
-        row({}, [photo("/expired.jpg")]);
-        const stats = await downloadSyncedMedia({
-            accountDir: dir,
-            renewLink: async () => ({ error_code: 1, data: {} }),
-        });
-        assert.equal(stats.expired, 1);
-        assert.equal(stats.renewed, 0);
-        assert.equal(stats.failed, 1);
-    });
-
-    it("survives a renewal that throws", async () => {
-        row({}, [photo("/expired.jpg")]);
-        const stats = await downloadSyncedMedia({
-            accountDir: dir,
-            renewLink: async () => {
-                throw new Error("service down");
-            },
-        });
-        assert.equal(stats.failed, 1);
-        assert.match(stats.failures[0].reason, /renew failed/);
     });
 
     it("counts a 404 as expired", async () => {
@@ -517,7 +498,7 @@ describe("downloadSyncedMedia — expiry", () => {
     });
 
     it("records a bounded list of failures", async () => {
-        for (let i = 0; i < 30; i++) row({}, [photo("/gone.jpg")]);
+        for (let i = 0; i < 30; i++) row({}, [photo(`/gone.jpg?n=${i}`)]);
         const stats = await downloadSyncedMedia({ accountDir: dir, limit: 50, backoffBaseMs: 0 });
         assert.equal(stats.failed, 30);
         assert.ok(stats.failures.length <= 20, "failure list should stay bounded");
@@ -549,8 +530,8 @@ describe("downloadSyncedMedia — filtering", () => {
 
     it("fetches a message asked for by id, however many newer ones are pending (zalo_view_media)", async () => {
         // The old view_media scan took the thread's 50 newest pending rows: an older message never downloaded.
-        const old = row({ timestamp: 1_600_000_000_000 }, [photo("/ok.jpg")]);
-        for (let i = 0; i < 60; i++) row({ timestamp: 1_750_000_000_000 + i }, [photo("/ok.jpg")]);
+        const old = row({ timestamp: T0 - 600_000 }, [photo("/ok.jpg")]);
+        for (let i = 0; i < 60; i++) row({ timestamp: T0 + i }, [photo("/ok.jpg")]);
         const stats = await downloadSyncedMedia({ accountDir: dir, threadId: "t1", msgIds: [old], limit: 1 });
         assert.equal(stats.considered, 1);
         assert.equal(stats.downloaded, 1);
@@ -559,9 +540,9 @@ describe("downloadSyncedMedia — filtering", () => {
     });
 
     it("honours a time window", async () => {
-        row({ timestamp: 1_700_000_000_000 }, [photo("/ok.jpg")]);
-        row({ timestamp: 1_750_000_000_000 }, [photo("/ok.jpg")]);
-        const stats = await downloadSyncedMedia({ accountDir: dir, since: 1_740_000_000_000 });
+        row({ timestamp: T0 - 600_000 }, [photo("/ok.jpg")]);
+        row({ timestamp: T0 }, [photo("/ok.jpg")]);
+        const stats = await downloadSyncedMedia({ accountDir: dir, since: T0 - 300_000 });
         assert.equal(stats.considered, 1);
     });
 
@@ -867,6 +848,259 @@ describe("a stalled connection must not block the run forever", () => {
     });
 });
 
+describe("every wait is bounded, and the run keeps going", () => {
+    /** A server that accepts the connection and never answers a byte: no status line, no headers. */
+    let silent;
+    let silentBase;
+    before(async () => {
+        const held = new Set();
+        silent = createTcpServer((sock) => {
+            held.add(sock);
+            sock.on("error", () => {});
+            sock.on("close", () => held.delete(sock));
+        });
+        silent.held = held;
+        await new Promise((r) => silent.listen(0, "127.0.0.1", r));
+        silentBase = `http://127.0.0.1:${silent.address().port}`;
+    });
+    after(async () => {
+        for (const sock of silent.held) sock.destroy();
+        await new Promise((r) => silent.close(r));
+    });
+    const mute = (name) => ({ kind: "photo", url: `${silentBase}/${name}.jpg` });
+
+    it("times out a server that accepts the connection and never sends headers, and keeps going", async () => {
+        row({}, [mute("a")]);
+        for (let i = 0; i < 3; i++) row({}, [photo("/ok.jpg")]);
+        const t0 = Date.now();
+        const stats = await downloadSyncedMedia({
+            accountDir: dir,
+            limit: 50,
+            concurrency: 1,
+            timeoutMs: 500,
+            backoffBaseMs: 0,
+        });
+        // Red if the wait for headers is unbounded: the run never returns and the test times out.
+        assert.equal(stats.downloaded, 3);
+        assert.equal(stats.failed, 1);
+        assert.equal(stats.attempted, 4);
+        assert.deepEqual(stats.reasons, { timeout: 1 });
+        assert.equal(stats.unknown, 1, "no answer is not evidence of throttling");
+        assert.ok(Date.now() - t0 < 8000, "gave up within the deadline");
+        assert.equal(countPendingAttachments(), 1, "the timed-out file stays pending for the next run");
+    });
+
+    it("times out headers-then-silence and counts it as a timeout", async () => {
+        row({}, [photo("/hang.jpg")]);
+        row({}, [photo("/ok.jpg")]);
+        const stats = await downloadSyncedMedia({ accountDir: dir, limit: 50, timeoutMs: 500, backoffBaseMs: 0 });
+        assert.equal(stats.downloaded, 1);
+        assert.equal(stats.failed, 1);
+        assert.equal(stats.reasons.timeout, 1);
+        assert.match(stats.failures[0].reason, /timed out after 500ms/);
+    });
+
+    it("still returns on time when the fetch underneath ignores its abort signal", async () => {
+        // The deadline cannot depend on every transport honoring `signal`: one
+        // that does not (a proxy layer, a wrapper) used to hold its worker forever.
+        for (let i = 0; i < 3; i++) row({}, [photo("/x.jpg")]);
+        const t0 = Date.now();
+        const stats = await downloadSyncedMedia({
+            accountDir: dir,
+            limit: 50,
+            concurrency: 2,
+            timeoutMs: 300,
+            backoffBaseMs: 0,
+            fetchImpl: () => new Promise(() => {}),
+        });
+        assert.equal(stats.failed, 3);
+        assert.equal(stats.reasons.timeout, 3);
+        assert.ok(Date.now() - t0 < 5000, `took ${Date.now() - t0}ms`);
+    });
+
+    it("reports progress per file attempted, even when every file fails", async () => {
+        for (let i = 0; i < 4; i++) row({}, [photo(`/gone.jpg?n=${i}`)]);
+        const seen = [];
+        const stats = await downloadSyncedMedia({
+            accountDir: dir,
+            limit: 50,
+            onProgress: (p) => p.phase === "attempted" && seen.push(p),
+        });
+        // Red if progress comes only from saved files: a run of dead links then looks frozen.
+        assert.equal(stats.downloaded, 0);
+        assert.deepEqual(
+            seen.map((p) => p.attempted),
+            [1, 2, 3, 4],
+        );
+        assert.equal(seen.at(-1).failed, 4);
+        assert.equal(seen.at(-1).total, 4);
+    });
+
+    it("stops promptly on abort, mid-request, and leaves what was not saved pending", async () => {
+        row({ timestamp: T0 + 3 }, [photo("/ok.jpg")]);
+        for (let i = 0; i < 5; i++) row({ timestamp: T0 - i }, [mute(`s${i}`)]);
+        const ctl = new AbortController();
+        const t0 = Date.now();
+        const run = downloadSyncedMedia({
+            accountDir: dir,
+            limit: 50,
+            concurrency: 2,
+            timeoutMs: 60000,
+            backoffBaseMs: 0,
+            signal: ctl.signal,
+            onProgress: (p) => {
+                // Once the healthy file is in, the workers sit on the silent server: stop then.
+                if (p.phase === "saved") setTimeout(() => ctl.abort(), 200);
+            },
+        });
+        const stats = await run;
+        // Red if the in-flight requests ignore the stop: they would wait out the 60 s deadline.
+        assert.ok(Date.now() - t0 < 5000, `took ${Date.now() - t0}ms`);
+        assert.equal(stats.interrupted, true);
+        assert.equal(stats.downloaded, 1);
+        assert.equal(stats.failed, 0, "a request cut short by the stop is not a failure");
+        assert.equal(stats.attempted, 1);
+        assert.equal(countPendingAttachments(), 5, "everything not saved is still pending");
+
+        // The next run resumes from exactly there.
+        const again = await downloadSyncedMedia({ accountDir: dir, limit: 50, timeoutMs: 300, backoffBaseMs: 0 });
+        assert.equal(again.considered, 5);
+        assert.equal(again.attempted, 5);
+    });
+
+    it("wakes from a backoff when stopped, instead of sleeping it out", async () => {
+        for (let i = 0; i < 3; i++) row({}, [photo("/ratelimit.jpg")]);
+        const ctl = new AbortController();
+        const t0 = Date.now();
+        const stats = await downloadSyncedMedia({
+            accountDir: dir,
+            limit: 50,
+            concurrency: 1,
+            backoffBaseMs: 20000,
+            signal: ctl.signal,
+            onProgress: (p) => p.phase === "throttled" && setTimeout(() => ctl.abort(), 50),
+        });
+        assert.ok(Date.now() - t0 < 5000, `took ${Date.now() - t0}ms`);
+        assert.equal(stats.interrupted, true);
+        assert.equal(stats.attempted, 1);
+        assert.equal(countPendingAttachments(), 3);
+    });
+
+    it("an already-aborted signal starts nothing", async () => {
+        row({}, [photo("/ok.jpg")]);
+        const ctl = new AbortController();
+        ctl.abort();
+        const stats = await downloadSyncedMedia({ accountDir: dir, signal: ctl.signal });
+        assert.equal(hits["/ok.jpg"], undefined);
+        assert.equal(stats.interrupted, true);
+        assert.equal(stats.attempted, 0);
+    });
+});
+
+describe("a link answered 404/410 is remembered and not asked again", () => {
+    const run = (extra = {}) => downloadSyncedMedia({ accountDir: dir, limit: 50, backoffBaseMs: 0, ...extra });
+
+    it("records a 404 and a 410, then skips both on the next run without a request", async () => {
+        row({ msgId: "m404" }, [photo("/gone.jpg")]);
+        row({ msgId: "m410" }, [photo("/gone410.jpg")]);
+        const first = await run();
+        assert.equal(first.expired, 2);
+        assert.equal(first.dead, 0);
+
+        const second = await run();
+        // Red if the list is not consulted: each link would be asked for a second time.
+        assert.equal(hits["/gone.jpg"], 1);
+        assert.equal(hits["/gone410.jpg"], 1);
+        assert.equal(second.dead, 2);
+        assert.equal(second.failed, 0, "a known-dead skip is not a failure");
+        assert.equal(second.expired, 0);
+        assert.equal(second.attempted, 2, "but it is a file finished, for progress");
+        assert.deepEqual(second.reasons, { dead: 2 });
+        assert.equal(countPendingAttachments(), 2, "the rows themselves stay as they are");
+    });
+
+    it("remembers nothing else: a lapsed-signature body, a 5xx, a 403 and a timeout are asked again", async () => {
+        row({}, [photo("/expired.jpg")]);
+        row({}, [photo("/servererr.jpg")]);
+        row({}, [photo("/forbidden.jpg")]);
+        row({}, [photo("/hang.jpg")]);
+        await run({ timeoutMs: 300 });
+        const again = await run({ timeoutMs: 300 });
+        assert.equal(again.dead, 0);
+        for (const path of ["/expired.jpg", "/servererr.jpg", "/forbidden.jpg", "/hang.jpg"]) {
+            assert.equal(hits[path], 2, `${path} was not asked again`);
+        }
+    });
+
+    it("tries a new link for the same message normally: the memory is keyed by link, not message", async () => {
+        row({ msgId: "m-relinked" }, [photo("/gone.jpg")]);
+        await run();
+        // A later sync hands out a fresh link for the same message.
+        row({ msgId: "m-relinked" }, [photo("/ok.jpg")]);
+        const stats = await run();
+        assert.equal(stats.dead, 0);
+        assert.equal(stats.downloaded, 1);
+        assert.equal(hits["/ok.jpg"], 1);
+        assert.equal(countPendingAttachments(), 0);
+    });
+
+    it("retryDead asks again for every remembered link", async () => {
+        row({}, [photo("/gone.jpg")]);
+        await run();
+        const again = await run({ retryDead: true });
+        assert.equal(hits["/gone.jpg"], 2);
+        assert.equal(again.dead, 0);
+        assert.equal(again.expired, 1);
+        // And the list still holds it afterwards.
+        const later = await run();
+        assert.equal(later.dead, 1);
+        assert.equal(hits["/gone.jpg"], 2);
+    });
+
+    it("keeps the list sealed in the account's media folder, with no link in it", async () => {
+        row({}, [photo("/gone.jpg")]);
+        await run();
+        const file = join(dir, "media", DEAD_LINKS_FILE);
+        assert.equal(fileState(file).state, "sealed");
+        const raw = readFileSync(file);
+        assert.equal(raw.includes(Buffer.from("gone.jpg")), false, "the link is not in the file");
+        assert.equal(raw.includes(Buffer.from("127.0.0.1")), false);
+        // What it holds, once opened: the link's hash, and nothing that reads as a link.
+        const saved = readSealedJson(file, scopeOfDir(dir), { kind: "media-dead-links", use: "data" });
+        assert.deepEqual(saved.keys, [deadLinkKey(`${base}/gone.jpg`)]);
+        assert.equal(JSON.stringify(saved).includes("http"), false);
+    });
+
+    it("caps the list, dropping the oldest first, and the cap survives a reload", () => {
+        const mediaDir = join(dir, "media");
+        const scope = scopeOfDir(dir);
+        const list = openDeadLinks(mediaDir, scope, { cap: 3 });
+        for (const u of ["https://x/1", "https://x/2", "https://x/3", "https://x/4"]) list.add(u);
+        list.flush();
+        assert.equal(list.size, 3);
+        assert.equal(list.has("https://x/1"), false, "the oldest went");
+        assert.equal(list.has("https://x/4"), true);
+
+        const reopened = openDeadLinks(mediaDir, scope, { cap: 3 });
+        assert.deepEqual(
+            ["https://x/1", "https://x/2", "https://x/3", "https://x/4"].map((u) => reopened.has(u)),
+            [false, true, true, true],
+        );
+        reopened.add("https://x/5");
+        reopened.flush();
+        assert.equal(openDeadLinks(mediaDir, scope, { cap: 3 }).has("https://x/2"), false);
+    });
+
+    it("an unreadable list starts empty instead of failing the run", async () => {
+        const mediaDir = join(dir, "media");
+        mkdirSync(mediaDir, { recursive: true });
+        writeFileSync(join(mediaDir, DEAD_LINKS_FILE), "not a sealed file");
+        row({}, [photo("/ok.jpg")]);
+        const stats = await run();
+        assert.equal(stats.downloaded, 1);
+    });
+});
+
 describe("expiry vs throttling — the difference is not cosmetic", () => {
     // A run once reported 4,894 "expired" links; a single request minutes later
     // pulled one of them down as a 25 MB video. Calling throttling "expired"
@@ -1050,7 +1284,7 @@ describe("the summary reports what was observed, not what it assumes", () => {
         for (const [code, spec] of Object.entries(DOWNLOAD_REASONS)) {
             assert.ok(spec.label, `${code} has no label`);
             assert.ok(
-                ["expired", "throttled", "unknown", "failed"].includes(spec.verdict),
+                ["expired", "throttled", "unknown", "failed", "dead", "old", "cloud"].includes(spec.verdict),
                 `${code} has verdict ${spec.verdict}`,
             );
         }
@@ -1128,7 +1362,7 @@ describe("pruneDownloadedMedia", () => {
     /** A row whose media is already on disk, aged `daysAgo`. */
     const downloaded = async (daysAgo) => {
         const id = row({ timestamp: NOW - daysAgo * DAY }, [photo("/ok.jpg")]);
-        await downloadSyncedMedia({ accountDir: dir, limit: 50 });
+        await downloadSyncedMedia({ accountDir: dir, allAges: true, limit: 50 });
         return id;
     };
 
@@ -1190,7 +1424,7 @@ describe("pruneDownloadedMedia", () => {
         upsertThread({ threadId: "t2", type: "dm", name: "Other", lastUpdate: 1 });
         await downloaded(40);
         row({ threadId: "t2", timestamp: NOW - 40 * DAY }, [photo("/ok.jpg")]);
-        await downloadSyncedMedia({ accountDir: dir, limit: 50 });
+        await downloadSyncedMedia({ accountDir: dir, allAges: true, limit: 50 });
         const s = await pruneDownloadedMedia({ olderThanDays: 30, now: NOW, threadId: "t2" });
         assert.equal(s.deleted, 1, "only the named thread");
     });
@@ -1210,7 +1444,7 @@ describe("pruning is a decision, not a gap to refill", () => {
 
     const downloadedThenPruned = async () => {
         row({ timestamp: NOW - 40 * DAY }, [photo("/ok.jpg")]);
-        await downloadSyncedMedia({ accountDir: dir, limit: 50 });
+        await downloadSyncedMedia({ accountDir: dir, allAges: true, limit: 50 });
         await pruneDownloadedMedia({ olderThanDays: 30, now: NOW });
     };
 
@@ -1218,7 +1452,7 @@ describe("pruning is a decision, not a gap to refill", () => {
         // Prune clears localPath to requeue the row, so without a marker the
         // very next sync silently undoes the cleanup.
         await downloadedThenPruned();
-        const again = await downloadSyncedMedia({ accountDir: dir, limit: 50 });
+        const again = await downloadSyncedMedia({ accountDir: dir, allAges: true, limit: 50 });
         assert.equal(again.considered, 0, "a pruned attachment must stay pruned");
         assert.equal(again.downloaded, 0);
     });
@@ -1230,23 +1464,23 @@ describe("pruning is a decision, not a gap to refill", () => {
 
     it("re-fetches only when explicitly asked", async () => {
         await downloadedThenPruned();
-        const back = await downloadSyncedMedia({ accountDir: dir, limit: 50, includePruned: true });
+        const back = await downloadSyncedMedia({ accountDir: dir, allAges: true, limit: 50, includePruned: true });
         assert.equal(back.downloaded, 1, "--include-pruned should bring it back");
     });
 
     it("clears the marker once the file is downloaded again", async () => {
         await downloadedThenPruned();
-        await downloadSyncedMedia({ accountDir: dir, limit: 50, includePruned: true });
+        await downloadSyncedMedia({ accountDir: dir, allAges: true, limit: 50, includePruned: true });
         // The file is back, so the earlier removal no longer applies: an
         // ordinary run must now treat it like any other downloaded row.
-        const after = await downloadSyncedMedia({ accountDir: dir, limit: 50 });
+        const after = await downloadSyncedMedia({ accountDir: dir, allAges: true, limit: 50 });
         assert.equal(after.considered, 0, "already downloaded, nothing to do");
         assert.ok(getMessages("t1")[0].localPath, "and it has a path again");
     });
 
     it("leaves never-pruned media fetchable as normal", async () => {
         row({ timestamp: NOW - 40 * DAY }, [photo("/ok.jpg")]);
-        const s = await downloadSyncedMedia({ accountDir: dir, limit: 50 });
+        const s = await downloadSyncedMedia({ accountDir: dir, allAges: true, limit: 50 });
         assert.equal(s.downloaded, 1);
     });
 });
@@ -1257,7 +1491,7 @@ describe("pruneDownloadedMedia — all mode", () => {
 
     const seedAges = async (...daysAgo) => {
         for (const d of daysAgo) row({ timestamp: NOW - d * DAY }, [photo("/ok.jpg")]);
-        await downloadSyncedMedia({ accountDir: dir, limit: 100 });
+        await downloadSyncedMedia({ accountDir: dir, allAges: true, limit: 100 });
     };
 
     it("deletes every downloaded file regardless of age", async () => {
@@ -1298,7 +1532,7 @@ describe("pruneDownloadedMedia — all mode", () => {
         upsertThread({ threadId: "t2", type: "dm", name: "Other", lastUpdate: 1 });
         await seedAges(1);
         row({ threadId: "t2", timestamp: NOW }, [photo("/ok.jpg")]);
-        await downloadSyncedMedia({ accountDir: dir, limit: 100 });
+        await downloadSyncedMedia({ accountDir: dir, allAges: true, limit: 100 });
         const s = await pruneDownloadedMedia({ all: true, now: NOW, threadId: "t2" });
         assert.equal(s.deleted, 1, "only the named thread");
     });
@@ -1306,7 +1540,7 @@ describe("pruneDownloadedMedia — all mode", () => {
     it("all mode still records the prune, so a sync does not undo it", async () => {
         await seedAges(1);
         await pruneDownloadedMedia({ all: true, now: NOW });
-        const again = await downloadSyncedMedia({ accountDir: dir, limit: 100 });
+        const again = await downloadSyncedMedia({ accountDir: dir, allAges: true, limit: 100 });
         assert.equal(again.considered, 0);
     });
 });

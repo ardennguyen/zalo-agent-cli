@@ -57,7 +57,7 @@ Files and the environment are read once at start; the policy is read again on ev
 The policy takes `confirmMode`, `hiddenChats`, `allowPinArgument`, `approval.*`, `media.deliver`, `media.inlineMaxBytes`,
 `media.allowDeliver`, `media.linkTtl`, `media.tempfileTtl`, `media.linkAuth`, `media.linkRateLimit`,
 `media.capability.*`, `media.autoOpen`, `webhook`, `webhookBatchSize`, `webhookMaxAge`, `quota.*`, `retention.*`,
-`groups.onLeave` and `presence.*` (`presence.alwaysOn.*` only in a tenant's or a user's policy; `quota.tenant.*` only
+`groups.onLeave`, `presence.*` and `session.renew.*` (`presence.alwaysOn.*` only in a tenant's or a user's policy; `quota.tenant.*` only
 in a tenant's).
 A key read only at start (`httpPort`, `host`, `publicUrl`, `tls`, `oauth`, `trustedProxies`, `admin`,
 `media.downloadDir`, the key provider and its options, `accounts`) and every secret (`webhookSecret`) is refused with
@@ -237,6 +237,36 @@ at most 60 s; `ZALO_CONNECT_SLOT_WAIT` (seconds, default `120`) is how long a wa
 Both take an `_<ownId>` form. `/status` and `/metrics` carry `lastWakeMs` / `lastCatchUpMs`
 (`zalo_presence_last_wake_seconds`, `zalo_presence_last_catch_up_seconds`) and the metered connected time.
 
+### Renewing the saved login (`session.renew`)
+
+A QR login lasts about 90 days and Zalo never renews it: only a new QR scan by the account's phone does. An
+`mcp start --http` server with a public address (`publicUrl`, `--public-url`, `ZALO_MCP_PUBLIC_URL[_<ownId>]`) does
+the asking itself. Within `daysBefore` days of the end it opens a **renewal link**, a one-time QR login page at
+`<publicUrl>/zalo/qr/<token>` on its own HTTP port, and puts it in its `session_expiring` events as `renewUrl` (with
+`renewExpiresAt`). A link lives `linkTtl`; when it runs out a new one is opened and one more `session_expiring` goes
+out with it, every day by default, until the login is renewed. The 14-day threshold event still goes out without a link.
+
+| Key (`session.renew.*`) | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | `false` (or `ZALO_SESSION_RENEW[_<ownId>]=off`): no link is opened; the events stay as they were |
+| `daysBefore` | `7` | open a link this many days before the end (1-14; `ZALO_SESSION_RENEW_DAYS[_<ownId>]`), and after it has ended |
+| `linkTtl` | `"24h"` | how long one link lives (10m-7d) |
+
+Layers: `mcp-config.json` `session.renew` < `accounts.<ownId>.session.renew` < the environment < the runtime policy
+(`session.renew.*`, applied at once). `zalo-agent session renew [--account <id>] [--fresh]` opens a link by hand.
+Without a public address no link can reach a phone: the events carry `renewHint` instead. `listen` serves no page,
+so it opens no link.
+
+The page asks Zalo for a fresh code when it is opened, shows which account it renews (its name and id), and needs
+nothing but the scan and the confirmation on that account's phone. The login keeps the account's saved device id, so
+Zalo's offline queue carries on. A scan by **another account** is refused before its session is opened, and the page
+says so. On success the server saves the new login sealed under the account's keyring, switches to it **in place** (no
+restart; a `signed_out` or `yielded` daemon comes back, a parked one keeps it for its next wake) and sends
+`session_renewed` `{event, accountId, expiresAt, daysLeft, deviceKept, at}`; the link is then used up. The token is
+128 random bits held in memory only (a restart opens a new link and the old one is dead) and never logged; the page is
+`no-store`, `nosniff`, `no-referrer`, unframeable, with a nonce CSP, at most 120 requests a minute (then 429) and
+12 QR logins an hour. `fleet status` shows `renewing` in LOGIN ENDS while a link is open.
+
 ---
 
 ## 2. Reference
@@ -252,13 +282,17 @@ Both take an `_<ownId>` form. `/status` and `/metrics` carry `lastWakeMs` / `las
 | `ZALO_DATA_DIR` (alias `ZALO_DB_DIR`) |  | per-account databases and runtime files. Default `<CONFIG_DIR>/accounts` | `--data-dir` |  |
 | `ZALO_MEDIA_DIR` |  | downloaded media root | `--media-dir` | `media.downloadDir` (MCP server only) |
 | `ZALO_OA_DIR` |  | the official APIs' credentials folder. Default `~/.zalo-agent` (no `-cli`): `oa-credentials.json` (the OA login, one record per `--oa-id`, also used by `zbs`) and `social-credentials.json` (the Social API login, one record per `--profile`), both mode `0600` | `--oa-dir` |  |
+| `ZALO_OA_APP_SECRET`, `ZALO_SOCIAL_APP_SECRET` |  | the app secret for `oa login` / `oa init`, and for `social setup` / `social login`, when `--secret` is not given (a flag shows in the process list). Without either, a terminal is asked at a prompt that does not echo | `--secret` |  |
 | `ZALO_ACCOUNT` |  | account for one-shot commands | `--account` |  |
 | `ZALO_ENV_FILE` |  | an extra `.env` to load | `--env-file` |  |
 | `ZALO_MCP_HTTP_PORT` | yes | serve HTTP/HTTPS on this port instead of stdio | `--http` | `httpPort` |
 | `ZALO_MCP_HOST` | yes | bind address. Default `127.0.0.1` | `--host` | `host` |
 | `ZALO_MCP_AUTH_TOKEN` | yes | bearer token for `/mcp` and `/events/wait` | `--auth` (visible in `ps`; prefer the variable) |  |
 | `ZALO_MCP_TLS_CERT`, `ZALO_MCP_TLS_KEY` | yes | serve HTTPS; both or neither | `--cert`, `--key` | `tls.cert`, `tls.key` |
-| `ZALO_MCP_OAUTH_CLIENT_ID`, `ZALO_MCP_OAUTH_CLIENT_SECRET` | yes | the primary OAuth client (the secret also works as a bearer token) | `--client-id`, `--client-secret` | `oauth.clientId`, `oauth.clientSecret` |
+| `ZALO_MCP_OAUTH_CLIENT_ID`, `ZALO_MCP_OAUTH_CLIENT_SECRET` | yes | the primary OAuth client (§3.4). Setting the secret turns OAuth on; it authenticates that client at `/token` only and is not a bearer token (since 3.0.1). `--auth` is never a client secret | `--client-id`, `--client-secret` | `oauth.clientId`, `oauth.clientSecret` |
+| `ZALO_MCP_OAUTH_REDIRECT_URIS` | yes | the primary client's callback URLs, comma-separated (`https://claude.ai/api/mcp/auth_callback`). Matched exactly, except that an `http://127.0.0.1`, `[::1]` or `localhost` one matches any port; only `https`, or `http` on loopback | | `oauth.redirectUris` |
+| `ZALO_MCP_OAUTH_DYNAMIC_REGISTRATION` | yes | `true` opens `/register` (RFC 7591) and turns OAuth on: clients that register themselves (Claude Code, MCP Inspector). Default `false` | | `oauth.allowDynamicRegistration` |
+| `ZALO_MCP_OAUTH_SECRETS_AS_BEARER` | yes | `true` keeps the 3.0.0 behavior where a configured client secret also works as a bearer token for `/mcp`. Default `false` | | `oauth.secretsAsBearer` |
 | `ZALO_MCP_PUBLIC_URL` | yes | the one public address of the server behind a reverse proxy or TLS terminator (`https://zalo.example.com`, optionally with a base path such as `https://zalo.example.com/a/<ownId>`): the MCP endpoint, the OAuth issuer, and the links to the one-time secure page (`/zalo/secure/<token>`) and QR login page (`/zalo/qr/<token>`). Must be `https`, except `http` on `localhost`, `127.0.0.1` or `[::1]`; no query or fragment; a trailing slash is dropped. A value that breaks a rule stops the server from starting. Unset: links use the server's own address and only the OAuth metadata falls back to the request's `Host` | `--public-url` (`mcp start`, `login`, `account login`) | `publicUrl` |
 | `ZALO_MCP_ISSUER_URL` | yes | deprecated name of `ZALO_MCP_PUBLIC_URL`, still read after every `publicUrl` source, with a note once per process | `--issuer-url` (deprecated) | `oauth.issuerUrl` (deprecated) |
 | `ZALO_WEBHOOK_URL` | yes | POST each incoming message here | `-w`, `--webhook` | `webhook` |
@@ -283,6 +317,7 @@ Both take an `_<ownId>` form. `/status` and `/metrics` carry `lastWakeMs` / `las
 | `ZALO_LOGIN_SLOTS` | yes | at most this many daemons on the machine logging in and loading their lists at once (0–64; default 0, no cap); the rest wait for a slot. `ZALO_LOGIN_SLOT_WAIT` (seconds, default 900) is how long one waits before going ahead anyway | | |
 | `ZALO_CONNECT_SLOTS` | yes | at most this many daemons on the machine waking their parked socket at once (on-demand presence; 0–64, default 0, no cap; fleet samples 16): a wake holds its slot until its first catch-up ends, at most 60 s. `ZALO_CONNECT_SLOT_WAIT` (seconds, default 120) is how long one waits before going ahead anyway | | |
 | `ZALO_EXIT_ON_SIGNED_OUT` | yes | `1`: a login Zalo keeps refusing ends the daemon with exit 4, as before 3.0 (`ZALO_EXIT_ON_SIGNED_OUT_<ownId>` for one account). Default: the daemon stays up in `signed_out` and refuses requests until the account is added again by QR | | |
+| `ZALO_SESSION_RENEW`, `ZALO_SESSION_RENEW_DAYS` | yes | `off` turns the renewal link off; the days before the login's end a link opens (1-14, default 7). Between the files and the runtime policy (see [renewing the saved login](#renewing-the-saved-login-sessionrenew)) | | `session.renew.enabled`, `session.renew.daysBefore` |
 | `ZALO_PRESENCE_MODE`, `ZALO_PRESENCE_IDLE_TIMEOUT` | yes | `on-demand` or `always-on`; the idle time before the socket parks (`5m`, at least `30s`). Between the files and the runtime policy (see [on-demand presence](#users-the-always-on-cap-and-on-demand-presence)) | | `presence.mode`, `presence.idleTimeout` |
 | `ZALO_FLEET_CONTROLLER_PORT` |  | the port `fleet serve` binds when `--http` is not given. Default `3899` | `fleet serve --http` | |
 | `ZALO_FLEET_DOMAIN` |  | the proxy host of `fleet generate --domain`: an account added by QR through `fleet serve` gets `ZALO_MCP_PUBLIC_URL=https://<host>/a/<ownId>` in its env file | `fleet serve --domain` | |
@@ -304,10 +339,12 @@ Both take an `_<ownId>` form. `/status` and `/metrics` carry `lastWakeMs` / `las
 
 ### Official APIs (`oa`, `zbs`, `social`)
 
-The official APIs take no `mcp-config.json` key and no environment variable besides `ZALO_OA_DIR`: their settings are flags, and their logins are files in the `ZALO_OA_DIR` folder (above), apart from the personal account's `~/.zalo-agent-cli/`.
+The official APIs take no `mcp-config.json` key; their only environment variables are `ZALO_OA_DIR`, the app secrets below and `ZALO_OA_SECRET`. Their other settings are flags, and their logins are files in the `ZALO_OA_DIR` folder (above, created `0700`), apart from the personal account's `~/.zalo-agent-cli/`.
 
-- `oa login` / `oa init` save the OA's App ID, secret key and tokens in `oa-credentials.json` under `--oa-id` (default `default`); every OA and ZBS call then sends `appsecret_proof`, computed from that secret key, so after resetting the app's secret key log in again with the new one (`oa login --secret <key>` or `oa init`).
-- `social login` saves a Social API user login in `social-credentials.json` under `--profile` (default `default`); `--dpop` binds its tokens to a key pair.
+- `oa login` / `oa init` save the OA's App ID, secret key and tokens in `oa-credentials.json` under `--oa-id` (default `default`); every OA and ZBS call then sends `appsecret_proof`, computed from that secret key, so after resetting the app's secret key log in again with the new one (`oa login` or `oa init`). The app secret comes from `--secret`, else the `ZALO_OA_APP_SECRET` environment variable, else a prompt that does not echo (on a terminal): the variable or the prompt keeps it out of the process list and the shell history.
+- `oa login` and `social login` wait for the callback 5 minutes (`--timeout <seconds>`, 10 to 3600). Only the answer to this login ends it: a request with another `state`, or none where one is required, or with no code, gets `400` and the login keeps waiting. `social login` requires `state` on the callback; `oa login` also takes a callback without one, since the example in Zalo's OA docs has none. A token request gives up after 30 s.
+- `social setup` and `social login` read the app secret from `--secret`, else `ZALO_SOCIAL_APP_SECRET`, else (`social setup` only) a prompt that does not echo; `social login` then falls back to the saved one.
+- `social login` saves a Social API user login in `social-credentials.json` under `--profile` (default `default`); `--dpop` binds its tokens to a key pair (each proof carries a random `jti`).
 - `oa listen` serves the OA and ZBS webhook: `--port` (default 3000; the engine does not read `ZALO_OA_WEBHOOK_PORT`), `--path` (default `/webhook`), `--secret <OA secret key>` or, better for a service, the `ZALO_OA_SECRET` environment variable (a flag is visible in the process list) for the `X-ZEvent-Signature` check (`--no-verify` skips it), `--app-id` for events whose body has no `app_id` (default: the saved App ID), and domain verification with `--verify-file <file.html>` (served as is at its name) or `--verify-meta '<meta …>'` (served in the home page's head). `oa init` run without flags asks for the keys interactively, which keeps them out of shell history.
 
 ### `mcp-config.json` keys
@@ -337,7 +374,11 @@ The official APIs take no `mcp-config.json` key and no environment variable besi
 | `httpPort`, `host` | `null` | HTTP port and bind address |
 | `tls.cert`, `tls.key` | `null` | HTTPS |
 | `publicUrl` | `null` | the one public address of the server (see `ZALO_MCP_PUBLIC_URL`): MCP endpoint, OAuth issuer, secure and QR page links. Per account in `accounts.<ownId>.publicUrl` |
-| `oauth.clientId`, `.clientSecret`, `.clients[]` | | OAuth 2.0 consumers; `clients[]` is a list of `{clientId, clientSecret}` |
+| `oauth.clientId`, `.clientSecret`, `.redirectUris` | `null`, `null`, `[]` | the primary OAuth client (§3.4 "OAuth for remote connectors"). A secret makes it confidential; with no secret and some `redirectUris` it is a public client (PKCE only). Either turns OAuth on |
+| `oauth.clients[]` | `[]` | more OAuth clients: `{clientId, clientSecret?, redirectUris?}` each |
+| `oauth.allowDynamicRegistration` | unset (= `false`) | see `ZALO_MCP_OAUTH_DYNAMIC_REGISTRATION` |
+| `oauth.secretsAsBearer` | unset (= `false`) | see `ZALO_MCP_OAUTH_SECRETS_AS_BEARER` |
+| `oauth.accessTokenTtl`, `.refreshTokenTtl` | unset (= `1h`, `30d`) | OAuth token lifetimes; the refresh token's is sliding (every refresh starts it again). At least `1m` |
 | `oauth.issuerUrl` | `null` | deprecated name of `publicUrl`, still read when no `publicUrl` source is set |
 | `confirmMode` | unset (= `agent`) | `agent`, `human` or `off`: who confirms a destructive tool action. Set `agent` for an AI agent; `human` makes the server ask the user itself |
 | `groupConfirm` | | deprecated: `false` means `confirmMode: "off"` when no confirm mode is set |
@@ -348,6 +389,7 @@ The official APIs take no `mcp-config.json` key and no environment variable besi
 | `admin.tokenFile` | `null` | see `ZALO_MCP_ADMIN_TOKEN_FILE` |
 | `admin.clientCa` | `null` | see `ZALO_MCP_ADMIN_CLIENT_CA` |
 | `presence.mode`, `.idleTimeout`, `.minConnected`, `.maxWakesPerHour`, `.warmWait`, `.connectOnStart`, `.catchUpEvery`, `.maxLeases`, `.leaseTtl`, `.leaseTtlMax`, `.waitHoldsSocket`, `.onKick` | see [Users, the always-on cap and on-demand presence](#users-the-always-on-cap-and-on-demand-presence) | on-demand presence of an `mcp start --http` / `listen --daemon`; per account in `accounts.<ownId>.presence`; the runtime policy beats it |
+| `session.renew.enabled`, `.daysBefore`, `.linkTtl` | unset (= `true`, `7`, `"24h"`) | the renewal link an `mcp start --http` server with a `publicUrl` opens before the saved login ends (see [renewing the saved login](#renewing-the-saved-login-sessionrenew)) |
 | `accounts.<ownId>` | | any of the above, for one account |
 
 A key that is not in this table is ignored without a message. (The `mode` key in older files is accepted and never read.)
@@ -421,9 +463,43 @@ Keep the engine on loopback and put a TLS reverse proxy in front of it.
 
 - Files: [`env/internet-server.env`](config-samples/env/internet-server.env), [`mcp-config/internet.json`](config-samples/mcp-config/internet.json), and one proxy sample: [`proxy/Caddyfile.internet`](config-samples/proxy/Caddyfile.internet) or [`proxy/nginx.internet.conf`](config-samples/proxy/nginx.internet.conf).
 - The proxy must not buffer responses and must allow reads of at least 310 s: `/events/wait` holds a request for up to 300 s. Both samples are tested for it.
-- **Authentication:** a bearer token for scripts and backends; OAuth 2.0 for remote connectors that insist on it. Set `ZALO_MCP_PUBLIC_URL` (or `publicUrl`) to the public `https://` address: the OAuth issuer, the MCP endpoint and every link to a one-time page are built from it. Without it the links use the server's own address, and the OAuth metadata and the `WWW-Authenticate` header are built from the request's own `X-Forwarded-Host` / `Host` headers, which any client can set. (`ZALO_MCP_ISSUER_URL`, `--issuer-url` and `oauth.issuerUrl` are its deprecated 2.x names and still work.) More than one consumer: list them in `oauth.clients[]` in `mcp-config.json`.
+- **Authentication:** a bearer token for scripts and backends; OAuth 2.1 for remote connectors that insist on it (below). Set `ZALO_MCP_PUBLIC_URL` (or `publicUrl`) to the public `https://` address: the OAuth issuer, the MCP endpoint and every link to a one-time page are built from it. Without it the links use the server's own address, and the OAuth metadata and the `WWW-Authenticate` header are built from the request's `Host` header (`X-Forwarded-Host` / `X-Forwarded-Proto` only from a proxy in `trustedProxies`); with OAuth on and the server listening off loopback, it refuses to start without one. (`ZALO_MCP_ISSUER_URL`, `--issuer-url` and `oauth.issuerUrl` are its deprecated 2.x names and still work.)
 - Native HTTPS (`--cert` / `--key`) without a proxy works, but the engine **also tries to listen on port 443** next to your port. Prefer the proxy.
-- Add what the engine does not have: an IP allow-list at the proxy, rate limiting, and a log that never records the `Authorization` header. The server answers every origin with `Access-Control-Allow-Origin: *`; strip or replace the header at the proxy if browsers should not call it.
+- Add what the engine does not have: an IP allow-list at the proxy, and a log that never records the `Authorization` header. The engine limits only the OAuth endpoints' request rate. The server answers most origins with `Access-Control-Allow-Origin: *` (not a `/register` answer carrying a client secret); strip or replace the header at the proxy if browsers should not call it.
+
+#### OAuth for remote connectors (Claude.ai, Claude Desktop, Gemini)
+
+OAuth is **off unless you turn it on** (since 3.0.1): a server with only `--auth` / `ZALO_MCP_AUTH_TOKEN` serves bearer tokens and answers `404` on every OAuth route, the discovery documents included. It is on when a client is configured (`ZALO_MCP_OAUTH_CLIENT_SECRET`, `oauth.redirectUris`, or an `oauth.clients[]` entry) or dynamic registration is.
+
+**Before the first connection**
+
+1. The public address: `ZALO_MCP_PUBLIC_URL=https://zalo.example.com`. It is the issuer, and the MCP endpoint is `<publicUrl>/mcp`. A base path works (`https://zalo.example.com/a/<ownId>`): the server also answers the path-inserted discovery URLs (`/.well-known/oauth-authorization-server/a/<ownId>`), and the multi-account Caddyfile (`fleet generate --domain`) routes them from the host root to the account.
+2. A server secret to sign tokens with: the bearer token (`ZALO_MCP_AUTH_TOKEN`), else the first client secret. The signing key is derived from it per account, so a token of one account is refused by another. Changing it signs every OAuth client out.
+3. An approver password: `zalo-agent mcp approver set --account <ownId>`. Every connection opens a one-time page on this server in the browser of the person connecting; it shows which client asks and where it returns, and asks for this password (with `approval.secret: "pin"`, the hidden-chat PIN instead). Only after **Approve** does the client get a code. With no approver secret set, `/authorize` refuses and says so.
+
+**Static client or dynamic registration**
+
+- **A static client** (recommended): you pick its id and secret, give both to the connector, and list the connector's callback URL. One client: `ZALO_MCP_OAUTH_CLIENT_ID`, `ZALO_MCP_OAUTH_CLIENT_SECRET`, `ZALO_MCP_OAUTH_REDIRECT_URIS`. More: `oauth.clients[]` in `mcp-config.json`, `{clientId, clientSecret, redirectUris}` each. A secret authenticates its own client at `/token` and nothing else: it is not a bearer token for `/mcp` (`oauth.secretsAsBearer: true` restores that 3.0.0 behavior). A client with `redirectUris` and no secret is a public client.
+- **Dynamic registration** (`ZALO_MCP_OAUTH_DYNAMIC_REGISTRATION=true`): a connector registers itself at `/register` (RFC 7591) and gets a client of its own, public unless it asks for a secret, which is random per client and kept only as a hash. `redirect_uris` are required. At most 100 clients (one never used is dropped after a day when the list is full) and 10 registrations an hour per address; registrations survive a restart. Every connection still needs your approval.
+- Redirect URIs match exactly. Only `https`, or `http` on `127.0.0.1`, `[::1]` or `localhost`, where any port matches (RFC 8252). `javascript:`, custom schemes and `http` elsewhere are refused.
+
+**Claude.ai custom connector, and Claude Desktop** (Claude Desktop uses the connectors of your Claude account):
+
+1. On the server: `ZALO_MCP_OAUTH_CLIENT_ID=zalo-connector`, `ZALO_MCP_OAUTH_CLIENT_SECRET=<openssl rand -hex 20>`, `ZALO_MCP_OAUTH_REDIRECT_URIS=https://claude.ai/api/mcp/auth_callback,https://claude.com/api/mcp/auth_callback`; restart.
+2. In Claude: Settings → Connectors → Add custom connector. URL `https://zalo.example.com/mcp`; under Advanced settings, the OAuth Client ID and Client Secret above. (With dynamic registration on, leave both empty.)
+3. Connect. A tab opens this server's approve page: type the approver password, Approve. Claude returns to the chat connected.
+
+**Gemini** (Gemini Enterprise custom MCP connectors, Connected Apps):
+
+1. On the server, a client for Gemini with the callback its setup form shows (Google's is `https://vertexaisearch.cloud.google.com/oauth-redirect`), e.g. in `oauth.clients[]`: `{"clientId": "gemini", "clientSecret": "<random>", "redirectUris": ["https://vertexaisearch.cloud.google.com/oauth-redirect"]}`.
+2. In Gemini's form: the MCP URL `https://zalo.example.com/mcp`, authorization URL `https://zalo.example.com/authorize`, token URL `https://zalo.example.com/token`, the client id and secret, scope `mcp:tools` (or `ACCESS_VIEW_MANAGE_MCP_CONTENT` if it asks for that one).
+3. Authorize: the approve page opens; type the approver password, Approve.
+
+**Protocol.** Authorization code with PKCE `S256` only (`plain` and a missing challenge are refused); `redirect_uri` again at `/token`; `iss` in the authorization response (RFC 9207); an optional `resource` (RFC 8707) must be `<publicUrl>/mcp`. Scopes: `mcp:tools`, `offline_access`, `ACCESS_VIEW_MANAGE_MCP_CONTENT`; each grants this account's tools, there is no narrower scope. `client_credentials` serves a confidential client acting for itself (a backend). Routes: `/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server`, `/authorize`, `/token`, `/register` (when on), `/revoke`. There is no OpenID Connect (`/.well-known/openid-configuration` is `404`). `/register`, `/authorize`, `/token` and `/revoke` are rate limited per client address (`429` with `Retry-After`).
+
+**Token lifetimes and revoking.** An access token lasts 1 hour (`oauth.accessTokenTtl`) and carries its issuer and audience, both checked. A refresh token lasts 30 days from its last use (`oauth.refreshTokenTtl`) and rotates on every refresh; one used twice revokes that whole connection, and the connector must be authorized again. To end a connection: `POST /revoke` (RFC 7009) with the token and the client's credentials; or remove the client from the configuration and restart (its tokens stop working at once); or, with the server stopped, delete `<account folder>/oauth-state.json` (every OAuth connection and registration). That file (`0600`) keeps the registered clients and one record per connection, with hashes only; authorization codes live in memory and do not survive a restart.
+
+**Upgrading from 3.0.0.** `--auth` alone no longer turns OAuth on, and the OAuth client secret no longer defaults to it: set `ZALO_MCP_OAUTH_CLIENT_SECRET` (and its redirect URIs) to keep a connector. Dynamic registration is off by default. A client secret is no longer a bearer token. Tokens issued by 3.0.0 are not accepted: every connector authorizes again, through the approve page.
 
 ### 3.5 Backend for a CRM
 
@@ -436,7 +512,7 @@ A CRM needs three things from an account: to **hear** new messages, to **send**,
 - **Delivery is durable, ordered and at least once.** Each event is written to `webhook-outbox.db` in the account directory before anything sends it, so a receiver that is down, slow (a POST has 10 seconds) or answering anything but 2xx costs a backlog, not messages: the sender retries with waits of 1 s doubling to 5 min, holds everything behind a failing event so order is kept, and carries on after a restart or crash. A payload the receiver refuses as malformed (400, 413, 422) is parked as a **dead letter**, and so is any event still undelivered after `ZALO_WEBHOOK_MAX_AGE` (24 h). Watch it with `zalo-agent mcp webhook status`, look with `mcp webhook list --dead`, and put events back with `mcp webhook retry`.
 - **Acknowledge with 2xx at once, do the work afterwards, and de-duplicate on the message id.** At least once means a message can arrive twice (a crash after your reply, before the sender noted it). Every POST has `X-Zalo-Attempt`, and `X-Zalo-Delivery: <first>-<last>` (outbox numbers).
 - **Batching.** With `ZALO_WEBHOOK_BATCH_SIZE=10` up to ten queued events go in one POST as `{"event":"batch","accountId":…,"count":N,"events":[…]}`, signed over the whole body; a lone event is still the plain payload. The sample receivers handle both. Turn it on when a backlog or many accounts make one POST per message too many.
-- **System events** go through the same webhook (ids and counts only, never a name): `account_state` (the account's state: `stopped`, `idle`, `connecting`, `connected`, `kicked`, `yielded`, `login_needed`, `signed_out`, `maintenance`; see [on-demand presence](#users-the-always-on-cap-and-on-demand-presence)), `storage_quota` ([quotas](#storage-quotas-and-retention)), `group_gone` ([leaving a group](#leaving-a-group-groupsonleave)), `queue_overflow` (Zalo dropped part of the offline queue: `{event, accountId, fromTs, toTs, queues, direct, groups, pending, command}`; group messages are read back from the groups' cloud store, a 1-1 gap stays pending with the `sync --from` command that restores it), `session_expiring` (the saved login ends by itself about 90 days after its QR login, and nothing renews it: `{event, accountId, expiresAt, daysLeft, expired, threshold, command, at}`, once per threshold crossed, 14, 7, 3 and 1 days left and `threshold: 0` once ended, remembered across restarts; renew with a QR login, `zalo-agent --account <id> login` then a restart, or the fleet controller's QR add, which keeps the device id; once it has ended `account_state` `signed_out` follows) and, with `approval.deliver: "webhook"`, `approval_requested`. A message that arrives while the socket is parked is delivered on the next connect with `catchUp: true`. Route on `event` and ignore one you do not know.
+- **System events** go through the same webhook (ids and counts only, never a name): `account_state` (the account's state: `stopped`, `idle`, `connecting`, `connected`, `kicked`, `yielded`, `login_needed`, `signed_out`, `maintenance`; see [on-demand presence](#users-the-always-on-cap-and-on-demand-presence)), `storage_quota` ([quotas](#storage-quotas-and-retention)), `group_gone` ([leaving a group](#leaving-a-group-groupsonleave)), `queue_overflow` (Zalo dropped part of the offline queue: `{event, accountId, fromTs, toTs, queues, direct, groups, pending, command}`; group messages are read back from the groups' cloud store, a 1-1 gap stays pending with the `sync --from` command that restores it), `session_expiring` (the saved login ends by itself about 90 days after its QR login, and nothing renews it: `{event, accountId, expiresAt, daysLeft, expired, threshold, command, at}`, once per threshold crossed, 14, 7, 3 and 1 days left and `threshold: 0` once ended, remembered across restarts; renew with a QR login, `zalo-agent --account <id> login` then a restart, or the fleet controller's QR add, which keeps the device id; once it has ended `account_state` `signed_out` follows; with a `publicUrl`, from 7 days before the end it carries a one-time renewal link, `renewUrl` with `renewExpiresAt`, and goes out again with each new link, see [renewing the saved login](#renewing-the-saved-login-sessionrenew)), `session_renewed` (the phone renewed the login through that link and the server uses it now: `{event, accountId, expiresAt, daysLeft, deviceKept, at}`) and, with `approval.deliver: "webhook"`, `approval_requested`. A message that arrives while the socket is parked is delivered on the next connect with `catchUp: true`. Route on `event` and ignore one you do not know.
 
 **Hear: pull.** `GET /events/wait?timeout=55&since=<cursor>` returns every message already waiting in the buffer (`&limit=<n>` caps how many), or `{"status":"timeout"}`, with a cursor to resume from. The reply has `messages` (in order), `count`, `hasMore` and `cursor`, the **last** message's, so `since=<cursor>` continues exactly where the batch ended; `message` is the first. **Breaking in 3.0.0:** the default was one message per call; a client that reads only `message` and continues from `cursor` now skips the rest of the batch: read `messages`, or send `limit=1`. With a `limit`, drain a backlog by calling again at once while `hasMore` is true; `settle=200` (ms, at most 5000) waits that long after the first message so a burst lands in one reply. The same `limit` and `settleMs` exist on the `zalo_wait_for_message` tool and as `mcp wait --limit --settle`. The buffer behind it holds up to `limits.bufferMaxSize` messages per thread for `limits.bufferMaxAge` (the CRM sample raises both to 2,000 and 6 h). Past that, read the cache with `zalo_get_history` / `zalo_get_messages`.
 
@@ -489,7 +565,7 @@ curl -s -H "Authorization: Bearer $TOKEN" http://HOST:PORT/status | head -c 400
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://HOST:PORT/mcp
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://HOST:PORT/mcp -H 'Authorization: Bearer wrong'
 
-# the tools are served (expect 36 names):
+# the tools are served (expect 37 names):
 curl -s http://HOST:PORT/mcp -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | grep -o '"name":"zalo_[a-z_]*"' | wc -l
@@ -498,3 +574,7 @@ curl -s http://HOST:PORT/mcp -H "Authorization: Bearer $TOKEN" \
 zalo-agent mcp start --account 1000000000000000001 --status
 tail -f ~/.zalo-agent-cli/accounts/1000000000000000001/daemon.log   # when started with -d
 ```
+
+## Notes
+
+- Claude's custom connector form has cut a 64-character client secret short (the token request then fails with `invalid_client`): keep `ZALO_MCP_OAUTH_CLIENT_SECRET` at 40 characters or fewer, e.g. `openssl rand -hex 20`.

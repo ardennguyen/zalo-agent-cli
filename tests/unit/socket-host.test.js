@@ -188,6 +188,49 @@ describe("socket host", () => {
             assert.deepEqual(sleeps, [], "a kicked daemon asked for a new login");
         });
 
+        it("expected while the daemon's own renewal logs in: the old socket goes, the daemon does not end", async () => {
+            let expecting = true;
+            const h = host([], { expectKick: () => expecting });
+            const sup = h.start({ id: "old" });
+            sup.emit("kicked", { via: "frame-3000" });
+            assert.equal(ended, null, "the renewal's kick ended the daemon");
+            assert.ok(sup.calls.includes("dispose"));
+            assert.equal(h.current(), null);
+            assert.ok(logged(/The renewal's new login replaced the old session/));
+            // The renewal then starts the new session; a later kick is another session's again.
+            const next = h.start({ id: "new" });
+            expecting = false;
+            next.emit("kicked", { via: "frame-3000" });
+            assert.equal(ended, "kicked");
+        });
+
+        it("is asked with the kicked socket's own session, so a kick of the renewed session is never absorbed", () => {
+            const asked = [];
+            const renewed = { id: "new" };
+            const h = host([], {
+                expectKick: (api) => {
+                    asked.push(api);
+                    return api !== renewed;
+                },
+            });
+            const old = { id: "old" };
+            h.start(old).emit("kicked", { via: "frame-3000" });
+            assert.equal(ended, null);
+            h.start(renewed).emit("kicked", { via: "frame-3000" });
+            assert.deepEqual(asked, [old, renewed]);
+            assert.equal(ended, "kicked", "the renewed session's kick was taken for the renewal's own");
+        });
+
+        it("a broken expectKick is no renewal: the kick ends the daemon as always", () => {
+            const h = host([], {
+                expectKick: () => {
+                    throw new Error("boom");
+                },
+            });
+            h.start({}).emit("kicked", { via: "frame-3000" });
+            assert.equal(ended, "kicked");
+        });
+
         it("says it was kicked, so the close that follows is not logged as a drop to retry", () => {
             const h = host();
             assert.equal(h.kicked(), false, "before any supervisor");

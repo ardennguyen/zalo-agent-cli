@@ -9,6 +9,52 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+## [3.0.1] — 2026-11-15
+
+A security release for the MCP server's OAuth, the official-API logins and moving an account between machines, and the saved login renewed from the running server.
+
+#### Breaking changes
+
+- **OAuth is no longer on with `--auth` alone.** A server with only a bearer token (`--auth` / `ZALO_MCP_AUTH_TOKEN`) now answers 404 on every OAuth route, the discovery documents included. OAuth is on when a client is configured (`ZALO_MCP_OAUTH_CLIENT_SECRET`, `ZALO_MCP_OAUTH_REDIRECT_URIS`, `oauth.clients[]`) or dynamic registration is turned on, and the client secret no longer defaults to the bearer token.
+- **Every OAuth connection is approved by the account owner.** `/authorize` opens a one-time page that asks for the approver password (`zalo-agent mcp approver set`), or the hidden-chat PIN with `approval.secret: "pin"`. Set one before connecting an app: without it, `/authorize` refuses.
+- **Each client needs its callback URLs.** Codes go only to a redirect URI registered for that client: `ZALO_MCP_OAUTH_REDIRECT_URIS` / `oauth.redirectUris`, or `redirectUris` in an `oauth.clients[]` entry (for Claude.ai: `https://claude.ai/api/mcp/auth_callback`).
+- **Dynamic client registration is off by default** (`ZALO_MCP_OAUTH_DYNAMIC_REGISTRATION=true` turns it on).
+- **A client secret is no longer a bearer token** for `/mcp`; `oauth.secretsAsBearer: true` keeps the old behavior.
+- **Connectors must authorize again after the upgrade**: tokens issued by 3.0.0 are not accepted.
+- **Shorter token lifetimes**: access tokens last 1 hour and refresh tokens 30 days from their last use (they used to last 30 and 365 days); both are configurable (`oauth.accessTokenTtl`, `oauth.refreshTokenTtl`).
+- **PKCE with `S256` is required** for every authorization; `plain` is refused.
+
+#### Fixed
+
+- Photos sent through the CLI or MCP (`msg send-image`, `send-file` with a photo, `zalo_send_message` with `filePath`/`files`, a video's thumbnail, avatars, catalog and quick-message photos) no longer carry the camera's location and other metadata. EXIF (GPS position, device make and model, times, the embedded thumbnail), XMP, comments and text chunks are removed from JPEG, PNG and WebP before upload; the color profile and the image data are kept unchanged, and a JPEG's orientation is kept so the photo still shows upright. GIF, HEIC and other formats are sent as they are.
+- `/register` no longer returns the server's secret. Registered clients are public, or get a secret of their own that is stored only as a hash; registration needs `redirect_uris`, is rate limited and capped, and survives a restart.
+- Redirect URIs must be `https`, or `http` on `127.0.0.1`, `[::1]` or `localhost` (any port); `javascript:` and other schemes are refused.
+- Refresh tokens rotate on every use, and a reused one revokes the connection; `/revoke` works; a removed client's tokens stop working.
+- Tokens are bound to the account, the issuer and `<publicUrl>/mcp`, and are checked on each request: a token of one account is refused by another.
+- The OAuth issuer is no longer taken from an `X-Forwarded-Host` header sent by a client that is not a trusted proxy, and a server with OAuth on and a bind address off loopback refuses to start without `publicUrl`.
+- An issuer with a base path (`https://host/a/<ownId>`) serves its path-inserted discovery documents, and the multi-account Caddyfile routes them.
+- OAuth errors are JSON, failed client authentication carries a `Basic` challenge, `/mcp`'s 401 follows RFC 6750, the authorization response carries `iss`, the OAuth endpoints are rate limited, and the OpenID discovery document the server could not honor is gone.
+- `oa login` and `social login` no longer end on a stray request to their callback (wrong `state`, no code): it gets 400 and the login keeps waiting. `social login` requires `state`. Both wait 5 minutes by default (`--timeout`), and a token request gives up after 30 seconds.
+- `oa login`, `oa init`, `social setup` and `social login` take the app secret from `ZALO_OA_APP_SECRET` / `ZALO_SOCIAL_APP_SECRET` or a prompt that does not echo, so it stays out of the process list. The OA data folder is created readable by its owner only, and DPoP proofs carry a random `jti`.
+- A keyring protected with `account security provider passphrase --passphrase-file <file>` and moved to another machine now opens with the systemd credential there when the recorded file does not exist.
+- `sync-media` and the media step of `sync` no longer seem to hang. A link that is gone is no longer sent for renewal (that call never succeeded and could wait forever), so a run moves through dead links in seconds; every download stops at its `--timeout` however it stalls, and the run carries on; a progress line follows every 50 files finished, failed ones included, with saved, failed and size; Ctrl+C stops at once and a re-run picks up the rest. The summary names how gone links were seen (`HTTP 404/410`, a lapsed-signature body) and counts downloads that never answered. A link that answered 404/410 is remembered (sealed, as a hash, in the account's media folder) and skipped without a request on later runs as *known dead*; a new link from a later sync is tried as usual, and `sync-media --retry-dead` asks again for all of them.
+- The `za` wrapper (`fleet generate`, `docs/config-samples/systemd/za`) now passes Ctrl+C and a stop (SIGINT/SIGTERM) on to the command it runs: the one-off service gets its own name and the signal is sent to it, where before it never reached the command and a stopped `za` left it running. The command's exit code is still `za`'s. Reinstall `/usr/local/bin/za` from the new sample to get it.
+
+#### Added
+
+- **The saved login renews itself from the running server, with one scan.** A QR login lasts about 90 days and Zalo never renews it. An `mcp start --http` server with a public address (`publicUrl` / `ZALO_MCP_PUBLIC_URL`) now opens a one-time renewal link 7 days before the end, `<publicUrl>/zalo/qr/<token>`, and sends it in `session_expiring` as `renewUrl` and `renewExpiresAt`; when a link runs out (24 hours) a new one is sent, until the login is renewed. Opening the link shows a fresh QR code and the account it renews; the account's phone scans and confirms, and the server saves the new login (keeping the device id, so the offline queue survives) and switches to it **without a restart**, also out of `signed_out`. A new `session_renewed` event (`expiresAt`, `daysLeft`, `deviceKept`) follows, on the log, the webhook and the MCP buffer. A scan by another account is refused and changes nothing; a link works once, dies on a restart, and is never written to a log.
+- `zalo-agent session renew [--account <id>] [--fresh]`: open a renewal link on the account's running server by hand and print it.
+- Settings: `session.renew` `{enabled, daysBefore, linkTtl}` in `mcp-config.json` (and per account), `ZALO_SESSION_RENEW[_<ownId>]=off`, `ZALO_SESSION_RENEW_DAYS[_<ownId>]`, and `session.renew.*` in the runtime policy. Without a public address the event carries `renewHint` instead of a link.
+- `fleet status` shows `renewing` in LOGIN ENDS while a renewal link is open, and `--check` points at the link.
+- The approval, PIN and status pages share the QR login page's design and its English | Tiếng Việt switch. The OAuth approve page says which app asks, for which account, what it will be able to do, and the host it returns to; `?lang=vi` opens any page in Vietnamese, and a choice made on one page is kept for the others. Their style and script carry a per-response nonce: the pages no longer allow inline styles.
+- **`sync-media` and the media step of `sync` no longer ask Zalo's servers for files they no longer keep.** A file is kept about 14 days after its message (7 days for a file over 100 MB); past that, a file gets no request and is sorted locally: *kept in zCloud* when the local zCloud index lists it, else *gone*, recorded so later runs skip it for free. My Cloud is exempt. A run over months of restored history now takes seconds instead of hours of 404s. `--all-ages` asks anyway; the summary and progress lines count `old in zCloud` and `old gone`.
+- `sync-media --from-zcloud`: fetch the files kept in zCloud from there (those past the window first, and a fresh file whose link failed), decrypted with the account's cloud key, which is read at run time (`--key-stdin` or `--key-prompt`) and held for that run only — never written, logged or put in `--json` output. Only on a zCloud plan. Files land in the usual `media/<threadId>/` folder. `zalo_view_media` never takes the key: for such a file it names the command to run.
+
+#### Known limits
+
+- The zCloud source of `sync-media --from-zcloud` is tested offline only: a live test needs the account's cloud key, which only the owner's phone holds. Getting the key from the phone, as Zalo does, needs this tool to be an end-to-end-encryption device of the account, which it is not; the key has to be given by hand.
+
+
 ## [3.0.0] — 2026-11-15
 
 ### What's changed since v2.5.9

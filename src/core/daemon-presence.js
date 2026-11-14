@@ -426,6 +426,20 @@ export function createDaemonPresence({
         },
 
         /**
+         * A new login of this account (a renewal) while signed out or yielded: the socket host takes its session and
+         * presence comes back (always-on connects now; on-demand runs its start-up catch-up).
+         *
+         * @param {object} api - the new session
+         * @returns {boolean} whether the daemon was signed out or yielded (false: the caller switches the socket itself)
+         */
+        signIn(api) {
+            const s = presence.state;
+            if (s !== "signed-out" && s !== "yielded") return false;
+            getSocketHost().adopt(api);
+            return presence.noteSignedIn();
+        },
+
+        /**
          * A policy change: the presence keys apply at once (a switch to always-on holds the socket now; one to
          * on-demand starts the idle clock).
          *

@@ -49,6 +49,8 @@ import { controlBody } from "../helpers/fake-zalo/sync.js";
 import { SEED, T0, TZ, expectGolden, freezeTime, loginOnce, openWire, seedRandom } from "../helpers/wire-diff/index.js";
 import { normalizeError, normalizeRequest, normalizeResult } from "../helpers/wire-diff/normalize.js";
 import { FILES, IMAGES } from "../fixtures/index.js";
+import { jpegWithMetadata } from "../helpers/metadata-images.js";
+import { stripImageMetadata } from "../../src/zalo/strip-metadata.js";
 import { installFakeZalo } from "./fake-zalo-session.js";
 
 const USER = "1000000000000000001";
@@ -328,6 +330,11 @@ writeFileSync(made.wide, pattern(64000 * 5 + 1000, 9));
 writeFileSync(made.exe, pattern(100, 1));
 mkdirSync(join(DIR, "sub dir"));
 writeFileSync(made.spaced, pattern(500, 2));
+// Phone-like photos: EXIF with a GPS IFD, make, model, a thumbnail and orientation 6, plus XMP, a comment and a trailer.
+made.exifPhoto = join(DIR, "camera.jpg");
+writeFileSync(made.exifPhoto, jpegWithMetadata().bytes);
+made.bigExifPhoto = join(DIR, "camera-big.jpg");
+writeFileSync(made.bigExifPhoto, jpegWithMetadata({ fill: 100000 }).bytes);
 
 after(() => rmSync(DIR, { recursive: true, force: true }));
 
@@ -636,6 +643,44 @@ describe("wire: attachments", () => {
         assert.equal(ofKind(rec.own.requests, "photo")[0].params.rawUrl, photoUrlsOf("image-64x48.png").normalUrl);
     });
 
+    it("a photo goes up without its metadata: the stripped bytes, their size, the orientation still applied", async () => {
+        const original = readFileSync(made.exifPhoto);
+        const clean = stripImageMetadata(original).bytes;
+        assert.ok(clean.length < original.length, "the fixture has metadata to lose");
+        const rec = named(
+            await wire.run("sendMessage", [{ msg: "", attachments: [made.exifPhoto] }, USER, 0], {
+                replies: replies(),
+            }),
+            "sendMessage/image-exif",
+        );
+        assert.equal(rec.own.error, null);
+        const [chunk] = ofKind(rec.own.requests, "chunk");
+        // Red if the original file's bytes (GPS, make, model, thumbnail) went up, or the size named the original.
+        assert.deepEqual(
+            [chunk.parts[0].size, chunk.parts[0].sha256, chunk.params.totalSize],
+            [clean.length, sha256(clean), clean.length],
+        );
+        assert.notEqual(chunk.parts[0].sha256, sha256(original));
+        // The stored 16x8 photo has orientation 6, which the stripped bytes keep: it is laid out 8 wide.
+        const [send] = ofKind(rec.own.requests, "photo");
+        assert.deepEqual([send.params.width, send.params.height], [8, 16]);
+
+        const up = await wire.run("uploadAttachment", [[made.exifPhoto], USER, 0], { replies: replies() });
+        assert.deepEqual([up.own.result[0].totalSize, up.own.result[0].hdSize], [clean.length, clean.length]);
+    });
+
+    it("a video's local thumbnail goes up without its metadata", async () => {
+        const clean = stripImageMetadata(readFileSync(made.exifPhoto)).bytes;
+        const rec = await wire.run(
+            "sendVideoFile",
+            [{ file: made.clip, thumbnailFile: made.exifPhoto, width: 640, height: 360 }, USER, 0],
+            { replies: replies(), during: playFileDone(reg, ["clip.mp4"], "callback") },
+        );
+        const photoChunk = ofKind(rec.own.requests, "chunk").find((c) => c.path.includes("photo_original"));
+        assert.equal(photoChunk.parts[0].sha256, sha256(clean));
+        assert.equal(photoChunk.params.totalSize, clean.length);
+    });
+
     it("uploadAttachment alone gives each file's upload result", async () => {
         const rec = await compared(
             "uploadAttachment/image-and-file",
@@ -735,6 +780,26 @@ describe("wire: a file in several chunks", () => {
             [0, 1, 2, 3].map((i) => sha256(bytes.subarray(i * 64000, (i + 1) * 64000))),
         );
         assert.equal(ofKind(rec.own.requests, "file")[0].params.checksum, md5(bytes));
+    });
+
+    it("a photo over one chunk: every chunk is a slice of the stripped bytes, never of the file", async () => {
+        const original = readFileSync(made.bigExifPhoto);
+        const clean = stripImageMetadata(original).bytes;
+        const rec = await wire.run("sendMessage", [{ msg: "", attachments: [made.bigExifPhoto] }, USER, 0], {
+            replies: replies(),
+        });
+        assert.equal(rec.own.error, null);
+        const chunks = ofKind(rec.own.requests, "chunk");
+        const total = Math.ceil(clean.length / 64000);
+        assert.ok(total > 1);
+        assert.deepEqual(
+            chunks.map((c) => [c.params.chunkId, c.params.totalChunk, c.params.totalSize]),
+            Array.from({ length: total }, (_, i) => [i + 1, total, clean.length]),
+        );
+        assert.deepEqual(
+            chunks.map((c) => c.parts[0].sha256),
+            Array.from({ length: total }, (_, i) => sha256(clean.subarray(i * 64000, (i + 1) * 64000))),
+        );
     });
 
     it("at most three chunks in flight; the last goes alone once the others answered, and its reply is the one used", async () => {

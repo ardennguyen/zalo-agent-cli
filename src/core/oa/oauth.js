@@ -89,20 +89,34 @@ export function getOAuthUrl(
 
 /**
  * Where a token request goes and what it adds: the OA token URL by default; the Social API's user token URL and a
- * DPoP header when its caller says so.
+ * DPoP header when its caller says so. `timeoutMs` defaults to TOKEN_REQUEST_TIMEOUT_MS.
  *
- * @typedef {{ url?: string, headers?: Record<string, string> }} TokenEndpoint
+ * @typedef {{ url?: string, headers?: Record<string, string>, timeoutMs?: number }} TokenEndpoint
  */
 
-async function postToken(secretKey, fields, { url = OAUTH_TOKEN_URL, headers = {} } = {}) {
+/**
+ * How long one token request may take: well under the refresh lock's stale age (withAsyncFileLock, 120 s), so a hung
+ * request never outlives the lock that serializes it.
+ */
+export const TOKEN_REQUEST_TIMEOUT_MS = 30_000;
+
+async function postToken(
+    secretKey,
+    fields,
+    { url = OAUTH_TOKEN_URL, headers = {}, timeoutMs = TOKEN_REQUEST_TIMEOUT_MS } = {},
+) {
     let res;
     try {
         res = await fetch(url, {
             method: "POST",
             headers: { ...headers, "Content-Type": "application/x-www-form-urlencoded", secret_key: secretKey },
             body: new URLSearchParams(fields),
+            signal: AbortSignal.timeout(timeoutMs),
         });
     } catch (e) {
+        if (e?.name === "TimeoutError") {
+            throw new OAError(`${url} did not answer within ${Math.round(timeoutMs / 1000)} s`, { code: "network" });
+        }
         throw new OAError(`${url} could not be reached: ${e.message}`, { code: "network" });
     }
     const reply = await readZaloJson(res, url);
@@ -315,10 +329,18 @@ export function openInBrowser(url) {
     }
 }
 
+/** How long a login waits for its callback by default: five minutes. */
+export const LOGIN_TIMEOUT_MS = 300_000;
+
 /**
  * Run the OAuth callback half: a one-shot HTTP server on `/callback` that checks `state`, exchanges the code with
  * the verifier, saves the credentials and closes. The server binds 127.0.0.1 unless `callbackHost` names a public
  * host (then 0.0.0.0). The timer is cleared on every outcome, so a finished login exits at once.
+ *
+ * Only Zalo's answer to this login ends it: a request with another `state`, or with none where one is required, or
+ * with no code and no matching `state`, is answered 400 and the login keeps waiting (in VPS mode the port is open to
+ * anyone). An error answer carrying this login's `state` (the person declined) ends it. `requireState`: the Social
+ * login requires `state`; the OA login tolerates its absence, since the example callback in Zalo's OA docs has none.
  *
  * @param {object} opts
  * @param {string} opts.appId
@@ -326,7 +348,8 @@ export function openInBrowser(url) {
  * @param {number} [opts.port] - default 3456
  * @param {string} [opts.callbackHost] - e.g. https://example.com (VPS mode)
  * @param {string} [opts.oaId] - the record to save into (default "default")
- * @param {number} [opts.timeoutMs] - default 2 minutes
+ * @param {number} [opts.timeoutMs] - default LOGIN_TIMEOUT_MS (5 minutes)
+ * @param {boolean} [opts.requireState] - refuse a callback without `state` (Social); default false (OA)
  * @param {(info: { authUrl: string, bindHost: string, port: number }) => void} [opts.onListening]
  * @param {string} [opts.permissionUrl] - default: the OA permission URL (the Social API passes its own)
  * @param {() => TokenEndpoint} [opts.tokenEndpoint] - built at exchange time (a DPoP proof is fresh); default OA
@@ -340,7 +363,8 @@ export function startOAuthLogin({
     port = 3456,
     callbackHost,
     oaId = "default",
-    timeoutMs = 120_000,
+    timeoutMs = LOGIN_TIMEOUT_MS,
+    requireState = false,
     onListening,
     permissionUrl,
     tokenEndpoint,
@@ -373,26 +397,49 @@ export function startOAuthLogin({
             if (err) rejectDone(err);
             else resolveDone(value);
         };
+        let exchanging = false;
         const server = createServer(async (req, res) => {
             if (settled || !req.url?.startsWith("/callback")) {
                 res.writeHead(404);
                 res.end();
                 return;
             }
-            const url = new URL(req.url, `http://localhost:${port}`);
+            if (exchanging) {
+                page(res, 409, "Login in progress", "This login is already completing. You can close this tab.");
+                return;
+            }
+            let url;
+            try {
+                url = new URL(req.url, `http://localhost:${port}`);
+            } catch {
+                page(res, 400, "Not this login", "That request is not an answer to this login.");
+                return;
+            }
             const code = url.searchParams.get("code");
             const returnedState = url.searchParams.get("state");
             const returnedOaId = url.searchParams.get("oa_id");
-            // Zalo echoes `state` on the redirect; one that is present and differs is someone else's answer.
-            if (returnedState !== null && returnedState !== state) {
-                page(res, 400, "Login failed", "The state does not match this login. Start the login again.");
-                return finish(new Error("OAuth state mismatch: the callback is not the answer to this login"));
+            const stateMatches = returnedState !== null && returnedState === state;
+            // Zalo echoes `state` on the redirect; one that differs (or none, where one is required) is not this
+            // login's answer: refused, and the login keeps waiting for its own.
+            if ((returnedState !== null && !stateMatches) || (returnedState === null && requireState)) {
+                page(
+                    res,
+                    400,
+                    "Not this login",
+                    returnedState === null
+                        ? "The answer carries no state, so it cannot be this login's. The login is still waiting."
+                        : "The state does not match this login. The login is still waiting.",
+                );
+                return;
             }
             if (!code) {
                 const msg = url.searchParams.get("error_description") || "No authorization code received";
                 page(res, 400, "Login failed", msg);
-                return finish(new Error(msg));
+                // Zalo's own answer to this login (its state) ends it; anything else is a stray request.
+                if (stateMatches) finish(new Error(msg));
+                return;
             }
+            exchanging = true;
             try {
                 const tokenData = await exchangeCode(code, appId, secretKey, verifier, tokenEndpoint?.());
                 const failed = tokenErrorText(tokenData);
@@ -408,7 +455,10 @@ export function startOAuthLogin({
                 finish(null, { tokenData, oaId: returnedOaId, saved });
             } catch (e) {
                 page(res, 500, "Login failed", e.message);
-                finish(e);
+                // With this login's state the code was the real one and is now spent: the login ends. Without a state
+                // (tolerated for the OA) it may have been a stray request: keep waiting for the real answer.
+                if (stateMatches) finish(e);
+                else exchanging = false;
             }
         });
         server.on("error", (e) => finish(e));

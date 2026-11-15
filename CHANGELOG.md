@@ -18,6 +18,7 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 #### Changed
 
+- **A refused user id says how to find the right one.** A user is known by a different id from each account, so sending to another account's own id fails with only "invalid parameter"; the error now says to look the user up with `friend list`, `friend find` or `conv list` (CLI and `zalo_send_message`).
 - **No file is written off by its age.** Media downloads ask for every file, whatever its age: an old file kept in zCloud comes from zCloud when the account's zCloud key is stored, any other from Zalo's servers, and zCloud is tried again when Zalo's servers fail. A file counts as gone only once Zalo's servers say it no longer exists, and files an earlier version set aside by age alone are looked at again. The stored key is used by every download (`sync`, `sync-media`, the automatic downloads of `listen` and `mcp start`, `zalo_view_media`); `sync-media --from-zcloud` now only insists on zCloud (it checks the plan, and takes a key at run time with `--key-stdin` or `--key-prompt`), and `--all-ages` is kept for scripts but no longer needed.
 - **Photos keep Zalo's format.** A photo Zalo keeps as JPEG XL is downloaded and saved as `.jxl`, no longer swapped for a JPEG copy; every picture is named by its own bytes. Over MCP a JPEG XL photo is sent as a link, since MCP clients take only JPEG, PNG, GIF and WebP inline.
 

@@ -4,6 +4,7 @@
  */
 
 import { existsSync } from "node:fs";
+import { withUserIdHint } from "../core/user-id-hint.js";
 import { resolve, join } from "path";
 import { InvalidArgumentError } from "commander";
 import { getApi, getOwnId } from "../core/zalo-client.js";
@@ -913,7 +914,7 @@ export function registerMsgCommands(program) {
                     }
                 }
             } catch (e) {
-                error(e.message);
+                error(withUserIdHint(e, threadId, opts.type));
             }
         });
 
@@ -1017,7 +1018,7 @@ export function registerMsgCommands(program) {
                 const result = await api.sendCard(cardOpts, threadId, Number(opts.type));
                 output(result, program.opts().json, () => success("Card sent"));
             } catch (e) {
-                error(e.message);
+                error(withUserIdHint(e, threadId, opts.type));
             }
         });
 
@@ -1043,7 +1044,7 @@ export function registerMsgCommands(program) {
                     success(`Bank card sent: ${BIN_TO_DISPLAY[bin]} / ${accountNumber}`),
                 );
             } catch (e) {
-                error(e.message);
+                error(withUserIdHint(e, threadId, opts.type));
             }
         });
 
@@ -1104,7 +1105,7 @@ export function registerMsgCommands(program) {
 
                 output(result, program.opts().json, () => success(`QR transfer sent to ${threadId}`));
             } catch (e) {
-                error(e.message);
+                error(withUserIdHint(e, threadId, opts.type));
             }
         });
 
@@ -1129,7 +1130,7 @@ export function registerMsgCommands(program) {
                 const result = await api.sendSticker(stickerObj, threadId, Number(opts.type));
                 output(result, program.opts().json, () => success("Sticker sent"));
             } catch (e) {
-                error(e.message);
+                error(withUserIdHint(e, threadId, opts.type));
             }
         });
 
@@ -1143,7 +1144,7 @@ export function registerMsgCommands(program) {
                 const result = await getApi().sendVoice({ voiceUrl, ttl: opts.ttl }, threadId, Number(opts.type));
                 output(result, program.opts().json, () => success(`Voice sent to ${threadId}`));
             } catch (e) {
-                error(`Send voice failed: ${e.message}`);
+                error(`Send voice failed: ${withUserIdHint(e, threadId, opts.type)}`);
             }
         });
 
@@ -1157,7 +1158,7 @@ export function registerMsgCommands(program) {
                 const result = await getApi().sendLink({ link: url, msg: opts.caption }, threadId, Number(opts.type));
                 output(result, program.opts().json, () => success(`Link sent to ${threadId}`));
             } catch (e) {
-                error(`Send link failed: ${e.message}`);
+                error(`Send link failed: ${withUserIdHint(e, threadId, opts.type)}`);
             }
         });
 
@@ -1232,7 +1233,7 @@ export function registerMsgCommands(program) {
                 );
                 output(result, program.opts().json, () => success(`Video sent to ${threadId}`));
             } catch (e) {
-                error(`Send video failed: ${e.message}`);
+                error(`Send video failed: ${withUserIdHint(e, threadId, opts.type)}`);
             }
         });
 
@@ -1305,7 +1306,7 @@ export function registerMsgCommands(program) {
                 const result = await getApi().addReaction(reaction, dest);
                 output(result, program.opts().json, () => success(`Reacted with '${reaction}'`));
             } catch (e) {
-                error(`React failed: ${e.message}`);
+                error(`React failed: ${withUserIdHint(e, threadId, opts.type)}`);
             }
         });
 
@@ -1407,7 +1408,7 @@ export function registerMsgCommands(program) {
                 const result = await api.undo(payload, threadId, Number(opts.type));
                 output(result, program.opts().json, () => success("Message recalled (undone)"));
             } catch (e) {
-                error(`Undo failed: ${e.message}`);
+                error(`Undo failed: ${withUserIdHint(e, threadId, opts.type)}`);
             }
         });
 

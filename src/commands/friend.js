@@ -3,6 +3,7 @@
  */
 
 import { getApi } from "../core/zalo-client.js";
+import { withUserIdHint } from "../core/user-id-hint.js";
 import { success, error, info, output, warning } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
 import { describeFriendUndoError, friendAddFailure, readSentRequests } from "../core/friend-requests.js";
@@ -171,7 +172,7 @@ export function registerFriendCommands(program) {
                     info(mutualGroupsLine(mutualGroups));
                 });
             } catch (e) {
-                error(e.message);
+                error(withUserIdHint(e, userId, 0));
             }
         });
 

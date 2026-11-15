@@ -16,6 +16,7 @@
  */
 
 import { existsSync, unlinkSync } from "node:fs";
+import { withUserIdHint } from "../core/user-id-hint.js";
 import { resolve } from "node:path";
 import { z } from "zod";
 import { officialMeta, officialTool } from "./official-tool.js";
@@ -1338,7 +1339,7 @@ export function registerTools(
                 });
             } catch (e) {
                 console.error("[mcp-tools] zalo_send_message error:", e.message);
-                return err(e.message);
+                return err(withUserIdHint(e, threadId, threadType));
             }
         },
     );

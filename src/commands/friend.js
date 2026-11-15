@@ -242,8 +242,8 @@ export function registerFriendCommands(program) {
         .command("last-online <userId>")
         .description(
             "When a user was last online, as Zalo reads it: when your own online status is hidden " +
-                '(profile set online-status 0) nothing is asked and hiddenBy is "you"; hiddenBy "them" means ' +
-                "they hide theirs",
+                '(profile set online-status 0) nothing is asked and hiddenBy is "you"; hiddenBy "them": yours is ' +
+                "shown and Zalo gave no time (they hide theirs, or were never online)",
         )
         .option("--ask-anyway", "Ask Zalo even when your own online status is hidden (diagnostics)")
         .option(

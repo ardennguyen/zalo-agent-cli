@@ -5,8 +5,8 @@
  * `ls` and `plan` read the local index that `sync-cloud` fills and the local message cache; they send nothing to Zalo.
  * `apply` does what Zalo's own cloud view does when you delete items there: it deletes the chat
  * message each item belongs to, for this account on every device, which cannot be undone. Zalo has no zCloud delete
- * endpoint. It is guarded (`--yes`, `--dry-run`, src/core/confirm-guard.js) and unverified: no such delete has been
- * watched on a disposable item yet (docs/agent-notes.md).
+ * endpoint. It is guarded (`--yes`, `--dry-run`, src/core/confirm-guard.js); confirmed live on a disposable item
+ * (`--msg` picks exactly one).
  *
  * `get` downloads one item's blob as Zalo opens it (src/zalo/zcloud-e2ee.js, ZP-10). An encrypted blob opens only
  * with the account's cloud key: the one stored sealed (`cloud key setup`, or fetched at a QR login), or one given at run
@@ -88,6 +88,7 @@ function filterOptions(cmd) {
     return cmd
         .option("-c, --conv <threadId>", "Only this conversation (repeatable)", collect, [])
         .option("-t, --type <kinds>", "Only these kinds, comma separated: photo, video, file, voice, gif, other")
+        .option("-m, --msg <id>", "Only the item of this message, by its msgId or cliMsgId (repeatable)", collect, [])
         .option("--older-than <days>", "Only items older than this many days", (v) => Number(v))
         .option("--larger-than <mb>", "Only items of at least this many MB", (v) => Number(v))
         .option("-n, --limit <n>", "Items to list and act on (default: every match)", (v) => parseInt(v, 10))
@@ -125,6 +126,7 @@ function planFrom(opts) {
                           .map((k) => k.trim())
                           .filter(Boolean)
                     : [],
+                messages: opts.msg ?? [],
                 olderThanDays: opts.olderThan ?? null,
                 largerThanBytes: opts.largerThan === undefined ? null : opts.largerThan * MB,
                 onlySavedLocally: Boolean(opts.onlySavedLocally),
@@ -283,7 +285,7 @@ export function registerCloudCommands(program) {
             const listedBytes = r.items.reduce((sum, it) => sum + it.bytes, 0);
             const target = { items: r.listed, size: bytesText(listedBytes), conversations };
             if (opts.dryRun) {
-                output({ dryRun: true, sent: false, verified: false, warning: CLEANUP_WARNING, ...r }, jsonMode, () => {
+                output({ dryRun: true, sent: false, verified: true, warning: CLEANUP_WARNING, ...r }, jsonMode, () => {
                     warning(CLEANUP_WARNING);
                     info(
                         `Dry run: this would delete the message behind ${r.listed} item(s) (${target.size}) in ` +
@@ -298,7 +300,7 @@ export function registerCloudCommands(program) {
             }
             gateCli("cloud.delete", target, opts, { json: jsonMode });
             if (!r.listed) {
-                output({ deleted: 0, failed: [], skipped: [], bytes: 0, verified: false }, jsonMode, () =>
+                output({ deleted: 0, failed: [], skipped: [], bytes: 0, verified: true }, jsonMode, () =>
                     info("Nothing matches: no message was deleted."),
                 );
                 return;
@@ -319,7 +321,7 @@ export function registerCloudCommands(program) {
                     if (!jsonMode && !p.ok) warning(`  ${p.item.noiseId}: ${p.error}`);
                 },
             });
-            output({ ...result, matched: r.matched, verified: false }, jsonMode, () => {
+            output({ ...result, matched: r.matched, verified: true }, jsonMode, () => {
                 success(
                     `Deleted the message behind ${result.deleted} item(s), ${bytesText(result.bytes)}. ` +
                         "The cloud drops them when its queue says so; `sync-cloud` then updates the local index.",

@@ -80,6 +80,29 @@ describe("describeItem", () => {
 });
 
 describe("planCloudCleanup", () => {
+    it("narrows to the items of named messages, by cliMsgId (the queue's msgId is often 0) or by msgId", () => {
+        const byCli = plan({ messages: ["c-big-video"] });
+        assert.deepEqual(
+            byCli.items.map((i) => i.noiseId),
+            ["big-video"],
+        );
+        const withGlobal = planCloudCleanup({
+            rows: [row("x", { msgInfo: { glbMsgId: "8000000000001" } }), row("y")],
+            ownId: OWN,
+            filters: { messages: ["8000000000001"] },
+            now: NOW,
+        });
+        assert.deepEqual(
+            withGlobal.items.map((i) => i.noiseId),
+            ["x"],
+        );
+        assert.equal(
+            plan({ messages: ["no-such-message"] }).matched,
+            0,
+            "an unknown id matches nothing, never everything",
+        );
+    });
+
     it("leaves out end-to-end encrypted items, groups and My Cloud unless asked, and counts what it left out", () => {
         const p = plan();
         assert.deepEqual(

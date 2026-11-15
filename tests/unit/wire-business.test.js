@@ -230,7 +230,7 @@ describe("wire: business (src/zalo/api/business.js)", () => {
             assert.equal(req.path, "/api/prodcatalog/product/view");
             assert.deepEqual(req.params, { product_id: PRODUCT });
             assert.deepEqual(rec.own.result, reply);
-            assert.equal(PRODUCT_VIEW.verified, false, "no live answer was seen");
+            assert.notEqual(PRODUCT_VIEW.verified, false, "confirmed live");
         });
 
         it("getProductInfo: a missing id is refused before any request", async () => {
@@ -380,8 +380,8 @@ describe("wire: business (src/zalo/api/business.js)", () => {
             );
         });
 
-        it("uploadProductPhoto is marked not verified until a live run (its fields are not known)", () => {
-            assert.equal(PRODUCT_PHOTO.verified, false);
+        it("uploadProductPhoto is no longer marked unverified (its quick-message fields worked live)", () => {
+            assert.notEqual(PRODUCT_PHOTO.verified, false);
         });
 
         it("registerCatalog: enable 1 / 0", async () => {

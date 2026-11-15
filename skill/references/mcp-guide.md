@@ -1073,5 +1073,5 @@ Claude Code / Gemini / MCP Client
 
 - Biểu mẫu custom connector của Claude từng cắt ngắn client secret dài 64 ký tự (khi đó yêu cầu token thất bại với `invalid_client`): hãy giữ `ZALO_MCP_OAUTH_CLIENT_SECRET` từ 40 ký tự trở xuống, ví dụ `openssl rand -hex 20`.
 - `zalo_get_history` và `msg history` chỉ lấy được từ Zalo các tin **kể từ lần đăng nhập này**; lịch sử cũ hơn cần `zalo-agent sync` (bấm xác nhận trên điện thoại).
-- Chưa được xác nhận trên tài khoản thật (phản hồi có `verified: false` khi có trường đó): `zalo_cloud` `apply`, `zalo_quick_message` `enable` / `disable`, bước `react_seen` của `zalo_conversation` `read`, `hiddenBy` của `zalo_friend` `last_online`, gửi video từ tệp cục bộ.
+- Chưa được xác nhận trên tài khoản thật (phản hồi có `verified: false` khi có trường đó): gửi video từ tệp cục bộ.
 - `zalo_conversation` `block_sharing` cần tài khoản zBusiness Max; tài khoản cá nhân nhận mã 829.

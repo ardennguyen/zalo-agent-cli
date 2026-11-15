@@ -6,7 +6,10 @@ import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { acquireLock, releaseLock } from "../../src/core/lock.js";
 import { runCli } from "../helpers/cli.js";
+import { checkCli } from "../helpers/cli-fast.js";
 
+// Most commands run in the in-process CLI worker; a check that fails there is re-run as a real child process
+// (tests/helpers/cli-fast.js `checkCli`). The two lock tests always spawn for real.
 const options = { home: SANDBOX_HOME, timeout: 120_000 };
 before(() => assertSandboxed(CONFIG_DIR));
 beforeEach(() => {
@@ -23,33 +26,39 @@ beforeEach(() => {
 for (const command of [["listen"], ["mcp", "start"]]) {
     describe(`${command.join(" ")} --account`, () => {
         it("advertises account selection by ID", async () => {
-            const result = await runCli([...command, "--help"], options);
-            assert.equal(result.code, 0);
-            assert.match(result.all, /--account <id>/);
-            assert.match(result.all, /exact registered account ID/);
+            await checkCli([...command, "--help"], options, (result) => {
+                assert.equal(result.code, 0);
+                assert.match(result.all, /--account <id>/);
+                assert.match(result.all, /exact registered account ID/);
+            });
         });
 
         it("rejects account names before authentication", async () => {
-            const result = await runCli([...command, "--account", "Example One"], options);
-            assert.notEqual(result.code, 0);
-            assert.match(result.all, /full numeric account ID/);
+            await checkCli([...command, "--account", "Example One"], options, (result) => {
+                assert.notEqual(result.code, 0);
+                assert.match(result.all, /full numeric account ID/);
+            });
         });
 
         it("rejects an empty value instead of using the active account", async () => {
-            const result = await runCli([...command, "--account", ""], options);
-            assert.notEqual(result.code, 0);
-            assert.match(result.all, /full numeric account ID/);
+            await checkCli([...command, "--account", ""], options, (result) => {
+                assert.notEqual(result.code, 0);
+                assert.match(result.all, /full numeric account ID/);
+            });
         });
 
         it("requires a value and does not accept a partial numeric ID", async () => {
-            const missing = await runCli([...command, "--account"], options);
-            assert.notEqual(missing.code, 0);
-            assert.match(missing.all, /argument missing/);
-            const partial = await runCli([...command, "--account", "10"], options);
-            assert.notEqual(partial.code, 0);
-            assert.match(partial.all, /not registered/);
+            await checkCli([...command, "--account"], options, async (missing) => {
+                assert.notEqual(missing.code, 0);
+                assert.match(missing.all, /argument missing/);
+                await checkCli([...command, "--account", "10"], options, (partial) => {
+                    assert.notEqual(partial.code, 0);
+                    assert.match(partial.all, /not registered/);
+                });
+            });
         });
 
+        // A real child process: the lock this test holds is checked against a live, separate process.
         it("uses the explicitly selected inactive account's lock before attempting login", async () => {
             const dir = join(SANDBOX_CONFIG_DIR, "accounts", "101");
             assert.equal(acquireLock(dir), true);
@@ -65,6 +74,8 @@ for (const command of [["listen"], ["mcp", "start"]]) {
             }
         });
 
+        // Real child processes, not the worker: the lock is released by the process, and a worker that held it
+        // would stay alive holding it.
         it("releases the selected account's lock when its saved credentials are missing", async () => {
             const dir = join(SANDBOX_CONFIG_DIR, "accounts", "101");
             const result = await runCli([...command, "--account", "101"], options);
@@ -81,35 +92,37 @@ for (const command of [["listen"], ["mcp", "start"]]) {
 
 describe("global --account on one-shot CLI commands", () => {
     it("targets the inactive account without modifying accounts.json", async () => {
-        const result = await runCli(["--json", "--account", "101", "status"], options);
-        assert.equal(result.code, 0, result.stderr);
-        const data = JSON.parse(result.stdout.trim());
-        assert.equal(data.activeAccount?.ownId, "101");
-        assert.equal(data.activeAccount?.name, "Example One");
-        const registry = JSON.parse(readFileSync(join(CONFIG_DIR, "accounts.json"), "utf8"));
-        assert.equal(registry.find((a) => a.active).ownId, "202");
+        await checkCli(["--json", "--account", "101", "status"], options, (result) => {
+            assert.equal(result.code, 0, result.stderr);
+            const data = JSON.parse(result.stdout.trim());
+            assert.equal(data.activeAccount?.ownId, "101");
+            assert.equal(data.activeAccount?.name, "Example One");
+            const registry = JSON.parse(readFileSync(join(CONFIG_DIR, "accounts.json"), "utf8"));
+            assert.equal(registry.find((a) => a.active).ownId, "202");
+        });
     });
 
     it("also accepts --account after the subcommand or via ZALO_ACCOUNT", async () => {
-        const trailing = await runCli(["account", "info", "--json", "--account", "101"], options);
-        assert.equal(trailing.code, 0, trailing.stderr);
-        assert.equal(JSON.parse(trailing.stdout.trim())?.ownId, "101");
+        await checkCli(["account", "info", "--json", "--account", "101"], options, async (trailing) => {
+            assert.equal(trailing.code, 0, trailing.stderr);
+            assert.equal(JSON.parse(trailing.stdout.trim())?.ownId, "101");
 
-        const envRes = await runCli(["--json", "status"], {
-            ...options,
-            env: { ZALO_ACCOUNT: "101" },
+            await checkCli(["--json", "status"], { ...options, env: { ZALO_ACCOUNT: "101" } }, (envRes) => {
+                assert.equal(envRes.code, 0, envRes.stderr);
+                assert.equal(JSON.parse(envRes.stdout.trim()).activeAccount?.ownId, "101");
+            });
         });
-        assert.equal(envRes.code, 0, envRes.stderr);
-        assert.equal(JSON.parse(envRes.stdout.trim()).activeAccount?.ownId, "101");
     });
 
     it("rejects an unregistered or non-numeric --account on one-shot commands", async () => {
-        const unknown = await runCli(["--account", "999", "status"], options);
-        assert.notEqual(unknown.code, 0);
-        assert.match(unknown.all, /not registered/);
+        await checkCli(["--account", "999", "status"], options, async (unknown) => {
+            assert.notEqual(unknown.code, 0);
+            assert.match(unknown.all, /not registered/);
 
-        const byName = await runCli(["--account", "Example One", "status"], options);
-        assert.notEqual(byName.code, 0);
-        assert.match(byName.all, /full numeric account ID/);
+            await checkCli(["--account", "Example One", "status"], options, (byName) => {
+                assert.notEqual(byName.code, 0);
+                assert.match(byName.all, /full numeric account ID/);
+            });
+        });
     });
 });

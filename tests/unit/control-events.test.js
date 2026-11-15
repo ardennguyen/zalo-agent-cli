@@ -7,7 +7,7 @@
  * from those key names and from the fields each control carries; ids are throwaway constants.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
-import { describe, it, after, beforeEach } from "node:test";
+import { describe, it, after, beforeEach, before } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -78,11 +78,10 @@ const reminderData = (over = {}) => ({
     ...over,
 });
 
-describe("control events — sandbox", () => {
-    it("runs inside the test sandbox", () => {
-        assertSandboxed(CONFIG_DIR);
-        assert.equal(CONFIG_DIR, SANDBOX_CONFIG_DIR);
-    });
+// Every test in this file runs in the sandbox: a failing hook fails them all.
+before(() => {
+    assertSandboxed(CONFIG_DIR);
+    assert.equal(CONFIG_DIR, SANDBOX_CONFIG_DIR);
 });
 
 describe("the three controls are known", () => {

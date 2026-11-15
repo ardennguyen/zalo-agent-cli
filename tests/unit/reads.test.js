@@ -10,7 +10,7 @@
  * Keys, ids and hosts are throwaway constants (AGENTS.md §12). No socket, no session, no network.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
-import { describe, it } from "node:test";
+import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import {
@@ -213,11 +213,10 @@ const CASES = [
     ["emoji-status-config", {}, "emoji_stt", "/api/v1/emoji-status/resource-config", "GET", { imei: IMEI }],
 ];
 
-describe("reads — sandbox", () => {
-    it("runs inside the test sandbox", () => {
-        assertSandboxed(CONFIG_DIR);
-        assert.equal(CONFIG_DIR, SANDBOX_CONFIG_DIR);
-    });
+// Every test in this file runs in the sandbox: a failing hook fails them all.
+before(() => {
+    assertSandboxed(CONFIG_DIR);
+    assert.equal(CONFIG_DIR, SANDBOX_CONFIG_DIR);
 });
 
 describe("each read goes out the way Zalo expects it", () => {

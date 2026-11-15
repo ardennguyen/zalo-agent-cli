@@ -1,6 +1,10 @@
 /**
  * Input-validation logic paths that resolve *before* any network call.
  *
+ * The commands run in the in-process CLI worker (tests/helpers/cli-fast.js `checkCli`): a case whose check fails
+ * there is re-run as a real child process, and only that result can fail the test. The exit-code test below
+ * spawns for real every time, as the smoke check that the worker and a real process agree.
+ *
  * Each of these guards sits ahead of `getApi()` in its action handler, so
  * they are fully testable offline against a throwaway HOME. Together they
  * are the CLI's whole "reject bad input early" surface.
@@ -16,62 +20,70 @@ import { SANDBOX_HOME } from "../helpers/sandbox.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { runCli, errorLineOf } from "../helpers/cli.js";
+import { checkCli } from "../helpers/cli-fast.js";
 
-// Per-spawn timeout: ZALO_TEST_CLI_TIMEOUT_MS when set (a loaded box), 30 s otherwise, as tests/cli/cli.test.js.
+// Per-spawn timeout: ZALO_TEST_CLI_TIMEOUT_MS when set (a loaded box), 30 s otherwise.
 const opts = { home: SANDBOX_HOME, timeout: Number(process.env.ZALO_TEST_CLI_TIMEOUT_MS) || 30_000 };
 const TID = "1234567890123456789";
 
 describe("bank resolution guards", () => {
-    it("msg send-bank rejects an unknown bank name", async () => {
-        const { all } = await runCli(["msg", "send-bank", TID, "12345", "-b", "notabank"], opts);
-        assert.match(all, /Unknown bank: 'notabank'/);
-    });
-
-    it("msg send-bank rejects a BIN that is not in the table", async () => {
-        const { all } = await runCli(["msg", "send-bank", TID, "12345", "-b", "123456"], opts);
-        assert.match(all, /Unknown bank: '123456'/);
-    });
-
-    it("msg send-qr-transfer rejects an unknown bank before generating anything", async () => {
-        const { all } = await runCli(["msg", "send-qr-transfer", TID, "12345", "-b", "nope"], opts);
-        assert.match(all, /Unknown bank: 'nope'/);
+    it("refuses an unknown bank name, a BIN not in the table, and (send-qr-transfer) before generating anything", async () => {
+        const rows = [
+            ["msg", "send-bank", "notabank"],
+            ["msg", "send-bank", "123456"],
+            ["msg", "send-qr-transfer", "nope"],
+        ];
+        const failed = [];
+        for (const [group, cmd, bank] of rows) {
+            const label = `${cmd} -b ${bank}`;
+            await checkCli([group, cmd, TID, "12345", "-b", bank], opts, ({ all }) => {
+                assert.match(all, new RegExp(`Unknown bank: '${bank}'`));
+            }).catch((e) => failed.push(`${label}: ${e.message.split("\n")[0]}`));
+        }
+        assert.deepEqual(failed, [], `${failed.length} bank refusal(s) wrong:\n${failed.join("\n")}`);
     });
 
     it("a valid bank gets past resolution and only then hits the missing session", async () => {
-        const { all } = await runCli(["msg", "send-bank", TID, "12345", "-b", "ocb"], opts);
-        assert.doesNotMatch(all, /Unknown bank/);
-        assert.match(all, /Bank: OCB \(BIN 970448\)/);
-        assert.match(all, /Not logged in/);
+        await checkCli(["msg", "send-bank", TID, "12345", "-b", "ocb"], opts, ({ all }) => {
+            assert.doesNotMatch(all, /Unknown bank/);
+            assert.match(all, /Bank: OCB \(BIN 970448\)/);
+            assert.match(all, /Not logged in/);
+        });
     });
 
     it("--bank is mandatory for send-bank (commander exits non-zero)", async () => {
-        const r = await runCli(["msg", "send-bank", TID, "12345"], opts);
-        assert.notEqual(r.code, 0);
-        assert.match(r.all, /required option .*--bank/i);
+        await checkCli(["msg", "send-bank", TID, "12345"], opts, (r) => {
+            assert.notEqual(r.code, 0);
+            assert.match(r.all, /required option .*--bank/i);
+        });
     });
 
     it("--bank is mandatory for send-qr-transfer", async () => {
-        const r = await runCli(["msg", "send-qr-transfer", TID, "12345"], opts);
-        assert.notEqual(r.code, 0);
+        await checkCli(["msg", "send-qr-transfer", TID, "12345"], opts, (r) => {
+            assert.notEqual(r.code, 0);
+        });
     });
 });
 
 describe("VietQR content-length guard", () => {
     it("rejects transfer content longer than 50 characters", async () => {
         const long = "x".repeat(51);
-        const { all } = await runCli(["msg", "send-qr-transfer", TID, "12345", "-b", "ocb", "-m", long], opts);
-        assert.match(all, /Content too long \(51 chars\)\. VietQR max is 50\./);
+        await checkCli(["msg", "send-qr-transfer", TID, "12345", "-b", "ocb", "-m", long], opts, ({ all }) => {
+            assert.match(all, /Content too long \(51 chars\)\. VietQR max is 50\./);
+        });
     });
 
     it("accepts content of exactly 50 characters", async () => {
         const exact = "x".repeat(50);
-        const { all } = await runCli(["msg", "send-qr-transfer", TID, "12345", "-b", "ocb", "-m", exact], opts);
-        assert.doesNotMatch(all, /Content too long/);
+        await checkCli(["msg", "send-qr-transfer", TID, "12345", "-b", "ocb", "-m", exact], opts, ({ all }) => {
+            assert.doesNotMatch(all, /Content too long/);
+        });
     });
 
     it("reports the actual length so the user knows how much to trim", async () => {
-        const { all } = await runCli(["msg", "send-qr-transfer", TID, "1", "-b", "ocb", "-m", "y".repeat(73)], opts);
-        assert.match(all, /73 chars/);
+        await checkCli(["msg", "send-qr-transfer", TID, "1", "-b", "ocb", "-m", "y".repeat(73)], opts, ({ all }) => {
+            assert.match(all, /73 chars/);
+        });
     });
 });
 
@@ -79,20 +91,22 @@ describe("msg undo requires a cliMsgId", () => {
     it("refuses without --cli-msg-id when the cache cannot supply one, and says where to get one", async () => {
         // The sandboxed cache is empty, so the lookup `msg undo` now shares
         // with `msg delete` finds nothing and the guard still fires.
-        const { all } = await runCli(["msg", "undo", "9999", TID, "--yes"], opts);
-        assert.match(all, /cliMsgId is required to recall a message/);
-        assert.match(all, /not in the local cache/);
-        assert.match(all, /listen --json/);
-        // `send --json` is no longer offered: the previous engine never returns the
-        // clientId it stamped, so the value send printed was a second
-        // Date.now() that matched only by luck.
-        assert.doesNotMatch(all, /send --json/);
+        await checkCli(["msg", "undo", "9999", TID, "--yes"], opts, ({ all }) => {
+            assert.match(all, /cliMsgId is required to recall a message/);
+            assert.match(all, /not in the local cache/);
+            assert.match(all, /listen --json/);
+            // `send --json` is no longer offered: the previous engine never returns the
+            // clientId it stamped, so the value send printed was a second
+            // Date.now() that matched only by luck.
+            assert.doesNotMatch(all, /send --json/);
+        });
     });
 
     it("gets past the guard when --cli-msg-id is supplied", async () => {
-        const { all } = await runCli(["msg", "undo", "9999", TID, "-c", "1700000000000", "--yes"], opts);
-        assert.doesNotMatch(all, /cliMsgId is required/);
-        assert.match(all, /Not logged in/);
+        await checkCli(["msg", "undo", "9999", TID, "-c", "1700000000000", "--yes"], opts, ({ all }) => {
+            assert.doesNotMatch(all, /cliMsgId is required/);
+            assert.match(all, /Not logged in/);
+        });
     });
 });
 
@@ -110,16 +124,18 @@ describe("conv read needs a message to anchor the seen event on", () => {
     // and `sync` only. The command must say that rather than appear to work.
 
     it("refuses on a cold cache instead of reporting success", async () => {
-        const r = await runCli(["conv", "read", "1234567890123456789"], opts);
-        assert.notEqual(r.code, 0, "must not exit 0 when it cannot mark anything");
-        assert.doesNotMatch(r.all, /Marked as read/i, "must never claim success it did not achieve");
+        await checkCli(["conv", "read", "1234567890123456789"], opts, (r) => {
+            assert.notEqual(r.code, 0, "must not exit 0 when it cannot mark anything");
+            assert.doesNotMatch(r.all, /Marked as read/i, "must never claim success it did not achieve");
+        });
     });
 
     it("exits before any network contact", async () => {
-        const r = await runCli(["conv", "read", "1234567890123456789"], opts);
-        assert.equal(r.code, 1);
-        assert.match(r.all, /No active account/i);
-        assert.doesNotMatch(r.all, /seen|seenv2/i, "must not reach the API without an account");
+        await checkCli(["conv", "read", "1234567890123456789"], opts, (r) => {
+            assert.equal(r.code, 1);
+            assert.match(r.all, /No active account/i);
+            assert.doesNotMatch(r.all, /seen|seenv2/i, "must not reach the API without an account");
+        });
     });
 
     // NOT COVERED OFFLINE: the cold-cache branch itself. Reaching it needs an
@@ -134,16 +150,18 @@ describe("conv read needs a message to anchor the seen event on", () => {
 describe("conv auto-delete TTL guard", () => {
     for (const bad of ["3d", "forever", "0", "", "1D"]) {
         it(`rejects TTL ${JSON.stringify(bad)} and lists the valid values`, async () => {
-            const { all } = await runCli(["conv", "auto-delete", TID, bad], opts);
-            assert.match(all, /Invalid TTL/);
-            assert.match(all, /Valid: off, 1d, 7d, 14d/);
+            await checkCli(["conv", "auto-delete", TID, bad], opts, ({ all }) => {
+                assert.match(all, /Invalid TTL/);
+                assert.match(all, /Valid: off, 1d, 7d, 14d/);
+            });
         });
     }
 
     for (const good of ["off", "1d", "7d", "14d"]) {
         it(`accepts TTL ${good} and proceeds to the API call`, async () => {
-            const { all } = await runCli(["conv", "auto-delete", TID, good], opts);
-            assert.doesNotMatch(all, /Invalid TTL/);
+            await checkCli(["conv", "auto-delete", TID, good], opts, ({ all }) => {
+                assert.doesNotMatch(all, /Invalid TTL/);
+            });
         });
     }
 });
@@ -162,24 +180,27 @@ describe("commander-level argument requirements", () => {
 
     for (const args of missingArgs) {
         it(`\`${args.join(" ")}\` exits non-zero on a missing argument`, async () => {
-            const r = await runCli(args, opts);
-            assert.notEqual(r.code, 0, `expected a parse error, got: ${r.all.slice(0, 200)}`);
+            await checkCli(args, opts, (r) => {
+                assert.notEqual(r.code, 0, `expected a parse error, got: ${r.all.slice(0, 200)}`);
+            });
         });
     }
 
     it("msg send-video requires --thumb", async () => {
-        const r = await runCli(["msg", "send-video", TID, "https://example.com/v.mp4"], opts);
-        assert.notEqual(r.code, 0);
-        assert.match(r.all, /--thumb/);
+        await checkCli(["msg", "send-video", TID, "https://example.com/v.mp4"], opts, (r) => {
+            assert.notEqual(r.code, 0);
+            assert.match(r.all, /--thumb/);
+        });
     });
 });
 
 describe("no-active-account guards", () => {
     it("conv recent exits 1 with a friendly login pointer", async () => {
-        const r = await runCli(["conv", "recent"], opts);
-        assert.equal(r.code, 1);
-        assert.match(r.all, /No active account\. Please login first\./);
-        assert.doesNotMatch(r.all, /at Command\./, "must not leak a stack trace");
+        await checkCli(["conv", "recent"], opts, (r) => {
+            assert.equal(r.code, 1);
+            assert.match(r.all, /No active account\. Please login first\./);
+            assert.doesNotMatch(r.all, /at Command\./, "must not leak a stack trace");
+        });
     });
 
     // REGRESSION GUARD — this used to print a raw Node stack trace.
@@ -190,34 +211,38 @@ describe("no-active-account guards", () => {
     // the rejection went unhandled, and the user saw a stack trace. Fixed by
     // moving the guard first and wrapping getApi() — matching `conv recent`.
     it("msg history exits 1 with a friendly login pointer, not a stack trace", async () => {
-        const r = await runCli(["msg", "history", TID], opts);
-        assert.equal(r.code, 1);
-        assert.match(r.all, /No active account\. Please login first\./);
-        assert.doesNotMatch(r.all, /at getApi|at Command\./, "must not leak a stack trace");
+        await checkCli(["msg", "history", TID], opts, (r) => {
+            assert.equal(r.code, 1);
+            assert.match(r.all, /No active account\. Please login first\./);
+            assert.doesNotMatch(r.all, /at getApi|at Command\./, "must not leak a stack trace");
+        });
     });
 
     it("commands that only need the API report 'Not logged in'", async () => {
         for (const args of [["whoami"], ["friend", "list"], ["group", "list"], ["conv", "pinned"]]) {
-            const { all } = await runCli(args, opts);
-            assert.match(all, /Not logged in\. Run: zalo-agent login/, `\`${args.join(" ")}\` should say so`);
+            await checkCli(args, opts, ({ all }) => {
+                assert.match(all, /Not logged in\. Run: zalo-agent login/, `\`${args.join(" ")}\` should say so`);
+            });
         }
     });
 });
 
 describe("logout on a clean machine", () => {
     it("succeeds, and never claims credentials were kept", async () => {
-        const { all } = await runCli(["logout", "--yes"], opts);
-        assert.match(all, /Logged out/);
-        // `logout` deletes the saved credentials since 2026-09-30: with them
-        // kept, the next command logged straight back in (measured live).
-        // Red if it goes back to "credentials kept — will auto-login".
-        assert.doesNotMatch(all, /credentials kept|will auto-login/);
+        await checkCli(["logout", "--yes"], opts, ({ all }) => {
+            assert.match(all, /Logged out/);
+            // `logout` deletes the saved credentials since 2026-09-30: with them
+            // kept, the next command logged straight back in (measured live).
+            // Red if it goes back to "credentials kept — will auto-login".
+            assert.doesNotMatch(all, /credentials kept|will auto-login/);
+        });
     });
 
     it("--purge with nothing to purge still reports success rather than throwing", async () => {
-        const r = await runCli(["logout", "--purge", "--yes"], opts);
-        assert.equal(r.code, 0);
-        assert.doesNotMatch(r.all, /Error|stack/i);
+        await checkCli(["logout", "--purge", "--yes"], opts, (r) => {
+            assert.equal(r.code, 0);
+            assert.doesNotMatch(r.all, /Error|stack/i);
+        });
     });
 });
 
@@ -233,15 +258,17 @@ describe("logout on a clean machine", () => {
 
 describe("--json stdout contract", () => {
     it("a failure is emitted as JSON on stdout, not a ✗ line", async () => {
-        const r = await runCli(["--json", "msg", "send-bank", TID, "1", "-b", "notabank"], opts);
-        const parsed = JSON.parse(r.stdout.trim()); // must not throw
-        assert.equal(parsed.error, "Unknown bank: 'notabank'");
-        assert.equal(errorLineOf(r.stdout), null, "no ✗ line should reach stdout");
+        await checkCli(["--json", "msg", "send-bank", TID, "1", "-b", "notabank"], opts, (r) => {
+            const parsed = JSON.parse(r.stdout.trim()); // must not throw
+            assert.equal(parsed.error, "Unknown bank: 'notabank'");
+            assert.equal(errorLineOf(r.stdout), null, "no ✗ line should reach stdout");
+        });
     });
 
     it("a success is a single parseable JSON value with nothing appended", async () => {
-        const r = await runCli(["--json", "status"], opts);
-        assert.doesNotThrow(() => JSON.parse(r.stdout.trim()));
+        await checkCli(["--json", "status"], opts, (r) => {
+            assert.doesNotThrow(() => JSON.parse(r.stdout.trim()));
+        });
     });
 
     it("every human marker is kept off stdout in --json mode", async () => {
@@ -251,9 +278,10 @@ describe("--json stdout contract", () => {
             ["--json", "whoami"],
             ["--json", "logout", "--yes"],
         ]) {
-            const r = await runCli(args, opts);
-            assert.doesNotMatch(r.stdout, /[✓✗●⚠]/, `\`${args.join(" ")}\` leaked a human marker to stdout`);
-            assert.doesNotMatch(r.stdout, /unofficial Zalo APIs/, `\`${args.join(" ")}\` leaked the disclaimer`);
+            await checkCli(args, opts, (r) => {
+                assert.doesNotMatch(r.stdout, /[✓✗●⚠]/, `\`${args.join(" ")}\` leaked a human marker to stdout`);
+                assert.doesNotMatch(r.stdout, /unofficial Zalo APIs/, `\`${args.join(" ")}\` leaked the disclaimer`);
+            });
         }
     });
 
@@ -264,20 +292,23 @@ describe("--json stdout contract", () => {
             ["--json", "msg", "undo", "9999", TID, "--yes"],
             ["--json", "whoami"],
         ]) {
-            const r = await runCli(args, opts);
-            const parsed = JSON.parse(r.stdout.trim()); // must not throw
-            assert.equal(typeof parsed.error, "string", `\`${args.join(" ")}\` should carry an .error string`);
+            await checkCli(args, opts, (r) => {
+                const parsed = JSON.parse(r.stdout.trim()); // must not throw
+                assert.equal(typeof parsed.error, "string", `\`${args.join(" ")}\` should carry an .error string`);
+            });
         }
     });
 
     it("human mode is unchanged — still a ✗ line, still no JSON", async () => {
-        const r = await runCli(["msg", "send-bank", TID, "1", "-b", "notabank"], opts);
-        assert.equal(errorLineOf(r.stdout), "Unknown bank: 'notabank'");
-        assert.throws(() => JSON.parse(r.stdout.trim()));
+        await checkCli(["msg", "send-bank", TID, "1", "-b", "notabank"], opts, (r) => {
+            assert.equal(errorLineOf(r.stdout), "Unknown bank: 'notabank'");
+            assert.throws(() => JSON.parse(r.stdout.trim()));
+        });
     });
 
     // Until 3.0.0 this exited 0 (pinned here as a characterization test): a script could not tell from `$?`
     // that nothing was sent. error() now sets exit code 1 (src/utils/output.js), in both modes.
+    // Real child processes, not the worker: the process exit code is the point.
     it("a validation failure exits 1, in both modes", async () => {
         const human = await runCli(["msg", "send-bank", TID, "1", "-b", "notabank"], opts);
         assert.equal(human.code, 1, human.all);
@@ -292,80 +323,91 @@ describe("sync-mobile — offline surface", () => {
     // Everything that does NOT need a session is checked here instead, for free.
 
     it("registers --force with a descriptive help entry", async () => {
-        const { stdout } = await runCli(["sync-mobile", "--help"], opts);
-        assert.match(stdout, /-F, --force/);
-        assert.match(stdout, /already synced/i, "--force should explain the shortcut it skips");
+        await checkCli(["sync-mobile", "--help"], opts, ({ stdout }) => {
+            assert.match(stdout, /-F, --force/);
+            assert.match(stdout, /already synced/i, "--force should explain the shortcut it skips");
+        });
     });
 
     it("rejects an unknown flag rather than silently ignoring it", async () => {
-        const r = await runCli(["sync-mobile", "--not-a-flag"], opts);
-        assert.notEqual(r.code, 0);
-        assert.match(r.all, /unknown option/i);
+        await checkCli(["sync-mobile", "--not-a-flag"], opts, (r) => {
+            assert.notEqual(r.code, 0);
+            assert.match(r.all, /unknown option/i);
+        });
     });
 
     it("registers --days and documents that the default is full history", async () => {
-        const { stdout } = await runCli(["sync-mobile", "--help"], opts);
-        assert.match(stdout, /-d, --days/);
-        // \s+ not a space: commander hard-wraps help at the terminal width, so
-        // "full history" can straddle a line break. The assertion is about the
-        // text being present, not about where the wrap lands.
-        assert.match(stdout, /full\s+history/i, "--days must state the default window it narrows");
+        await checkCli(["sync-mobile", "--help"], opts, ({ stdout }) => {
+            assert.match(stdout, /-d, --days/);
+            // \s+ not a space: commander hard-wraps help at the terminal width, so
+            // "full history" can straddle a line break. The assertion is about the
+            // text being present, not about where the wrap lands.
+            assert.match(stdout, /full\s+history/i, "--days must state the default window it narrows");
+        });
     });
 
     it("--days now works without a flag, because the restore is the default", async () => {
         // It used to exit 1 telling you to add --transfer. A default that makes
         // a third of the command's own flags an error was the wrong default;
         // --days reaching the restore is the whole point of the inversion.
-        const r = await runCli(["sync-mobile", "--days", "7"], opts);
-        assert.doesNotMatch(r.all, /--days only applies/i, "the old refusal must be gone");
-        assert.doesNotMatch(r.all, /--transfer --days 7/, "must not hand back a corrected command");
+        await checkCli(["sync-mobile", "--days", "7"], opts, (r) => {
+            assert.doesNotMatch(r.all, /--days only applies/i, "the old refusal must be gone");
+            assert.doesNotMatch(r.all, /--transfer --days 7/, "must not hand back a corrected command");
+        });
     });
 
     it("refuses --days alongside --socket, which switches the restore off", async () => {
         // The window is a field of the cmd 590 query only the restore sends, so
         // asking for the socket probe AND a window is a contradiction. This is
         // the same guard as before, pointed at the flag that now turns it off.
-        const r = await runCli(["sync-mobile", "--socket", "--days", "7"], opts);
-        assert.equal(r.code, 1);
-        assert.match(r.all, /--days shapes the phone-backed restore/i);
-        assert.match(r.all, /Drop --socket/, "should say which flag to remove");
+        await checkCli(["sync-mobile", "--socket", "--days", "7"], opts, (r) => {
+            assert.equal(r.code, 1);
+            assert.match(r.all, /--days shapes the phone-backed restore/i);
+            assert.match(r.all, /Drop --socket/, "should say which flag to remove");
+        });
     });
 
     it("keeps --transfer working as a no-op so existing scripts do not break", async () => {
-        const { stdout } = await runCli(["sync-mobile", "--help"], opts);
-        assert.match(stdout, /-t, --transfer/, "the flag must still be accepted");
-        assert.match(stdout, /Accepted and ignored/i, "and must say it is now the default");
+        await checkCli(["sync-mobile", "--help"], opts, ({ stdout }) => {
+            assert.match(stdout, /-t, --transfer/, "the flag must still be accepted");
+            assert.match(stdout, /Accepted and ignored/i, "and must say it is now the default");
+        });
     });
 
     it("rejects a --days value that is not a whole number of days >= 1", async () => {
         for (const bad of ["0", "-3", "1.5", "week"]) {
-            const r = await runCli(["sync-mobile", "--transfer", "--days", bad], opts);
-            assert.notEqual(r.code, 0, `--days ${bad} must not be accepted`);
-            assert.match(r.all, /whole number/i, `--days ${bad} should fail on the value, not later`);
+            await checkCli(["sync-mobile", "--transfer", "--days", bad], opts, (r) => {
+                assert.notEqual(r.code, 0, `--days ${bad} must not be accepted`);
+                assert.match(r.all, /whole number/i, `--days ${bad} should fail on the value, not later`);
+            });
         }
     });
 
     it("exits 1 with a login pointer when there is no account — before any network contact", async () => {
-        const r = await runCli(["sync-mobile"], opts);
-        assert.equal(r.code, 1);
-        assert.match(r.all, /No active account\. Please login first\./);
-        assert.doesNotMatch(r.all, /Waiting for sync data|pullMobileMsg/, "must not reach any sync path");
+        await checkCli(["sync-mobile"], opts, (r) => {
+            assert.equal(r.code, 1);
+            assert.match(r.all, /No active account\. Please login first\./);
+            assert.doesNotMatch(r.all, /Waiting for sync data|pullMobileMsg/, "must not reach any sync path");
+        });
     });
 
     it("no longer offers the retired --legacy flag", async () => {
-        const { stdout } = await runCli(["sync-mobile", "--help"], opts);
-        assert.doesNotMatch(stdout, /--legacy/);
+        await checkCli(["sync-mobile", "--help"], opts, ({ stdout }) => {
+            assert.doesNotMatch(stdout, /--legacy/);
+        });
     });
 
     it("no longer advertises the retry loop that used to spam the phone", async () => {
-        const { stdout } = await runCli(["sync-mobile", "--help"], opts);
-        assert.doesNotMatch(stdout, /--interval/, "the repeating poll is gone, so its flag must be too");
+        await checkCli(["sync-mobile", "--help"], opts, ({ stdout }) => {
+            assert.doesNotMatch(stdout, /--interval/, "the repeating poll is gone, so its flag must be too");
+        });
     });
 
     it("rejects --legacy as an unknown option", async () => {
-        const r = await runCli(["sync-mobile", "--legacy"], opts);
-        assert.equal(r.code, 1);
-        assert.match(r.all, /unknown option/i);
+        await checkCli(["sync-mobile", "--legacy"], opts, (r) => {
+            assert.equal(r.code, 1);
+            assert.match(r.all, /unknown option/i);
+        });
     });
 });
 
@@ -374,21 +416,24 @@ describe("msg send --quote guards", () => {
         // `--quote` is a cache lookup, not an argument transform: cliMsgId and
         // the property blob exist nowhere else. With no account there is no
         // cache, so every id is uncached.
-        const r = await runCli(["msg", "send", TID, "hi", "--quote", "8314033169851"], opts);
-        assert.match(r.all, /8314033169851 is not in the local cache/);
-        assert.match(r.all, /msg history/, "should name the command that fills the cache");
-        assert.doesNotMatch(r.all, /Not logged in/, "must resolve before getApi()");
+        await checkCli(["msg", "send", TID, "hi", "--quote", "8314033169851"], opts, (r) => {
+            assert.match(r.all, /8314033169851 is not in the local cache/);
+            assert.match(r.all, /msg history/, "should name the command that fills the cache");
+            assert.doesNotMatch(r.all, /Not logged in/, "must resolve before getApi()");
+        });
     });
 
     it("takes a value rather than swallowing the next flag", async () => {
-        const r = await runCli(["msg", "send", TID, "hi", "--quote", "123", "-t", "1"], opts);
-        assert.match(r.all, /123 is not in the local cache/);
+        await checkCli(["msg", "send", TID, "hi", "--quote", "123", "-t", "1"], opts, (r) => {
+            assert.match(r.all, /123 is not in the local cache/);
+        });
     });
 
     it("errors when --quote is given no value", async () => {
-        const r = await runCli(["msg", "send", TID, "hi", "--quote"], opts);
-        assert.notEqual(r.code, 0);
-        assert.match(r.all, /argument missing/i);
+        await checkCli(["msg", "send", TID, "hi", "--quote"], opts, (r) => {
+            assert.notEqual(r.code, 0);
+            assert.match(r.all, /argument missing/i);
+        });
     });
 });
 
@@ -396,18 +441,21 @@ describe("msg send mention guards", () => {
     it("warns that mentions are dropped outside a group", async () => {
         // The session drops mentions in a 1-1 conversation, so a `-t 0` send would
         // otherwise arrive with the names as plain text and nobody tagged.
-        const r = await runCli(["msg", "send", TID, "hello @[-1]", "-t", "0"], opts);
-        assert.match(r.all, /Mentions only apply to group messages/);
+        await checkCli(["msg", "send", TID, "hello @[-1]", "-t", "0"], opts, (r) => {
+            assert.match(r.all, /Mentions only apply to group messages/);
+        });
     });
 
     it("does not warn when there is nothing to mention", async () => {
-        const r = await runCli(["msg", "send", TID, "hello", "-t", "0"], opts);
-        assert.doesNotMatch(r.all, /Mentions only apply/);
+        await checkCli(["msg", "send", TID, "hello", "-t", "0"], opts, (r) => {
+            assert.doesNotMatch(r.all, /Mentions only apply/);
+        });
     });
 
     it("documents the @[userId] token on --mention", async () => {
-        const { stdout } = await runCli(["msg", "send", "--help"], opts);
-        assert.match(stdout, /@\[userId\]/, "the safe form must be discoverable from --help");
+        await checkCli(["msg", "send", "--help"], opts, ({ stdout }) => {
+            assert.match(stdout, /@\[userId\]/, "the safe form must be discoverable from --help");
+        });
     });
 });
 
@@ -416,69 +464,67 @@ describe("msg send mention name resolution", () => {
         // An uncached uid in a group send triggers one getGroupMembersInfo
         // call. With no session that throws — it must fall back to the uid
         // rather than take the command down before sendMessage is reached.
-        const r = await runCli(["msg", "send", TID, "cc @[1000000000000000001]", "-t", "1"], opts);
-        assert.match(r.all, /Not logged in/, "should fail at the send, not at the name lookup");
-        assert.doesNotMatch(r.all, /getGroupMembersInfo|profiles/, "the lookup failure must stay internal");
+        await checkCli(["msg", "send", TID, "cc @[1000000000000000001]", "-t", "1"], opts, (r) => {
+            assert.match(r.all, /Not logged in/, "should fail at the send, not at the name lookup");
+            assert.doesNotMatch(r.all, /getGroupMembersInfo|profiles/, "the lookup failure must stay internal");
+        });
     });
 
     it("needs no lookup for @All", async () => {
-        const r = await runCli(["msg", "send", TID, "@[-1] hi", "-t", "1"], opts);
-        assert.match(r.all, /Not logged in/);
-        assert.doesNotMatch(r.all, /Mentions only apply/, "-t 1 is a group; no warning");
+        await checkCli(["msg", "send", TID, "@[-1] hi", "-t", "1"], opts, (r) => {
+            assert.match(r.all, /Not logged in/);
+            assert.doesNotMatch(r.all, /Mentions only apply/, "-t 1 is a group; no warning");
+        });
     });
 });
 
 describe("mcp start --auth", () => {
     it("refuses an empty token before logging in, instead of serving with no authentication", async () => {
         // An unset variable in a unit file arrives as exactly this: `--auth ""`.
-        const r = await runCli(["mcp", "start", "--http", "8765", "--auth", ""], opts);
-        assert.equal(r.code, 1);
-        // Red if the empty token is taken as "no auth" again, or checked only after the login.
-        assert.match(r.all, /--auth was given an empty token/);
-        assert.doesNotMatch(r.all, /Auto-login failed/, "refused before anything logs in");
+        await checkCli(["mcp", "start", "--http", "8765", "--auth", ""], opts, (r) => {
+            assert.equal(r.code, 1);
+            // Red if the empty token is taken as "no auth" again, or checked only after the login.
+            assert.match(r.all, /--auth was given an empty token/);
+            assert.doesNotMatch(r.all, /Auto-login failed/, "refused before anything logs in");
+        });
     });
 });
 
 describe("mcp start --config", () => {
     it("refuses a config file it cannot read, before logging in, instead of watching every thread", async () => {
-        const r = await runCli(["mcp", "start", "--config", "no-such-dir/mcp-config.json"], opts);
-        assert.equal(r.code, 1);
-        // Red if a missing --config falls back to the defaults again.
-        assert.match(r.all, /Refusing to start: cannot read the config file/);
-        assert.doesNotMatch(r.all, /Auto-login failed/, "refused before anything logs in");
+        await checkCli(["mcp", "start", "--config", "no-such-dir/mcp-config.json"], opts, (r) => {
+            assert.equal(r.code, 1);
+            // Red if a missing --config falls back to the defaults again.
+            assert.match(r.all, /Refusing to start: cannot read the config file/);
+            assert.doesNotMatch(r.all, /Auto-login failed/, "refused before anything logs in");
+        });
     });
 });
 
 describe("mcp start --cert / --key (HTTPS)", () => {
-    it("refuses --cert without --key before logging in", async () => {
-        const r = await runCli(["mcp", "start", "--http", "8765", "--cert", "cert.pem"], opts);
-        assert.equal(r.code, 1);
-        assert.match(r.all, /--cert and --key must both be provided/);
-        assert.doesNotMatch(r.all, /Account selection failed|Auto-login failed/, "refused before anything logs in");
-    });
-
-    it("refuses --key without --cert before logging in", async () => {
-        const r = await runCli(["mcp", "start", "--http", "8765", "--key", "key.pem"], opts);
-        assert.equal(r.code, 1);
-        assert.match(r.all, /--cert and --key must both be provided/);
-        assert.doesNotMatch(r.all, /Account selection failed|Auto-login failed/, "refused before anything logs in");
-    });
-
-    it("refuses --cert and --key when --http is omitted", async () => {
-        const r = await runCli(["mcp", "start", "--cert", "cert.pem", "--key", "key.pem"], opts);
-        assert.equal(r.code, 1);
-        assert.match(r.all, /--cert and --key require --http <port>/);
-        assert.doesNotMatch(r.all, /Account selection failed|Auto-login failed/, "refused before anything logs in");
-    });
-
-    it("refuses an unreadable --cert file before logging in", async () => {
-        const r = await runCli(
-            ["mcp", "start", "--http", "8765", "--cert", "no-such-dir/cert.pem", "--key", "no-such-dir/key.pem"],
-            opts,
-        );
-        assert.equal(r.code, 1);
-        assert.match(r.all, /cannot read the TLS certificate file/);
-        assert.doesNotMatch(r.all, /Account selection failed|Auto-login failed/, "refused before anything logs in");
+    it("refuses a half or unreadable --cert/--key pair, or one without --http, before logging in", async () => {
+        const rows = [
+            [["--http", "8765", "--cert", "cert.pem"], /--cert and --key must both be provided/],
+            [["--http", "8765", "--key", "key.pem"], /--cert and --key must both be provided/],
+            [["--cert", "cert.pem", "--key", "key.pem"], /--cert and --key require --http <port>/],
+            [
+                ["--http", "8765", "--cert", "no-such-dir/cert.pem", "--key", "no-such-dir/key.pem"],
+                /cannot read the TLS certificate file/,
+            ],
+        ];
+        const failed = [];
+        for (const [flags, message] of rows) {
+            await checkCli(["mcp", "start", ...flags], opts, (r) => {
+                assert.equal(r.code, 1);
+                assert.match(r.all, message);
+                assert.doesNotMatch(
+                    r.all,
+                    /Account selection failed|Auto-login failed/,
+                    "refused before anything logs in",
+                );
+            }).catch((e) => failed.push(`${flags.join(" ")}: ${e.message.split("\n")[0]}`));
+        }
+        assert.deepEqual(failed, [], `${failed.length} --cert/--key case(s) wrong:\n${failed.join("\n")}`);
     });
 });
 
@@ -488,8 +534,9 @@ describe("--webhook-secret", () => {
             ["listen", "--help"],
             ["mcp", "start", "--help"],
         ]) {
-            const { stdout } = await runCli(args, opts);
-            assert.match(stdout, /--webhook-secret <secret>/, `${args.join(" ")} must offer --webhook-secret`);
+            await checkCli(args, opts, ({ stdout }) => {
+                assert.match(stdout, /--webhook-secret <secret>/, `${args.join(" ")} must offer --webhook-secret`);
+            });
         }
     });
 
@@ -499,10 +546,11 @@ describe("--webhook-secret", () => {
             ["listen", "--webhook", "https://example.invalid/hook", "--webhook-secret", ""],
             ["mcp", "start", "--webhook", "https://example.invalid/hook", "--webhook-secret", ""],
         ]) {
-            const r = await runCli(args, opts);
-            assert.equal(r.code, 1, args.join(" "));
-            assert.match(r.all, /--webhook-secret was given an empty secret/);
-            assert.doesNotMatch(r.all, /No active account|Auto-login failed/, "refused before account or login");
+            await checkCli(args, opts, (r) => {
+                assert.equal(r.code, 1, args.join(" "));
+                assert.match(r.all, /--webhook-secret was given an empty secret/);
+                assert.doesNotMatch(r.all, /No active account|Auto-login failed/, "refused before account or login");
+            });
         }
     });
 });

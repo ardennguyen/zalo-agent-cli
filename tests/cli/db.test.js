@@ -16,8 +16,12 @@ import { HiddenChats } from "../../src/core/hidden-chats.js";
 import { registerRowMacFunction } from "../../src/core/row-mac.js";
 import { dbFileState, openDatabase } from "../../src/core/sqlite.js";
 import { runCli, stripAnsi } from "../helpers/cli.js";
+import { checkCli } from "../helpers/cli-fast.js";
 
 const options = { home: SANDBOX_HOME, timeout: 120_000 };
+// Commands run in the in-process CLI worker; a check that fails there is re-run as a real child process
+// (tests/helpers/cli-fast.js `checkCli`), so only a real process can fail a test.
+
 const OWN = "5151";
 const json = (r) => JSON.parse(stripAnsi(r.stdout));
 
@@ -47,6 +51,7 @@ describe("db", () => {
     });
 
     it("query --json returns the rows; a write is refused with exit 1", async () => {
+        // A real child process: the smoke check that the worker and a real process agree.
         const r = await runCli(["--json", "db", "query", "SELECT msgId, text FROM messages ORDER BY msgId"], options);
         assert.equal(r.code, 0, r.all);
         const reply = json(r);
@@ -55,59 +60,68 @@ describe("db", () => {
             reply.rows.map((x) => x.msgId),
             ["m0", "m1", "m2"],
         );
-        const write = await runCli(["db", "query", "DELETE FROM messages"], options);
-        assert.equal(write.code, 1);
-        assert.match(write.all, /reads/);
-        const key = await runCli(["db", "query", "PRAGMA key = 'x'"], options);
-        assert.equal(key.code, 1);
+        await checkCli(["db", "query", "DELETE FROM messages"], options, async (write) => {
+            assert.equal(write.code, 1);
+            assert.match(write.all, /reads/);
+            await checkCli(["db", "query", "PRAGMA key = 'x'"], options, (key) => {
+                assert.equal(key.code, 1);
+            });
+        });
     });
 
     it("backup writes an encrypted, verified copy", async () => {
         const out = join(SANDBOX_HOME, "backup.db");
-        const r = await runCli(["--json", "db", "backup", "--out", out], options);
-        assert.equal(r.code, 0, r.all);
-        const reply = json(r);
-        assert.deepEqual([reply.encrypted, reply.messages, reply.quickCheck], [true, 3, "ok"]);
-        assert.equal(dbFileState(out), "encrypted");
+        await checkCli(["--json", "db", "backup", "--out", out], options, (r) => {
+            assert.equal(r.code, 0, r.all);
+            const reply = json(r);
+            assert.deepEqual([reply.encrypted, reply.messages, reply.quickCheck], [true, 3, "ok"]);
+            assert.equal(dbFileState(out), "encrypted");
+        });
     });
 
     it("export --plaintext asks first: exit 2 and nothing written; --dry-run previews; --yes writes it", async () => {
         const out = join(SANDBOX_HOME, "plain.db");
-        const refused = await runCli(["db", "export", "--out", out, "--plaintext"], options);
-        assert.equal(refused.code, 2, refused.all);
-        assert.ok(!existsSync(out));
-        const dry = await runCli(["db", "export", "--out", out, "--plaintext", "--dry-run"], options);
-        assert.equal(dry.code, 0, dry.all);
-        assert.match(dry.all, /decrypted/);
-        assert.ok(!existsSync(out));
-        const done = await runCli(["--json", "db", "export", "--out", out, "--plaintext", "--yes"], options);
-        assert.equal(done.code, 0, done.all);
-        assert.equal(json(done).encrypted, false);
-        assert.equal(dbFileState(out), "plaintext");
+        await checkCli(["db", "export", "--out", out, "--plaintext"], options, async (refused) => {
+            assert.equal(refused.code, 2, refused.all);
+            assert.ok(!existsSync(out));
+            await checkCli(["db", "export", "--out", out, "--plaintext", "--dry-run"], options, async (dry) => {
+                assert.equal(dry.code, 0, dry.all);
+                assert.match(dry.all, /decrypted/);
+                assert.ok(!existsSync(out));
+                await checkCli(["--json", "db", "export", "--out", out, "--plaintext", "--yes"], options, (done) => {
+                    assert.equal(done.code, 0, done.all);
+                    assert.equal(json(done).encrypted, false);
+                    assert.equal(dbFileState(out), "plaintext");
+                });
+            });
+        });
     });
 
     it("export without --plaintext needs no --yes and writes an encrypted copy", async () => {
         const out = join(SANDBOX_HOME, "enc.db");
-        const r = await runCli(["db", "export", "--out", out], options);
-        assert.equal(r.code, 0, r.all);
-        assert.equal(dbFileState(out), "encrypted");
+        await checkCli(["db", "export", "--out", out], options, (r) => {
+            assert.equal(r.code, 0, r.all);
+            assert.equal(dbFileState(out), "encrypted");
+        });
     });
 
     it("verify exits 0 on a clean cache, 1 on a row changed under another key", async () => {
-        const clean = await runCli(["--json", "db", "verify"], options);
-        assert.equal(clean.code, 0, clean.all);
-        assert.deepEqual([json(clean).checked, json(clean).clean], [3, true]);
-        const db = openDatabase(getAccountDbPath(OWN));
-        try {
-            registerRowMacFunction(db, randomBytes(32));
-            db.prepare("UPDATE messages SET text = 'forged' WHERE msgId = 'm1'").run();
-        } finally {
-            db.close();
-        }
-        const dirty = await runCli(["--json", "db", "verify"], options);
-        assert.equal(dirty.code, 1, dirty.all);
-        const reply = json(dirty);
-        assert.equal(reply.bad, 1);
-        assert.deepEqual(reply.failures, [{ msgId: "m1", threadId: "t1", state: "bad" }]);
+        await checkCli(["--json", "db", "verify"], options, async (clean) => {
+            assert.equal(clean.code, 0, clean.all);
+            assert.deepEqual([json(clean).checked, json(clean).clean], [3, true]);
+            const db = openDatabase(getAccountDbPath(OWN));
+            try {
+                registerRowMacFunction(db, randomBytes(32));
+                db.prepare("UPDATE messages SET text = 'forged' WHERE msgId = 'm1'").run();
+            } finally {
+                db.close();
+            }
+            await checkCli(["--json", "db", "verify"], options, (dirty) => {
+                assert.equal(dirty.code, 1, dirty.all);
+                const reply = json(dirty);
+                assert.equal(reply.bad, 1);
+                assert.deepEqual(reply.failures, [{ msgId: "m1", threadId: "t1", state: "bad" }]);
+            });
+        });
     });
 });

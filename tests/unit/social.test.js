@@ -6,6 +6,7 @@
 import { SANDBOX_HOME } from "../helpers/sandbox.js";
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { freePort } from "../helpers/free-port.js";
 import { createHash, createHmac, createPublicKey, verify } from "node:crypto";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
@@ -104,7 +105,7 @@ describe("app secrets without a flag (oa login, oa init, social setup)", () => {
 
 describe("social login", () => {
     async function login(opts = {}) {
-        const port = 40000 + Math.floor(Math.random() * 20000);
+        const port = await freePort();
         const flow = startSocialLogin({ appId: "1000000000000000001", secretKey: "sek", port, ...opts });
         const auth = new URL(flow.authUrl);
         // Red if the user login goes to the OA's permission page.
@@ -143,7 +144,7 @@ describe("social login", () => {
 
     it("a callback without state is refused (Social requires it) and the login keeps waiting for its own", async () => {
         const calls = mockFetch(() => ({ json: { access_token: "AT1", refresh_token: "RT1", expires_in: "3600" } }));
-        const port = 40000 + Math.floor(Math.random() * 20000);
+        const port = await freePort();
         const flow = startSocialLogin({ appId: "1000000000000000001", secretKey: "sek", port });
         let settled = false;
         flow.done.then(

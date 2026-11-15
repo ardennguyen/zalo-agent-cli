@@ -2,67 +2,53 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { resolveBankBin, BIN_TO_DISPLAY, BANK_NAME_TO_BIN } from "../../src/utils/bank-helpers.js";
 import { BIN_CODES } from "../../src/core/zbs/template-check.js";
+import { checkTableSync } from "../helpers/table.js";
 
 describe("resolveBankBin", () => {
-    it("resolves OCB by name", () => {
-        assert.equal(resolveBankBin("ocb"), 970448);
-    });
-
-    it("resolves VCB alias", () => {
-        assert.equal(resolveBankBin("vcb"), 970436);
-    });
-
-    it("resolves Vietcombank full name", () => {
-        assert.equal(resolveBankBin("vietcombank"), 970436);
-    });
-
-    it("resolves BIDV by BIN string", () => {
-        assert.equal(resolveBankBin("970418"), 970418);
-    });
-
-    it("returns null for unknown name", () => {
-        assert.equal(resolveBankBin("unknown"), null);
-    });
-
-    it("returns null for unknown BIN", () => {
-        assert.equal(resolveBankBin("999999"), null);
-    });
-
-    it("is case insensitive", () => {
-        assert.equal(resolveBankBin("OCB"), 970448);
-        assert.equal(resolveBankBin("Vietcombank"), 970436);
-        assert.equal(resolveBankBin("BIDV"), 970418);
-    });
-
-    it("handles spaces and underscores", () => {
-        assert.equal(resolveBankBin("mb bank"), 970422);
-        assert.equal(resolveBankBin("mb_bank"), 970422);
-    });
-
-    it("resolves MB shorthand", () => {
-        assert.equal(resolveBankBin("mb"), 970422);
-    });
-
-    it("resolves CTG alias for VietinBank", () => {
-        assert.equal(resolveBankBin("ctg"), 970415);
+    it("resolves names, aliases and BINs in any case and spacing, and nothing unknown", () => {
+        // [input, expected BIN or null]
+        const ROWS = [
+            ["ocb", 970448], // by name
+            ["vcb", 970436], // alias
+            ["vietcombank", 970436], // full name
+            ["970418", 970418], // BIDV by BIN string
+            ["unknown", null],
+            ["999999", null], // an unknown BIN
+            ["OCB", 970448], // case insensitive
+            ["Vietcombank", 970436],
+            ["BIDV", 970418],
+            ["mb bank", 970422], // spaces and underscores
+            ["mb_bank", 970422],
+            ["mb", 970422], // MB shorthand
+            ["ctg", 970415], // CTG alias for VietinBank
+            // The ZBS BIN appendix's short names.
+            ["LienVietPostBank", 970449],
+            ["LPBank", 970449],
+            ["Keb Hana HCM", 970466],
+            ["BNP Paribas HN", 963668],
+            ["VietCapitalBank", 970454],
+        ];
+        checkTableSync(
+            ROWS,
+            ([input]) => JSON.stringify(input),
+            ([input, bin]) => assert.equal(resolveBankBin(input), bin),
+        );
+        assert.ok(Object.keys(BANK_NAME_TO_BIN).length >= 50, "at least 50 aliases");
     });
 });
 
 describe("BIN_TO_DISPLAY", () => {
-    it("has at least 50 banks", () => {
+    it("names at least 50 banks, the known BINs by their usual name", () => {
         assert.ok(Object.keys(BIN_TO_DISPLAY).length >= 50);
-    });
-
-    it("maps known BINs correctly", () => {
-        assert.equal(BIN_TO_DISPLAY[970448], "OCB");
-        assert.equal(BIN_TO_DISPLAY[970436], "Vietcombank");
-        assert.equal(BIN_TO_DISPLAY[970418], "BIDV");
-    });
-});
-
-describe("BANK_NAME_TO_BIN", () => {
-    it("has at least 50 aliases", () => {
-        assert.ok(Object.keys(BANK_NAME_TO_BIN).length >= 50);
+        checkTableSync(
+            [
+                [970448, "OCB"],
+                [970436, "Vietcombank"],
+                [970418, "BIDV"],
+            ],
+            ([bin]) => String(bin),
+            ([bin, name]) => assert.equal(BIN_TO_DISPLAY[bin], name),
+        );
     });
 });
 
@@ -72,13 +58,5 @@ describe("every bank in Zalo's BIN list resolves", () => {
         // `msg send-qr-transfer`.
         const missing = Object.keys(BIN_CODES).filter((bin) => resolveBankBin(bin) !== Number(bin));
         assert.deepEqual(missing, []);
-    });
-
-    it("the appendix's short names resolve to their BIN", () => {
-        assert.equal(resolveBankBin("LienVietPostBank"), 970449);
-        assert.equal(resolveBankBin("LPBank"), 970449);
-        assert.equal(resolveBankBin("Keb Hana HCM"), 970466);
-        assert.equal(resolveBankBin("BNP Paribas HN"), 963668);
-        assert.equal(resolveBankBin("VietCapitalBank"), 970454);
     });
 });

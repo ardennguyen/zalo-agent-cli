@@ -2,7 +2,9 @@
  * Source-level guards for the listener lifecycle.
  *
  * These read the command files as TEXT, the same technique as
- * `sync-socket-rules.test.js` and `daemon-channel.test.js`. The behaviour they
+ * `sync-socket-rules.test.js` and `daemon-channel.test.js`, or, where a rule is
+ * about which object a call receives, as a syntax tree (tests/helpers/ast-wiring.js),
+ * so a rename or reformat cannot break it and a dead line cannot satisfy it. The behaviour they
  * protect lives inside 700-line command actions wired to a live Zalo socket, so
  * there is no seam to unit-test it through — and every one of these defects was
  * invisible to the existing suite precisely because nothing asserted on shape.
@@ -13,6 +15,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { boundTo, boundToCall, callsTo, findAll, isId, methodCalls, parseModule, prop } from "../helpers/ast-wiring.js";
 
 const SRC = join(import.meta.dirname, "..", "..", "src");
 const read = (p) => readFileSync(join(SRC, p), "utf8");
@@ -133,14 +136,29 @@ describe("msg history must not open a second web session", () => {
 describe("listen and mcp start must track coverage the same way", () => {
     const mcp = readFileSync(join(SRC, "commands", "mcp.js"), "utf8");
 
+    // The wiring lives in the daemons' action handlers (live login only), so it is read as data flow from the syntax
+    // tree: which object each call receives, not which text is on a line.
+    const daemons = [
+        ["listen.js", parseModule(join(SRC, "commands", "listen.js"))],
+        ["mcp.js", parseModule(join(SRC, "commands", "mcp.js"))],
+    ];
+
+    /** The one SyncManager a daemon owns, by variable name. */
+    const syncManagerOf = (name, ast) => {
+        const owned = boundToCall(ast, "SyncManager", { isNew: true });
+        assert.equal(owned.length, 1, `${name} must own exactly one SyncManager`);
+        return owned[0];
+    };
+
     it("both keep coverage through the one gap tracker, with the park stamp", () => {
-        for (const [name, src] of [
-            ["listen.js", listen],
-            ["mcp.js", mcp],
-        ]) {
-            assert.match(src, /createGapTracker\(\{[^}]*setState: setSyncState/, `${name} must stamp the park`);
-            assert.match(src, /startupGapReason\(/, `${name} must name a start-up gap that ended in a park`);
-            assert.match(src, /createDaemonPresence\(/, `${name} must run presence`);
+        for (const [name, ast] of daemons) {
+            const sm = syncManagerOf(name, ast);
+            const trackers = callsTo(ast, "createGapTracker");
+            assert.equal(trackers.length, 1, `${name} must keep coverage through createGapTracker`);
+            const arg = trackers[0].arguments[0];
+            assert.ok(isId(prop(arg, "syncManager"), sm), `${name}: the tracker drives the daemon's SyncManager`);
+            assert.ok(isId(prop(arg, "setState"), "setSyncState"), `${name} must stamp the park`);
+            assert.equal(callsTo(ast, "createDaemonPresence").length, 1, `${name} must run presence`);
         }
     });
 
@@ -151,20 +169,50 @@ describe("listen and mcp start must track coverage the same way", () => {
         // `mcp start` had zero loss detection, and since it never wrote
         // lastConnectedAt, a later `listen` filed a bogus 14-day gap over a
         // window that was fully covered.
-        for (const [name, src] of [
-            ["listen.js", listen],
-            ["mcp.js", mcp],
-        ]) {
-            assert.match(src, /new SyncManager\(/, `${name} must own a SyncManager`);
+        for (const [name, ast] of daemons) {
+            const sm = syncManagerOf(name, ast);
+            assert.ok(methodCalls(ast, sm, "markConnected").length > 0, `${name} must mark itself connected`);
         }
     });
 
     it("both file a startup gap rather than assuming they are caught up", () => {
-        for (const [name, src] of [
-            ["listen.js", listen],
-            ["mcp.js", mcp],
-        ]) {
-            assert.match(src, /"startup-gap"/, `${name} must check for a startup gap`);
+        // From the last recorded connection, with "startup-gap" as the reason unless the window ended in a park
+        // (startupGapReason names that one); only when nothing was filed is the daemon caught up.
+        for (const [name, ast] of daemons) {
+            const sm = syncManagerOf(name, ast);
+            const [last] = boundTo(
+                ast,
+                (init) =>
+                    init.type === "CallExpression" &&
+                    init.callee.type === "MemberExpression" &&
+                    isId(init.callee.object, sm) &&
+                    init.callee.property.name === "getLastConnectedAt",
+            );
+            assert.ok(last, `${name} must read the last recorded connection`);
+            const [reason] = boundTo(
+                ast,
+                (init) =>
+                    init.type === "ConditionalExpression" &&
+                    init.alternate.type === "Literal" &&
+                    init.alternate.value === "startup-gap" &&
+                    init.consequent.type === "CallExpression" &&
+                    init.consequent.callee.name === "startupGapReason" &&
+                    isId(prop(init.consequent.arguments[0], "lastConnectedAt"), last),
+            );
+            assert.ok(reason, `${name} must name the start-up gap "startup-gap", or the park's reason`);
+            const filed = findAll(
+                ast,
+                (n) =>
+                    n.type === "IfStatement" &&
+                    n.test.type === "UnaryExpression" &&
+                    n.test.operator === "!" &&
+                    n.test.argument.type === "CallExpression" &&
+                    n.test.argument.callee.name === "reportGap" &&
+                    isId(n.test.argument.arguments[0], last) &&
+                    isId(n.test.argument.arguments[1], reason) &&
+                    methodCalls(n.consequent, sm, "markConnected").length === 1,
+            );
+            assert.equal(filed.length, 1, `${name} must file the gap, and mark connected only when none was filed`);
         }
     });
 

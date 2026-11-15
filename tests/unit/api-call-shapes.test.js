@@ -28,6 +28,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 
 import { extractSignatures, jsdocParams, jsdocType, resolveKind, splitTopLevel } from "../helpers/api-call-shapes.js";
+import { checkTableSync } from "../helpers/table.js";
 import { jsFiles, callSitesIn, findEvasions, commanderPositionals } from "../helpers/api-call-sites.js";
 import { compareCall, nameAffinity, kindCompatible, normaliseName } from "../helpers/api-call-compare.js";
 
@@ -263,48 +264,64 @@ describe("api call shapes — the checker can actually fail", () => {
         assert.equal(r.nominal.verdict, "OK", r.nominal.reasons.join("; "));
     });
 
-    it("catches an options object passed last instead of first — the conv mute defect", () => {
-        const r = check(wrap(`await getApi().setMute(threadId, Number(opts.type), Number(opts.duration));`));
-        assert.equal(r.structural.verdict, "WRONG", "the real conv mute bug must be caught");
-        assert.match(r.structural.reasons.join(" "), /argument 1 is primitive but options is declared object/);
-    });
-
-    it("catches an object where a value or a list is declared — the msg forward defect's class", () => {
-        // msg forward handed one shape where another was declared; here an
-        // options object where `string|string[]` is.
-        const r = check(wrap(`await getApi().getMultiUsersByPhones({ phone: threadId });`));
-        assert.equal(r.structural.verdict, "WRONG", r.structural.reasons.join("; "));
-        assert.match(r.structural.reasons.join(" "), /phoneNumbers is declared union/);
-    });
-
-    it("catches a bare value where an object is declared — the conv read defect", () => {
-        const r = check(wrap(`await getApi().deleteMessage(threadId, false);`));
-        assert.equal(r.structural.verdict, "WRONG");
-        assert.match(r.structural.reasons.join(" "), /target is declared object/);
-    });
-
-    it("catches an omitted required argument", () => {
-        const r = check(wrap(`await getApi().undo({ msgId: "1", cliMsgId: "2" });`));
-        assert.equal(r.structural.verdict, "WRONG");
-        assert.match(r.structural.reasons.join(" "), /omits required threadId/);
-    });
-
-    it("catches an extra argument the signature ignores", () => {
-        const r = check(wrap(`await getApi().setMute({ action: 1 }, threadId, 1, "surplus");`));
-        assert.equal(r.structural.verdict, "WRONG");
-        assert.match(r.structural.reasons.join(" "), /passes 4 arguments/);
-    });
-
-    it("catches an object literal missing a required key", () => {
-        const r = check(wrap(`await getApi().undo({ msgId: "1" }, threadId, 1);`));
-        assert.equal(r.structural.verdict, "WRONG");
-        assert.match(r.structural.reasons.join(" "), /omits required key\(s\): cliMsgId/);
-    });
-
-    it("reports an object literal with an undeclared key as SUSPECT, not WRONG", () => {
-        const r = check(wrap(`await getApi().undo({ msgId: "1", cliMsgId: "2", nope: 3 }, threadId, 1);`));
-        assert.equal(r.structural.verdict, "SUSPECT");
-        assert.match(r.structural.reasons.join(" "), /undeclared key\(s\): nope/);
+    it("catches one deliberate defect of each structural class, each with its reason", () => {
+        // [defect, call, verdict, reason]
+        const DEFECTS = [
+            [
+                // The real conv mute bug must be caught.
+                "an options object passed last instead of first — the conv mute defect",
+                `await getApi().setMute(threadId, Number(opts.type), Number(opts.duration));`,
+                "WRONG",
+                /argument 1 is primitive but options is declared object/,
+            ],
+            [
+                // msg forward handed one shape where another was declared; here an options object where
+                // `string|string[]` is.
+                "an object where a value or a list is declared — the msg forward defect's class",
+                `await getApi().getMultiUsersByPhones({ phone: threadId });`,
+                "WRONG",
+                /phoneNumbers is declared union/,
+            ],
+            [
+                "a bare value where an object is declared — the conv read defect",
+                `await getApi().deleteMessage(threadId, false);`,
+                "WRONG",
+                /target is declared object/,
+            ],
+            [
+                "an omitted required argument",
+                `await getApi().undo({ msgId: "1", cliMsgId: "2" });`,
+                "WRONG",
+                /omits required threadId/,
+            ],
+            [
+                "an extra argument the signature ignores",
+                `await getApi().setMute({ action: 1 }, threadId, 1, "surplus");`,
+                "WRONG",
+                /passes 4 arguments/,
+            ],
+            [
+                "an object literal missing a required key",
+                `await getApi().undo({ msgId: "1" }, threadId, 1);`,
+                "WRONG",
+                /omits required key\(s\): cliMsgId/,
+            ],
+            [
+                "an object literal with an undeclared key is SUSPECT, not WRONG",
+                `await getApi().undo({ msgId: "1", cliMsgId: "2", nope: 3 }, threadId, 1);`,
+                "SUSPECT",
+                /undeclared key\(s\): nope/,
+            ],
+        ];
+        checkTableSync(
+            DEFECTS,
+            ([defect]) => defect,
+            ([, call, verdict, reason]) => {
+                const r = check(wrap(call));
+                assert.equal(r.structural.verdict, verdict, r.structural.reasons.join("; "));
+                assert.match(r.structural.reasons.join(" "), reason);
+            },
+        );
     });
 
     it("catches a two-string transposition that the structural pass CANNOT see", () => {
@@ -355,36 +372,47 @@ describe("api call shapes — the commander rule", () => {
         return sites[0].args.map((a) => a.kind);
     }
 
-    it("treats a declared positional as a string", () => {
-        const src = `const p={};p.command("x <threadId>").action(async (threadId) => { getApi().undo(threadId); });`;
-        assert.deepEqual(kinds(src), ["primitive"]);
-    });
-
-    it("treats a variadic positional as an array", () => {
-        const src = `const p={};p.command("x <paths...>").action(async (paths) => { getApi().undo(paths); });`;
-        assert.deepEqual(kinds(src), ["array"]);
-    });
-
-    it("identifies the options object by NAME, never by position", () => {
-        // Inferring opts positionally misfires on a handler that ignores its
-        // tail arguments, which produced two false positives in the audit.
-        const src = `const p={};p.command("x <a> <b>").action(async (opts) => { getApi().undo(opts.foo); });`;
-        assert.deepEqual(kinds(src), ["cli-flag"], "the first parameter is named opts, so it IS opts");
-    });
-
-    it("does not mistake a positional for opts just because it is last", () => {
-        const src = `const p={};p.command("x <a> <b>").action(async (a) => { getApi().undo(a); });`;
-        assert.deepEqual(kinds(src), ["primitive"]);
-    });
-
-    it("reads positionals from .argument() as well as .command()", () => {
-        const src = `const p={};p.command("x").argument("<threadId>").action(async (threadId) => { getApi().undo(threadId); });`;
-        assert.deepEqual(kinds(src), ["primitive"]);
-    });
-
-    it("demotes a reassigned variable to unknown rather than guessing", () => {
-        const src = `let v = "a"; v = {}; getApi().undo(v);`;
-        assert.deepEqual(kinds(src), ["unknown"]);
+    it("types each argument by how commander declared it, and guesses nothing", () => {
+        // [rule, source, kinds]
+        const RULES = [
+            [
+                "a declared positional is a string",
+                `const p={};p.command("x <threadId>").action(async (threadId) => { getApi().undo(threadId); });`,
+                ["primitive"],
+            ],
+            [
+                "a variadic positional is an array",
+                `const p={};p.command("x <paths...>").action(async (paths) => { getApi().undo(paths); });`,
+                ["array"],
+            ],
+            [
+                // Inferring opts positionally misfires on a handler that ignores its tail arguments, which
+                // produced two false positives in the audit. The first parameter is named opts, so it IS opts.
+                "the options object is identified by NAME, never by position",
+                `const p={};p.command("x <a> <b>").action(async (opts) => { getApi().undo(opts.foo); });`,
+                ["cli-flag"],
+            ],
+            [
+                "a positional is not opts just because it is last",
+                `const p={};p.command("x <a> <b>").action(async (a) => { getApi().undo(a); });`,
+                ["primitive"],
+            ],
+            [
+                "positionals are read from .argument() as well as .command()",
+                `const p={};p.command("x").argument("<threadId>").action(async (threadId) => { getApi().undo(threadId); });`,
+                ["primitive"],
+            ],
+            [
+                "a reassigned variable is demoted to unknown rather than guessed",
+                `let v = "a"; v = {}; getApi().undo(v);`,
+                ["unknown"],
+            ],
+        ];
+        checkTableSync(
+            RULES,
+            ([rule]) => rule,
+            ([, src, want]) => assert.deepEqual(kinds(src), want),
+        );
     });
 
     it("extracts positional names and variadics from a chain", () => {

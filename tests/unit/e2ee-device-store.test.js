@@ -5,7 +5,7 @@
  * is a throwaway. Runs in the test sandbox (a default key provider is installed there).
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
-import { describe, it } from "node:test";
+import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { isSealed } from "../../src/core/keystore/index.js";
@@ -47,9 +47,8 @@ let n = 0;
 /** A fresh throwaway account id per test (past MAX_SAFE_INTEGER, like the keystore tests' fakes). */
 const freshId = () => String(1000000000000000900n + BigInt(n++));
 
-describe("e2ee device store — sandbox", () => {
-    it("runs inside the test sandbox", () => assertSandboxed(SANDBOX_CONFIG_DIR));
-});
+// Every test in this file runs in the sandbox: a failing hook fails them all.
+before(() => assertSandboxed(SANDBOX_CONFIG_DIR));
 
 describe("the sealed device identity", () => {
     it("seals the identity to disk with no plaintext key and reloads it", async () => {

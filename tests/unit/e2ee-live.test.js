@@ -3,7 +3,7 @@
  * request/reply correlation and the 601 control subscription are proved offline. Nothing here touches a real socket.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
-import { describe, it } from "node:test";
+import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import {
     SignalCommandError,
@@ -35,9 +35,8 @@ function fakeTap() {
     };
 }
 
-describe("e2ee live transport — sandbox", () => {
-    it("runs inside the test sandbox", () => assertSandboxed(SANDBOX_CONFIG_DIR));
-});
+// Every test in this file runs in the sandbox: a failing hook fails them all.
+before(() => assertSandboxed(SANDBOX_CONFIG_DIR));
 
 describe("sendSignalCommand", () => {
     it("resolves with the reply that matches the request id", async () => {

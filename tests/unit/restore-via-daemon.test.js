@@ -6,7 +6,7 @@
  * releases its sessions on the phone); a second quits at once.
  */
 import { assertSandboxed } from "../helpers/sandbox.js";
-import { describe, it, after } from "node:test";
+import { describe, it, after, before } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -60,9 +60,10 @@ async function rig() {
     return { accountDir, seen, proc };
 }
 
-describe("restoreViaDaemon", () => {
-    it("runs inside the test sandbox", () => assertSandboxed(CONFIG_DIR));
+// Every test in this file runs in the sandbox: a failing hook fails them all.
+before(() => assertSandboxed(CONFIG_DIR));
 
+describe("restoreViaDaemon", () => {
     it("the first Ctrl+C cancels the stage on the daemon and the restore ends with its cancelled result", async () => {
         const { accountDir, seen, proc } = await rig();
         const running = restoreViaDaemon(accountDir, { stage: "messages" }, { proc });

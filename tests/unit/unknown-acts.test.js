@@ -3,7 +3,7 @@
  * a small local file, and never disturb the socket. Frames are shaped like the captured 602 and 601 pushes.
  */
 import { assertSandboxed } from "../helpers/sandbox.js";
-import { describe, it, after } from "node:test";
+import { describe, it, after, before } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -38,9 +38,8 @@ after(() => {
 const actions = (...list) => ({ actions: list });
 const saved = (file) => JSON.parse(readFileSync(file, "utf8")).names;
 
-describe("unknown actions — sandbox", () => {
-    it("runs inside the test sandbox", () => assertSandboxed(CONFIG_DIR));
-});
+// Every test in this file runs in the sandbox: a failing hook fails them all.
+before(() => assertSandboxed(CONFIG_DIR));
 
 describe("reading a 602 frame", () => {
     it("takes act_type, act and the key NAMES of data, from an object or a JSON string", () => {

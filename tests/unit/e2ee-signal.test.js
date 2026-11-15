@@ -6,7 +6,7 @@
  * node:crypto and a pure-JS curve library, no network. Known-answer vectors are in e2ee-signal-vectors.test.js.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
-import { describe, it } from "node:test";
+import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import {
@@ -55,9 +55,8 @@ function utf8Ab(text) {
     return ab;
 }
 
-describe("e2ee signal — sandbox", () => {
-    it("runs inside the test sandbox", () => assertSandboxed(SANDBOX_CONFIG_DIR));
-});
+// Every test in this file runs in the sandbox: a failing hook fails them all.
+before(() => assertSandboxed(SANDBOX_CONFIG_DIR));
 
 describe("device identity generation", () => {
     it("makes an identity, a registration id, a signed pre-key and a batch of one-time pre-keys", async () => {

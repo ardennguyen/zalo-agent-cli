@@ -7,7 +7,7 @@
  * through a proxy, so none noticed.
  */
 import { assertSandboxed } from "../helpers/sandbox.js";
-import { describe, it, after } from "node:test";
+import { describe, it, after, before } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
@@ -34,9 +34,10 @@ async function proxy(answer = "via-proxy") {
     return { seen, url: `http://127.0.0.1:${server.address().port}` };
 }
 
-describe("proxy fetch", () => {
-    it("runs inside the test sandbox", () => assertSandboxed(CONFIG_DIR));
+// Every test in this file runs in the sandbox: a failing hook fails them all.
+before(() => assertSandboxed(CONFIG_DIR));
 
+describe("proxy fetch", () => {
     it("sends a request through the proxy and returns a standard Response", async () => {
         const p = await proxy();
         const f = createProxyFetch(p.url);

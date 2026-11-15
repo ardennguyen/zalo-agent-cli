@@ -2,10 +2,10 @@
  * Pure helpers with no I/O: bank BIN resolution, proxy masking, message-text
  * extraction, device fingerprinting, and version comparison.
  *
- * `tests/unit/bank-helpers.test.js` and `tests/unit/proxy-helpers.test.js`
- * already cover the happy paths; what follows targets the edges those
- * suites leave open — the ones that decide whether a command silently does
- * the wrong thing rather than erroring.
+ * `tests/unit/bank-helpers.test.js` already covers the bank happy paths, and
+ * this file holds every `maskProxy` case; what follows targets the edges —
+ * the ones that decide whether a command silently does the wrong thing
+ * rather than erroring.
  */
 
 import { describe, it } from "node:test";
@@ -93,6 +93,14 @@ describe("maskProxy", () => {
     it("masks across schemes", () => {
         assert.equal(maskProxy("socks5://u:p@h:1080"), "socks5://u:***@h:1080");
         assert.equal(maskProxy("https://u:p@h:443"), "https://u:***@h:443");
+    });
+
+    it("masks a long session-style password and keeps a hyphenated user and an IP host exactly", () => {
+        assert.equal(
+            maskProxy("http://user-example:a-long-example-password_session-0000@proxy.example.invalid:12321"),
+            "http://user-example:***@proxy.example.invalid:12321",
+        );
+        assert.equal(maskProxy("socks5://admin:p4ss@192.0.2.4:1080"), "socks5://admin:***@192.0.2.4:1080");
     });
 
     it("leaves a credential-free proxy untouched", () => {

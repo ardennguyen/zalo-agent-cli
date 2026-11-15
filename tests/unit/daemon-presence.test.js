@@ -31,6 +31,7 @@ import { PARK_RETRY_MS, createPresence } from "../../src/core/presence.js";
 import { createDaemonHealth, renderPrometheus } from "../../src/core/daemon-health.js";
 import { ACCOUNT_STATES, accountStateOfHealth, describeAccountState } from "../../src/core/account-state.js";
 import { switchToRenewedSession } from "../../src/core/session-renew.js";
+import { boundTo, boundToCall, callsTo, isId, parseModule, prop } from "../helpers/ast-wiring.js";
 
 const OWN = "1000000000000000911";
 const SEC = 1000;
@@ -772,12 +773,25 @@ describe("daemon presence: listen reads mcp-config.json like mcp start", () => {
     });
 
     it("both daemons hand the files to the resolver and to the daemon's presence (no listen without a config)", () => {
-        const src = readFileSync(join(import.meta.dirname, "..", "..", "src", "commands", "listen.js"), "utf8");
-        assert.match(src, /presenceConfigFiles\(\{ ownId: activeAcc\.ownId, accountDir \}\)/);
-        for (const call of ["resolveDaemonPresence({", "createDaemonPresence({"]) {
-            const at = src.indexOf(call);
-            assert.ok(at > 0, call);
-            assert.match(src.slice(at, at + 200), /config: presenceConfig,/, `listen's ${call} gets the files`);
+        // listen's wiring runs only with a live login: read the data flow from its syntax tree. Red if listen reads
+        // another account's files, or hands the resolver or the presence anything but what it read.
+        const ast = parseModule(join(SRC, "commands", "listen.js"));
+        const reads = callsTo(ast, "presenceConfigFiles");
+        assert.equal(reads.length, 1, "listen reads the presence files once");
+        const arg = reads[0].arguments[0];
+        const ownId = prop(arg, "ownId");
+        assert.ok(ownId?.type === "MemberExpression" && ownId.property.name === "ownId", "for the active account");
+        assert.ok(isId(prop(arg, "accountDir"), "accountDir"), "and its own folder");
+        const [files] = boundToCall(ast, "presenceConfigFiles");
+        const configs = boundTo(
+            ast,
+            (init) => init.type === "MemberExpression" && isId(init.object, files) && init.property.name === "config",
+        );
+        assert.equal(configs.length, 1, "the merged config is taken from what was read");
+        for (const fn of ["resolveDaemonPresence", "createDaemonPresence"]) {
+            const calls = callsTo(ast, fn);
+            assert.equal(calls.length, 1, fn);
+            assert.ok(isId(prop(calls[0].arguments[0], "config"), configs[0]), `listen's ${fn} gets the files`);
         }
     });
 

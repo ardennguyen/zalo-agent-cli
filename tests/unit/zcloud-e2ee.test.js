@@ -7,7 +7,7 @@
  * the assertions are about the scheme, not about any real item. Every id and key is a throwaway.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
-import { describe, it, beforeEach } from "node:test";
+import { describe, it, beforeEach, before } from "node:test";
 import assert from "node:assert/strict";
 import { constants, createCipheriv, generateKeyPairSync, publicEncrypt, randomBytes } from "node:crypto";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
@@ -41,11 +41,10 @@ function seal(plainBytes) {
     return { data, wrapped: wrapped.toString("base64") };
 }
 
-describe("zcloud-e2ee: sandbox", () => {
-    it("runs inside the test sandbox", () => {
-        assertSandboxed(CONFIG_DIR);
-        assert.equal(CONFIG_DIR, SANDBOX_CONFIG_DIR);
-    });
+// Every test in this file runs in the sandbox: a failing hook fails them all.
+before(() => {
+    assertSandboxed(CONFIG_DIR);
+    assert.equal(CONFIG_DIR, SANDBOX_CONFIG_DIR);
 });
 
 describe("the download address Zalo expects", () => {

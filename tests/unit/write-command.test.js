@@ -3,7 +3,7 @@
  * the account is not sent without --yes.
  */
 import { assertSandboxed } from "../helpers/sandbox.js";
-import { describe, it } from "node:test";
+import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { Command } from "commander";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
@@ -15,9 +15,10 @@ import { ReadUsageError } from "../../src/zalo/reads.js";
 
 const args = (name, opts) => argsFromDef(WRITES[name], name, opts);
 
-describe("write arguments", () => {
-    it("runs inside the test sandbox", () => assertSandboxed(CONFIG_DIR));
+// Every test in this file runs in the sandbox: a failing hook fails them all.
+before(() => assertSandboxed(CONFIG_DIR));
 
+describe("write arguments", () => {
     it("types a boolean as true, false, 1 or 0, and refuses anything else", () => {
         for (const [raw, want] of [
             ["true", true],

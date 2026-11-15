@@ -13,8 +13,12 @@ import { scopeOfDir } from "../../src/core/keystore/keyring.js";
 import { writeSealedMedia } from "../../src/core/keystore/media-seal.js";
 import { HiddenChats } from "../../src/core/hidden-chats.js";
 import { runCli, stripAnsi } from "../helpers/cli.js";
+import { checkCli } from "../helpers/cli-fast.js";
 
 const options = { home: SANDBOX_HOME, timeout: 120_000 };
+// Commands run in the in-process CLI worker; a check that fails there is re-run as a real child process
+// (tests/helpers/cli-fast.js `checkCli`), so only a real process can fail a test.
+
 const OWN = "4343";
 const PLAIN = Buffer.from(Array.from({ length: 70_000 }, (_, i) => (i * 13) % 256));
 
@@ -41,15 +45,17 @@ describe("msg media", () => {
 
     it("--out writes exactly the plaintext, and the cache stays sealed", async () => {
         const out = join(SANDBOX_HOME, "out.jpg");
-        const r = await runCli(["--json", "msg", "media", "p1", "--out", out], options);
-        assert.equal(r.code, 0, r.all);
-        const reply = JSON.parse(stripAnsi(r.stdout));
-        assert.deepEqual([reply.delivery, reply.size, reply.msgId], ["file", PLAIN.length, "p1"]);
-        assert.deepEqual(readFileSync(out), PLAIN);
-        assert.equal(readFileSync(sealed).includes(PLAIN.subarray(0, 4096)), false);
+        await checkCli(["--json", "msg", "media", "p1", "--out", out], options, (r) => {
+            assert.equal(r.code, 0, r.all);
+            const reply = JSON.parse(stripAnsi(r.stdout));
+            assert.deepEqual([reply.delivery, reply.size, reply.msgId], ["file", PLAIN.length, "p1"]);
+            assert.deepEqual(readFileSync(out), PLAIN);
+            assert.equal(readFileSync(sealed).includes(PLAIN.subarray(0, 4096)), false);
+        });
     });
 
     it("by default leaves a private decrypted copy and says where and until when", async () => {
+        // A real child process: the decrypted copy outlives the command until the sweep, which is the process's.
         const r = await runCli(["--json", "msg", "media", "p1"], options);
         assert.equal(r.code, 0, r.all);
         const reply = JSON.parse(stripAnsi(r.stdout));
@@ -60,34 +66,39 @@ describe("msg media", () => {
     });
 
     it("--deliver inline prints base64 under --json", async () => {
-        const r = await runCli(["--json", "msg", "media", "p1", "--deliver", "inline"], options);
-        assert.equal(r.code, 0, r.all);
-        const reply = JSON.parse(stripAnsi(r.stdout));
-        assert.deepEqual(Buffer.from(reply.data, "base64"), PLAIN);
-        assert.equal(reply.mimeType, "image/jpeg");
+        await checkCli(["--json", "msg", "media", "p1", "--deliver", "inline"], options, (r) => {
+            assert.equal(r.code, 0, r.all);
+            const reply = JSON.parse(stripAnsi(r.stdout));
+            assert.deepEqual(Buffer.from(reply.data, "base64"), PLAIN);
+            assert.equal(reply.mimeType, "image/jpeg");
+        });
     });
 
     it("--deliver link needs a running daemon, and says so", async () => {
-        const r = await runCli(["msg", "media", "p1", "--deliver", "link"], options);
-        assert.equal(r.code, 1);
-        assert.match(r.all, /running daemon/);
+        await checkCli(["msg", "media", "p1", "--deliver", "link"], options, (r) => {
+            assert.equal(r.code, 1);
+            assert.match(r.all, /running daemon/);
+        });
     });
 
     it("refuses media that is not downloaded, a hidden chat, and two outputs at once", async () => {
-        const missing = await runCli(["msg", "media", "p2"], options);
-        assert.equal(missing.code, 1);
-        assert.match(missing.all, /sync-media -T t1/);
-        const both = await runCli(["msg", "media", "p1", "--out", "x", "--stdout"], options);
-        assert.equal(both.code, 1);
-        // The sealed id mirror the daemon keeps, written the way it writes it.
-        const mirror = new HiddenChats({ accountId: OWN, stateDir: getAccountDir(OWN) });
-        mirror.setFromServer({ threads: [{ thread_id: "t1", is_group: 0 }] });
-        try {
-            const hidden = await runCli(["msg", "media", "p1", "--out", join(SANDBOX_HOME, "h.jpg")], options);
-            assert.equal(hidden.code, 1);
-            assert.match(hidden.all, /hidden chat/);
-        } finally {
-            mirror.clear();
-        }
+        await checkCli(["msg", "media", "p2"], options, async (missing) => {
+            assert.equal(missing.code, 1);
+            assert.match(missing.all, /sync-media -T t1/);
+            await checkCli(["msg", "media", "p1", "--out", "x", "--stdout"], options, async (both) => {
+                assert.equal(both.code, 1);
+                // The sealed id mirror the daemon keeps, written the way it writes it.
+                const mirror = new HiddenChats({ accountId: OWN, stateDir: getAccountDir(OWN) });
+                mirror.setFromServer({ threads: [{ thread_id: "t1", is_group: 0 }] });
+                try {
+                    await checkCli(["msg", "media", "p1", "--out", join(SANDBOX_HOME, "h.jpg")], options, (hidden) => {
+                        assert.equal(hidden.code, 1);
+                        assert.match(hidden.all, /hidden chat/);
+                    });
+                } finally {
+                    mirror.clear();
+                }
+            });
+        });
     });
 });

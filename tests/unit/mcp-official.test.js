@@ -4,7 +4,7 @@
  * reply or its error. The last test runs a real command in a child process, inside the sandbox.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
-import { describe, it } from "node:test";
+import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { GUARDS } from "../../src/core/confirm-guard.js";
@@ -53,9 +53,10 @@ function harness(reply = { code: 0, stdout: '{"ok": true}', stderr: "" }) {
     return { runs, call, registered };
 }
 
-describe("zalo_official", () => {
-    it("runs inside the test sandbox", () => assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR));
+// Every test in this file runs in the sandbox: a failing hook fails them all.
+before(() => assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR));
 
+describe("zalo_official", () => {
     it("is registered by registerTools, with the CLI's commands and none of the CLI-only ones", () => {
         const { registered } = harness();
         assert.ok(registered, "zalo_official is registered");

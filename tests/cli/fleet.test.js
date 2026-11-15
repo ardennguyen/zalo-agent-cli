@@ -13,17 +13,28 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_DIR, getAccountDir } from "../../src/core/credentials.js";
 import { runCli, stripAnsi } from "../helpers/cli.js";
+import { checkCli } from "../helpers/cli-fast.js";
 
 // Per-spawn timeout: ZALO_TEST_CLI_TIMEOUT_MS when set (a loaded box), 60 s otherwise.
 const options = { home: SANDBOX_HOME, timeout: Number(process.env.ZALO_TEST_CLI_TIMEOUT_MS) || 60_000 };
 const IDS = ["501", "502", "503", "504", "505"];
 
-const fleet = (...args) => runCli(["fleet", ...args], options);
-const fleetJson = async (...args) => {
-    const r = await runCli(["--json", "fleet", ...args], options);
+/** A `--json` result as `{code, json, all}`; throws when stdout holds no JSON document. */
+const parsed = (r) => {
     const text = stripAnsi(r.stdout);
     return { code: r.code, json: JSON.parse(text.slice(text.indexOf("{"))), all: r.all };
 };
+// Each runs in the in-process CLI worker and hands the result to the trailing `check` callback; a check that fails
+// there is re-run as a real child process (tests/helpers/cli-fast.js `checkCli`). The last test spawns for real.
+const fleet = (...args) => {
+    const check = args.pop();
+    return checkCli(["fleet", ...args], options, check);
+};
+const fleetJson = (...args) => {
+    const check = args.pop();
+    return checkCli(["--json", "fleet", ...args], options, (r) => check(parsed(r)));
+};
+const ok = (r) => assert.equal(r.code, 0, r.all);
 
 before(() => assertSandboxed(CONFIG_DIR));
 beforeEach(() => {
@@ -37,93 +48,102 @@ beforeEach(() => {
 
 describe("fleet ports", () => {
     it("assigns a stable port to every account, from 3900", async () => {
-        const { json } = await fleetJson("ports");
-        assert.deepEqual(
-            json.ports.map((p) => [p.accountId, p.port]),
-            IDS.map((id, i) => [id, 3900 + i]),
-        );
-        const again = await fleetJson("ports");
-        assert.deepEqual(again.json, json, "the same on the next run");
+        await fleetJson("ports", async ({ json }) => {
+            assert.deepEqual(
+                json.ports.map((p) => [p.accountId, p.port]),
+                IDS.map((id, i) => [id, 3900 + i]),
+            );
+            await fleetJson("ports", (again) => {
+                assert.deepEqual(again.json, json, "the same on the next run");
+            });
+        });
     });
 
     it("--base applies to a new table; a new account never moves the others", async () => {
-        await fleetJson("ports", "--base", "4100");
+        await fleetJson("ports", "--base", "4100", ok);
         const accounts = JSON.parse(readFileSync(join(CONFIG_DIR, "accounts.json"), "utf8"));
         accounts.push({ ownId: "500", name: "New", proxy: null, active: false });
         writeFileSync(join(CONFIG_DIR, "accounts.json"), JSON.stringify(accounts));
-        const { json } = await fleetJson("ports", "--base", "9000");
-        const byId = Object.fromEntries(json.ports.map((p) => [p.accountId, p.port]));
-        assert.equal(byId["501"], 4100);
-        assert.equal(byId["505"], 4104);
-        assert.equal(byId["500"], 4105, "the new account takes the next free port, whatever it sorts like");
+        await fleetJson("ports", "--base", "9000", ({ json }) => {
+            const byId = Object.fromEntries(json.ports.map((p) => [p.accountId, p.port]));
+            assert.equal(byId["501"], 4100);
+            assert.equal(byId["505"], 4104);
+            assert.equal(byId["500"], 4105, "the new account takes the next free port, whatever it sorts like");
+        });
     });
 
     it("refuses a base that is not a port, and a damaged table, without writing", async () => {
-        const bad = await fleet("ports", "--base", "70000");
-        assert.equal(bad.code, 1);
-        assert.match(stripAnsi(bad.all), /Invalid --base/);
-        writeFileSync(join(CONFIG_DIR, "fleet.json"), "{ nope");
-        const damaged = await fleet("ports");
-        assert.equal(damaged.code, 1);
-        assert.match(stripAnsi(damaged.all), /cannot be read/);
-        assert.equal(readFileSync(join(CONFIG_DIR, "fleet.json"), "utf8"), "{ nope");
+        await fleet("ports", "--base", "70000", async (bad) => {
+            assert.equal(bad.code, 1);
+            assert.match(stripAnsi(bad.all), /Invalid --base/);
+            writeFileSync(join(CONFIG_DIR, "fleet.json"), "{ nope");
+            await fleet("ports", (damaged) => {
+                assert.equal(damaged.code, 1);
+                assert.match(stripAnsi(damaged.all), /cannot be read/);
+                assert.equal(readFileSync(join(CONFIG_DIR, "fleet.json"), "utf8"), "{ nope");
+            });
+        });
     });
 });
 
 describe("fleet status", () => {
     it("one row per account, all stopped when no daemon runs, with a summary", async () => {
-        const r = await fleet("status");
-        assert.equal(r.code, 0, r.all);
-        const text = stripAnsi(r.stdout);
-        const lines = text.split("\n").filter(Boolean);
-        const header = lines.findIndex((l) => /^ACCOUNT\s+NAME\s+PORT\s+STATE\s+PID\s+SOCKET/.test(l));
-        assert.ok(header >= 0, "the table has its header");
-        for (const id of IDS)
-            assert.ok(
-                lines.some((l) => l.startsWith(id) && /stopped/.test(l)),
-                id,
-            );
-        assert.ok(lines.some((l) => /5 stopped/.test(l)));
+        await fleet("status", (r) => {
+            assert.equal(r.code, 0, r.all);
+            const text = stripAnsi(r.stdout);
+            const lines = text.split("\n").filter(Boolean);
+            const header = lines.findIndex((l) => /^ACCOUNT\s+NAME\s+PORT\s+STATE\s+PID\s+SOCKET/.test(l));
+            assert.ok(header >= 0, "the table has its header");
+            for (const id of IDS)
+                assert.ok(
+                    lines.some((l) => l.startsWith(id) && /stopped/.test(l)),
+                    id,
+                );
+            assert.ok(lines.some((l) => /5 stopped/.test(l)));
+        });
     });
 
     it("does not assign ports: status only reads", async () => {
-        await fleet("status");
-        assert.equal(existsSync(join(CONFIG_DIR, "fleet.json")), false);
+        await fleet("status", () => assert.equal(existsSync(join(CONFIG_DIR, "fleet.json")), false));
     });
 
     it("--json gives each account's state and a summary", async () => {
-        const { json } = await fleetJson("status");
-        assert.equal(json.accounts.length, 5);
-        assert.deepEqual(json.summary, { stopped: 5 });
-        assert.deepEqual(Object.keys(json.accounts[0]).sort(), [
-            "accountId",
-            "daemon",
-            "health",
-            "name",
-            "port",
-            "session",
-            "state",
-        ]);
-        assert.equal(json.accounts[0].session, null, "no saved login, no end date");
-        assert.deepEqual(json.accounts[0].daemon, { running: false, pid: null });
+        await fleetJson("status", ({ json }) => {
+            assert.equal(json.accounts.length, 5);
+            assert.deepEqual(json.summary, { stopped: 5 });
+            assert.deepEqual(Object.keys(json.accounts[0]).sort(), [
+                "accountId",
+                "daemon",
+                "health",
+                "name",
+                "port",
+                "session",
+                "state",
+            ]);
+            assert.equal(json.accounts[0].session, null, "no saved login, no end date");
+            assert.deepEqual(json.accounts[0].daemon, { running: false, pid: null });
+        });
     });
 
     it("can be limited to named accounts, and refuses one that is not registered", async () => {
-        const { json } = await fleetJson("status", "502", "504");
-        assert.deepEqual(
-            json.accounts.map((a) => a.accountId),
-            ["502", "504"],
-        );
-        const r = await fleet("status", "999");
-        assert.equal(r.code, 1);
-        assert.match(stripAnsi(r.all), /Account 999 is not registered/);
+        await fleetJson("status", "502", "504", async ({ json }) => {
+            assert.deepEqual(
+                json.accounts.map((a) => a.accountId),
+                ["502", "504"],
+            );
+            await fleet("status", "999", (r) => {
+                assert.equal(r.code, 1);
+                assert.match(stripAnsi(r.all), /Account 999 is not registered/);
+            });
+        });
     });
 
     it("--check exits 1 unless every account is serving, and says what to do about each", async () => {
-        const r = await fleet("status", "--check");
-        assert.equal(r.code, 1);
-        assert.match(stripAnsi(r.all), /501: stopped - no daemon runs for it; `fleet start` starts it/);
-        assert.equal((await fleet("status")).code, 0);
+        await fleet("status", "--check", async (r) => {
+            assert.equal(r.code, 1);
+            assert.match(stripAnsi(r.all), /501: stopped - no daemon runs for it; `fleet start` starts it/);
+            await fleet("status", ok);
+        });
     });
 
     it("shows when each saved login ends: --check fails at 7 days left, warns at 10, says how to log in again", async () => {
@@ -143,67 +163,79 @@ describe("fleet status", () => {
         save("501", 7);
         save("502", 10);
         save("503", 60);
-        const { json } = await fleetJson("status", "501", "502", "503");
-        assert.deepEqual(
-            json.accounts.map((a) => [a.accountId, a.session?.daysLeft]),
-            [
-                ["501", 7],
-                ["502", 10],
-                ["503", 60],
-            ],
-        );
-        const table = stripAnsi((await fleet("status", "501", "502", "503")).stdout);
-        assert.match(table, /LOGIN ENDS/);
-        assert.match(table, /^501 .*\s7d!$/m);
-        assert.match(table, /^503 .*\s60d$/m);
-        const r = await fleet("status", "--check", "501", "502", "503");
-        assert.equal(r.code, 1);
-        const all = stripAnsi(r.all);
-        assert.match(all, /501: session ends \S+ \(7 day\(s\) left\) - log in again by \S+: za --account 501 login/);
-        assert.match(all, /502: session ends \S+ \(10 day\(s\) left\) - log in again by/);
-        assert.doesNotMatch(all, /503: session/);
+        await fleetJson("status", "501", "502", "503", async ({ json }) => {
+            assert.deepEqual(
+                json.accounts.map((a) => [a.accountId, a.session?.daysLeft]),
+                [
+                    ["501", 7],
+                    ["502", 10],
+                    ["503", 60],
+                ],
+            );
+            await fleet("status", "501", "502", "503", (t) => {
+                const table = stripAnsi(t.stdout);
+                assert.match(table, /LOGIN ENDS/);
+                assert.match(table, /^501 .*\s7d!$/m);
+                assert.match(table, /^503 .*\s60d$/m);
+            });
+            await fleet("status", "--check", "501", "502", "503", (r) => {
+                assert.equal(r.code, 1);
+                const all = stripAnsi(r.all);
+                assert.match(
+                    all,
+                    /501: session ends \S+ \(7 day\(s\) left\) - log in again by \S+: za --account 501 login/,
+                );
+                assert.match(all, /502: session ends \S+ \(10 day\(s\) left\) - log in again by/);
+                assert.doesNotMatch(all, /503: session/);
+            });
+        });
     });
 
     it("refuses a nonsense --down-for", async () => {
-        const r = await fleet("status", "--down-for", "-5");
-        assert.equal(r.code, 1);
-        assert.match(stripAnsi(r.all), /Invalid --down-for/);
+        await fleet("status", "--down-for", "-5", (r) => {
+            assert.equal(r.code, 1);
+            assert.match(stripAnsi(r.all), /Invalid --down-for/);
+        });
     });
 
     it("with no accounts registered it says so", async () => {
         writeFileSync(join(CONFIG_DIR, "accounts.json"), "[]");
-        const r = await fleet("status");
-        assert.equal(r.code, 1);
-        assert.match(stripAnsi(r.all), /No accounts are registered/);
+        await fleet("status", (r) => {
+            assert.equal(r.code, 1);
+            assert.match(stripAnsi(r.all), /No accounts are registered/);
+        });
     });
 });
 
 describe("fleet start and restart: the plan", () => {
     it("start --dry-run plans every account in shuffled batches and starts nothing", async () => {
-        const { json, code } = await fleetJson("start", "--dry-run", "--batch", "2", "--stagger", "0");
-        assert.equal(code, 0);
-        assert.equal(json.dryRun, true);
-        assert.deepEqual(json.started.map((s) => s.accountId).sort(), IDS);
-        assert.ok(json.started.every((s) => /would start \(mcp, port 39\d\d\)/.test(s.detail)));
-        for (const id of IDS)
-            assert.equal(existsSync(join(CONFIG_DIR, "accounts", id, "daemon.log")), false, "nothing was spawned");
+        await fleetJson("start", "--dry-run", "--batch", "2", "--stagger", "0", ({ json, code }) => {
+            assert.equal(code, 0);
+            assert.equal(json.dryRun, true);
+            assert.deepEqual(json.started.map((s) => s.accountId).sort(), IDS);
+            assert.ok(json.started.every((s) => /would start \(mcp, port 39\d\d\)/.test(s.detail)));
+            for (const id of IDS)
+                assert.equal(existsSync(join(CONFIG_DIR, "accounts", id, "daemon.log")), false, "nothing was spawned");
+        });
     });
 
     it("start --listen plans listen daemons, which need no port", async () => {
-        const { json } = await fleetJson("start", "501", "--dry-run", "--listen", "--stagger", "0");
-        assert.deepEqual(
-            json.started.map((s) => s.detail),
-            ["would start (listen)"],
-        );
+        await fleetJson("start", "501", "--dry-run", "--listen", "--stagger", "0", ({ json }) => {
+            assert.deepEqual(
+                json.started.map((s) => s.detail),
+                ["would start (listen)"],
+            );
+        });
     });
 
     it("start names its batches on stderr in --json mode, so stdout stays one document", async () => {
-        const r = await runCli(["--json", "fleet", "start", "--dry-run", "--batch", "2", "--stagger", "0"], options);
-        const batches = stripAnsi(r.stderr)
-            .split("\n")
-            .filter((l) => /batch \d\/3/.test(l));
-        assert.equal(batches.length, 3, "5 accounts at 2 a batch is 3 batches");
-        assert.doesNotThrow(() => JSON.parse(stripAnsi(r.stdout)));
+        await checkCli(["--json", "fleet", "start", "--dry-run", "--batch", "2", "--stagger", "0"], options, (r) => {
+            const batches = stripAnsi(r.stderr)
+                .split("\n")
+                .filter((l) => /batch \d\/3/.test(l));
+            assert.equal(batches.length, 3, "5 accounts at 2 a batch is 3 batches");
+            assert.doesNotThrow(() => JSON.parse(stripAnsi(r.stdout)));
+        });
     });
 
     it("refuses nonsense batch and stagger values", async () => {
@@ -214,44 +246,50 @@ describe("fleet start and restart: the plan", () => {
             ["--stagger", "-1"],
             ["--stagger", "99999"],
         ]) {
-            const r = await fleet("start", "--dry-run", ...args);
-            assert.equal(r.code, 1, args.join(" "));
-            assert.match(stripAnsi(r.all), /Invalid --(batch|stagger)/);
+            await fleet("start", "--dry-run", ...args, (r) => {
+                assert.equal(r.code, 1, args.join(" "));
+                assert.match(stripAnsi(r.all), /Invalid --(batch|stagger)/);
+            });
         }
     });
 
     it("a bare restart restarts nothing: it asks to be told which", async () => {
-        const r = await fleet("restart");
-        assert.equal(r.code, 1);
-        assert.match(stripAnsi(r.all), /Name the accounts to restart, or pass --unhealthy or --all/);
+        await fleet("restart", (r) => {
+            assert.equal(r.code, 1);
+            assert.match(stripAnsi(r.all), /Name the accounts to restart, or pass --unhealthy or --all/);
+        });
     });
 
     it("restart --unhealthy leaves stopped accounts alone: nothing is down, so nothing to restart", async () => {
-        const { json } = await fleetJson("restart", "--unhealthy", "--dry-run");
-        assert.deepEqual(json, { restarted: [], considered: 5 });
+        await fleetJson("restart", "--unhealthy", "--dry-run", ({ json }) => {
+            assert.deepEqual(json, { restarted: [], considered: 5 });
+        });
     });
 
     it("restart --all --dry-run plans every account and changes nothing", async () => {
-        const { json } = await fleetJson("restart", "--all", "--dry-run", "--stagger", "0");
-        assert.equal(json.restarted.length, 5);
-        assert.equal(json.dryRun, true);
+        await fleetJson("restart", "--all", "--dry-run", "--stagger", "0", ({ json }) => {
+            assert.equal(json.restarted.length, 5);
+            assert.equal(json.dryRun, true);
+        });
     });
 
     it("restart of named accounts plans only those", async () => {
-        const { json } = await fleetJson("restart", "503", "--dry-run", "--listen");
-        assert.deepEqual(
-            json.restarted.map((r) => [r.accountId, r.detail]),
-            [["503", "would start (listen)"]],
-        );
+        await fleetJson("restart", "503", "--dry-run", "--listen", ({ json }) => {
+            assert.deepEqual(
+                json.restarted.map((r) => [r.accountId, r.detail]),
+                [["503", "would start (listen)"]],
+            );
+        });
     });
 });
 
 describe("fleet stop", () => {
     it("with no daemon running it says so for each account and succeeds", async () => {
-        const { json, code } = await fleetJson("stop");
-        assert.equal(code, 0);
-        assert.equal(json.stopped.length, 5);
-        assert.ok(json.stopped.every((s) => s.stopped === false));
+        await fleetJson("stop", ({ json, code }) => {
+            assert.equal(code, 0);
+            assert.equal(json.stopped.length, 5);
+            assert.ok(json.stopped.every((s) => s.stopped === false));
+        });
     });
 });
 
@@ -259,64 +297,70 @@ describe("fleet stop", () => {
 // daemon spawned beside the unit or a stop its Restart=always undoes.
 describe("fleet under systemd", () => {
     const sd = { ...options, env: { ZALO_FLEET_SUPERVISOR: "systemd" } };
-    const sdJson = async (...args) => {
-        const r = await runCli(["--json", "fleet", ...args], sd);
-        const text = stripAnsi(r.stdout);
-        return { code: r.code, json: JSON.parse(text.slice(text.indexOf("{"))), all: r.all };
+    const sdJson = (...args) => {
+        const check = args.pop();
+        return checkCli(["--json", "fleet", ...args], sd, (r) => check(parsed(r)));
     };
 
     it("start and restart plan the unit, not a spawn", async () => {
-        const start = await sdJson("start", "501", "502", "--dry-run", "--stagger", "0");
-        assert.equal(start.code, 0, start.all);
-        assert.deepEqual(start.json.started.map((s) => [s.accountId, s.supervisor, s.detail]).sort(), [
-            ["501", "systemd", "would start zalo-mcp@501.service"],
-            ["502", "systemd", "would start zalo-mcp@502.service"],
-        ]);
-        const restart = await sdJson("restart", "503", "--dry-run");
-        assert.deepEqual(
-            restart.json.restarted.map((s) => [s.supervisor, s.detail]),
-            [["systemd", "would restart zalo-mcp@503.service"]],
-        );
+        await sdJson("start", "501", "502", "--dry-run", "--stagger", "0", async (start) => {
+            assert.equal(start.code, 0, start.all);
+            assert.deepEqual(start.json.started.map((s) => [s.accountId, s.supervisor, s.detail]).sort(), [
+                ["501", "systemd", "would start zalo-mcp@501.service"],
+                ["502", "systemd", "would start zalo-mcp@502.service"],
+            ]);
+            await sdJson("restart", "503", "--dry-run", (restart) => {
+                assert.deepEqual(
+                    restart.json.restarted.map((s) => [s.supervisor, s.detail]),
+                    [["systemd", "would restart zalo-mcp@503.service"]],
+                );
+            });
+        });
     });
 
     it("stop goes to systemctl, and a refused systemctl is a failure that says how to do it", async () => {
         // Here systemctl is missing (Windows, macOS) or refuses an unprivileged stop of an unknown unit (Linux CI).
-        const r = await runCli(["fleet", "stop", "501"], sd);
-        assert.equal(r.code, 1, r.all);
-        const text = stripAnsi(r.all);
-        assert.match(text, /systemctl stop zalo-mcp@501\.service failed/);
-        assert.match(text, /sudo systemctl stop zalo-mcp@501/);
-        assert.doesNotMatch(text, /no daemon was running/, "the spawn path was not taken");
+        await checkCli(["fleet", "stop", "501"], sd, (r) => {
+            assert.equal(r.code, 1, r.all);
+            const text = stripAnsi(r.all);
+            assert.match(text, /systemctl stop zalo-mcp@501\.service failed/);
+            assert.match(text, /sudo systemctl stop zalo-mcp@501/);
+            assert.doesNotMatch(text, /no daemon was running/, "the spawn path was not taken");
+        });
     });
 });
 
 describe("fleet purge", () => {
     it("asks first: without --yes or --dry-run it does nothing and exits 2", async () => {
-        const r = await fleet("purge");
-        assert.equal(r.code, 2, r.all);
-        assert.match(stripAnsi(r.all), /quota and retention purge for every account on this machine/);
+        await fleet("purge", (r) => {
+            assert.equal(r.code, 2, r.all);
+            assert.match(stripAnsi(r.all), /quota and retention purge for every account on this machine/);
+        });
     });
 
     it("--dry-run reports each account (no database here: skipped) and exits 0; --yes the same", async () => {
-        const { json, code } = await fleetJson("purge", "--dry-run");
-        assert.equal(code, 0);
-        assert.equal(json.dryRun, true);
-        assert.deepEqual(
-            json.purge.map((r) => [r.accountId, r.action]),
-            IDS.map((id) => [id, "skipped"]),
-        );
-        const yes = await fleetJson("purge", "502", "--yes");
-        assert.equal(yes.code, 0, yes.all);
-        assert.deepEqual(
-            yes.json.purge.map((r) => r.accountId),
-            ["502"],
-        );
+        await fleetJson("purge", "--dry-run", async ({ json, code }) => {
+            assert.equal(code, 0);
+            assert.equal(json.dryRun, true);
+            assert.deepEqual(
+                json.purge.map((r) => [r.accountId, r.action]),
+                IDS.map((id) => [id, "skipped"]),
+            );
+            await fleetJson("purge", "502", "--yes", (yes) => {
+                assert.equal(yes.code, 0, yes.all);
+                assert.deepEqual(
+                    yes.json.purge.map((r) => r.accountId),
+                    ["502"],
+                );
+            });
+        });
     });
 
     it("an account that is not registered is refused", async () => {
-        const r = await fleet("purge", "999", "--dry-run");
-        assert.equal(r.code, 1);
-        assert.match(stripAnsi(r.all), /not registered/);
+        await fleet("purge", "999", "--dry-run", (r) => {
+            assert.equal(r.code, 1);
+            assert.match(stripAnsi(r.all), /not registered/);
+        });
     });
 });
 
@@ -327,49 +371,54 @@ describe("fleet generate", () => {
     });
     afterEach(() => rmSync(out, { recursive: true, force: true }));
     const gen = (...a) => fleet("generate", "--out", out, ...a);
+    const genOk = (...a) => gen(...a, ok);
 
     it("writes the unit, env files with tokens, and the port table that fleet ports shows", async () => {
-        const r = await gen();
-        assert.equal(r.code, 0, r.all);
-        assert.ok(existsSync(join(out, "zalo-mcp@.service")));
-        assert.ok(existsSync(join(out, "zalo-mcp-purge.service")));
-        assert.ok(existsSync(join(out, "zalo-mcp-purge.timer")));
-        const ports = JSON.parse(readFileSync(join(out, "ports.json"), "utf8"));
-        assert.deepEqual(ports, Object.fromEntries(IDS.map((id, i) => [id, 3900 + i])));
-        for (const id of IDS) {
-            const env = readFileSync(join(out, "accounts", `${id}.env`), "utf8");
-            assert.match(env, new RegExp(`^ZALO_MCP_HTTP_PORT=${ports[id]}$`, "m"));
-            assert.match(env, /^ZALO_MCP_AUTH_TOKEN=[0-9a-f]{64}$/m);
-        }
-        const { json } = await fleetJson("ports");
-        assert.deepEqual(Object.fromEntries(json.ports.map((p) => [p.accountId, p.port])), ports);
+        await gen(async (r) => {
+            assert.equal(r.code, 0, r.all);
+            assert.ok(existsSync(join(out, "zalo-mcp@.service")));
+            assert.ok(existsSync(join(out, "zalo-mcp-purge.service")));
+            assert.ok(existsSync(join(out, "zalo-mcp-purge.timer")));
+            const ports = JSON.parse(readFileSync(join(out, "ports.json"), "utf8"));
+            assert.deepEqual(ports, Object.fromEntries(IDS.map((id, i) => [id, 3900 + i])));
+            for (const id of IDS) {
+                const env = readFileSync(join(out, "accounts", `${id}.env`), "utf8");
+                assert.match(env, new RegExp(`^ZALO_MCP_HTTP_PORT=${ports[id]}$`, "m"));
+                assert.match(env, /^ZALO_MCP_AUTH_TOKEN=[0-9a-f]{64}$/m);
+            }
+            await fleetJson("ports", ({ json }) => {
+                assert.deepEqual(Object.fromEntries(json.ports.map((p) => [p.accountId, p.port])), ports);
+            });
+        });
     });
 
     it("never prints a token", async () => {
-        const r = await gen();
-        const tokens = IDS.map(
-            (id) => /^ZALO_MCP_AUTH_TOKEN=(.+)$/m.exec(readFileSync(join(out, "accounts", `${id}.env`), "utf8"))[1],
-        );
-        for (const t of tokens) assert.ok(!r.all.includes(t));
-        assert.match(stripAnsi(r.all), /Tokens are in accounts\/<id>\.env \(mode 600\) and are not printed here/);
+        await gen((r) => {
+            const tokens = IDS.map(
+                (id) => /^ZALO_MCP_AUTH_TOKEN=(.+)$/m.exec(readFileSync(join(out, "accounts", `${id}.env`), "utf8"))[1],
+            );
+            for (const t of tokens) assert.ok(!r.all.includes(t));
+            assert.match(stripAnsi(r.all), /Tokens are in accounts\/<id>\.env \(mode 600\) and are not printed here/);
+        });
     });
 
     it("a second run keeps everything, tokens included; --force replaces the plain files; --rotate-tokens the tokens", async () => {
-        await gen();
+        await genOk();
         const tokenOf = () => readFileSync(join(out, "accounts", "501.env"), "utf8").match(/TOKEN=(.+)/)[1];
         const t1 = tokenOf();
-        const second = await runCli(["--json", "fleet", "generate", "--out", out], options);
-        const j2 = JSON.parse(stripAnsi(second.stdout).slice(stripAnsi(second.stdout).indexOf("{")));
-        assert.deepEqual(j2.written, ["ports.json"]);
-        assert.equal(tokenOf(), t1);
-        await gen("--force");
+        await checkCli(["--json", "fleet", "generate", "--out", out], options, (second) => {
+            const j2 = JSON.parse(stripAnsi(second.stdout).slice(stripAnsi(second.stdout).indexOf("{")));
+            assert.deepEqual(j2.written, ["ports.json"]);
+            assert.equal(tokenOf(), t1);
+        });
+        await genOk("--force");
         assert.equal(tokenOf(), t1, "force does not replace a token in use");
-        await gen("--rotate-tokens");
+        await genOk("--rotate-tokens");
         assert.notEqual(tokenOf(), t1);
     });
 
     it("--user/--home/--bin go into the unit; --domain adds a Caddyfile", async () => {
-        await gen("--user", "bot", "--home", "/srv/bot", "--bin", "/opt/za", "--domain", "crm.example.com");
+        await genOk("--user", "bot", "--home", "/srv/bot", "--bin", "/opt/za", "--domain", "crm.example.com");
         const unit = readFileSync(join(out, "zalo-mcp@.service"), "utf8");
         assert.match(unit, /^User=bot$/m);
         assert.match(unit, /^ExecStart=\/opt\/za mcp start --account %i$/m);
@@ -379,7 +428,7 @@ describe("fleet generate", () => {
     });
 
     it("--domain gives each named account its public URL; the steps are printed with the paths used", async () => {
-        const r = await runCli(
+        await checkCli(
             [
                 "--json",
                 "fleet",
@@ -396,27 +445,33 @@ describe("fleet generate", () => {
                 "/srv/zalo/accounts",
             ],
             options,
+            (r) => {
+                assert.equal(r.code, 0, r.all);
+                const json = JSON.parse(stripAnsi(r.stdout).slice(stripAnsi(r.stdout).indexOf("{")));
+                assert.deepEqual(
+                    readdirSync(join(out, "accounts")).sort(),
+                    ["501.env", "502.env"],
+                    "only the named accounts",
+                );
+                for (const id of ["501", "502"]) {
+                    const env = readFileSync(join(out, "accounts", `${id}.env`), "utf8");
+                    assert.match(env, new RegExp(`^ZALO_MCP_PUBLIC_URL=https://zalo\\.example\\.com/a/${id}$`, "m"));
+                }
+                assert.match(readFileSync(join(out, "common.env"), "utf8"), /^ZALO_MCP_TRUSTED_PROXIES=127\.0\.0\.1$/m);
+                assert.match(readFileSync(join(out, "home.env"), "utf8"), /^ZALO_DATA_DIR=\/srv\/zalo\/accounts$/m);
+                assert.match(
+                    readFileSync(join(out, "zalo-mcp@.service"), "utf8"),
+                    /^ReadWritePaths=\/home\/zalo\/\.zalo-agent-cli \/srv\/zalo\/accounts$/m,
+                );
+                assert.equal(json.provider, "passphrase");
+                const steps = json.install.join("\n");
+                assert.match(steps, /\/opt\/zalo\/etc\/storage-passphrase\.cred/);
+                assert.match(steps, /zalo-mcp@\.service\.d\/credentials\.conf/);
+                assert.match(steps, /enable --now zalo-mcp@502 zalo-mcp@501 /);
+                assert.doesNotMatch(steps, /\/etc\/zalo-mcp\b/, "no hard-coded /etc dir");
+                assert.doesNotMatch(steps, /fleet start --env-dir/, "never a spawn beside the units");
+            },
         );
-        assert.equal(r.code, 0, r.all);
-        const json = JSON.parse(stripAnsi(r.stdout).slice(stripAnsi(r.stdout).indexOf("{")));
-        assert.deepEqual(readdirSync(join(out, "accounts")).sort(), ["501.env", "502.env"], "only the named accounts");
-        for (const id of ["501", "502"]) {
-            const env = readFileSync(join(out, "accounts", `${id}.env`), "utf8");
-            assert.match(env, new RegExp(`^ZALO_MCP_PUBLIC_URL=https://zalo\\.example\\.com/a/${id}$`, "m"));
-        }
-        assert.match(readFileSync(join(out, "common.env"), "utf8"), /^ZALO_MCP_TRUSTED_PROXIES=127\.0\.0\.1$/m);
-        assert.match(readFileSync(join(out, "home.env"), "utf8"), /^ZALO_DATA_DIR=\/srv\/zalo\/accounts$/m);
-        assert.match(
-            readFileSync(join(out, "zalo-mcp@.service"), "utf8"),
-            /^ReadWritePaths=\/home\/zalo\/\.zalo-agent-cli \/srv\/zalo\/accounts$/m,
-        );
-        assert.equal(json.provider, "passphrase");
-        const steps = json.install.join("\n");
-        assert.match(steps, /\/opt\/zalo\/etc\/storage-passphrase\.cred/);
-        assert.match(steps, /zalo-mcp@\.service\.d\/credentials\.conf/);
-        assert.match(steps, /enable --now zalo-mcp@502 zalo-mcp@501 /);
-        assert.doesNotMatch(steps, /\/etc\/zalo-mcp\b/, "no hard-coded /etc dir");
-        assert.doesNotMatch(steps, /fleet start --env-dir/, "never a spawn beside the units");
     });
 
     it("refuses an unknown provider, a relative path, a bad domain or user, and writes nothing", async () => {
@@ -427,20 +482,23 @@ describe("fleet generate", () => {
             ["--domain", "https://zalo.example.com/"],
             ["--user", "Bad User"],
         ]) {
-            const r = await gen(...args);
-            assert.equal(r.code, 1, args.join(" "));
-            assert.match(stripAnsi(r.all), /Invalid --(provider|data-dir|etc-dir|domain|user)/, args.join(" "));
+            await gen(...args, (r) => {
+                assert.equal(r.code, 1, args.join(" "));
+                assert.match(stripAnsi(r.all), /Invalid --(provider|data-dir|etc-dir|domain|user)/, args.join(" "));
+            });
         }
         assert.deepEqual(readdirSync(out), [], "nothing was written");
     });
 
     it("needs --out, and a sane --base-port", async () => {
-        const noOut = await fleet("generate");
-        assert.equal(noOut.code, 1);
-        assert.match(stripAnsi(noOut.all), /required option '--out <dir>'/);
-        const bad = await gen("--base-port", "0");
-        assert.equal(bad.code, 1);
-        assert.deepEqual(readdirSync(out), [], "nothing was written");
+        await fleet("generate", async (noOut) => {
+            assert.equal(noOut.code, 1);
+            assert.match(stripAnsi(noOut.all), /required option '--out <dir>'/);
+            await gen("--base-port", "0", (bad) => {
+                assert.equal(bad.code, 1);
+                assert.deepEqual(readdirSync(out), [], "nothing was written");
+            });
+        });
     });
 });
 
@@ -453,12 +511,14 @@ describe("fleet needs no Zalo session", () => {
             JSON.stringify({ imei: "i", cookie: {}, userAgent: "UA", language: "vi" }),
         );
         for (const args of [["status"], ["ports"], ["start", "--dry-run", "--stagger", "0"], ["stop"]]) {
-            const r = await fleet(...args);
-            const text = stripAnsi(r.all);
-            assert.doesNotMatch(text, /Auto-login|Logged in as|session/i, `fleet ${args.join(" ")}: ${text}`);
+            await fleet(...args, (r) => {
+                const text = stripAnsi(r.all);
+                assert.doesNotMatch(text, /Auto-login|Logged in as|session/i, `fleet ${args.join(" ")}: ${text}`);
+            });
         }
     });
 
+    // A real child process: the smoke check that the worker and a real process agree.
     it("a global --account does not pin the process either: fleet acts on every account", async () => {
         const r = await runCli(["--account", "501", "fleet", "status", "502"], options);
         assert.equal(r.code, 0, r.all);

@@ -10,8 +10,12 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR, getAccountDir } from "../../src/core/credentials.js";
 import { runCli, stripAnsi } from "../helpers/cli.js";
+import { checkCli } from "../helpers/cli-fast.js";
 
 const options = { home: SANDBOX_HOME, timeout: 120_000 };
+// Commands run in the in-process CLI worker; a check that fails there is re-run as a real child process
+// (tests/helpers/cli-fast.js `checkCli`), so only a real process can fail a test.
+
 const OWN = "5353";
 
 describe("presence", () => {
@@ -26,28 +30,33 @@ describe("presence", () => {
     });
 
     it("status with no daemon: running false, exit 0", async () => {
+        // A real child process: the smoke check that the worker and a real process agree.
         const r = await runCli(["--json", "presence", "status"], options);
         assert.equal(r.code, 0, r.all);
         assert.deepEqual(JSON.parse(stripAnsi(r.stdout)), { accountId: OWN, running: false });
     });
 
     it("resume is guarded: without --yes nothing is asked of the daemon (exit 2); --dry-run says what it would do", async () => {
-        const bare = await runCli(["presence", "resume"], options);
-        assert.equal(bare.code, 2, bare.all);
-        assert.match(bare.all, /take account 5353 back from the other session/);
-        const dry = await runCli(["--json", "presence", "resume", "--dry-run"], options);
-        assert.equal(dry.code, 0, dry.all);
-        assert.equal(JSON.parse(stripAnsi(dry.stdout)).action, "presence resume");
-        const yes = await runCli(["presence", "resume", "--yes"], options);
-        assert.equal(yes.code, 1, yes.all);
-        assert.match(yes.all, /No daemon runs/);
+        await checkCli(["presence", "resume"], options, async (bare) => {
+            assert.equal(bare.code, 2, bare.all);
+            assert.match(bare.all, /take account 5353 back from the other session/);
+            await checkCli(["--json", "presence", "resume", "--dry-run"], options, async (dry) => {
+                assert.equal(dry.code, 0, dry.all);
+                assert.equal(JSON.parse(stripAnsi(dry.stdout)).action, "presence resume");
+                await checkCli(["presence", "resume", "--yes"], options, (yes) => {
+                    assert.equal(yes.code, 1, yes.all);
+                    assert.match(yes.all, /No daemon runs/);
+                });
+            });
+        });
     });
 
     it("wake and park with no daemon exit 1 and say a daemon is needed", async () => {
         for (const verb of ["wake", "park"]) {
-            const r = await runCli(["presence", verb], options);
-            assert.equal(r.code, 1, r.all);
-            assert.match(r.all, /No daemon runs/);
+            await checkCli(["presence", verb], options, (r) => {
+                assert.equal(r.code, 1, r.all);
+                assert.match(r.all, /No daemon runs/);
+            });
         }
     });
 });

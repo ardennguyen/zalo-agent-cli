@@ -31,6 +31,7 @@ import {
 import { mediaStatus, migrateMedia, rekeyMedia } from "../../src/core/media-store.js";
 import { decryptToTempfile, mediaTempRoot, removeMediaTemp, sweepMediaTemp } from "../../src/core/media-deliver.js";
 import { fullSecurityStatus, migrateStores } from "../../src/core/keystore/stores.js";
+import { checkTableSync } from "../helpers/table.js";
 
 let n = 0;
 const freshId = () => String(1000000000000000980n + BigInt(n++));
@@ -59,20 +60,25 @@ function sealedFile(len, { msgId = "m1", id = freshId() } = {}) {
 before(() => assertSandboxed(CONFIG_DIR));
 
 describe("round trip", () => {
-    for (const len of [0, 1, 100, MEDIA_CHUNK - 1, MEDIA_CHUNK, MEDIA_CHUNK + 1, 3 * MEDIA_CHUNK, 5 * 1024 * 1024]) {
-        it(`${len} bytes: sealed on disk, opens to the same bytes, size in the header`, () => {
-            const { file, plain, scope } = sealedFile(len);
-            const raw = readFileSync(file);
-            assert.ok(isSealedMedia(raw));
-            assert.equal(mediaFileState(file), "sealed");
-            if (len >= 32) assert.equal(raw.includes(plain.subarray(0, 32)), false, "plaintext on disk");
-            // Overhead: the header plus one tag per chunk (0.024%), never a whole re-encoding.
-            const chunks = Math.max(1, Math.ceil(len / MEDIA_CHUNK));
-            assert.equal(raw.length, readMediaHeader(file).dataOffset + len + chunks * TAG);
-            assert.deepEqual(readMediaFile(file, scope, { msgId: "m1" }), plain);
-            assert.equal(mediaPlainSize(file), len);
-        });
-    }
+    it("every length around the chunk edges: sealed on disk, opens to the same bytes, size in the header", () => {
+        const LENGTHS = [0, 1, 100, MEDIA_CHUNK - 1, MEDIA_CHUNK, MEDIA_CHUNK + 1, 3 * MEDIA_CHUNK, 5 * 1024 * 1024];
+        checkTableSync(
+            LENGTHS,
+            (len) => `${len} bytes`,
+            (len) => {
+                const { file, plain, scope } = sealedFile(len);
+                const raw = readFileSync(file);
+                assert.ok(isSealedMedia(raw));
+                assert.equal(mediaFileState(file), "sealed");
+                if (len >= 32) assert.equal(raw.includes(plain.subarray(0, 32)), false, "plaintext on disk");
+                // Overhead: the header plus one tag per chunk (0.024%), never a whole re-encoding.
+                const chunks = Math.max(1, Math.ceil(len / MEDIA_CHUNK));
+                assert.equal(raw.length, readMediaHeader(file).dataOffset + len + chunks * TAG);
+                assert.deepEqual(readMediaFile(file, scope, { msgId: "m1" }), plain);
+                assert.equal(mediaPlainSize(file), len);
+            },
+        );
+    });
 
     it("two seals of the same bytes differ (a random key per file)", () => {
         const id = freshId();
@@ -100,16 +106,20 @@ describe("random access (HTTP Range)", () => {
         [100, 99 + 3 * C],
         [0, len - 1],
     ];
-    for (const [a, b] of edges) {
-        it(`bytes ${a}-${b}`, () => {
-            const m = openMedia(f.file, f.scope);
-            try {
-                assert.deepEqual(m.read(a, b), f.plain.subarray(a, b + 1));
-            } finally {
-                m.close();
-            }
-        });
-    }
+    it("reads every range across the chunk edges to the exact bytes", () => {
+        checkTableSync(
+            edges,
+            ([a, b]) => `bytes ${a}-${b}`,
+            ([a, b]) => {
+                const m = openMedia(f.file, f.scope);
+                try {
+                    assert.deepEqual(m.read(a, b), f.plain.subarray(a, b + 1));
+                } finally {
+                    m.close();
+                }
+            },
+        );
+    });
 
     it("an end past the file is clamped; a start past it is empty", () => {
         const m = openMedia(f.file, f.scope);

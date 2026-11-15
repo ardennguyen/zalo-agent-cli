@@ -9,7 +9,7 @@
  */
 
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
-import { describe, it, beforeEach } from "node:test";
+import { describe, it, beforeEach, before } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -50,9 +50,8 @@ function seedAccountData(id) {
     return dir;
 }
 
-describe("accounts — sandboxing", () => {
-    it("operates inside the test sandbox", () => assertSandboxed(CONFIG_DIR));
-});
+// Every test in this file runs in the sandbox: a failing hook fails them all.
+before(() => assertSandboxed(CONFIG_DIR));
 
 describe("registry CRUD", () => {
     beforeEach(reset);

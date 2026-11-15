@@ -6,6 +6,7 @@
 import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { checkTable } from "../helpers/table.js";
 import { Command } from "commander";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import {
@@ -250,32 +251,35 @@ const GUARDED_CLI = [
 ];
 
 describe("every guarded CLI command", () => {
-    for (const [name, args] of GUARDED_CLI) {
-        it(`${name}: refused with exit 2 before its action; --dry-run exits 0; --yes reaches it`, async () => {
-            const ran = [];
-            const parse = (extra) =>
-                captured(() =>
-                    guardedProgram(ran).parseAsync([...name.split(" "), ...args, ...extra], { from: "user" }),
-                );
-            const refused = await parse([]);
-            assert.equal(refused.code, 2, refused.out);
-            assert.equal(JSON.parse(refused.out).action, name);
-            assert.equal(JSON.parse(refused.out).confirmationRequired, true);
-            const dry = await parse(["--dry-run"]);
-            if (name === "conv forget") {
-                // Its own --dry-run lists what would go, from the local cache: the guard lets it through.
-                assert.equal(dry.code, null);
-            } else {
-                assert.equal(dry.code, 0, dry.out);
-                assert.equal(JSON.parse(dry.out).dryRun, true);
-            }
-            assert.deepEqual(ran, name === "conv forget" ? ["forget"] : [], "nothing ran unconfirmed");
-            ran.length = 0;
-            const yes = await parse(["--yes"]);
-            assert.equal(yes.code, null, yes.out);
-            assert.deepEqual(ran, [name.split(" ").at(-1)]);
-        });
-    }
+    it("each: refused with exit 2 before its action; --dry-run exits 0; --yes reaches it", () =>
+        checkTable(
+            GUARDED_CLI,
+            ([name]) => name,
+            async ([name, args]) => {
+                const ran = [];
+                const parse = (extra) =>
+                    captured(() =>
+                        guardedProgram(ran).parseAsync([...name.split(" "), ...args, ...extra], { from: "user" }),
+                    );
+                const refused = await parse([]);
+                assert.equal(refused.code, 2, refused.out);
+                assert.equal(JSON.parse(refused.out).action, name);
+                assert.equal(JSON.parse(refused.out).confirmationRequired, true);
+                const dry = await parse(["--dry-run"]);
+                if (name === "conv forget") {
+                    // Its own --dry-run lists what would go, from the local cache: the guard lets it through.
+                    assert.equal(dry.code, null);
+                } else {
+                    assert.equal(dry.code, 0, dry.out);
+                    assert.equal(JSON.parse(dry.out).dryRun, true);
+                }
+                assert.deepEqual(ran, name === "conv forget" ? ["forget"] : [], "nothing ran unconfirmed");
+                ran.length = 0;
+                const yes = await parse(["--yes"]);
+                assert.equal(yes.code, null, yes.out);
+                assert.deepEqual(ran, [name.split(" ").at(-1)]);
+            },
+        ));
 
     it("group settings is asked about only when it turns membership approval off", async () => {
         const ran = [];
@@ -288,14 +292,13 @@ describe("every guarded CLI command", () => {
 
     // They read the group first (an owner must name a successor; only the owner disbands), then settle the guard
     // themselves: tests/unit/group-leave-silent.test.js drives that against the fake session.
-    for (const name of ["group leave", "group disperse"]) {
-        it(`${name} settles itself after reading the group, so preAction lets it through`, async () => {
+    it("group leave and group disperse settle themselves after reading the group, so preAction lets them through", () =>
+        checkTable(["group leave", "group disperse"], String, async (name) => {
             const ran = [];
             const r = await captured(() => guardedProgram(ran).parseAsync([...name.split(" "), G], { from: "user" }));
             assert.equal(r.code, null);
             assert.deepEqual(ran, [name.split(" ").at(-1)]);
-        });
-    }
+        }));
 
     it("label update settles itself after reading the labels, so preAction lets it through", async () => {
         const ran = [];

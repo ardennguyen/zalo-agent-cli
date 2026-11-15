@@ -35,7 +35,7 @@ import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { seedAccount, seedThread, seedMessage, runOffline, requestsTo, OWN_UID } from "./support/offline-cli.js";
+import { seedAccount, checkOffline, seedThread, seedMessage, requestsTo, OWN_UID } from "./support/offline-cli.js";
 
 const GROUP_SRC = "200000000000000021";
 const GROUP_DST = "200000000000000022";
@@ -105,82 +105,102 @@ function onlyForward(r, suffix) {
 
 describe("msg forward sends the captured reference and decorLog", () => {
     it("group source -> group target: key order, nesting, st 2, no imei", async () => {
-        const r = await runOffline(["msg", "forward", A.msgId, GROUP_DST, "-t", "1"]);
-        const q = onlyForward(r, "/api/group/mforward");
-        const want = expectedForward(A.text, REF_ID.A, A.timestamp, 2);
+        await checkOffline(["msg", "forward", A.msgId, GROUP_DST, "-t", "1"], {}, (r) => {
+            const q = onlyForward(r, "/api/group/mforward");
+            const want = expectedForward(A.text, REF_ID.A, A.timestamp, 2);
 
-        assert.equal(q.method, "POST");
-        assert.equal(q.service, "file");
-        // Red if the reference is missing, derived from different inputs, or
-        // serialized in a different order or nesting than expected.
-        assert.equal(q.params.msgInfo, want.msgInfo);
-        assert.equal(q.params.decorLog, want.decorLog);
-        assert.deepEqual(Object.keys(q.params), ["grids", "ttl", "msgType", "totalIds", "msgInfo", "decorLog"]);
-        assert.equal(q.params.grids.length, 1);
-        assert.deepEqual(Object.keys(q.params.grids[0]), ["clientId", "grid", "ttl"]);
-        assert.equal(q.params.grids[0].grid, GROUP_DST);
-        assert.match(q.params.grids[0].clientId, /^\d+$/, "the captured clientId is a digit string");
-        assert.equal(q.params.msgType, "1");
-        assert.equal(q.params.totalIds, 1);
+            assert.equal(q.method, "POST");
+            assert.equal(q.service, "file");
+            // Red if the reference is missing, derived from different inputs, or
+            // serialized in a different order or nesting than expected.
+            assert.equal(q.params.msgInfo, want.msgInfo);
+            assert.equal(q.params.decorLog, want.decorLog);
+            assert.deepEqual(Object.keys(q.params), ["grids", "ttl", "msgType", "totalIds", "msgInfo", "decorLog"]);
+            assert.equal(q.params.grids.length, 1);
+            assert.deepEqual(Object.keys(q.params.grids[0]), ["clientId", "grid", "ttl"]);
+            assert.equal(q.params.grids[0].grid, GROUP_DST);
+            assert.match(q.params.grids[0].clientId, /^\d+$/, "the captured clientId is a digit string");
+            assert.equal(q.params.msgType, "1");
+            assert.equal(q.params.totalIds, 1);
+        });
     });
 
     it("group source -> 1-1 target: toIds and imei, same reference", async () => {
-        const r = await runOffline(["msg", "forward", A.msgId, PEER_DST, "-t", "0"]);
-        const q = onlyForward(r, "/api/message/mforward");
-        const want = expectedForward(A.text, REF_ID.A, A.timestamp, 2);
-        assert.equal(q.params.msgInfo, want.msgInfo);
-        assert.equal(q.params.decorLog, want.decorLog);
-        assert.deepEqual(Object.keys(q.params), ["toIds", "imei", "ttl", "msgType", "totalIds", "msgInfo", "decorLog"]);
-        assert.deepEqual(Object.keys(q.params.toIds[0]), ["clientId", "toUid", "ttl"]);
-        assert.equal(q.params.toIds[0].toUid, PEER_DST);
-        assert.equal(q.params.imei, "offline-test-imei");
+        await checkOffline(["msg", "forward", A.msgId, PEER_DST, "-t", "0"], {}, (r) => {
+            const q = onlyForward(r, "/api/message/mforward");
+            const want = expectedForward(A.text, REF_ID.A, A.timestamp, 2);
+            assert.equal(q.params.msgInfo, want.msgInfo);
+            assert.equal(q.params.decorLog, want.decorLog);
+            assert.deepEqual(Object.keys(q.params), [
+                "toIds",
+                "imei",
+                "ttl",
+                "msgType",
+                "totalIds",
+                "msgInfo",
+                "decorLog",
+            ]);
+            assert.deepEqual(Object.keys(q.params.toIds[0]), ["clientId", "toUid", "ttl"]);
+            assert.equal(q.params.toIds[0].toUid, PEER_DST);
+            assert.equal(q.params.imei, "offline-test-imei");
+        });
     });
 
     it("1-1 source: the peer uid is the conversation key, logSrcType and st are 1 (UNVERIFIED live)", async () => {
-        const r = await runOffline(["msg", "forward", B.msgId, GROUP_DST, "-t", "1"]);
-        const q = onlyForward(r, "/api/group/mforward");
-        const want = expectedForward(B.text, REF_ID.B, B.timestamp, 1);
-        assert.equal(q.params.msgInfo, want.msgInfo);
-        assert.equal(q.params.decorLog, want.decorLog);
+        await checkOffline(["msg", "forward", B.msgId, GROUP_DST, "-t", "1"], {}, (r) => {
+            const q = onlyForward(r, "/api/group/mforward");
+            const want = expectedForward(B.text, REF_ID.B, B.timestamp, 1);
+            assert.equal(q.params.msgInfo, want.msgInfo);
+            assert.equal(q.params.decorLog, want.decorLog);
+        });
     });
 
     it("someone else's message: their uid, not ours, goes into the id", async () => {
-        const r = await runOffline(["msg", "forward", C.msgId, GROUP_DST, "-t", "1"]);
-        const q = onlyForward(r, "/api/group/mforward");
-        assert.equal(q.params.msgInfo, expectedForward(C.text, REF_ID.C, C.timestamp, 1).msgInfo);
+        await checkOffline(["msg", "forward", C.msgId, GROUP_DST, "-t", "1"], {}, (r) => {
+            const q = onlyForward(r, "/api/group/mforward");
+            assert.equal(q.params.msgInfo, expectedForward(C.text, REF_ID.C, C.timestamp, 1).msgInfo);
+        });
     });
 
     it("a sync-restored row: the noised sender is resolved before it goes into the id", async () => {
-        const r = await runOffline(["msg", "forward", D.msgId, GROUP_DST, "-t", "1"], {
-            responses: { "/api/gid/decrypt": { [NOISED]: RESOLVED } },
-        });
-        assert.equal(requestsTo(r.requests, "/api/gid/decrypt").length, 1, r.all);
-        const q = onlyForward(r, "/api/group/mforward");
-        assert.equal(q.params.msgInfo, expectedForward(D.text, REF_ID.D, D.timestamp, 2).msgInfo);
+        await checkOffline(
+            ["msg", "forward", D.msgId, GROUP_DST, "-t", "1"],
+            {
+                responses: { "/api/gid/decrypt": { [NOISED]: RESOLVED } },
+            },
+            (r) => {
+                assert.equal(requestsTo(r.requests, "/api/gid/decrypt").length, 1, r.all);
+                const q = onlyForward(r, "/api/group/mforward");
+                assert.equal(q.params.msgInfo, expectedForward(D.text, REF_ID.D, D.timestamp, 2).msgInfo);
+            },
+        );
     });
 
     it("reports each forwarded msgId with the cliMsgId that went on the wire", async () => {
-        const r = await runOffline(["--json", "msg", "forward", A.msgId, GROUP_DST, "-t", "1"]);
-        const q = onlyForward(r, "/api/group/mforward");
-        const out = JSON.parse(r.stdout);
-        assert.equal(out.sent.length, 1, r.stdout);
-        assert.equal(out.sent[0].cliMsgId, q.params.grids[0].clientId, "tier 4 recalls forwards by this pair");
-        assert.match(out.sent[0].msgId, /^\d+$/);
+        await checkOffline(["--json", "msg", "forward", A.msgId, GROUP_DST, "-t", "1"], {}, (r) => {
+            const q = onlyForward(r, "/api/group/mforward");
+            const out = JSON.parse(r.stdout);
+            assert.equal(out.sent.length, 1, r.stdout);
+            assert.equal(out.sent[0].cliMsgId, q.params.grids[0].clientId, "tier 4 recalls forwards by this pair");
+            assert.match(out.sent[0].msgId, /^\d+$/);
+        });
     });
 });
 
 describe("msg forward refuses a forward it cannot reference correctly", () => {
     it("no cached cliMsgId: nothing is sent", async () => {
-        const r = await runOffline(["msg", "forward", E.msgId, GROUP_DST, "-t", "1"]);
-        assert.deepEqual(requestsTo(r.requests, "/mforward"), [], r.all);
-        assert.notEqual(r.code, 0);
-        assert.match(r.all, /cliMsgId/);
+        await checkOffline(["msg", "forward", E.msgId, GROUP_DST, "-t", "1"], {}, (r) => {
+            assert.deepEqual(requestsTo(r.requests, "/mforward"), [], r.all);
+            assert.notEqual(r.code, 0);
+            assert.match(r.all, /cliMsgId/);
+        });
     });
 
     it("a noised sender that does not resolve: nothing is sent", async () => {
-        const r = await runOffline(["msg", "forward", F.msgId, GROUP_DST, "-t", "1"]);
-        assert.equal(requestsTo(r.requests, "/api/gid/decrypt").length, 1, "it must try to resolve first");
-        assert.deepEqual(requestsTo(r.requests, "/mforward"), [], r.all);
-        assert.notEqual(r.code, 0);
+        await checkOffline(["msg", "forward", F.msgId, GROUP_DST, "-t", "1"], {}, (r) => {
+            assert.equal(requestsTo(r.requests, "/api/gid/decrypt").length, 1, "it must try to resolve first");
+            assert.deepEqual(requestsTo(r.requests, "/mforward"), [], r.all);
+            assert.notEqual(r.code, 0);
+        });
     });
 });

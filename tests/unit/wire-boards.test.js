@@ -17,6 +17,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
+import { checkErrorTable, ERROR_ANSWERS } from "../helpers/wire-diff/error-table.js";
 import { getBoardItems, initDb } from "../../src/core/db.js";
 import { listOneOneBoard as reExported, syncBoards } from "../../src/core/sync-v2/board.js";
 import { FAKE, T0, expectGolden, openWire } from "../helpers/wire-diff/index.js";
@@ -30,26 +31,6 @@ const OWN = FAKE.ownId;
 const BIG_UID = "1111111111111111200";
 /** A bare JSON integer of {@link BIG_UID}, as the server sends a uid. */
 const BIG_RAW = JSON.rawJSON(BIG_UID);
-
-/** The answers every method is run against for part 2, and what each must throw. */
-const ERROR_ANSWERS = [
-    {
-        label: "an outer error",
-        error: { outer: { error_code: 102, error_message: "outer failure" } },
-        expected: { message: "outer failure", code: 102 },
-    },
-    {
-        label: "an inner error",
-        error: { inner: { error_code: 114, error_message: "inner failure" } },
-        expected: { message: "inner failure", code: 114 },
-    },
-    { label: "HTTP 500", error: { status: 500 }, expected: { message: "HTTP 500", code: null } },
-    {
-        label: "an undecryptable data",
-        error: { undecryptable: true },
-        expected: { message: "Failed to parse response data", code: null },
-    },
-];
 
 /** A note as the server answers a create or an edit. */
 const NOTE_REPLY = {
@@ -786,14 +767,18 @@ describe("wire: boards (src/zalo/api/boards.js)", () => {
             ["getListReminder", [{ page: 1, count: 20 }, GROUP, 1]],
             ["getReminderResponses", [44]],
         ];
-        for (const [method, args] of CALLS) {
-            it(`${method}(${args.length > 2 ? `type ${args[2]}` : "…"}): the code and message of each error`, async () => {
-                for (const answer of ERROR_ANSWERS) {
-                    const rec = await wire.run(method, args, { error: answer.error });
-                    assert.deepEqual(rec.own.error, answer.expected, `${method}, ${answer.label}`);
-                }
-            });
-        }
+        it("every method: the code and message of each error answer", async () => {
+            // Red if any method swallows, rewraps or drops the code of one of the four answers; every
+            // failing method and answer is listed.
+            await checkErrorTable(
+                wire,
+                CALLS.map(([method, args]) => [
+                    method,
+                    args,
+                    `${method}(${args.length > 2 ? `type ${args[2]}` : "…"})`,
+                ]),
+            );
+        });
 
         it("listOneOneBoard: Zalo's code is kept", async () => {
             for (const answer of ERROR_ANSWERS) {

@@ -83,7 +83,12 @@ const result = {
 };
 
 if (process.argv.includes("--tests")) {
-    const r = spawnSync("npm", ["test"], { cwd: root, encoding: "utf8", shell: true });
+    // The suite runs as `npm test` does from a shell: without the config dir and JSON mode this script set for itself
+    // (inherited, they turn the tests that read human output red).
+    const env = { ...process.env };
+    delete env.ZALO_CONFIG_DIR;
+    delete env.ZALO_JSON_MODE;
+    const r = spawnSync("npm", ["test"], { cwd: root, encoding: "utf8", shell: true, env, maxBuffer: 1 << 30 });
     const out = `${r.stdout}\n${r.stderr}`;
     // TAP prints `# tests 5906`; the spec reporter (Node's default on newer versions) prints `ℹ tests 5906`.
     const pick = (k) => Number(out.match(new RegExp(`^(?:#|ℹ) ${k} (\\d+)`, "m"))?.[1] ?? NaN);

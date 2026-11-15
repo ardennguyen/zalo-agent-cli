@@ -9,6 +9,10 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+## [3.0.2] — 2026-11-15
+
+Files kept in zCloud now download: the account's zCloud key comes from the phone at login. Also local video sends, room checks before downloads, and photos kept in Zalo's own format.
+
 #### Added
 
 - **zCloud files download.** Files the account keeps in zCloud now download and open: the account's zCloud key is fetched from the phone and stored sealed under the account's data key, and `cloud get`, the media downloads of `sync` and `sync-media`, and the `zalo_view_media` MCP tool use it on their own. Both of zCloud's file formats open.
@@ -924,7 +928,9 @@ npm install -g @ardennguyen/zalo-agent-cli@2.0.0
 
 Commands, flags and defaults: `skill/references/command-reference.md`. Operating it on a server: `docs/deployment.md`.
 
-[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.0.0...v3.0-dev
+[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.0.2...v3.0-dev
+[3.0.2]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.0.2
+[3.0.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.0.1
 [3.0.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.0.0
 [2.5.9]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v2.5.9
 [2.5.8]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v2.5.8

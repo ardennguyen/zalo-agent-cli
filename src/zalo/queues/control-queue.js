@@ -95,14 +95,9 @@ const KNOWN = new Map([
                 "the late answer to a link renewal another device made to forward a file (matched by originalUrl to a waiting callback); this client reads renewlink's own reply and waits for none",
         },
     ],
-    [
-        "video/renew_link",
-        {
-            kind: "renew-link",
-            ignored:
-                "the late answer to a link renewal another device made to forward a video (matched by originalUrl to a waiting callback); this client reads renewlink's own reply and waits for none",
-        },
-    ],
+    // The late answer to a video forward's link renewal (matched by originalUrl): the listener settles the
+    // renewal a local video send waits on (src/zalo/api/upload.js `sendVideoFile`).
+    ["video/renew_link", { kind: "renew-link", handler: "listener" }],
     [
         "emoji_status",
         {

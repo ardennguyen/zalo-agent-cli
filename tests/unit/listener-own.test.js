@@ -552,4 +552,14 @@ describe("upload settlement (601)", () => {
         assert.deepEqual([v.kind, v.url], ["video_done", "v"]);
         assert.deepEqual([p.kind, p.url], ["photo_success", "h"]);
     });
+
+    it("settles a video forward's link renewal under its original address", async () => {
+        const r = await rig();
+        await startKeyed(r);
+        const item = { originalUrl: "https://v.invalid/a.mp4", renewUrl: "https://v.invalid/b.mp4", error: 0 };
+        const renew = { content: { act_type: "video", act: "renew_link", data: JSON.stringify([item]) } };
+        r.sock.push(601, 0, ok({ controls: [renew] }));
+        const s = await r.ctx.uploadCallbacks.waitFor("renew_link:https://v.invalid/a.mp4", { timeoutMs: 1000 });
+        assert.deepEqual([s.kind, s.url, s.data], ["renew_link", "https://v.invalid/b.mp4", item]);
+    });
 });

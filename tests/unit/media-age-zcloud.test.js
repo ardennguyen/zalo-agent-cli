@@ -358,6 +358,19 @@ describe("the zCloud source", () => {
         assert.equal(countPendingAttachments(), 3, "the failed ones stay pending");
     });
 
+    it("with no source given, uses the account's stored cloud key on its own (null turns it off)", async () => {
+        const id = row({ daysAgo: 30, path: "/cdn/gone.jpg" });
+        inCloud(id);
+        const stored = {
+            loadStoredKey: () => ({ privateKeyPkcs8Base64: KEY_B64 }),
+            cloudFetchBlob: cloudWith(null).fetchBlob,
+        };
+        const off = await run({ cloud: null, ...stored });
+        assert.equal(off.fromCloud, 0, "an explicit null means no zCloud source");
+        const auto = await run(stored);
+        assert.equal(auto.fromCloud, 1, "omitted: the stored key opens it");
+    });
+
     it("stops when there is no room left, leaving the rest pending", async () => {
         const first = row({ daysAgo: 30 });
         inCloud(first);

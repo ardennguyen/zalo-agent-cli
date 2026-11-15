@@ -59,9 +59,9 @@ import { loadCloudKey } from "../cloud-key-store.js";
  * @param {string} ownId
  * @returns {{privateKey: import("node:crypto").KeyObject}|null}
  */
-function storedCloudSource(ownId) {
+function storedCloudSource(ownId, load = loadCloudKey) {
     try {
-        const stored = loadCloudKey(ownId);
+        const stored = load(ownId);
         return stored?.privateKeyPkcs8Base64
             ? { privateKey: importCloudPrivateKey(stored.privateKeyPkcs8Base64) }
             : null;
@@ -641,6 +641,9 @@ function writeConversationIndex(mediaRoot, names, scope) {
  *   (no file is written off by the clock alone: past the window the CDN may still have it, and on an account without
  *   zCloud it is the only source); then, when the CDN failed, zCloud. A link that answered 404/410 is remembered and
  *   not asked again (`retryDead`). `fetchBlob(item, {signal})` is the blob fetch (tests); default: the account's own
+ * @param {(ownId: string) => {privateKeyPkcs8Base64: string}|null} [opts.loadStoredKey] - the stored-key reader when
+ *   `cloud` is omitted (tests); default: the account's sealed key
+ * @param {Function} [opts.cloudFetchBlob] - the blob fetch for that stored-key source (tests)
  * @param {string} [opts.ownId] - the account (its chat with itself is My Cloud); default: the account folder's id
  * @param {number} [opts.now] - the clock (tests)
  * @param {boolean} [opts.retryDead=false] - ask again for links remembered as dead (404/410 on an earlier run);
@@ -799,12 +802,13 @@ export async function downloadSyncedMedia(opts = {}) {
     // Always the account's own media folder, never a shared override root: the list is the account's alone.
     const deadLinks = opts.deadLinks ?? openDeadLinks(resolve(accountDir, "media"), scope);
     const ownId = opts.ownId ?? scope.id;
-    const cloudGiven = opts.cloud === undefined ? storedCloudSource(ownId) : cloud;
+    const cloudGiven = opts.cloud === undefined ? storedCloudSource(ownId, opts.loadStoredKey) : cloud;
     const cloudSource = cloudGiven
         ? {
               privateKey: cloudGiven.privateKey ?? null,
               fetchBlob:
                   cloudGiven.fetchBlob ??
+                  opts.cloudFetchBlob ??
                   ((item, o = {}) => fetchCloudBlob(api, item, { fetch: download, signal: o.signal })),
           }
         : null;

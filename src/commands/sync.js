@@ -471,9 +471,10 @@ async function runMediaDownload(activeAcc, opts) {
         warning("No active session — downloading without the account's proxy and identity.");
     }
 
-    // The zCloud source: only on a plan that has zCloud, and only with the cloud key given now. The key lives in this
-    // variable for this run and nowhere else: never written, never logged, never in the JSON result.
-    let cloud = null;
+    // The zCloud source. --from-zcloud insists on it (plan checked, the stored key or one given now); without it the
+    // source is left unset, so the downloader uses the account's stored key on its own (an explicit null would turn
+    // that off). A key given now lives in this variable only: never written, never logged, never in the JSON result.
+    let cloud;
     if (opts.fromZcloud) {
         cloud = await openCloudSource(api, opts, activeAcc.ownId);
         if (!cloud) process.exit(1);

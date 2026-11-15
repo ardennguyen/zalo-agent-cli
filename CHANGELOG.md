@@ -9,6 +9,10 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+#### Fixed
+
+- **`sync-media` uses the stored zCloud key without `--from-zcloud`.** In 3.0.2 a run without the flag fetched nothing from zCloud; `--from-zcloud` did.
+
 ## [3.0.2] — 2026-11-15
 
 Files kept in zCloud now download: the account's zCloud key comes from the phone at login. Also local video sends, room checks before downloads, and photos kept in Zalo's own format.

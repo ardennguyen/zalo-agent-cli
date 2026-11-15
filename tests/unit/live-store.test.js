@@ -677,7 +677,12 @@ describe("cache robustness against legacy rows", () => {
         storeLiveMessage(
             liveMsg({}, { msgId: "m1", msgType: "chat.recommended", content: { href: "https://e.com/x", title: "T" } }),
         );
-        assert.doesNotThrow(() => getLinkMessages({ threadId: "t1" }));
+        // Red if the legacy row throws (malformed JSON), or if guarding it also hides the valid row's link.
+        const links = getLinkMessages({ threadId: "t1" });
+        assert.deepEqual(
+            links.map((l) => [l.msgId, l.url, l.title]),
+            [["m1", "https://e.com/x", "T"]],
+        );
     });
 
     it("normalizes legacy row types on open, so a removal query is not short", () => {

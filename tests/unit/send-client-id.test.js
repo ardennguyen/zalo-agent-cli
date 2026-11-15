@@ -26,12 +26,20 @@
  *
  * Pure protocol plumbing: `ctx.options.polyfill` is the session's HTTP seam,
  * so the real `sendMessage` runs with no socket, no session and no filesystem.
+ * The attachment commands' JSON is checked by running them offline against the
+ * fake session (tests/helpers/fake-api.js) in the sandbox.
  */
 
+import { SANDBOX_HOME, SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+
+import { CONFIG_DIR, saveCredentials } from "../../src/core/credentials.js";
+import { addAccount } from "../../src/core/accounts.js";
+import { checkCli } from "../helpers/cli-fast.js";
+import { FAKE_OWN_ID, FAKE_PEER_ID } from "../helpers/fake-api.js";
 
 import { createApi } from "../../src/zalo/api.js";
 import { THREAD_TYPE } from "../../src/zalo/enums.js";
@@ -199,14 +207,46 @@ describe("msg send never fabricates a cliMsgId", () => {
         );
     });
 
-    it("surfaces the attachment ids that `msg undo` and `msg delete` need", () => {
-        // `msg send` reads result.message; an attachment send has none. Both
-        // attachment commands go through sentAttachmentIds(), and both must
-        // put it in the JSON — dropping it from either one is the regression
-        // that leaves a sent file unrecallable.
-        const uses = SRC.match(/sent: sentAttachmentIds\(result\)/g) || [];
-        assert.equal(uses.length, 2, "both `send-image` and `send-file` must report it");
-        assert.match(SRC, /function sentAttachmentIds\(result\)/);
+    it("surfaces the attachment ids that `msg undo` and `msg delete` need, from send-image and send-file alike", async () => {
+        // `msg send` reads result.message; an attachment send has none, its ids
+        // are in result.attachment. Dropping `sent` from either command's JSON,
+        // or reading the ids from the wrong place, is the regression that leaves
+        // a sent file unrecallable.
+        assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR);
+        addAccount(FAKE_OWN_ID, "Fake Self");
+        saveCredentials(FAKE_OWN_ID, { imei: "fake-imei", cookie: [], userAgent: "fake-agent", language: "vi" });
+        const fixtures = join(import.meta.dirname, "..", "fixtures");
+        const reply = {
+            message: null,
+            attachment: [
+                { msgId: 7000000000001, cliMsgId: 7000000000002 },
+                { msgId: "7000000000003", cliMsgId: null },
+            ],
+        };
+        const env = {
+            ZALO_TEST_FAKE_API: join(import.meta.dirname, "..", "helpers", "fake-api.js"),
+            ZALO_TEST_FAKE_API_REPLIES: JSON.stringify({ sendMessage: reply }),
+        };
+        for (const [cmd, file] of [
+            ["send-image", "image-64x48.png"],
+            ["send-file", "notes.txt"],
+        ]) {
+            await checkCli(
+                ["--json", "msg", cmd, FAKE_PEER_ID, join(fixtures, file)],
+                { home: SANDBOX_HOME, env },
+                (r) => {
+                    assert.equal(r.code, 0, `${cmd}: ${r.all}`);
+                    assert.deepEqual(
+                        JSON.parse(r.stdout).sent,
+                        [
+                            { msgId: "7000000000001", cliMsgId: "7000000000002" },
+                            { msgId: "7000000000003", cliMsgId: null },
+                        ],
+                        `${cmd} reports every attachment's ids, as strings`,
+                    );
+                },
+            );
+        }
     });
 
     it("gives --react only an id the send actually returned", () => {

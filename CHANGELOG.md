@@ -9,9 +9,15 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
-#### Documentation
+#### Added
 
-- Documented, under `cloud get`'s Known limits, that the account's zCloud cloud key **cannot be fetched from the phone by this engine**: the phone delivers it as an end-to-end-encryption message addressed to a registered encrypted-chat device's identity, which this engine does not register, so the reply could not be opened. The key is supplied at run time instead (`cloud get` / `sync-media --from-zcloud` with `--key-stdin` or `--key-prompt`) and is never stored. Internal request/wait/receive scaffolding is in place behind a clear "needs an end-to-end-encryption device" error, ready for the day such a device is supported; no command or tool was added.
+- **`cloud key` — store the account's zCloud cloud key and fetch it from the phone.** The engine can register a narrow end-to-end-encryption device so the phone delivers the account's cloud key (an end-to-end-encryption message to that device's Signal identity), decrypt it, and seal it per account for reuse. New commands: `cloud key status` (whether a key and a device are stored; never prints the key), `cloud key forget` (`--device`, `--key`), `cloud key devices` (list the account's end-to-end-encryption devices and which platform slots are occupied; read-only), and `cloud key setup` (live, gated: shows the devices first and needs `--confirm`, then registers and fetches the key). Once stored, `cloud get`, `sync-media --from-zcloud` and the `zalo_view_media` MCP tool use the sealed key automatically; `--key-stdin` / `--key-prompt` still override, and the MCP tool never takes a key as input. New sealed per-account files `e2ee-device.json` and `cloud-key.json` (0600, under the account data key).
+
+  **Not yet confirmed on a live account:** the device registration and the phone key transfer need an owner-present phone session to verify. Registering adds an **account-visible** end-to-end-encryption device that claims a platform slot — if a real device (such as a browser session) holds that slot, registering may displace it.
+
+#### Dependencies
+
+- Added `@privacyresearch/libsignal-protocol-typescript` (pure JS, loaded lazily only when the end-to-end-encryption device feature is used).
 
 ## [3.0.1] — 2026-11-15
 

@@ -1,0 +1,101 @@
+/**
+ * Generate the Signal keys a device publishes, and read a device bundle back from its store.
+ *
+ * A device needs a fixed set of keys to be addressable: an identity key pair, a registration id, a signed pre-key with
+ * its signature, and a batch of one-time pre-keys. {@link generateDeviceIdentity} makes all of them with the library's
+ * KeyHelper and fills a {@link SignalProtocolStore}; the account layer seals that store to disk. {@link bundleFromStore}
+ * reads the public half back out, in the order a SUBMIT_BUNDLE needs (src/zalo/e2ee/bundle-wire.js).
+ *
+ * Protocol layer: no `src/core`, no `src/utils`. The library is loaded lazily (./signal-lib.js).
+ */
+import { SignalProtocolStore } from "./signal-store.js";
+import { loadSignalLib } from "./signal-lib.js";
+
+/** How many one-time pre-keys a fresh device publishes (the installed clients publish a batch of 20). */
+export const DEFAULT_ONE_TIME_PREKEY_COUNT = 20;
+/** The signed pre-key's id. Fixed, as the installed clients fix it, so a re-submission reuses the slot. */
+export const SIGNED_PREKEY_ID = 1;
+/** The id of the first one-time pre-key in a batch; ids run upward from here. */
+export const FIRST_ONE_TIME_PREKEY_ID = 100;
+
+/**
+ * Generate a fresh device identity and fill a store with it.
+ *
+ * @param {object} [opts]
+ * @param {number} [opts.preKeyCount] - how many one-time pre-keys to make
+ * @param {number} [opts.signedPreKeyId]
+ * @param {number} [opts.firstPreKeyId]
+ * @returns {Promise<{store: SignalProtocolStore, registrationId: number, signedPreKeyId: number,
+ *   preKeyIds: number[]}>}
+ */
+export async function generateDeviceIdentity({
+    preKeyCount = DEFAULT_ONE_TIME_PREKEY_COUNT,
+    signedPreKeyId = SIGNED_PREKEY_ID,
+    firstPreKeyId = FIRST_ONE_TIME_PREKEY_ID,
+} = {}) {
+    const lib = await loadSignalLib();
+    const store = new SignalProtocolStore();
+
+    const identityKeyPair = await lib.KeyHelper.generateIdentityKeyPair();
+    const registrationId = lib.KeyHelper.generateRegistrationId();
+    store.setIdentity(identityKeyPair, registrationId);
+
+    const signed = await lib.KeyHelper.generateSignedPreKey(identityKeyPair, signedPreKeyId);
+    store.addSignedPreKey(signed.keyId, signed.keyPair, signed.signature);
+
+    const preKeyIds = [];
+    for (let i = 0; i < Math.max(1, preKeyCount); i++) {
+        const id = firstPreKeyId + i;
+        const pk = await lib.KeyHelper.generatePreKey(id);
+        store.addPreKey(pk.keyId, pk.keyPair);
+        preKeyIds.push(id);
+    }
+
+    return { store, registrationId, signedPreKeyId, preKeyIds };
+}
+
+/**
+ * Make a fresh batch of one-time pre-keys and add them to a store (to replenish after some were consumed).
+ *
+ * @param {SignalProtocolStore} store
+ * @param {object} [opts]
+ * @param {number} [opts.count]
+ * @param {number} [opts.firstPreKeyId] - the first id; pick one past the highest id already held
+ * @returns {Promise<number[]>} the ids added
+ */
+export async function generateOneTimePreKeys(store, { count = DEFAULT_ONE_TIME_PREKEY_COUNT, firstPreKeyId } = {}) {
+    const lib = await loadSignalLib();
+    const start =
+        firstPreKeyId ?? (store.preKeyIds().length ? Math.max(...store.preKeyIds()) + 1 : FIRST_ONE_TIME_PREKEY_ID);
+    const ids = [];
+    for (let i = 0; i < Math.max(1, count); i++) {
+        const id = start + i;
+        const pk = await lib.KeyHelper.generatePreKey(id);
+        store.addPreKey(pk.keyId, pk.keyPair);
+        ids.push(id);
+    }
+    return ids;
+}
+
+/**
+ * The public bundle a store publishes, with every key as base64 (what SUBMIT_BUNDLE sends). One one-time pre-key is
+ * offered per bundle, the lowest id still held, as the installed clients do.
+ *
+ * @param {SignalProtocolStore} store
+ * @returns {{registrationId: number, identityKey: string, signedPreKey: {keyId: number, publicKey: string,
+ *   signature: string}, preKeys: Array<{keyId: number, publicKey: string}>}}
+ */
+export function bundleFromStore(store) {
+    const snap = store.toJSON();
+    if (!snap.identityKeyPair || snap.registrationId === null) {
+        throw new Error("the store has no device identity to publish");
+    }
+    const signed = snap.signedPreKeys[0];
+    if (!signed) throw new Error("the store has no signed pre-key to publish");
+    return {
+        registrationId: snap.registrationId,
+        identityKey: snap.identityKeyPair.pubKey,
+        signedPreKey: { keyId: signed[0], publicKey: signed[1].pubKey, signature: signed[1].signature },
+        preKeys: snap.preKeys.map(([keyId, kp]) => ({ keyId, publicKey: kp.pubKey })),
+    };
+}

@@ -54,6 +54,10 @@ export const SEALED_FILES = Object.freeze([
         path: (id) => join(getAccountDir(id), "sync", "open-sessions.json"),
     },
     { kind: "voice-text", use: "data", path: (id) => join(getAccountDir(id), "voice-text.json") },
+    // The engine's end-to-end-encryption device identity (Signal keys) and the account's cloud key it decrypts. Both
+    // hold secrets, both are sealed under the data key (they are read only with a live login).
+    { kind: "e2ee-device", use: "data", path: (id) => join(getAccountDir(id), "e2ee-device.json") },
+    { kind: "cloud-key", use: "data", path: (id) => join(getAccountDir(id), "cloud-key.json") },
     // Boot key: both are read without a login (offline hidden-chat filtering, an approval page).
     { kind: "hidden-threads", use: "boot", path: (id) => join(getAccountDir(id), "hidden-threads.json") },
     { kind: "approver-secret", use: "boot", path: (id) => join(getAccountDir(id), "approver-secret.json") },

@@ -13,7 +13,7 @@ contacts Zalo or reads your real `~/.zalo-agent-cli/`. Some tests use disposable
 loopback servers and subprocess transports.
 
 ```bash
-npm test                      # 6625 offline tests — no Zalo session needed
+npm test                      # 5624 offline tests — no Zalo session needed
 npm run test:unit             # just tests/unit/
 npm run test:cli              # just tests/cli/
 npm run lint                  # ESLint over src/ and tests/
@@ -55,7 +55,8 @@ tests/
 ├── helpers/
 │   ├── sandbox.js               # throwaway HOME for offline tests
 │   ├── cli.js                   # subprocess harness (runCli / runJson)
-│   ├── cli-batch-worker.mjs     # runs many CLI invocations in one process (the --json contract walk)
+│   ├── cli-batch-worker.mjs     # runs many CLI invocations in one process (the --json contract walk; --serve for cli-fast.js)
+│   ├── cli-fast.js              # checkCli: a CLI run in the in-process worker, re-run as a real child when its check fails
 │   ├── fake-api.js              # a fake logged-in session: any method answers a canned or empty reply
 │   ├── no-network.mjs           # `--import` preload: fetch fails instead of reaching the network
 │   ├── targets.js               # disposable-target registry + blast-radius guard
@@ -68,7 +69,7 @@ tests/
 │   ├── id-scan.js               # the real-id scanner behind no-real-ids.test.js
 │   ├── use-case-manifest.js     # the file set each docs/config-samples/use-cases/ folder must hold
 │   └── {registry,slot}-worker.mjs  # child processes for the registry-lock and start-up slot races
-├── unit/                        # offline, pure logic + filesystem (264 test files; a sample below)
+├── unit/                        # offline, pure logic + filesystem (279 test files; a sample below)
 │   ├── accounts.test.js              credentials.test.js           daemon-channel.test.js
 │   ├── db.test.js                    image-metadata.test.js        listener-lifecycle-rules.test.js
 │   ├── live-store.test.js            lock.test.js                  mcp-config.test.js
@@ -84,7 +85,7 @@ tests/
 │   ├── sync-v2-restore-success.test.js  sync-v2-resume.test.js        sync-v2-window.test.js
 │   └── sync-v2-zcloud.test.js        thread-type.test.js           api-surface.test.js
 ├── cli/                         # offline, drives the real binary (25 test files; a sample below)
-│   ├── surface.test.js          # every command/subcommand/flag is registered
+│   ├── surface.test.js          # every command/subcommand/flag is registered (one test per group, collect-all)
 │   ├── json-contract.test.js    # every personal command, run with --json against a fake session
 │   ├── validation.test.js       # every guard that fires before a network call
 │   ├── confirm-guard.test.js    # destructive commands: exit 2 without --yes, --dry-run reports
@@ -176,31 +177,50 @@ about 20 ms a command instead of 1.4 s a spawn; the five walks take about 20 s),
 and every violation it reports is re-run as a real child process before it
 fails the suite.
 
+### Most CLI tests run in one process (the in-process worker)
+
+A spawned `node src/index.js` pays about 1.4 s of module loading on Windows,
+and far more on a loaded machine, so most CLI tests do not spawn one per case.
+`helpers/cli-fast.js` keeps one long-lived worker per sandbox home
+(`helpers/cli-batch-worker.mjs --serve`) that loads the CLI once and runs each
+case as a fresh Commander program, resetting the module state a new process
+would not have (session, open cache, unwrapped keys, policy and alias caches).
+
+The worker is a harness, not the CLI, so only a real process can fail a test:
+
+- `checkCli(args, opts, check)` (and `checkOffline` in
+  `unit/support/offline-cli.js` for the offline logged-in session) runs `check`
+  on the worker's result; when it throws, the command runs again as a real
+  child process and `check` runs on that result instead.
+- Commands that read stdin, start or stop a daemon, depend on signals or on
+  the process exiting stay on `runCli` / `runOffline` (a real child).
+- Each converted file keeps at least one real spawn as a smoke check
+  (`cli/surface.test.js`: `--version`).
+- `ZALO_TEST_CLI_FAST_LOG=<file> npm test` appends every case that was re-run
+  as a real child, with the reason, to `<file>`. A case that keeps landing there
+  is one the worker does not run the way a process does: fix the worker's reset
+  or keep that case on a real spawn.
+
+Table tests (`helpers/table.js` `checkTable`, and the wire error matrix in
+`helpers/wire-diff/error-table.js`) check every row and fail once, listing every
+failing row by its label: one test per rule, not one per case.
+
 ### Spawn timeouts are a load symptom, not a regression
 
-`tests/cli/cli.test.js` boots a real `node` process per assertion. When something
-else is competing for the machine — parallel agent sessions, a running
-`listen` daemon, a full rebuild — a cold start can outlast the per-spawn
-limit, and `npm test` then reports a handful of `--help` tests as failed. The
-tell is that a **different** subset fails on each run and each one dies at
-almost exactly the limit.
+The tests that still spawn a real `node` process can outlast a per-spawn
+limit when something else is competing for the machine — parallel agent
+sessions, a running `listen` daemon, a full rebuild. The tell is that a
+**different** test fails on each run and each one dies at almost exactly the
+limit. Run the file alone before chasing a regression
+(`node --test tests/cli/<file>.test.js`).
 
-Check that before chasing a regression:
-
-```bash
-node --test tests/cli/cli.test.js  # passes alone => the suite is fine
-```
-
-The limit defaults to 30s. Override it when the default is wrong for the
-machine, in either direction:
+`cli/validation.test.js` and `cli/fleet.test.js` take their limit from
+`ZALO_TEST_CLI_TIMEOUT_MS` (30 s by default):
 
 ```bash
 ZALO_TEST_CLI_TIMEOUT_MS=60000 npm test   # slow or heavily loaded box
 ZALO_TEST_CLI_TIMEOUT_MS=2000 npm test    # tighten, to surface a real hang
 ```
-
-A spawn that does time out now says so in those terms rather than surfacing a
-bare `ETIMEDOUT`, and keeps the original error as its `cause`.
 
 ### What the offline suite covers
 

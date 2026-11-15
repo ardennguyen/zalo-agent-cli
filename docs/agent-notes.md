@@ -1703,7 +1703,10 @@ account's RSA private key, which Zalo's own apps get from the phone: `GET req_cl
 user approves, and the key arrives on the chat socket as a `personal_cloud` control, wrapped in a Signal-style message
 addressed to the account's own E2EE session. Taking part needs a registered E2EE device identity, a state-changing step on
 the account whose effect on other devices is unknown, plus secure storage, key-version and `correct_cloud_key` handling and
-free-plan removal. None of it is built, and no live request for it was made.
+free-plan removal. None of it was built then. **D8 was reversed on 2026-11-15:** the device identity, the phone transfer
+(no prompt for a registered device) and both blob formats were built and confirmed live; the key is sealed under the
+account's data key (`accounts/<ownId>/cloud-key.json`) and a QR login fetches it for an account with zCloud
+(`src/core/cloud-key-setup.js`, `login --no-cloud-key` skips it).
 
 **The Signal slice is our own code (2026-11-15).** `cloud key setup` later built that device identity
 (`src/zalo/e2ee/`). Its first version ran on a GPL-3.0 Signal library, a release blocker for this license; it was replaced
@@ -2120,7 +2123,7 @@ the code and from read-only calls on both:
 | reactions, pinned and unread, boards | same | same | the socket (610/611) and REST |
 | cloud index | walks the queue; records where each backup lives | free plan with nothing in the cloud: no page asked for, stage reported as skipped | zCloud REST (`zcld.chat.zalo.me`) |
 | media downloads | from the CDN references the messages carry | the same | the CDN, until Zalo's copy expires |
-| media that expired from the CDN | listed in the cloud index; not downloadable (the blob is end-to-end encrypted under the account's cloud key, which this tool never holds, decision D8) | gone: nothing else holds it | none for this client |
+| media that expired from the CDN | listed in the cloud index; downloadable with `sync-media --from-zcloud` (the blob is end-to-end encrypted under the account's cloud key, which the login or `cloud key setup` fetches from the phone and seals; D8 was reversed on 2026-11-15) | gone: nothing else holds it | none for this client |
 
 Live reads of the two accounts (aggregate numbers only): the usage answer is `{plan, quota, usage, service_usage}` for
 both. Main: plan 0 (`zcloud`), quota 107374182400 B (100 GiB), 39,192,432,681 B used, `service_usage` keys `my_cloud`,
@@ -2172,10 +2175,10 @@ was done (items are the audit's ZP numbers):
     `cloud-viewer-key` only. The 404 above came from the bare URL. A My Cloud item is opened by its chat message first.
     Live check: `cloud get` on one key-less My Cloud item of the paid account.
   - *The key*: RSA-OAEP SHA-256 (2048, PKCS#8) unwraps `encryptKey` into key(32) | IV(12) | tag(16); data is AES-256-GCM
-    (the metadata, and `algoversion` 1 blobs); `algoversion` 2 is AES-CTR in 4096-byte blocks and is not built. The RSA
-    key comes only from the phone (`personalcloud_key/req_cloud_key`, then a Signal-wrapped `personal_cloud` control
-    opened with a registered device identity). No PIN path exists, so `cloud get` takes the
-    RSA key at run time (stdin or a hidden prompt) and never stores it. Missing: the Signal identity (D8).
+    (the metadata, and `algoversion` 1 blobs); `algoversion` 2 is AES-256-CTR in 4096-byte blocks, each from the same IV
+    (built 2026-11-15). The RSA key comes only from the phone (`personalcloud_key/req_cloud_key`, then a Signal-wrapped
+    `personal_cloud` control opened with a registered device identity). No PIN path exists. Since 2026-11-15 the key is
+    fetched by the login or `cloud key setup` and sealed; `--key-stdin`/`--key-prompt` still override it.
   - *Cloud delete* (`cloud apply`): Zalo's "Delete data" dialog deletes per conversation, per item,
     the delete-for-me sync (`msgId` = `glbMsgId` or `<cliMsgId>_001`, the sender `"0"` when it is the account). Live
     check: one disposable item with the owner watching.

@@ -105,6 +105,7 @@ trước: mặc định, `storage.json` (cấp trên cùng, rồi `accounts.<own
 | `quota.graceDays` | `45` | số ngày giữ lại sau khi vượt trước khi xóa |
 | `quota.warnAt` | `0.8` | tỉ lệ của giới hạn thì gửi `warn` |
 | `quota.purgeOrder` | `media-first` | file media cũ nhất trước, rồi tin nhắn cũ nhất |
+| `quota.minFree` | `2GB` | dung lượng trống luôn chừa lại trên ổ đĩa chứa dữ liệu và media của tài khoản: số byte, hoặc `"2GB"`, hoặc `0` để tắt. `ZALO_STORAGE_MIN_FREE` thắng nó, rồi tới chính sách chạy, rồi `storage.json`. Xem [chừa chỗ trước khi tải](#chừa-chỗ-trước-khi-tải-quotaminfree) |
 | `retention.messages` | `keep` | `keep`, hoặc `<N>d`: tin nhắn từ N ngày tuổi trở lên bị xóa |
 | `retention.media` | `keep` | `keep`, hoặc `<N>d`: file media của tin nhắn từ N ngày tuổi trở lên bị xóa (tin nhắn vẫn giữ) |
 | `retention.outboxDead` | `30d` | lượt gửi webhook đã chết bị xóa sau thời gian này |
@@ -121,6 +122,15 @@ vượt tương ứng với dung lượng của nó. Một lần xóa nâng mố
 hay lấy lịch sử nào lưu lại tin nhắn ở hoặc trước mốc đó. File cơ sở dữ liệu giữ nguyên kích thước (SQLite dùng lại
 các trang đã giải phóng); dung lượng tính theo các trang đang dùng. `zalo-agent db usage` (và `zalo_profile` `usage` qua MCP) cho xem tất cả,
 `db purge --dry-run` đếm những gì đến hạn, và `db purge --yes` chạy ngay (qua daemon nếu có daemon đang chạy).
+
+#### Chừa chỗ trước khi tải (`quota.minFree`)
+
+Trước một lần tải media (`sync-media`, bước media của `sync`, lần tải sau khi khôi phục, `zalo_view_media`) và trước
+mỗi file được lưu, engine kiểm tra còn chỗ: ổ đĩa vẫn trống ít nhất `quota.minFree`, và tài khoản vẫn dưới
+`quota.account.limit` khi có đặt giới hạn. Khi một trong hai sắp bị vượt, lần tải dừng lại và nói rõ lý do; các file
+chưa lưu vẫn ở trạng thái chờ, và chạy lại đúng lệnh đó sẽ tải tiếp khi đã có chỗ (dọn bớt dung lượng, hoặc nâng giới
+hạn). Lần khôi phục được đề nghị sau khi đăng nhập QR cũng bị bỏ qua như vậy khi không còn chỗ, và lệnh đăng nhập ghi
+rõ lệnh `sync` để chạy sau. Đặt `quota.minFree` là `0` (hoặc `ZALO_STORAGE_MIN_FREE=0`) để tắt kiểm tra ổ đĩa.
 
 Token admin: `zalo-agent policy token --rotate` tạo một token và hiện nó đúng một lần; chỉ SHA-256 của nó được giữ, niêm
 phong trong `<CONFIG_DIR>/admin/admin-token.json`, và lần xoay mới làm token cũ hết hiệu lực ngay. Hoặc trỏ
@@ -334,6 +344,7 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 | `ZALO_NET_PROBE` |  | thứ daemon hỏi để biết mạng còn hoạt động hay không khi socket đang đứt (mỗi 10 giây): một URL, mặc định là một trang nhẹ của công cụ tìm kiếm toàn cầu, hoặc `off` để coi như mạng luôn hoạt động và không liên hệ nơi nào ngoài Zalo | | |
 | `ZALO_STORAGE_PROVIDER` |  | bộ cung cấp khóa bảo vệ các file đã lưu trên đĩa: `dpapi`, `keychain`, `secret-service`, `systemd-creds`, `kms`, `passphrase`, `env`. Mặc định theo nền tảng; server Linux không có desktop keyring phải đặt. Xem [security.vi.md](security.vi.md) | | |
 | `ZALO_RETENTION_MESSAGES`, `ZALO_RETENTION_MEDIA` | có | `keep` hoặc `<N>d`: quy tắc theo tuổi của bộ nhớ đệm, đè lên `retention.messages` / `retention.media` của `storage.json` (xem mục Hạn mức dung lượng và thời gian lưu giữ) | | |
+| `ZALO_STORAGE_MIN_FREE` |  | dung lượng trống mà một lần tải chừa lại trên ổ đĩa (mặc định `2GB`, `0` để tắt), đè lên `quota.minFree` của chính sách chạy và của `storage.json` (xem mục Chừa chỗ trước khi tải) | | |
 | `ZALO_GROUPS_ON_LEAVE` | có | `purge` (mặc định) hoặc `keep`: lịch sử cục bộ của nhóm đã rời, bị xóa, bị chặn hoặc bị giải tán sẽ ra sao, đè lên `groups.onLeave` của `storage.json` (xem mục Rời nhóm) | | |
 | `ZALO_STORAGE_DKEY_LAYER` |  | `1` / `0`: khóa thêm mọi thứ không cần cho việc đăng nhập bằng `dkey` của lần đăng nhập. Mặc định tắt | | |
 | `ZALO_DPAPI_SCOPE`, `ZALO_SYSTEMD_CREDS_WITH_KEY`, `ZALO_KMS_BACKEND`, `ZALO_KMS_KEY`, `ZALO_STORAGE_PASSPHRASE_FILE`, `ZALO_STORAGE_KEY` |  | tùy chọn của bộ cung cấp khóa đã chọn (`ZALO_STORAGE_KEY`: khóa của bộ `env`, yếu theo thiết kế). Backend KMS `vault` còn đọc `VAULT_ADDR`, `VAULT_TOKEN` và `VAULT_NAMESPACE` khi `storage.json` không ghi chúng | | |
@@ -359,7 +370,7 @@ Các API chính thức không có khóa `mcp-config.json` nào; biến môi trư
 | `limits.bufferMaxSize` | 500 | số tin giữ trong bộ đệm live **cho mỗi thread** |
 | `media.downloadDir` | `null` | thư mục gốc media của máy chủ này (file trong đó được niêm phong bằng khóa media của tài khoản, như thư mục mặc định) |
 | `media.autoOpen` | không đặt (= `true` khi stdio, `false` khi HTTP) | `zalo_view_media` mở file bằng trình xem của máy này (qua tempfile). Qua HTTP thì không bao giờ mở |
-| `media.deliver` | photo, gif, doodle, sticker, voice, audio `inline`; video, file `link` | theo từng loại: `inline`, `link` hoặc `tempfile` (xem `ZALO_MCP_MEDIA_DELIVER`). Inline lớn hơn `inlineMaxBytes`, hoặc kiểu client không hiển thị được, chuyển thành link; tempfile cho client ở máy khác chuyển thành link |
+| `media.deliver` | photo, gif, doodle, sticker, voice, audio `inline`; video, file `link` | theo từng loại: `inline`, `link` hoặc `tempfile` (xem `ZALO_MCP_MEDIA_DELIVER`). Inline lớn hơn `inlineMaxBytes`, hoặc kiểu client không hiển thị được (ảnh chỉ gửi inline khi là JPEG, PNG, GIF hoặc WebP, nên ảnh JPEG XL đi dạng link), chuyển thành link; tempfile cho client ở máy khác chuyển thành link |
 | `media.inlineMaxBytes` | `5242880` | ảnh hoặc tin nhắn thoại lớn nhất gửi inline (5 MB là khoảng 6,7 MB base64 trong ngữ cảnh của model) |
 | `media.allowDeliver` | `["inline","link","tempfile"]` | các cách một lời gọi, hoặc mặc định, được chọn. Máy chủ CRM có thể bỏ `tempfile` |
 | `media.linkTtl` | `"10m"` | link media dùng được bao lâu |
@@ -410,7 +421,7 @@ Khóa không có trong bảng này bị bỏ qua mà không báo. (Khóa `mode` 
 | `env.variable` | `ZALO_STORAGE_KEY` | biến chứa khóa của bộ `env` (yếu: bị cảnh báo ở mỗi lần khởi động) |
 | `accounts.<ownId>.<mục của bộ cung cấp>`, `accounts.<ownId>.dkeyLayer` | | đặt riêng cho một tài khoản, ví dụ khóa KMS của một tenant (`accounts.<ownId>.kms.key`): thắng cả cấp trên cùng **lẫn** biến môi trường cho tài khoản đó, nên daemon, `za`, unit purge và unit sao lưu đều mở được keyring của nó. `account security provider kms <ownId> --key <id>` ghi khóa này |
 | `rowMac.verifyOnRead` | `actions` | `off`: trích dẫn, chuyển tiếp, xóa, thu hồi, thả cảm xúc, ghim và `msg media` không còn kiểm tra MAC của dòng tin trong cache trước |
-| `quota.*`, `retention.*` | không giới hạn, `keep` | hạn mức dung lượng và quy tắc theo tuổi, đặt riêng theo tài khoản dưới `accounts.<ownId>`: [Hạn mức dung lượng và thời gian lưu giữ](#hạn-mức-dung-lượng-và-thời-gian-lưu-giữ) |
+| `quota.*`, `retention.*` | không giới hạn, `minFree` `2GB`, `keep` | hạn mức dung lượng, phần đĩa chừa trống và quy tắc theo tuổi, đặt riêng theo tài khoản dưới `accounts.<ownId>`: [Hạn mức dung lượng và thời gian lưu giữ](#hạn-mức-dung-lượng-và-thời-gian-lưu-giữ) |
 | `groups.onLeave` | `purge` | lịch sử cục bộ của nhóm đã rời sẽ ra sao, đặt riêng dưới `accounts.<ownId>.groups`: [Rời nhóm](#rời-nhóm-groupsonleave) |
 
 `storage.json` không phải JSON hợp lệ sẽ chặn mọi lệnh cần khóa (một cài đặt có thể làm yếu lớp bảo vệ không bao giờ được đoán). Các khóa của bộ cung cấp chỉ được đọc khi khởi động: chính sách chạy từ chối chúng với `restartRequired`.

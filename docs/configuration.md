@@ -106,6 +106,7 @@ the media files, the webhook outbox) every `retention.purgeEvery` and applies th
 | `quota.graceDays` | `45` | days kept after going over before the purge |
 | `quota.warnAt` | `0.8` | the fraction of the limit that sends `warn` |
 | `quota.purgeOrder` | `media-first` | the oldest media files first, then the oldest messages |
+| `quota.minFree` | `2GB` | the free space kept on the disk that holds the account's data and media: bytes, or `"2GB"`, or `0` for none. `ZALO_STORAGE_MIN_FREE` wins over it, then the runtime policy, then `storage.json`. See [room before downloading](#room-before-downloading-quotaminfree) |
 | `retention.messages` | `keep` | `keep`, or `<N>d`: messages N days old or older are deleted |
 | `retention.media` | `keep` | `keep`, or `<N>d`: media files of messages N days old or older are deleted (the messages stay) |
 | `retention.outboxDead` | `30d` | dead webhook deliveries are deleted after this |
@@ -122,6 +123,15 @@ give up their share of the excess. A purge raises the database's retention floor
 message at or before it again. The database file keeps its size (SQLite reuses the freed pages); usage counts the
 pages in use. `zalo-agent db usage` (and `zalo_profile` `usage` over MCP) shows all of it, `db purge --dry-run` counts what is due, and `db purge --yes` runs
 it now (through the daemon when one runs).
+
+#### Room before downloading (`quota.minFree`)
+
+Before a media download (`sync-media`, the media stage of `sync`, the fetch after a restore, `zalo_view_media`) and
+before each file it saves, the engine checks that there is room: the disk keeps `quota.minFree` free, and the account
+stays under `quota.account.limit` when one is set. When either would be crossed, the download stops and says why; the
+files not yet saved stay pending, and the same command continues once there is room (free some space, or raise the
+limit). The restore offered after a QR login is skipped the same way when there is no room, and the login names the
+`sync` command to run later. Set `quota.minFree` to `0` (or `ZALO_STORAGE_MIN_FREE=0`) to turn the disk check off.
 
 The admin token: `zalo-agent policy token --rotate` makes one and shows it once; only its SHA-256 is kept, sealed in
 `<CONFIG_DIR>/admin/admin-token.json`, and a rotation retires the old one at once. Or point
@@ -333,6 +343,7 @@ restart; a `signed_out` or `yielded` daemon comes back, a parked one keeps it fo
 | `ZALO_NET_PROBE` |  | what a daemon asks to learn whether the network is up while its socket is down (every 10 s): a URL, default a global search engine's lightweight page, or `off` to assume the network is always up and contact nothing but Zalo | | |
 | `ZALO_STORAGE_PROVIDER` |  | key provider that protects the saved files at rest: `dpapi`, `keychain`, `secret-service`, `systemd-creds`, `kms`, `passphrase`, `env`. Default by platform; a Linux server without a desktop keyring must set one. See [security.md](security.md) | | |
 | `ZALO_RETENTION_MESSAGES`, `ZALO_RETENTION_MEDIA` | yes | `keep` or `<N>d`: the age rules of the local cache, over `storage.json`'s `retention.messages` / `retention.media` (see [Storage quotas and retention](#storage-quotas-and-retention)) | | |
+| `ZALO_STORAGE_MIN_FREE` |  | the free space a download leaves on the disk (`2GB` by default, `0` for none), over the runtime policy's and `storage.json`'s `quota.minFree` (see [room before downloading](#room-before-downloading-quotaminfree)) | | |
 | `ZALO_GROUPS_ON_LEAVE` | yes | `purge` (default) or `keep`: what a left, removed-from, blocked-from or disbanded group's local history becomes, over `storage.json`'s `groups.onLeave` (see [Leaving a group](#leaving-a-group-groupsonleave)) | | |
 | `ZALO_STORAGE_DKEY_LAYER` |  | `1` / `0`: lock everything a login does not need under the account's login `dkey` as well. Default off | | |
 | `ZALO_DPAPI_SCOPE`, `ZALO_SYSTEMD_CREDS_WITH_KEY`, `ZALO_KMS_BACKEND`, `ZALO_KMS_KEY`, `ZALO_STORAGE_PASSPHRASE_FILE`, `ZALO_STORAGE_KEY` |  | the chosen provider's options (`ZALO_STORAGE_KEY`: the `env` provider's key, weak by design). The `vault` KMS backend also reads `VAULT_ADDR`, `VAULT_TOKEN` and `VAULT_NAMESPACE` when `storage.json` does not name them | | |
@@ -358,7 +369,7 @@ The official APIs take no `mcp-config.json` key; their only environment variable
 | `limits.bufferMaxSize` | 500 | messages kept **per thread** in the live buffer |
 | `media.downloadDir` | `null` | media root for this server (files there are sealed under the account's media key, like the default root) |
 | `media.autoOpen` | unset (= `true` on stdio, `false` over HTTP) | `zalo_view_media` opens the file with this machine's viewer (through a tempfile). Over HTTP it never opens anything |
-| `media.deliver` | photo, gif, doodle, sticker, voice, audio `inline`; video, file `link` | per kind: `inline`, `link` or `tempfile` (see `ZALO_MCP_MEDIA_DELIVER`). Inline over `inlineMaxBytes`, or of a type a client cannot render, goes as a link; a tempfile for a client on another machine goes as a link |
+| `media.deliver` | photo, gif, doodle, sticker, voice, audio `inline`; video, file `link` | per kind: `inline`, `link` or `tempfile` (see `ZALO_MCP_MEDIA_DELIVER`). Inline over `inlineMaxBytes`, or of a type a client cannot render (pictures go inline only as JPEG, PNG, GIF or WebP, so a JPEG XL photo goes as a link), goes as a link; a tempfile for a client on another machine goes as a link |
 | `media.inlineMaxBytes` | `5242880` | largest picture or voice message sent inline (5 MB is about 6.7 MB of base64 in the model's context) |
 | `media.allowDeliver` | `["inline","link","tempfile"]` | the modes a call, or the defaults, may pick. A CRM server can leave out `tempfile` |
 | `media.linkTtl` | `"10m"` | how long a media link works |
@@ -409,7 +420,7 @@ A key that is not in this table is ignored without a message. (The `mode` key in
 | `env.variable` | `ZALO_STORAGE_KEY` | the variable that holds the `env` provider's key (weak: warned about on every start) |
 | `accounts.<ownId>.<provider section>`, `accounts.<ownId>.dkeyLayer` | | one account set apart, e.g. a tenant's KMS key (`accounts.<ownId>.kms.key`): it beats the top level **and** the environment for that account, so the daemon, `za`, the purge and the backup units all open its keyring. `account security provider kms <ownId> --key <id>` writes it |
 | `rowMac.verifyOnRead` | `actions` | `off`: quote, forward, delete, recall, react, pin and `msg media` no longer check the cached row's MAC first |
-| `quota.*`, `retention.*` | no limit, `keep` | storage quotas and age rules, also per account under `accounts.<ownId>`: [Storage quotas and retention](#storage-quotas-and-retention) |
+| `quota.*`, `retention.*` | no limit, `minFree` `2GB`, `keep` | storage quotas, the disk reserve and age rules, also per account under `accounts.<ownId>`: [Storage quotas and retention](#storage-quotas-and-retention) |
 | `groups.onLeave` | `purge` | what a left group's local history becomes, also under `accounts.<ownId>.groups`: [Leaving a group](#leaving-a-group-groupsonleave) |
 
 A `storage.json` that is not valid JSON stops every command that needs a key (a setting that might weaken the protection is never guessed). The provider keys are read at start only: the runtime policy refuses them as `restartRequired`.

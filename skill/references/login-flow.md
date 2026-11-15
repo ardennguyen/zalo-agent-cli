@@ -48,6 +48,7 @@ After every QR login, `zalo-agent login` reads the phone's answer and says wheth
 | Ticked, but the key is over two minutes old by the time the socket is up | Same as not ticked (`late`) |
 | An offer for the Zalo desktop app only | Same as not ticked (`other-client`) |
 | A `listen`/`mcp` daemon holds the account | Reads nothing (a second socket would fight the daemon); prints the `sync` command |
+| No room: the disk would fall under `quota.minFree` (default 2 GB) or the account is at its quota | Restores nothing, ticked or not; prints the `sync` command to run once there is room (`no-room`) |
 
 `--sync` is the older spelling of the default, kept for scripts. No daemon ever starts this restore on its own.
 
@@ -63,9 +64,13 @@ With `--json` the outcome is one line, `{"event": "login_auto_sync", "status": .
 | `same-device` | Not ticked, but the login kept its device id: nothing needs restoring unless the next daemon start reports a gap (`offer`) |
 | `daemon-running` | A `listen`/`mcp` daemon holds the account; nothing read (`command`) |
 | `unknown` | The offer could not be checked (no socket) (`command`) |
+| `no-room` | Not restored: the disk is under its reserve or the account at its quota (`reason`: `disk` or `quota`; `command`) |
 | `failed` | The restore started and failed |
 
 With `--verbose --json` the same line also carries `pulls` (the control queues read: queue, start point, pages, why) and `controls` (act type, act, `pc`, whether it carried a key, its age; never the key itself).
+
+### The zCloud key at login
+After a QR login, an account with a zCloud plan (active or in its grace period) or with files still kept in zCloud gets its zCloud key from the phone, with no prompt on the phone. The key is sealed under the account's data key and never printed; `cloud get`, `sync-media --from-zcloud` and `zalo_view_media` then open files kept in zCloud on their own. Getting it registers this engine as the account's end-to-end-encryption device in the web slot (`cloud key devices` lists the slots). An account that already has a key stored, or nothing in zCloud, is left alone. A failure is a warning, never a failed login: `zalo-agent cloud key setup --confirm` fetches it later. `--no-cloud-key` skips the step. With `--json` it is one line, `{"event": "cloud_key_stored", "keyVersion": ...}` or `{"event": "cloud_key_failed", "message": ...}`.
 
 ### Device id across re-logins
 Zalo keeps the offline queue (what arrives while no client is connected) **per device id** (imei). `zalo-agent login` (and `account login`) keeps the device id across logout and login for an account whose saved login is still on this machine: it presents the saved user agent again, and when the account that confirms the QR has a device id saved here, it logs in with that imei. The line after "Logged in" says `Device: the same device id ...` (`--json`: `newDevice: false` and `device` in `login_success`). A first login here, a login after `logout` (it deletes the saved login), an unreadable saved login, or a different account gets a **new device id** (`Device: a new device id ... (no saved login for this account here: ...)`).

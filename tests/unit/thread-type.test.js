@@ -93,6 +93,14 @@ describe("applyCachedThreadType", () => {
     it("ignores a command that has no --type option at all", () => {
         const c = new Command("sync-boards").exitOverride().action(() => {});
         c.parse([], { from: "user" });
-        assert.doesNotThrow(() => applyCachedThreadType(c, group));
+        let asked = 0;
+        applyCachedThreadType(c, (id) => {
+            asked++;
+            return group(id);
+        });
+        // Red if it invents a --type on a command that has none, or looks anything up for it.
+        assert.deepEqual(c.opts(), {});
+        assert.equal(c.getOptionValueSource("type"), undefined);
+        assert.equal(asked, 0);
     });
 });

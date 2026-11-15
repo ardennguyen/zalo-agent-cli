@@ -40,20 +40,30 @@ import { parseMultipart, readBody } from "../../helpers/wire-diff/body.js";
 /** Throwaway 128-bit session key. Only this process and its log ever see it. */
 const KEY = Buffer.alloc(16, 7).toString("base64");
 
-const LOG = process.env.ZALO_OFFLINE_LOG;
-const UID = process.env.ZALO_OFFLINE_UID || "100000000000000001";
-const SEND2ME = process.env.ZALO_OFFLINE_SEND2ME;
+/**
+ * The environment is read per request, not once: the in-process CLI worker (tests/helpers/cli-fast.js) runs many
+ * commands in one process, each with its own log, uid and overrides. A new log file starts a new run: the call
+ * counts and the id counter start over, as they would in a fresh process.
+ */
+let run = null;
 
-/** Per-path response overrides, read once. */
-const OVERRIDES = (() => {
-    const file = process.env.ZALO_OFFLINE_RESPONSES;
-    if (!file) return {};
-    try {
-        return JSON.parse(readFileSync(file, "utf8"));
-    } catch {
-        return {};
+/** This run's settings. */
+function current() {
+    const log = process.env.ZALO_OFFLINE_LOG;
+    if (run?.log !== log) {
+        run = { log, calls: new Map(), nextId: 8000000000001, overrides: null };
+        const file = process.env.ZALO_OFFLINE_RESPONSES;
+        try {
+            run.overrides = file ? JSON.parse(readFileSync(file, "utf8")) : {};
+        } catch {
+            run.overrides = {};
+        }
     }
-})();
+    return run;
+}
+
+// Tells the CLI worker this process has its own stub network.
+globalThis.__zaloOfflineSession = true;
 
 /**
  * Every service key the engine resolves, mapped to a host that names it. A
@@ -84,8 +94,7 @@ const SERVICES = [
 ];
 const SERVICE_MAP = Object.fromEntries(SERVICES.map((k) => [k, [`https://${k.replace(/_/g, "-")}.offline.invalid`]]));
 
-let nextId = 8000000000001;
-const newMsgId = () => String(nextId++);
+const newMsgId = () => String(current().nextId++);
 
 /**
  * The canned answer for one request, before any override.
@@ -171,9 +180,10 @@ async function offlineFetch(url, init = {}) {
     }
     const service = u.hostname.replace(/\.offline\.invalid$/, "").replace(/-/g, "_");
     const query = Object.fromEntries([...u.searchParams.entries()].filter(([k]) => k !== "params"));
-    if (LOG) {
+    const { log, calls, overrides } = current();
+    if (log) {
         appendFileSync(
-            LOG,
+            log,
             JSON.stringify({
                 method: init.method || "GET",
                 service,
@@ -191,16 +201,13 @@ async function offlineFetch(url, init = {}) {
     }
     const call = (calls.get(u.pathname) || 0) + 1;
     calls.set(u.pathname, call);
-    let answer = OVERRIDES[u.pathname];
+    let answer = overrides[u.pathname];
     if (answer && typeof answer === "object" && Array.isArray(answer.__sequence)) {
         answer = answer.__sequence[Math.min(call, answer.__sequence.length) - 1];
     }
     if (answer && typeof answer === "object" && answer.__error) return envelope(null, answer.__error);
     return envelope(answer !== undefined ? answer : cannedData(u.pathname, params));
 }
-
-/** How many times each path has been called in this process, for `__sequence`. */
-const calls = new Map();
 
 /** The server settings the session reads: the socket's retry table, and `sharefile` for uploads. */
 const SETTINGS = {
@@ -221,13 +228,14 @@ globalThis.fetch = async (url, init) => {
     }
     if (u.pathname === "/api/login/getLoginInfo") {
         // The answer is sealed with a key derived from zcid and zcid_ext: derive the same one.
+        const send2me = process.env.ZALO_OFFLINE_SEND2ME;
         const enk = deriveEnk(u.searchParams.get("zcid"), u.searchParams.get("zcid_ext"));
         const loginInfo = {
-            uid: UID,
+            uid: process.env.ZALO_OFFLINE_UID || "100000000000000001",
             zpw_enk: KEY,
             zpw_service_map_v3: SERVICE_MAP,
             zpw_ws: ["wss://ws.offline.invalid/"],
-            ...(SEND2ME && SEND2ME !== "none" ? { send2me_id: SEND2ME } : {}),
+            ...(send2me && send2me !== "none" ? { send2me_id: send2me } : {}),
         };
         const payload = { error_code: 0, error_message: "", data: loginInfo };
         return json({ error_code: 0, error_message: "", data: sealLogin(enk, payload) });

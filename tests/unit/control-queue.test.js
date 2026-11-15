@@ -24,6 +24,7 @@ describe("readControls", () => {
                 control("15", "file_done", "file_done"),
                 control("16", "video_done", "video_done"),
                 control("17", "photo_success", "photo"),
+                control("18", "video", "renew_link"),
             ],
         });
         assert.deepEqual(
@@ -38,6 +39,8 @@ describe("readControls", () => {
                 ["15", "upload", "listener", true],
                 ["16", "upload", "listener", true],
                 ["17", "upload", "listener", true],
+                // A video forward's late link renewal settles the local video send waiting on it.
+                ["18", "renew-link", "listener", true],
             ],
         );
     });

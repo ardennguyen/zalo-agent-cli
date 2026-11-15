@@ -12,6 +12,7 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
+import { checkErrorTable } from "../helpers/wire-diff/error-table.js";
 import { FAKE, T0, expectGolden, openWire } from "../helpers/wire-diff/index.js";
 import { conversationMethods, secondsUntil8am } from "../../src/zalo/api/conversations.js";
 
@@ -24,26 +25,6 @@ const BEFORE_8AM = 10_000;
 /** Four hours later, 09:13:20: the next 08:00 is tomorrow's, 22 h 46 min 40 s away. */
 const T_AFTER_8AM = T0 + 4 * 3600 * 1000;
 const AFTER_8AM = 82_000;
-
-/** The answers every method is run against for the error part, and what each must throw. */
-const ERROR_ANSWERS = [
-    {
-        label: "an outer error",
-        error: { outer: { error_code: 102, error_message: "outer failure" } },
-        expected: { message: "outer failure", code: 102 },
-    },
-    {
-        label: "an inner error",
-        error: { inner: { error_code: 114, error_message: "inner failure" } },
-        expected: { message: "inner failure", code: 114 },
-    },
-    { label: "HTTP 500", error: { status: 500 }, expected: { message: "HTTP 500", code: null } },
-    {
-        label: "an undecryptable data",
-        error: { undecryptable: true },
-        expected: { message: "Failed to parse response data", code: null },
-    },
-];
 
 /**
  * Open a wire with a cookie in the jar, so the Cookie header is recorded with a value.
@@ -275,14 +256,11 @@ describe("wire: conversations (src/zalo/api/conversations.js)", () => {
             ["getAutoDeleteChat", []],
             ["updateAutoDeleteChat", [0, PEER, 0]],
         ];
-        for (const [method, args] of CALLS) {
-            it(`${method}: the code and message of each error`, async () => {
-                for (const answer of ERROR_ANSWERS) {
-                    const rec = await wire.run(method, args, { error: answer.error });
-                    assert.deepEqual(rec.own.error, answer.expected, `${method}, ${answer.label}`);
-                }
-            });
-        }
+        it("every method: the code and message of each error answer", async () => {
+            // Red if any method swallows, rewraps or drops the code of one of the four answers; every
+            // failing method and answer is listed.
+            await checkErrorTable(wire, CALLS);
+        });
     });
 
     it("the area defines exactly the methods this file covers", () => {

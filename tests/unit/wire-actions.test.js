@@ -12,6 +12,7 @@ import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
+import { checkErrorTable } from "../helpers/wire-diff/error-table.js";
 import { FAKE, T0, expectGolden, openWire } from "../helpers/wire-diff/index.js";
 import { actionMethods, planLabelCalls } from "../../src/zalo/api/actions.js";
 
@@ -25,26 +26,6 @@ const CLI_MSG_ID = "1700000000123";
 /** A 19-digit thread id and the twin that rounds to the same double (the loss conv-state documents). */
 const LOSSY = "4123456789012345678";
 const TWIN = "4123456789012345679";
-
-/** The answers every method is run against for part 2, and what each must throw. */
-const ERROR_ANSWERS = [
-    {
-        label: "an outer error",
-        error: { outer: { error_code: 102, error_message: "outer failure" } },
-        expected: { message: "outer failure", code: 102 },
-    },
-    {
-        label: "an inner error",
-        error: { inner: { error_code: 114, error_message: "inner failure" } },
-        expected: { message: "inner failure", code: 114 },
-    },
-    { label: "HTTP 500", error: { status: 500 }, expected: { message: "HTTP 500", code: null } },
-    {
-        label: "an undecryptable data",
-        error: { undecryptable: true },
-        expected: { message: "Failed to parse response data", code: null },
-    },
-];
 
 describe("wire: actions (src/zalo/api/actions.js)", () => {
     let wire;
@@ -433,14 +414,11 @@ describe("wire: actions (src/zalo/api/actions.js)", () => {
             ["getLabels", []],
             ["updateLabels", [{ labelData: [], version: 1 }]],
         ];
-        for (const [method, args] of CALLS) {
-            it(`${method}: the code and message of each error answer`, async () => {
-                for (const answer of ERROR_ANSWERS) {
-                    const rec = await wire.run(method, args, { error: answer.error });
-                    assert.deepEqual(rec.own.error, answer.expected, `${method}, ${answer.label}`);
-                }
-            });
-        }
+        it("every method: the code and message of each error answer", async () => {
+            // Red if any method swallows, rewraps or drops the code of one of the four answers; every
+            // failing method and answer is listed.
+            await checkErrorTable(wire, CALLS);
+        });
     });
 
     it("the area defines exactly the methods this file covers", () => {

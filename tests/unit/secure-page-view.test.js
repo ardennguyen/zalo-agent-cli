@@ -15,6 +15,7 @@
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { freePort } from "../helpers/free-port.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -327,7 +328,7 @@ describe("the QR login page shares the kit", () => {
         dir = mkdtempSync(join(tmpdir(), "page-kit-"));
         const file = join(dir, "qr.png");
         writeFileSync(file, qrPng("a-sample-text-for-the-kit"));
-        const port = 20000 + Math.floor(Math.random() * 20000);
+        const port = await freePort();
         const original = console.log;
         console.log = () => {};
         try {

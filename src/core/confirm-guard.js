@@ -216,6 +216,14 @@ export const GUARDS = Object.freeze({
             `delete the chat message behind each of ${t.items ?? 0} zCloud item(s) (${t.size ?? "0 B"}) in ` +
             `${t.conversations ?? 0} conversation(s), for this account on every device, so the cloud drops them`,
     },
+    "cloud.registerDevice": {
+        cli: "cloud key setup",
+        irreversible: true,
+        what: (t) =>
+            `register a new end-to-end-encryption device for this account on the ${t.platform ?? "Web"} slot` +
+            `${t.slotOccupied ? " (a device already holds that slot — this may displace it)" : ""}; it becomes visible` +
+            " on the account and other devices will encrypt to it",
+    },
     "bank.remove": {
         cli: "bank remove",
         mcp: "zalo_bank remove",

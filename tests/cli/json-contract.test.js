@@ -80,6 +80,8 @@ export const EXCLUDED = {
     "fleet serve": "daemon: the fleet controller runs until stopped",
     sync: "phone-backed restore: waits for a tap on the phone",
     "sync-mobile": "phone-backed restore: waits for a tap on the phone",
+    "cloud key devices": "needs the account's live socket to list its end-to-end-encryption devices",
+    "cloud key setup": "needs the account's live socket and a tap on the phone to register and fetch the key",
 };
 
 /**
@@ -454,7 +456,7 @@ describe("--json contract: every personal command against a fake session", { tim
         const names = leaves.map((l) => l.path.join(" "));
         for (const x of Object.keys(EXCLUDED)) assert.ok(names.includes(x), `excluded command ${x} does not exist`);
         assert.ok(names.length >= 200, `only ${names.length} personal commands found`);
-        assert.ok(Object.keys(EXCLUDED).length <= 12, "the exclusion list keeps growing: run them instead");
+        assert.ok(Object.keys(EXCLUDED).length <= 14, "the exclusion list keeps growing: run them instead");
         for (const x of LIST_COMMANDS) assert.ok(names.includes(x), `list-replies.js names ${x}, which does not exist`);
     });
 

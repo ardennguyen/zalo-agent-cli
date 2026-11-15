@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { runCli, stripAnsi } from "../helpers/cli.js";
+import { checkCli } from "../helpers/cli-fast.js";
 
 const OWN = "401";
 let logDir;
@@ -38,6 +39,7 @@ const asDaemon = (env = {}) =>
     });
 const lines = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : []);
 
+// Real child processes: a daemon child redirects its own stdout and stderr into the log, for the whole process.
 describe("a daemon child's log", () => {
     it("captures the output, with a timestamp on each line, instead of the terminal", async () => {
         const r = await asDaemon();
@@ -103,19 +105,22 @@ describe("a daemon child's log", () => {
     });
 });
 
+// In the in-process CLI worker; a check that fails there is re-run as a real child (tests/helpers/cli-fast.js).
 describe("--log-level", () => {
     for (const cmd of [["mcp", "start"], ["listen"]]) {
         it(`${cmd.join(" ")} refuses a level that is not one, before doing anything`, async () => {
-            const r = await runCli([...cmd, "--log-level", "loud"], { home: SANDBOX_HOME, timeout: 60_000 });
-            assert.equal(r.code, 1);
-            assert.match(stripAnsi(r.all), /Invalid --log-level \\?"loud\\?": use one of error, warn, info, debug/);
+            await checkCli([...cmd, "--log-level", "loud"], { home: SANDBOX_HOME, timeout: 60_000 }, (r) => {
+                assert.equal(r.code, 1);
+                assert.match(stripAnsi(r.all), /Invalid --log-level \\?"loud\\?": use one of error, warn, info, debug/);
+            });
         });
 
         it(`${cmd.join(" ")} documents it`, async () => {
-            const r = await runCli([...cmd, "--help"], { home: SANDBOX_HOME, timeout: 60_000 });
-            const text = stripAnsi(r.all);
-            assert.match(text, /--log-level <level>/);
-            assert.match(text, /ZALO_LOG_LEVEL/);
+            await checkCli([...cmd, "--help"], { home: SANDBOX_HOME, timeout: 60_000 }, (r) => {
+                const text = stripAnsi(r.all);
+                assert.match(text, /--log-level <level>/);
+                assert.match(text, /ZALO_LOG_LEVEL/);
+            });
         });
     }
 });

@@ -9,7 +9,7 @@
  * No network: the walker and the verify call are injected; ids are throwaway constants.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
-import { describe, it, after, beforeEach } from "node:test";
+import { describe, it, after, beforeEach, before } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -66,11 +66,10 @@ function fakeWalker() {
     return { calls, walk };
 }
 
-describe("cloud walk route — sandbox", () => {
-    it("runs inside the test sandbox", () => {
-        assertSandboxed(CONFIG_DIR);
-        assert.equal(CONFIG_DIR, SANDBOX_CONFIG_DIR);
-    });
+// Every test in this file runs in the sandbox: a failing hook fails them all.
+before(() => {
+    assertSandboxed(CONFIG_DIR);
+    assert.equal(CONFIG_DIR, SANDBOX_CONFIG_DIR);
 });
 
 describe("where the walk runs", () => {

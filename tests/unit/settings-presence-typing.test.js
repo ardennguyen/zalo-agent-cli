@@ -301,14 +301,26 @@ describe("friend last-online: Zalo's rules", () => {
         assert.equal(r.asked, false);
     });
 
-    it("asks anyway with askAnyway, and reports hiddenBy them from the answer's settings", async () => {
+    it("asks anyway with askAnyway; with our own status hidden, an answer with no time is still hiddenBy you", async () => {
         const api = fakeApi({
             getSettings: { show_online_status: false },
             getUserInfo: { changed_profiles: { [PEER]: { userId: PEER, type: 0 } } },
-            lastOnline: { settings: { show_online_status: false }, lastOnline: 0 },
+            // As answered live: the settings say true whoever hides, and the time is 0.
+            lastOnline: { settings: { show_online_status: true }, lastOnline: 0 },
         });
         const r = await lastOnlineStatus(api, PEER, { askAnyway: true });
         assert.deepEqual(api.calls.at(-1), { name: "lastOnline", args: [PEER, 1] });
+        assert.equal(r.hiddenBy, "you");
+        assert.equal(r.lastOnline, null);
+    });
+
+    it("says hiddenBy them when our status is shown and Zalo answers no time (its settings say true regardless)", async () => {
+        const api = fakeApi({
+            getSettings: { show_online_status: 1 },
+            getUserInfo: { changed_profiles: { [PEER]: { userId: PEER, type: 0 } } },
+            lastOnline: { settings: { show_online_status: true }, lastOnline: 0 },
+        });
+        const r = await lastOnlineStatus(api, PEER);
         assert.equal(r.hiddenBy, "them");
         assert.equal(r.lastOnline, null);
     });

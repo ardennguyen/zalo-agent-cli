@@ -22,7 +22,7 @@ import { insertMessage, initDb, upsertThread } from "../../src/core/db.js";
 import { FORWARD_VIDEO_FALLBACK, videoResendOptions, voiceResendOptions } from "../../src/zalo/custom/forward.js";
 import { HEAD_TIMEOUT_MS } from "../../src/zalo/api/messages.js";
 import { registerTools } from "../../src/mcp/mcp-tools.js";
-import { seedAccount, seedThread, runOffline, requestsTo } from "./support/offline-cli.js";
+import { seedAccount, checkOffline, seedThread, requestsTo } from "./support/offline-cli.js";
 
 const PEER = "300000000000000081";
 const SOURCE = "300000000000000082";
@@ -132,22 +132,24 @@ describe("msg forward of a cached voice or video", () => {
         ["one nothing knows the size of, and no m4a", VOICE_BARE, VOICE_URL],
     ]) {
         it(`a voice (${name}) makes no HEAD and sends no size`, async () => {
-            const r = await runOffline(["msg", "forward", msgId, PEER, "-t", "0"]);
-            // Red when sendVoice asks the host for the size again: the bare voice would show a HEAD.
-            assert.deepEqual(HEADS(r.requests), [], r.all);
-            const sends = requestsTo(r.requests, "/api/message/forward");
-            assert.equal(sends.length, 1, r.all);
-            assert.deepEqual(JSON.parse(sends[0].params.msgInfo), { voiceUrl: VOICE_URL, m4aUrl });
+            await checkOffline(["msg", "forward", msgId, PEER, "-t", "0"], {}, (r) => {
+                // Red when sendVoice asks the host for the size again: the bare voice would show a HEAD.
+                assert.deepEqual(HEADS(r.requests), [], r.all);
+                const sends = requestsTo(r.requests, "/api/message/forward");
+                assert.equal(sends.length, 1, r.all);
+                assert.deepEqual(JSON.parse(sends[0].params.msgInfo), { voiceUrl: VOICE_URL, m4aUrl });
+            });
         });
     }
 
     it("a video with no geometry goes out as 1280x720, with its cached size and no HEAD", async () => {
-        const r = await runOffline(["msg", "forward", VIDEO_NO_GEOMETRY, PEER, "-t", "0"]);
-        assert.deepEqual(HEADS(r.requests), [], r.all);
-        const sends = requestsTo(r.requests, "/api/message/forward");
-        assert.equal(sends.length, 1, r.all);
-        const info = JSON.parse(sends[0].params.msgInfo);
-        assert.deepEqual([info.width, info.height, info.fileSize, info.duration], [1280, 720, 9000, 4000]);
+        await checkOffline(["msg", "forward", VIDEO_NO_GEOMETRY, PEER, "-t", "0"], {}, (r) => {
+            assert.deepEqual(HEADS(r.requests), [], r.all);
+            const sends = requestsTo(r.requests, "/api/message/forward");
+            assert.equal(sends.length, 1, r.all);
+            const info = JSON.parse(sends[0].params.msgInfo);
+            assert.deepEqual([info.width, info.height, info.fileSize, info.duration], [1280, 720, 9000, 4000]);
+        });
     });
 });
 

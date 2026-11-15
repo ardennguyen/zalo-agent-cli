@@ -31,7 +31,7 @@ import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { seedAccount, seedThread, seedMessage, runOffline, requestsTo, OWN_UID } from "./support/offline-cli.js";
+import { seedAccount, checkOffline, seedThread, seedMessage, requestsTo, OWN_UID } from "./support/offline-cli.js";
 
 const GROUP = "200000000000000051";
 const PEER = "300000000000000051";
@@ -93,118 +93,136 @@ function only(r, suffix) {
 
 describe("msg pin", () => {
     it("group: POST board/topic/createv2 with the captured fields, in the captured order", async () => {
-        const r = await runOffline(["msg", "pin", G1.msgId]);
-        const q = only(r, "/api/board/topic/createv2");
-        assert.equal(q.method, "POST");
-        assert.equal(q.service, "group_board");
-        // Red on any drift from the captured request: a missing or renamed
-        // field, a different topic type or pin action, the wrong message ids,
-        // or params serialized in a different order.
-        assert.equal(q.params.params, pinParams(G1, OWN_UID));
-        assert.deepEqual(q.params, {
-            grid: GROUP,
-            type: 2,
-            color: -14540254,
-            emoji: "📌",
-            startTime: -1,
-            duration: -1,
-            params: pinParams(G1, OWN_UID),
-            repeat: 0,
-            src: -1,
-            imei: "offline-test-imei",
-            pinAct: 1,
+        await checkOffline(["msg", "pin", G1.msgId], {}, (r) => {
+            const q = only(r, "/api/board/topic/createv2");
+            assert.equal(q.method, "POST");
+            assert.equal(q.service, "group_board");
+            // Red on any drift from the captured request: a missing or renamed
+            // field, a different topic type or pin action, the wrong message ids,
+            // or params serialized in a different order.
+            assert.equal(q.params.params, pinParams(G1, OWN_UID));
+            assert.deepEqual(q.params, {
+                grid: GROUP,
+                type: 2,
+                color: -14540254,
+                emoji: "📌",
+                startTime: -1,
+                duration: -1,
+                params: pinParams(G1, OWN_UID),
+                repeat: 0,
+                src: -1,
+                imei: "offline-test-imei",
+                pinAct: 1,
+            });
+            assert.deepEqual(Object.keys(q.params), [
+                "grid",
+                "type",
+                "color",
+                "emoji",
+                "startTime",
+                "duration",
+                "params",
+                "repeat",
+                "src",
+                "imei",
+                "pinAct",
+            ]);
         });
-        assert.deepEqual(Object.keys(q.params), [
-            "grid",
-            "type",
-            "color",
-            "emoji",
-            "startTime",
-            "duration",
-            "params",
-            "repeat",
-            "src",
-            "imei",
-            "pinAct",
-        ]);
     });
 
     it("group: someone else's message carries their uid and name", async () => {
-        const r = await runOffline(["msg", "pin", G2.msgId]);
-        assert.equal(only(r, "/api/board/topic/createv2").params.params, pinParams(G2, MEMBER));
+        await checkOffline(["msg", "pin", G2.msgId], {}, (r) => {
+            assert.equal(only(r, "/api/board/topic/createv2").params.params, pinParams(G2, MEMBER));
+        });
     });
 
     it("group: a sync-restored row's noised sender is resolved first", async () => {
-        const r = await runOffline(["msg", "pin", S1.msgId], {
-            responses: { "/api/gid/decrypt": { [NOISED]: RESOLVED } },
-        });
-        assert.equal(requestsTo(r.requests, "/api/gid/decrypt").length, 1, r.all);
-        assert.equal(only(r, "/api/board/topic/createv2").params.params, pinParams(S1, RESOLVED));
+        await checkOffline(
+            ["msg", "pin", S1.msgId],
+            {
+                responses: { "/api/gid/decrypt": { [NOISED]: RESOLVED } },
+            },
+            (r) => {
+                assert.equal(requestsTo(r.requests, "/api/gid/decrypt").length, 1, r.all);
+                assert.equal(only(r, "/api/board/topic/createv2").params.params, pinParams(S1, RESOLVED));
+            },
+        );
     });
 
     it("1-1: friendboard/list for the version, then GET friendboard/create", async () => {
-        const r = await runOffline(["msg", "pin", D1.msgId], {
-            responses: { "/api/friendboard/list": { data: [], version: 1790000000111 } },
-        });
-        const list = only(r, "/api/friendboard/list");
-        const create = only(r, "/api/friendboard/create");
-        assert.ok(r.requests.indexOf(list) < r.requests.indexOf(create), "the version must be read before the create");
-        assert.equal(list.method, "GET");
-        assert.deepEqual(list.params, { conversationId: PEER, version: 0, imei: "offline-test-imei" });
-        assert.equal(create.method, "GET");
-        assert.equal(create.service, "friend_board");
-        assert.deepEqual(create.params, {
-            conversationId: PEER,
-            topic: {
-                color: -14540254,
-                duration: -1,
-                emoji: "📌",
-                params: pinParams(D1, OWN_UID),
-                repeat: 0,
-                startTime: -1,
-                type: 2,
-                src: -1,
-                pinAct: 1,
+        await checkOffline(
+            ["msg", "pin", D1.msgId],
+            {
+                responses: { "/api/friendboard/list": { data: [], version: 1790000000111 } },
             },
-            version: 1790000000111,
-            lang: "vi",
-            imei: "offline-test-imei",
-        });
-        assert.deepEqual(Object.keys(create.params), ["conversationId", "topic", "version", "lang", "imei"]);
-        assert.deepEqual(Object.keys(create.params.topic), [
-            "color",
-            "duration",
-            "emoji",
-            "params",
-            "repeat",
-            "startTime",
-            "type",
-            "src",
-            "pinAct",
-        ]);
+            (r) => {
+                const list = only(r, "/api/friendboard/list");
+                const create = only(r, "/api/friendboard/create");
+                assert.ok(
+                    r.requests.indexOf(list) < r.requests.indexOf(create),
+                    "the version must be read before the create",
+                );
+                assert.equal(list.method, "GET");
+                assert.deepEqual(list.params, { conversationId: PEER, version: 0, imei: "offline-test-imei" });
+                assert.equal(create.method, "GET");
+                assert.equal(create.service, "friend_board");
+                assert.deepEqual(create.params, {
+                    conversationId: PEER,
+                    topic: {
+                        color: -14540254,
+                        duration: -1,
+                        emoji: "📌",
+                        params: pinParams(D1, OWN_UID),
+                        repeat: 0,
+                        startTime: -1,
+                        type: 2,
+                        src: -1,
+                        pinAct: 1,
+                    },
+                    version: 1790000000111,
+                    lang: "vi",
+                    imei: "offline-test-imei",
+                });
+                assert.deepEqual(Object.keys(create.params), ["conversationId", "topic", "version", "lang", "imei"]);
+                assert.deepEqual(Object.keys(create.params.topic), [
+                    "color",
+                    "duration",
+                    "emoji",
+                    "params",
+                    "repeat",
+                    "startTime",
+                    "type",
+                    "src",
+                    "pinAct",
+                ]);
+            },
+        );
     });
 
     it("refuses an uncached message and names what caches one", async () => {
-        const r = await runOffline(["msg", "pin", "7100000000059"]);
-        assert.deepEqual(r.requests, [], r.all);
-        assert.notEqual(r.code, 0);
-        assert.match(r.all, /not in the local cache/);
-        assert.match(r.all, /\blisten\b/);
-        assert.match(r.all, /\bsync\b/);
+        await checkOffline(["msg", "pin", "7100000000059"], {}, (r) => {
+            assert.deepEqual(r.requests, [], r.all);
+            assert.notEqual(r.code, 0);
+            assert.match(r.all, /not in the local cache/);
+            assert.match(r.all, /\blisten\b/);
+            assert.match(r.all, /\bsync\b/);
+        });
     });
 
     it("refuses a non-text message rather than guess its params", async () => {
-        const r = await runOffline(["msg", "pin", P1.msgId]);
-        assert.deepEqual(r.requests, [], r.all);
-        assert.notEqual(r.code, 0);
-        assert.match(r.all, /text/);
+        await checkOffline(["msg", "pin", P1.msgId], {}, (r) => {
+            assert.deepEqual(r.requests, [], r.all);
+            assert.notEqual(r.code, 0);
+            assert.match(r.all, /text/);
+        });
     });
 
     it("refuses when the named thread is not the message's thread", async () => {
-        const r = await runOffline(["msg", "pin", G1.msgId, PEER]);
-        assert.deepEqual(r.requests, [], r.all);
-        assert.notEqual(r.code, 0);
-        assert.match(r.all, /belongs to thread/);
+        await checkOffline(["msg", "pin", G1.msgId, PEER], {}, (r) => {
+            assert.deepEqual(r.requests, [], r.all);
+            assert.notEqual(r.code, 0);
+            assert.match(r.all, /belongs to thread/);
+        });
     });
 });
 
@@ -213,102 +231,138 @@ describe("msg unpin", () => {
     const NOTE = { id: "910000077", type: 0, params: '{"title":"a pinned note"}' };
 
     it("group: pin/list for topicId and boardVersion, then GET board/unpinv2", async () => {
-        const r = await runOffline(["msg", "unpin", G1.msgId], {
-            responses: { "/api/board/pin/list": groupBoard(1790000000222, NOTE, pinnedTopic("910000078", G1)) },
-        });
-        const list = only(r, "/api/board/pin/list");
-        const unpin = only(r, "/api/board/unpinv2");
-        assert.equal(list.method, "GET");
-        assert.deepEqual(list.params, { groupId: GROUP, boardVersion: 0, imei: "offline-test-imei" });
-        assert.equal(unpin.method, "GET");
-        assert.equal(unpin.service, "group_board");
-        assert.deepEqual(unpin.params, {
-            grid: GROUP,
-            imei: "offline-test-imei",
-            topic: { topicId: "910000078", topicType: 2 },
-            boardVersion: 1790000000222,
-        });
-        assert.deepEqual(Object.keys(unpin.params), ["grid", "imei", "topic", "boardVersion"]);
+        await checkOffline(
+            ["msg", "unpin", G1.msgId],
+            {
+                responses: { "/api/board/pin/list": groupBoard(1790000000222, NOTE, pinnedTopic("910000078", G1)) },
+            },
+            (r) => {
+                const list = only(r, "/api/board/pin/list");
+                const unpin = only(r, "/api/board/unpinv2");
+                assert.equal(list.method, "GET");
+                assert.deepEqual(list.params, { groupId: GROUP, boardVersion: 0, imei: "offline-test-imei" });
+                assert.equal(unpin.method, "GET");
+                assert.equal(unpin.service, "group_board");
+                assert.deepEqual(unpin.params, {
+                    grid: GROUP,
+                    imei: "offline-test-imei",
+                    topic: { topicId: "910000078", topicType: 2 },
+                    boardVersion: 1790000000222,
+                });
+                assert.deepEqual(Object.keys(unpin.params), ["grid", "imei", "topic", "boardVersion"]);
+            },
+        );
     });
 
     it("group: a stale board version (183) is refetched and retried once", async () => {
-        const r = await runOffline(["msg", "unpin", G1.msgId], {
-            responses: {
-                "/api/board/pin/list": {
-                    __sequence: [
-                        groupBoard(1790000000222, pinnedTopic("910000078", G1)),
-                        groupBoard(1790000000223, pinnedTopic("910000078", G1)),
-                    ],
-                },
-                "/api/board/unpinv2": {
-                    __sequence: [{ __error: { code: 183, message: "invalid board version" } }, ""],
+        await checkOffline(
+            ["msg", "unpin", G1.msgId],
+            {
+                responses: {
+                    "/api/board/pin/list": {
+                        __sequence: [
+                            groupBoard(1790000000222, pinnedTopic("910000078", G1)),
+                            groupBoard(1790000000223, pinnedTopic("910000078", G1)),
+                        ],
+                    },
+                    "/api/board/unpinv2": {
+                        __sequence: [{ __error: { code: 183, message: "invalid board version" } }, ""],
+                    },
                 },
             },
-        });
-        const unpins = requestsTo(r.requests, "/api/board/unpinv2");
-        assert.equal(requestsTo(r.requests, "/api/board/pin/list").length, 2, r.all);
-        assert.equal(unpins.length, 2, r.all);
-        assert.equal(unpins[1].params.boardVersion, 1790000000223, "the retry carries the refetched version");
-        assert.equal(r.code, 0, r.all);
+            (r) => {
+                const unpins = requestsTo(r.requests, "/api/board/unpinv2");
+                assert.equal(requestsTo(r.requests, "/api/board/pin/list").length, 2, r.all);
+                assert.equal(unpins.length, 2, r.all);
+                assert.equal(unpins[1].params.boardVersion, 1790000000223, "the retry carries the refetched version");
+                assert.equal(r.code, 0, r.all);
+            },
+        );
     });
 
     it("1-1: friendboard/list for topicId and version, then GET friendboard/multi_unpin", async () => {
-        const r = await runOffline(["msg", "unpin", D1.msgId], {
-            responses: {
-                "/api/friendboard/list": { data: [pinnedTopic("920000088", D1)], version: 1790000000333 },
+        await checkOffline(
+            ["msg", "unpin", D1.msgId],
+            {
+                responses: {
+                    "/api/friendboard/list": { data: [pinnedTopic("920000088", D1)], version: 1790000000333 },
+                },
             },
-        });
-        const unpin = only(r, "/api/friendboard/multi_unpin");
-        assert.equal(unpin.method, "GET");
-        assert.equal(unpin.service, "friend_board");
-        assert.deepEqual(unpin.params, {
-            conversationId: PEER,
-            topics: [{ topicId: "920000088", topicType: 2 }],
-            version: 1790000000333,
-            lang: "vi",
-            imei: "offline-test-imei",
-        });
-        assert.deepEqual(Object.keys(unpin.params), ["conversationId", "topics", "version", "lang", "imei"]);
+            (r) => {
+                const unpin = only(r, "/api/friendboard/multi_unpin");
+                assert.equal(unpin.method, "GET");
+                assert.equal(unpin.service, "friend_board");
+                assert.deepEqual(unpin.params, {
+                    conversationId: PEER,
+                    topics: [{ topicId: "920000088", topicType: 2 }],
+                    version: 1790000000333,
+                    lang: "vi",
+                    imei: "offline-test-imei",
+                });
+                assert.deepEqual(Object.keys(unpin.params), ["conversationId", "topics", "version", "lang", "imei"]);
+            },
+        );
     });
 
     it("1-1: a topic that arrives as a JSON string is found and unpinned (spec-people 16.3)", async () => {
         // The previous engine typed the 1-1 board's topics as strings; the engine parses a string topic to its object, so
         // findPinnedTopic, which reads `type` and `params`, finds it next to an object topic.
-        const r = await runOffline(["msg", "unpin", D1.msgId], {
-            responses: {
-                "/api/friendboard/list": {
-                    data: [{ id: "920000087", type: 0, params: "{}" }, JSON.stringify(pinnedTopic("920000089", D1))],
-                    version: 1790000000334,
+        await checkOffline(
+            ["msg", "unpin", D1.msgId],
+            {
+                responses: {
+                    "/api/friendboard/list": {
+                        data: [
+                            { id: "920000087", type: 0, params: "{}" },
+                            JSON.stringify(pinnedTopic("920000089", D1)),
+                        ],
+                        version: 1790000000334,
+                    },
                 },
             },
-        });
-        assert.equal(r.code, 0, r.all);
-        assert.deepEqual(only(r, "/api/friendboard/multi_unpin").params.topics, [
-            { topicId: "920000089", topicType: 2 },
-        ]);
+            (r) => {
+                assert.equal(r.code, 0, r.all);
+                assert.deepEqual(only(r, "/api/friendboard/multi_unpin").params.topics, [
+                    { topicId: "920000089", topicType: 2 },
+                ]);
+            },
+        );
     });
 
     it("an uncached message can still be unpinned when its thread is named", async () => {
         const pinnedElsewhere = { ...G1, msgId: "7100000000099", cliMsgId: "1700000000099" };
-        const r = await runOffline(["msg", "unpin", pinnedElsewhere.msgId, GROUP, "-t", "1"], {
-            responses: { "/api/board/pin/list": groupBoard(1790000000444, pinnedTopic("910000099", pinnedElsewhere)) },
-        });
-        assert.deepEqual(only(r, "/api/board/unpinv2").params.topic, { topicId: "910000099", topicType: 2 });
+        await checkOffline(
+            ["msg", "unpin", pinnedElsewhere.msgId, GROUP, "-t", "1"],
+            {
+                responses: {
+                    "/api/board/pin/list": groupBoard(1790000000444, pinnedTopic("910000099", pinnedElsewhere)),
+                },
+            },
+            (r) => {
+                assert.deepEqual(only(r, "/api/board/unpinv2").params.topic, { topicId: "910000099", topicType: 2 });
+            },
+        );
     });
 
     it("refuses when the message is not pinned: nothing is unpinned", async () => {
-        const r = await runOffline(["msg", "unpin", G2.msgId], {
-            responses: { "/api/board/pin/list": groupBoard(1790000000222, pinnedTopic("910000078", G1)) },
-        });
-        assert.deepEqual(requestsTo(r.requests, "/api/board/unpinv2"), [], r.all);
-        assert.notEqual(r.code, 0);
-        assert.match(r.all, /not pinned/);
+        await checkOffline(
+            ["msg", "unpin", G2.msgId],
+            {
+                responses: { "/api/board/pin/list": groupBoard(1790000000222, pinnedTopic("910000078", G1)) },
+            },
+            (r) => {
+                assert.deepEqual(requestsTo(r.requests, "/api/board/unpinv2"), [], r.all);
+                assert.notEqual(r.code, 0);
+                assert.match(r.all, /not pinned/);
+            },
+        );
     });
 
     it("refuses an uncached message with no thread named, before any request", async () => {
-        const r = await runOffline(["msg", "unpin", "7100000000098"]);
-        assert.deepEqual(r.requests, [], r.all);
-        assert.notEqual(r.code, 0);
-        assert.match(r.all, /thread/i);
+        await checkOffline(["msg", "unpin", "7100000000098"], {}, (r) => {
+            assert.deepEqual(r.requests, [], r.all);
+            assert.notEqual(r.code, 0);
+            assert.match(r.all, /thread/i);
+        });
     });
 });

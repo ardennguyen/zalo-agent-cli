@@ -44,11 +44,31 @@ import { lookupCloudBackup, messageZKey } from "./zcloud.js";
 import { pastCdnWindow } from "./media-age.js";
 import { createDownloadFetch } from "../../zalo/download-fetch.js";
 import { fetchCloudBlob } from "../../zalo/zcloud.js";
-import { ALGO_BLOCK, CloudKeyError, decryptCloudBlob } from "../../zalo/zcloud-e2ee.js";
+import { CloudKeyError, decryptCloudBlob, importCloudPrivateKey } from "../../zalo/zcloud-e2ee.js";
 import { readSealedJson, writeSealedJson } from "../keystore/index.js";
 import { scopeOfDir } from "../keystore/keyring.js";
 import { mediaPlainSize, writeSealedMedia } from "../keystore/media-seal.js";
 import { openDeadLinks } from "./dead-links.js";
+import { checkDiskRoom } from "../storage-quota.js";
+import { loadCloudKey } from "../cloud-key-store.js";
+
+/**
+ * The zCloud source from the account's stored cloud key, or null when none is stored or it cannot be opened (a locked
+ * keystore, an older file). Never throws: no key just means no zCloud source.
+ *
+ * @param {string} ownId
+ * @returns {{privateKey: import("node:crypto").KeyObject}|null}
+ */
+function storedCloudSource(ownId) {
+    try {
+        const stored = loadCloudKey(ownId);
+        return stored?.privateKeyPkcs8Base64
+            ? { privateKey: importCloudPrivateKey(stored.privateKeyPkcs8Base64) }
+            : null;
+    } catch {
+        return null;
+    }
+}
 
 /** Kinds that point at a byte stream worth saving. */
 export const DOWNLOADABLE_KINDS = new Set(["photo", "video", "file", "gif", "voice", "audio", "doodle"]);
@@ -85,12 +105,15 @@ export function sanitize(name) {
     return out.trim().slice(0, 80) || "unknown";
 }
 
+/** Kinds whose file is a picture, named by its bytes. */
+const IMAGE_KINDS = new Set(["photo", "doodle"]);
 const DEFAULT_EXT = { photo: "jpg", video: "mp4", gif: "gif", voice: "mp3", audio: "mp3", doodle: "jpg", file: "bin" };
 const CONTENT_TYPE_EXT = {
     "image/jpeg": "jpg",
     "image/png": "png",
     "image/gif": "gif",
     "image/webp": "webp",
+    "image/jxl": "jxl",
     "video/mp4": "mp4",
     "video/quicktime": "mov",
     "audio/mpeg": "mp3",
@@ -99,29 +122,33 @@ const CONTENT_TYPE_EXT = {
 };
 
 /**
- * The JPEG twin of a JPEG XL photo URL, the form Zalo serves to a client that cannot decode JPEG XL:
- * `…/jxl/…/x.jxl?jxlstatus=1` becomes `…/jpg/…/x.jpg`. A JPEG XL file opens in almost no viewer and no model, so the
- * CLI always takes the JPEG. An end-to-end encrypted session's URL keeps its form; any other URL is returned unchanged.
+ * The image format the bytes themselves are, by their signature: what Zalo stored is what is kept, so a picture that
+ * Zalo keeps as JPEG XL is saved as `.jxl` even when its URL or the message says `.jpg`. Null when not an image this
+ * knows.
  *
- * @param {string} url
- * @returns {string}
+ * @param {Buffer|Uint8Array|null|undefined} buf
+ * @returns {string|null}
  */
-export function jpegUrl(url) {
-    if (typeof url !== "string" || !/^https?:\/\/.*\/jxl\/.*\.jxl/.test(url)) return url;
-    let u;
-    try {
-        u = new URL(url);
-    } catch {
-        return url;
-    }
-    u.searchParams.delete("jxlstatus");
-    u.search = decodeURIComponent(u.search);
-    if (url.includes("?e2esession")) return u.href;
-    return u.href.replace("/jxl/", "/jpg/").replace(".jxl", ".jpg");
+export function sniffImageExt(buf) {
+    if (!buf || buf.length < 12) return null;
+    const b = buf;
+    if (b[0] === 0xff && b[1] === 0x0a) return "jxl"; // JPEG XL codestream
+    if (b[0] === 0 && b[1] === 0 && b[2] === 0 && b[3] === 0x0c && b[4] === 0x4a && b[5] === 0x58 && b[6] === 0x4c)
+        return "jxl"; // JPEG XL container
+    if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "jpg";
+    if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return "png";
+    if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return "gif";
+    if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && b[8] === 0x57 && b[9] === 0x45)
+        return "webp";
+    return null;
 }
 
-/** Extension from the filename, then the URL, then content-type, then the kind. */
-function guessExt(att, url, contentType) {
+/** Extension: a picture's own format first (its bytes), then the filename, the URL, the content-type and the kind. */
+function guessExt(att, url, contentType, buf) {
+    if (IMAGE_KINDS.has(att.kind)) {
+        const sniffed = sniffImageExt(buf);
+        if (sniffed) return sniffed;
+    }
     if (att.ext) return String(att.ext).replace(/^\./, "").toLowerCase().slice(0, 8);
     if (att.fileName && /\.([A-Za-z0-9]{1,8})$/.test(att.fileName)) return RegExp.$1.toLowerCase();
     const inUrl = /\.([A-Za-z0-9]{2,5})(?:\?|$)/.exec(String(url || "").split("#")[0]);
@@ -506,9 +533,6 @@ async function fetchFromCloud({ item, cloudConversation, cloud, timeoutMs, signa
         : null;
     const encryptInfo = raw.encryptInfo ? { algoVersion: item?.algoVersion ?? undefined, ...raw.encryptInfo } : fromRow;
     const encrypted = !cloudConversation && Boolean(encryptInfo?.encryptKey);
-    if (encrypted && String(encryptInfo.algoVersion ?? "") === ALGO_BLOCK) {
-        return { ok: false, code: "cloud-unsupported", reason: "zCloud: block-encrypted item (algoversion 2)" };
-    }
     if (encrypted && !cloud.privateKey) {
         return { ok: false, code: "cloud-no-key", reason: "zCloud: encrypted, and no cloud key was given" };
     }
@@ -531,9 +555,6 @@ async function fetchFromCloud({ item, cloudConversation, cloud, timeoutMs, signa
     const blob = r.value;
     let buf = Buffer.from(blob?.bytes ?? []);
     if (blob?.encrypted) {
-        if (String(blob.algoVersion ?? "") === ALGO_BLOCK) {
-            return { ok: false, code: "cloud-unsupported", reason: "zCloud: block-encrypted item (algoversion 2)" };
-        }
         try {
             buf = decryptCloudBlob(buf, blob.wrappedKey, blob.algoVersion, cloud.privateKey);
         } catch (e) {
@@ -612,14 +633,14 @@ function writeConversationIndex(mediaRoot, names, scope) {
  *   0 disables the pause (tests)
  * @param {number} [opts.timeoutMs=60000] - per-request deadline over the whole exchange; without one a stalled
  *   connection blocks its worker indefinitely
- * @param {boolean} [opts.allAges=false] - ask the CDN for files past its window too. By default a file whose message
- *   is older than the window (./media-age.js: 14 days, 7 for a file over 100 MB; My Cloud exempt) gets no request: it
- *   is counted `oldInCloud` when the local zCloud index lists it, else `oldGone` (and its row is marked gone, so the
- *   automatic queue skips it from then on)
+ * @param {boolean} [opts.allAges] - kept for scripts: every file is asked for whatever its age (below)
  * @param {{privateKey?: import("node:crypto").KeyObject|null, fetchBlob?: Function}|null} [opts.cloud] - the zCloud
- *   source, opt-in: a file past the window that the index lists is fetched from zCloud and decrypted with
- *   `privateKey`; a fresh file whose CDN download failed is tried there too. `fetchBlob(item, {signal})` is the
- *   blob fetch (tests); default: the account's own. Rows already marked gone are looked at again
+ *   source. Omitted: the account's stored cloud key when it has one (src/core/cloud-key-store.js), else none; null:
+ *   none. Where a file comes from, in order: for a file past the CDN's window (./media-age.js: 14 days, 7 for a file
+ *   over 100 MB; My Cloud exempt) that the zCloud index lists, zCloud first; then the CDN, for every file of any age
+ *   (no file is written off by the clock alone: past the window the CDN may still have it, and on an account without
+ *   zCloud it is the only source); then, when the CDN failed, zCloud. A link that answered 404/410 is remembered and
+ *   not asked again (`retryDead`). `fetchBlob(item, {signal})` is the blob fetch (tests); default: the account's own
  * @param {string} [opts.ownId] - the account (its chat with itself is My Cloud); default: the account folder's id
  * @param {number} [opts.now] - the clock (tests)
  * @param {boolean} [opts.retryDead=false] - ask again for links remembered as dead (404/410 on an earlier run);
@@ -631,12 +652,17 @@ function writeConversationIndex(mediaRoot, names, scope) {
  * @param {(msgId: string, zKey?: string|null) => {found: boolean}} [opts.cloudLookup] - whether the local zCloud index lists a message's
  *   backup (defaults to {@link lookupCloudBackup}); a file that is gone from the CDN and listed there is counted in
  *   `cloudBacked`: it exists, but the copy is end-to-end encrypted under the account's cloud key, which this client never holds
+ * @param {(addedBytes: number) => {ok: boolean, reason: string|null, message: string|null}} [opts.room] - whether
+ *   there is room for more after `addedBytes` (tests); default: the disk reserve and the account quota
+ *   (src/core/storage-quota.js checkDiskRoom). Checked before the run and before each file; out of room, the run stops
+ *   and `outOfRoom` says why
  * @param {(p: object) => void} [opts.onProgress] - `saved` per file written, `fail` per failure, `throttled` per
  *   backoff, and `attempted` once per file finished either way (`{attempted, total, downloaded, failed, dead, bytes}`), so a
  *   run whose files all fail still shows it is moving
  * @returns {Promise<{considered:number, attempted:number, downloaded:number, skipped:number, failed:number, dead:number,
  *   expired:number, cloudBacked:number, throttled:number, unknown:number, renewed:number, bytes:number,
- *   abortedEarly:boolean, interrupted:boolean, deferred:number, reasons:Record<string,number>, failures:Array<object>}>}
+ *   abortedEarly:boolean, interrupted:boolean, outOfRoom: {reason: string, message: string}|null, deferred:number,
+ *   reasons:Record<string,number>, failures:Array<object>}>}
  *   `renewed` is always 0 (no link is renewed; kept so a reader of the result keeps its shape).
  *   `throttled` counts only responses that said to slow down; `unknown` counts the retryable
  *   failures that explained nothing. `reasons` tallies the observed codes — pass it to
@@ -663,7 +689,6 @@ export async function downloadSyncedMedia(opts = {}) {
         backoffBaseMs = 1000,
         signal,
         retryDead = false,
-        allAges = false,
         cloud = null,
         onProgress = () => {},
     } = opts;
@@ -685,7 +710,9 @@ export async function downloadSyncedMedia(opts = {}) {
         onlyMissing: true,
         includePruned,
         // A row sorted as gone is looked at again only by a run that can say something new about it.
-        includeGone: allAges || Boolean(cloud),
+        // A row marked gone is looked at again: links that really answered 404/410 are skipped by the dead-link list
+        // without a request, and a row once sorted gone by the clock alone gets its one request.
+        includeGone: true,
     });
     const jobs = [];
     for (const row of rows) {
@@ -693,9 +720,8 @@ export async function downloadSyncedMedia(opts = {}) {
         for (const att of attachmentsOf(row)) {
             // The full file, else the HD one, else (for a picture with nothing better) the thumbnail: a row counts as
             // having an attachment when any of these is there, so taking only `url` left such rows pending forever.
-            const url = jpegUrl(
-                att.url || att.hdUrl || (thumbs || THUMB_IS_THE_PICTURE.has(att.kind) ? att.thumbUrl : null),
-            );
+            // Fetched as Zalo serves it: a JPEG XL picture stays JPEG XL.
+            const url = att.url || att.hdUrl || (thumbs || THUMB_IS_THE_PICTURE.has(att.kind) ? att.thumbUrl : null);
             if (!url || !kinds.has(att.kind)) continue;
             if (maxBytes && att.size && att.size > maxBytes) continue;
             jobs.push({ row, att, url, index: index++ });
@@ -740,6 +766,8 @@ export async function downloadSyncedMedia(opts = {}) {
         abortedEarly: false,
         // Stopped by the caller's signal; what was not saved is still pending.
         interrupted: false,
+        // Stopped for lack of room ({reason: "disk"|"quota", message}); what was not saved is still pending.
+        outOfRoom: null,
         // code -> count over the jobs that ultimately failed, for the summary.
         reasons: {},
         failures: [],
@@ -771,11 +799,12 @@ export async function downloadSyncedMedia(opts = {}) {
     // Always the account's own media folder, never a shared override root: the list is the account's alone.
     const deadLinks = opts.deadLinks ?? openDeadLinks(resolve(accountDir, "media"), scope);
     const ownId = opts.ownId ?? scope.id;
-    const cloudSource = cloud
+    const cloudGiven = opts.cloud === undefined ? storedCloudSource(ownId) : cloud;
+    const cloudSource = cloudGiven
         ? {
-              privateKey: cloud.privateKey ?? null,
+              privateKey: cloudGiven.privateKey ?? null,
               fetchBlob:
-                  cloud.fetchBlob ??
+                  cloudGiven.fetchBlob ??
                   ((item, o = {}) => fetchCloudBlob(api, item, { fetch: download, signal: o.signal })),
           }
         : null;
@@ -797,6 +826,24 @@ export async function downloadSyncedMedia(opts = {}) {
     // get an account flagged -- so the run backs off and then gives up.
     let throttleStreak = 0;
     let stopAll = false;
+    // Room to store more: the disk keeps its reserve and the account its quota (../storage-quota.js). Usage is measured
+    // once; the bytes this run saves are added to it. A run that runs out of room stops; what is left stays pending.
+    let usedAtStart = null;
+    const room =
+        opts.room ??
+        ((added) => {
+            const r = checkDiskRoom(ownId, { mediaRoot, addedBytes: added, usedBytes: usedAtStart });
+            if (usedAtStart === null && Number.isFinite(r.usedBytes)) usedAtStart = r.usedBytes;
+            return r;
+        });
+    const outOfRoom = () => {
+        const r = room(stats.bytes);
+        if (r.ok) return false;
+        stats.outOfRoom = { reason: r.reason, message: r.message };
+        onProgress({ phase: "out-of-room", detail: r.message });
+        return true;
+    };
+    if (outOfRoom()) return stats;
     const backoff = async () => {
         const wait = Math.min(30000, backoffBaseMs * 2 ** Math.min(throttleStreak, 5));
         onProgress({ phase: "throttled", detail: `backing off ${Math.round(wait / 1000)}s`, streak: throttleStreak });
@@ -808,6 +855,10 @@ export async function downloadSyncedMedia(opts = {}) {
             if (stopAll || cursor >= jobs.length) return;
             if (signal?.aborted) {
                 stats.interrupted = true;
+                return;
+            }
+            if (outOfRoom()) {
+                stopAll = true;
                 return;
             }
             const job = jobs[cursor++];
@@ -879,42 +930,33 @@ export async function downloadSyncedMedia(opts = {}) {
 
             let got;
             let source = "cdn";
-            if (!allAges && pastCdnWindow(row, att, { now, ownId })) {
-                // Past the CDN's window: no request to it, as Zalo sends none. Sorted locally.
-                const item = cloudItemOf(row);
-                if (!item) {
-                    stats.oldGone++;
-                    stats.skipped++;
-                    tally("old-gone");
-                    if (primary) {
-                        try {
-                            markMediaGone(row.msgId, now);
-                        } catch {
-                            /* a missing row is not worth failing the run over */
-                        }
-                    }
-                    return;
-                }
-                if (!cloudSource) {
-                    stats.oldInCloud++;
-                    stats.skipped++;
-                    tally("old-in-zcloud");
-                    return;
-                }
+            const pastWindow = pastCdnWindow(row, att, { now, ownId });
+            const item = cloudItemOf(row);
+            // 1. Past the CDN's window and kept in zCloud: zCloud first, as Zalo reads it.
+            // A zCloud failure is reported only when the CDN does not save the file either.
+            let cloudMiss = null;
+            if (pastWindow && item && cloudSource) {
                 got = await fetchFromCloud({ item, cloudConversation: myCloud, cloud: cloudSource, timeoutMs, signal });
                 if (got.aborted) return "stopped";
-                if (!got.ok) {
-                    cloudFail(got);
-                    return;
-                }
-                source = "cloud";
-            } else {
-                // Answered 404/410 on an earlier run: gone, so not asked again. Keyed by the link, so a new link a
-                // later sync hands out for the same message is tried normally.
+                if (got.ok) source = "cloud";
+                else cloudMiss = got;
+            }
+            // 2. The CDN, at any age. A link that answered 404/410 before is gone, so it is not asked again; keyed by the
+            //    link, so a new link a later sync hands out for the same message is tried normally.
+            if (!got?.ok) {
                 if (!retryDead && deadLinks.has(url)) {
-                    stats.dead++;
+                    if (cloudMiss) {
+                        cloudFail(cloudMiss);
+                        return;
+                    }
+                    if (pastWindow && item && !cloudSource) {
+                        stats.oldInCloud++;
+                        tally("old-in-zcloud");
+                    } else {
+                        stats.dead++;
+                        tally("dead");
+                    }
                     stats.skipped++;
-                    tally("dead");
                     return;
                 }
                 got = await fetchBytes(url, timeoutMs, download, signal);
@@ -923,24 +965,40 @@ export async function downloadSyncedMedia(opts = {}) {
                 // Only a status that says the object no longer exists is remembered; a lapsed-signature body, a
                 // timeout or a 5xx says nothing that lasts.
                 if (got.code === "not-found") deadLinks.add(url);
-                // The CDN failed a fresh file: zCloud next, when the run has the source and the index lists the file.
-                if (!got.ok && cloudSource) {
-                    const item = cloudItemOf(row);
-                    if (item) {
-                        const fromCloud = await fetchFromCloud({
-                            item,
-                            cloudConversation: myCloud,
-                            cloud: cloudSource,
-                            timeoutMs,
-                            signal,
-                        });
-                        if (fromCloud.aborted) return "stopped";
-                        if (fromCloud.ok) {
-                            got = fromCloud;
-                            source = "cloud";
-                        } else {
-                            stats.cloudFailed++;
-                            tally(fromCloud.code);
+                // 3. The CDN failed: zCloud, when the run has the source and the index lists the file.
+                if (!got.ok && cloudMiss) {
+                    cloudFail(cloudMiss);
+                    return;
+                }
+                if (!got.ok && cloudSource && item) {
+                    const fromCloud = await fetchFromCloud({
+                        item,
+                        cloudConversation: myCloud,
+                        cloud: cloudSource,
+                        timeoutMs,
+                        signal,
+                    });
+                    if (fromCloud.aborted) return "stopped";
+                    if (fromCloud.ok) {
+                        got = fromCloud;
+                        source = "cloud";
+                    } else {
+                        stats.cloudFailed++;
+                        tally(fromCloud.code);
+                    }
+                }
+                // Past the window, gone from the CDN and not openable from zCloud: counted for the summary; a file
+                // that zCloud keeps but this run has no key for says so.
+                if (!got.ok && pastWindow && got.code === "not-found") {
+                    if (item && !cloudSource) stats.oldInCloud++;
+                    else {
+                        stats.oldGone++;
+                        if (primary) {
+                            try {
+                                markMediaGone(row.msgId, now);
+                            } catch {
+                                /* a missing row is not worth failing the run over */
+                            }
                         }
                     }
                 }
@@ -984,7 +1042,7 @@ export async function downloadSyncedMedia(opts = {}) {
                 return;
             }
 
-            const ext = guessExt(att, url, got.contentType);
+            const ext = guessExt(att, url, got.contentType, got.buf);
             const path = destPath(dir, row, att, ext, job.index);
             try {
                 fs.mkdirSync(dirname(path), { recursive: true });

@@ -169,6 +169,8 @@ export async function applyCloudCleanup({
  * @param {object} [args.filters]
  * @param {string[]} [args.filters.threads] - only these conversations
  * @param {string[]} [args.filters.kinds] - only these kinds (photo, video, file, voice, gif, other)
+ * @param {string[]} [args.filters.messages] - only the items of these messages, by msgId or cliMsgId (the queue often
+ *   names no msgId, so its cliMsgId counts too)
  * @param {number} [args.filters.olderThanDays]
  * @param {number} [args.filters.largerThanBytes]
  * @param {boolean} [args.filters.onlySavedLocally] - only items whose file this machine already has
@@ -203,12 +205,14 @@ export function planCloudCleanup({
         onlySavedLocally = false,
         includeGroups = false,
         includeMyCloud = false,
+        messages = [],
     } = filters;
     // No limit by default: the plan lists every match, and `apply` acts on every one. A limit is the caller's choice.
     const asked = Math.floor(Number(filters.limit));
     const limit = Number.isFinite(asked) && asked >= 1 ? asked : Infinity;
     const wantThreads = new Set(threads.map(String));
     const wantKinds = new Set(kinds.map((k) => String(k).toLowerCase()));
+    const wantMessages = new Set(messages.map(String));
     const cutoff = olderThanDays === null || olderThanDays === undefined ? null : now - Number(olderThanDays) * DAY_MS;
 
     const excluded = { e2ee: 0, groups: 0, myCloud: 0, notSavedLocally: 0 };
@@ -217,6 +221,8 @@ export function planCloudCleanup({
         const it = describeItem(row, ownId);
         if (wantThreads.size && !wantThreads.has(String(it.threadId))) continue;
         if (wantKinds.size && !wantKinds.has(it.kind)) continue;
+        if (wantMessages.size && !wantMessages.has(String(it.msgId)) && !wantMessages.has(String(it.cliMsgId)))
+            continue;
         if (cutoff !== null && !(it.ts > 0 && it.ts < cutoff)) continue;
         if (largerThanBytes !== null && !(it.bytes >= Number(largerThanBytes))) continue;
         if (it.e2ee) {

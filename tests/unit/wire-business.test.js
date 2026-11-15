@@ -16,6 +16,7 @@ import { createHash } from "node:crypto";
 import { jpegWithMetadata } from "../helpers/metadata-images.js";
 import { stripImageMetadata } from "../../src/zalo/strip-metadata.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
+import { checkErrorTable, errorAnswers } from "../helpers/wire-diff/error-table.js";
 import { FAKE, T0, expectGolden, openWire } from "../helpers/wire-diff/index.js";
 import { businessMethods, PRODUCT_PHOTO, PRODUCT_VIEW, bankHolderName, ruleUids } from "../../src/zalo/api/business.js";
 
@@ -43,26 +44,6 @@ const UPLOADED = Object.freeze({
     normalUrl: PHOTO_URL,
     hdUrl: "https://photo.zalo.invalid/p/hd.jpg",
 });
-
-/** The answers every method is run against for the error part, and what each must throw. */
-const ERROR_ANSWERS = [
-    {
-        label: "an outer error",
-        error: { outer: { error_code: 102, error_message: "outer failure" } },
-        expected: { message: "outer failure", code: 102 },
-    },
-    {
-        label: "an inner error",
-        error: { inner: { error_code: 114, error_message: "invalid params" } },
-        expected: { message: "invalid params", code: 114 },
-    },
-    { label: "HTTP 500", error: { status: 500 }, expected: { message: "HTTP 500", code: null } },
-    {
-        label: "an undecryptable data",
-        error: { undecryptable: true },
-        expected: { message: "Failed to parse response data", code: null },
-    },
-];
 
 describe("wire: business (src/zalo/api/business.js)", () => {
     let wire;
@@ -230,7 +211,7 @@ describe("wire: business (src/zalo/api/business.js)", () => {
             assert.equal(req.path, "/api/prodcatalog/product/view");
             assert.deepEqual(req.params, { product_id: PRODUCT });
             assert.deepEqual(rec.own.result, reply);
-            assert.equal(PRODUCT_VIEW.verified, false, "no live answer was seen");
+            assert.notEqual(PRODUCT_VIEW.verified, false, "confirmed live");
         });
 
         it("getProductInfo: a missing id is refused before any request", async () => {
@@ -380,8 +361,8 @@ describe("wire: business (src/zalo/api/business.js)", () => {
             );
         });
 
-        it("uploadProductPhoto is marked not verified until a live run (its fields are not known)", () => {
-            assert.equal(PRODUCT_PHOTO.verified, false);
+        it("uploadProductPhoto is no longer marked unverified (its quick-message fields worked live)", () => {
+            assert.notEqual(PRODUCT_PHOTO.verified, false);
         });
 
         it("registerCatalog: enable 1 / 0", async () => {
@@ -627,15 +608,13 @@ describe("wire: business (src/zalo/api/business.js)", () => {
             ["updateAutoReply", [{ id: 9, content: "c", isEnable: true, startTime: T0, endTime: T0, scope: 0 }]],
             ["deleteAutoReply", [9]],
         ];
-        for (const [method, args] of CALLS) {
-            it(`${method}: the code and message of each error`, async () => {
-                for (const answer of ERROR_ANSWERS) {
-                    // A fresh copy per run: a call may write into its payload.
-                    const rec = await wire.run(method, () => structuredClone(args), { error: answer.error });
-                    assert.deepEqual(rec.own.error, answer.expected, `${method}, ${answer.label}`);
-                }
-            });
-        }
+        it("every method: the code and message of each error answer", async () => {
+            // Red if any method swallows, rewraps or drops the code of one of the four answers; every
+            // failing method and answer is listed.
+            // A fresh copy of the arguments per run: a call may write into its payload.
+            const fresh = CALLS.map(([method, args]) => [method, () => structuredClone(args)]);
+            await checkErrorTable(wire, fresh, errorAnswers({ inner: "invalid params" }));
+        });
     });
 
     it("the area defines exactly the methods this file covers", () => {

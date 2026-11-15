@@ -20,7 +20,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR, getAccountDir } from "../../src/core/credentials.js";
 import { insertMessage, recordReadWatermark, upsertConvState, upsertThread } from "../../src/core/db.js";
-import { seedAccount, runOffline, requestsTo, OWN_UID } from "./support/offline-cli.js";
+import { seedAccount, checkOffline, requestsTo, OWN_UID } from "./support/offline-cli.js";
 
 const DM_OLD = "300000000000000081";
 const DM_NEW = "300000000000000082";
@@ -76,26 +76,29 @@ function jsonOf(r) {
 
 describe("conv recent answers from the cache", () => {
     it("-n is per kind: up to n DMs and n groups, merged newest first", async () => {
-        const r = await runOffline(["--json", "conv", "recent", "-n", "2"]);
-        // Red if -n becomes a global cap (2 rows), if the merge stops sorting
-        // by lastUpdate, or if the third-newest group slips in.
-        assert.deepEqual(jsonOf(r), [
-            row(DM_NEW, "Anh Minh", "dm"),
-            row(GROUP_NEW, "Nhóm C", "group"),
-            row(GROUP_MID, "Nhóm B", "group"),
-            row(DM_OLD, "Chị Lan", "dm"),
-        ]);
-        assert.deepEqual(r.requests, [], "a cache answer asks Zalo for nothing");
+        await checkOffline(["--json", "conv", "recent", "-n", "2"], {}, (r) => {
+            // Red if -n becomes a global cap (2 rows), if the merge stops sorting
+            // by lastUpdate, or if the third-newest group slips in.
+            assert.deepEqual(jsonOf(r), [
+                row(DM_NEW, "Anh Minh", "dm"),
+                row(GROUP_NEW, "Nhóm C", "group"),
+                row(GROUP_MID, "Nhóm B", "group"),
+                row(DM_OLD, "Chị Lan", "dm"),
+            ]);
+            assert.deepEqual(r.requests, [], "a cache answer asks Zalo for nothing");
+        });
     });
 
     it("--groups-only returns the n newest groups, not the groups among the n newest threads", async () => {
-        const r = await runOffline(["--json", "conv", "recent", "--groups-only", "-n", "2"]);
-        assert.deepEqual(jsonOf(r), [row(GROUP_NEW, "Nhóm C", "group"), row(GROUP_MID, "Nhóm B", "group")]);
+        await checkOffline(["--json", "conv", "recent", "--groups-only", "-n", "2"], {}, (r) => {
+            assert.deepEqual(jsonOf(r), [row(GROUP_NEW, "Nhóm C", "group"), row(GROUP_MID, "Nhóm B", "group")]);
+        });
     });
 
     it("--friends-only returns DMs only", async () => {
-        const r = await runOffline(["--json", "conv", "recent", "--friends-only"]);
-        assert.deepEqual(jsonOf(r), [row(DM_NEW, "Anh Minh", "dm"), row(DM_OLD, "Chị Lan", "dm")]);
+        await checkOffline(["--json", "conv", "recent", "--friends-only"], {}, (r) => {
+            assert.deepEqual(jsonOf(r), [row(DM_NEW, "Anh Minh", "dm"), row(DM_OLD, "Chị Lan", "dm")]);
+        });
     });
 });
 
@@ -111,15 +114,17 @@ describe("conv recent with no -n lists every cached conversation", () => {
 
     it("returns all 27 DMs, past the old default of 20 per type", async () => {
         // Red if a default cap comes back: 20 DMs instead of 27.
-        const r = await runOffline(["--json", "conv", "recent", "--friends-only"]);
-        const ids = jsonOf(r).map((c) => c.threadId);
-        assert.equal(ids.length, 27);
-        for (const id of MANY) assert.ok(ids.includes(id), id);
+        await checkOffline(["--json", "conv", "recent", "--friends-only"], {}, (r) => {
+            const ids = jsonOf(r).map((c) => c.threadId);
+            assert.equal(ids.length, 27);
+            for (const id of MANY) assert.ok(ids.includes(id), id);
+        });
     });
 
     it("-n still caps each type when asked", async () => {
-        const r = await runOffline(["--json", "conv", "recent", "--friends-only", "-n", "21"]);
-        assert.equal(jsonOf(r).length, 21);
+        await checkOffline(["--json", "conv", "recent", "--friends-only", "-n", "21"], {}, (r) => {
+            assert.equal(jsonOf(r).length, 21);
+        });
     });
 });
 
@@ -152,31 +157,33 @@ describe("conv recent shows how far the account has read each conversation on Za
     });
 
     it("--json carries each conversation's read state, null where nothing is known", async () => {
-        const r = await runOffline(["--json", "conv", "recent", "-n", "1"]);
-        // Red if own messages count as unread (3), the watermark is dropped, or
-        // a conversation with no state gets an invented one.
-        assert.deepEqual(jsonOf(r), [
-            row(DM_NEW, "Anh Minh", "dm", {
-                lastReadMsgId: "7000000000011",
-                lastReadAt: new Date(1700000009500).toISOString(),
-                unreadAfter: 0,
-                markedUnread: true,
-            }),
-            row(GROUP_NEW, "Nhóm C", "group", {
-                lastReadMsgId: "7000000000002",
-                lastReadAt: new Date(1700000009000).toISOString(),
-                unreadAfter: 2,
-                markedUnread: false,
-            }),
-        ]);
+        await checkOffline(["--json", "conv", "recent", "-n", "1"], {}, (r) => {
+            // Red if own messages count as unread (3), the watermark is dropped, or
+            // a conversation with no state gets an invented one.
+            assert.deepEqual(jsonOf(r), [
+                row(DM_NEW, "Anh Minh", "dm", {
+                    lastReadMsgId: "7000000000011",
+                    lastReadAt: new Date(1700000009500).toISOString(),
+                    unreadAfter: 0,
+                    markedUnread: true,
+                }),
+                row(GROUP_NEW, "Nhóm C", "group", {
+                    lastReadMsgId: "7000000000002",
+                    lastReadAt: new Date(1700000009000).toISOString(),
+                    unreadAfter: 2,
+                    markedUnread: false,
+                }),
+            ]);
+        });
     });
 
     it("the table has a READ column", async () => {
-        const r = await runOffline(["conv", "recent", "-n", "2"]);
-        assert.match(r.stdout, /THREAD_ID\s+TYPE\s+READ\s+NAME/, r.all);
-        assert.match(r.stdout, new RegExp(`${GROUP_NEW}\\s+Group\\s+2 unread\\s+Nhóm C`), r.all);
-        assert.match(r.stdout, new RegExp(`${DM_NEW}\\s+User\\s+marked unread\\s+Anh Minh`), r.all);
-        assert.match(r.stdout, new RegExp(`${GROUP_MID}\\s+Group\\s+-\\s+Nhóm B`), r.all);
+        await checkOffline(["conv", "recent", "-n", "2"], {}, (r) => {
+            assert.match(r.stdout, /THREAD_ID\s+TYPE\s+READ\s+NAME/, r.all);
+            assert.match(r.stdout, new RegExp(`${GROUP_NEW}\\s+Group\\s+2 unread\\s+Nhóm C`), r.all);
+            assert.match(r.stdout, new RegExp(`${DM_NEW}\\s+User\\s+marked unread\\s+Anh Minh`), r.all);
+            assert.match(r.stdout, new RegExp(`${GROUP_MID}\\s+Group\\s+-\\s+Nhóm B`), r.all);
+        });
     });
 });
 
@@ -196,23 +203,27 @@ describe("group members lists the uids in memVerList", () => {
     const LISTED = { groupId: GROUP, name: "Nhóm D", memberIds: [], memVerList: MEMBERS.map((u, i) => `${u}_${i}`) };
 
     it("--json prints the uids, version suffixes stripped", async () => {
-        const r = await runOffline(["--json", "group", "members", GROUP], answer({ ...LISTED, totalMember: 3 }));
-        assert.deepEqual(jsonOf(r), MEMBERS);
-        // getGroupInfo takes an array: the request asks for this one group at version 0.
-        const [q] = requestsTo(r.requests, "/api/group/getmg-v2");
-        assert.deepEqual(JSON.parse(q.params.gridVerMap), { [GROUP]: 0 });
+        await checkOffline(["--json", "group", "members", GROUP], answer({ ...LISTED, totalMember: 3 }), (r) => {
+            assert.deepEqual(jsonOf(r), MEMBERS);
+            // getGroupInfo takes an array: the request asks for this one group at version 0.
+            const [q] = requestsTo(r.requests, "/api/group/getmg-v2");
+            assert.deepEqual(JSON.parse(q.params.gridVerMap), { [GROUP]: 0 });
+        });
     });
 
     it("the count line is Zalo's totalMember, then one uid per line", async () => {
-        const r = await runOffline(["group", "members", GROUP], answer({ ...LISTED, totalMember: 5 }));
-        assert.match(r.stdout, /5 member\(s\):/, r.all);
-        for (const uid of MEMBERS) assert.match(r.stdout, new RegExp(`^ {2}${uid}$`, "m"));
+        await checkOffline(["group", "members", GROUP], answer({ ...LISTED, totalMember: 5 }), (r) => {
+            assert.match(r.stdout, /5 member\(s\):/, r.all);
+            for (const uid of MEMBERS) assert.match(r.stdout, new RegExp(`^ {2}${uid}$`, "m"));
+        });
     });
 
     it("a group missing from Zalo's answer prints 0 members", async () => {
-        const r = await runOffline(["--json", "group", "members", GROUP], answer(null));
-        assert.deepEqual(jsonOf(r), []);
-        const human = await runOffline(["group", "members", GROUP], answer(null));
-        assert.match(human.stdout, /0 members/, human.all);
+        await checkOffline(["--json", "group", "members", GROUP], answer(null), (r) => {
+            assert.deepEqual(jsonOf(r), []);
+        });
+        await checkOffline(["group", "members", GROUP], answer(null), (human) => {
+            assert.match(human.stdout, /0 members/, human.all);
+        });
     });
 });

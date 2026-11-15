@@ -11,8 +11,12 @@ import { join } from "node:path";
 import { CONFIG_DIR, getAccountDir } from "../../src/core/credentials.js";
 import { startDaemonChannel } from "../../src/core/daemon-channel.js";
 import { runCli, stripAnsi } from "../helpers/cli.js";
+import { checkCli } from "../helpers/cli-fast.js";
 
 const options = { home: SANDBOX_HOME, timeout: 120_000 };
+// Commands run in the in-process CLI worker; a check that fails there is re-run as a real child process
+// (tests/helpers/cli-fast.js `checkCli`), so only a real process can fail a test.
+
 const OWN = "6464";
 const OTHER = "6465";
 const LINK = "https://host.example/a/6464/zalo/qr/AAAAAAAAAAAAAAAAAAAAAA";
@@ -33,6 +37,7 @@ describe("session renew", () => {
     });
 
     it("with no daemon: exit 1, and it says how to renew instead", async () => {
+        // A real child process: the smoke check that the worker and a real process agree.
         const r = await runCli(["session", "renew"], options);
         assert.equal(r.code, 1, r.all);
         assert.match(r.all, /No daemon runs for this account/);
@@ -72,24 +77,27 @@ describe("session renew", () => {
         });
 
         it("prints the link the daemon opened (--json: the fields), and passes --fresh on", async () => {
-            const r = await runCli(["--json", "session", "renew", "--fresh"], options);
-            assert.equal(r.code, 0, r.all);
-            const out = JSON.parse(stripAnsi(r.stdout));
-            assert.deepEqual(
-                [out.accountId, out.renewUrl, out.renewExpiresAt, out.issued],
-                [OWN, LINK, "2026-06-02T00:00:00.000Z", true],
-            );
-            assert.deepEqual(asked.at(-1), { action: "renew", fresh: true });
-            const human = await runCli(["session", "renew"], options);
-            assert.equal(human.code, 0, human.all);
-            assert.match(human.all, /Renewal link opened/);
-            assert.ok(human.all.includes(LINK));
+            await checkCli(["--json", "session", "renew", "--fresh"], options, async (r) => {
+                assert.equal(r.code, 0, r.all);
+                const out = JSON.parse(stripAnsi(r.stdout));
+                assert.deepEqual(
+                    [out.accountId, out.renewUrl, out.renewExpiresAt, out.issued],
+                    [OWN, LINK, "2026-06-02T00:00:00.000Z", true],
+                );
+                assert.deepEqual(asked.at(-1), { action: "renew", fresh: true });
+                await checkCli(["session", "renew"], options, (human) => {
+                    assert.equal(human.code, 0, human.all);
+                    assert.match(human.all, /Renewal link opened/);
+                    assert.ok(human.all.includes(LINK));
+                });
+            });
         });
 
         it("--account picks the account whose daemon is asked; its refusal is the error, exit 1", async () => {
-            const r = await runCli(["session", "renew", "--account", OTHER], options);
-            assert.equal(r.code, 1, r.all);
-            assert.match(r.all, /no public address/);
+            await checkCli(["session", "renew", "--account", OTHER], options, (r) => {
+                assert.equal(r.code, 1, r.all);
+                assert.match(r.all, /no public address/);
+            });
         });
     });
 });

@@ -36,6 +36,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { readImageMetadata } from "../../src/zalo/client.js";
 import { IMAGES, FILES, ALL, verifyFixtures } from "../fixtures/index.js";
+import { checkTable } from "../helpers/table.js";
 
 const TMP = mkdtempSync(join(tmpdir(), "zalo-imgmeta-"));
 process.on("exit", () => {
@@ -64,18 +65,19 @@ describe("fixtures are intact", () => {
 });
 
 describe("readImageMetadata — dimensions from real encoder output", () => {
-    for (const [key, fx] of Object.entries(IMAGES)) {
-        it(`reads ${fx.format} as ${fx.width}x${fx.height} (${fx.name})`, async () => {
-            const meta = await readImageMetadata(fx.path);
-            assert.equal(meta.width, fx.width, `${key}: width`);
-            assert.equal(meta.height, fx.height, `${key}: height`);
-        });
-
-        it(`reports ${fx.name}'s true byte size`, async () => {
-            const meta = await readImageMetadata(fx.path);
-            assert.equal(meta.size, statSync(fx.path).size);
-        });
-    }
+    it("reads every fixture's width, height and true byte size", async () => {
+        await checkTable(
+            Object.entries(IMAGES),
+            ([key, fx]) => `${key}: ${fx.format} ${fx.width}x${fx.height} (${fx.name})`,
+            async ([, fx]) => {
+                const meta = await readImageMetadata(fx.path);
+                assert.deepEqual(
+                    { width: meta.width, height: meta.height, size: meta.size },
+                    { width: fx.width, height: fx.height, size: statSync(fx.path).size },
+                );
+            },
+        );
+    });
 
     it("distinguishes two JPEGs of different sizes", async () => {
         const small = await readImageMetadata(IMAGES.jpg.path);

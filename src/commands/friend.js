@@ -3,6 +3,7 @@
  */
 
 import { getApi } from "../core/zalo-client.js";
+import { withUserIdHint } from "../core/user-id-hint.js";
 import { success, error, info, output, warning } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
 import { describeFriendUndoError, friendAddFailure, readSentRequests } from "../core/friend-requests.js";
@@ -171,7 +172,7 @@ export function registerFriendCommands(program) {
                     info(mutualGroupsLine(mutualGroups));
                 });
             } catch (e) {
-                error(e.message);
+                error(withUserIdHint(e, userId, 0));
             }
         });
 
@@ -242,8 +243,8 @@ export function registerFriendCommands(program) {
         .command("last-online <userId>")
         .description(
             "When a user was last online, as Zalo reads it: when your own online status is hidden " +
-                '(profile set online-status 0) nothing is asked and hiddenBy is "you"; hiddenBy "them" means ' +
-                "they hide theirs",
+                '(profile set online-status 0) nothing is asked and hiddenBy is "you"; hiddenBy "them": yours is ' +
+                "shown and Zalo gave no time (they hide theirs, or were never online)",
         )
         .option("--ask-anyway", "Ask Zalo even when your own online status is hidden (diagnostics)")
         .option(

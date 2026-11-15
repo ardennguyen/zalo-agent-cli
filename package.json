@@ -1,6 +1,6 @@
 {
     "name": "@ardennguyen/zalo-agent-cli",
-    "version": "3.0.1",
+    "version": "3.0.2",
     "description": "CLI and MCP server for Zalo automation, on its own Zalo-protocol engine — multi-account, proxy, bank transfers, QR payments, Official Account API v3.0",
     "type": "module",
     "bin": {
@@ -56,6 +56,7 @@
     },
     "dependencies": {
         "@modelcontextprotocol/sdk": "^1.32.1",
+        "@noble/curves": "2.4.0",
         "better-sqlite3-multiple-ciphers": "13.0.3",
         "chalk": "^5.6.2",
         "commander": "^15.0.0",

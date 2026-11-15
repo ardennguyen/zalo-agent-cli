@@ -9,6 +9,31 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+## [3.0.2] — 2026-11-15
+
+Files kept in zCloud now download: the account's zCloud key comes from the phone at login. Also local video sends, room checks before downloads, and photos kept in Zalo's own format.
+
+#### Added
+
+- **zCloud files download.** Files the account keeps in zCloud now download and open: the account's zCloud key is fetched from the phone and stored sealed under the account's data key, and `cloud get`, the media downloads of `sync` and `sync-media`, and the `zalo_view_media` MCP tool use it on their own. Both of zCloud's file formats open.
+- **The key comes with the login.** After a QR login, an account that keeps files in zCloud gets its key with no phone prompt (`--no-cloud-key` skips it). `cloud key setup --confirm` fetches it for an account already logged in.
+- **`cloud key` commands**: `status` (whether a key is stored; never prints it), `devices` (the account's end-to-end-encryption devices), `setup` (fetch the key now) and `forget`. Getting the key adds this engine as one of the account's end-to-end-encryption devices, in the web slot.
+- **Room checks.** Media downloads stop before the disk runs low or the account passes its quota, and leave the rest pending; the restore after a QR login is skipped, with the command to run later, when there is no room. The free space kept is `quota.minFree` in `storage.json` (default `2GB`, `0` for none) or `ZALO_STORAGE_MIN_FREE`.
+
+#### Changed
+
+- **A refused user id says how to find the right one.** A user is known by a different id from each account, so sending to another account's own id fails with only "invalid parameter"; the error now says to look the user up with `friend list`, `friend find` or `conv list` (CLI and `zalo_send_message`).
+- **No file is written off by its age.** Media downloads ask for every file, whatever its age: an old file kept in zCloud comes from zCloud when the account's zCloud key is stored, any other from Zalo's servers, and zCloud is tried again when Zalo's servers fail. A file counts as gone only once Zalo's servers say it no longer exists, and files an earlier version set aside by age alone are looked at again. The stored key is used by every download (`sync`, `sync-media`, the automatic downloads of `listen` and `mcp start`, `zalo_view_media`); `sync-media --from-zcloud` now only insists on zCloud (it checks the plan, and takes a key at run time with `--key-stdin` or `--key-prompt`), and `--all-ages` is kept for scripts but no longer needed.
+- **Photos keep Zalo's format.** A photo Zalo keeps as JPEG XL is downloaded and saved as `.jxl`, no longer swapped for a JPEG copy; every picture is named by its own bytes. Over MCP a JPEG XL photo is sent as a link, since MCP clients take only JPEG, PNG, GIF and WebP inline.
+
+#### Fixed
+
+- **`msg send-video` with a local file.** The send no longer fails with Zalo's "invalid parameter": the video and a local thumbnail now go up through Zalo's own video upload, their addresses are renewed for the conversation, and the message is sent with them (the same applies to a local `video` in `zalo_send_message`). A video given without `--duration` is sent as 1 ms long instead of 0.
+
+#### Dependencies
+
+- Added `@noble/curves` 2.4.0 (MIT) for the end-to-end-encryption device. Its Signal protocol code is the engine's own; no GPL-licensed library is used.
+
 ## [3.0.1] — 2026-11-15
 
 A security release for the MCP server's OAuth, the official-API logins and moving an account between machines, and the saved login renewed from the running server.
@@ -903,7 +928,9 @@ npm install -g @ardennguyen/zalo-agent-cli@2.0.0
 
 Commands, flags and defaults: `skill/references/command-reference.md`. Operating it on a server: `docs/deployment.md`.
 
-[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.0.0...v3.0-dev
+[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.0.2...v3.0-dev
+[3.0.2]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.0.2
+[3.0.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.0.1
 [3.0.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.0.0
 [2.5.9]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v2.5.9
 [2.5.8]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v2.5.8

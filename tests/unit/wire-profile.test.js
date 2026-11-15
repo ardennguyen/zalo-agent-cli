@@ -21,6 +21,7 @@ import { createHash } from "node:crypto";
 import { jpegWithMetadata } from "../helpers/metadata-images.js";
 import { stripImageMetadata } from "../../src/zalo/strip-metadata.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
+import { checkErrorTable } from "../helpers/wire-diff/error-table.js";
 import { openSession } from "../../src/zalo/kernel/cipher.js";
 import { FAKE, expectGolden, openWire } from "../helpers/wire-diff/index.js";
 import { profileMethods } from "../../src/zalo/api/profile.js";
@@ -39,26 +40,6 @@ const IMAGE_META = Object.freeze({ width: 640, height: 480, size: IMAGE_BYTES.le
 const CAMERA = jpegWithMetadata().bytes;
 const CAMERA_CLEAN = stripImageMetadata(CAMERA).bytes;
 const sha256 = (b) => createHash("sha256").update(b).digest("hex");
-
-/** The answers every method is run against for the error part, and what each must throw. */
-const ERROR_ANSWERS = [
-    {
-        label: "an outer error",
-        error: { outer: { error_code: 102, error_message: "outer failure" } },
-        expected: { message: "outer failure", code: 102 },
-    },
-    {
-        label: "an inner error",
-        error: { inner: { error_code: 114, error_message: "inner failure" } },
-        expected: { message: "inner failure", code: 114 },
-    },
-    { label: "HTTP 500", error: { status: 500 }, expected: { message: "HTTP 500", code: null } },
-    {
-        label: "an undecryptable data",
-        error: { undecryptable: true },
-        expected: { message: "Failed to parse response data", code: null },
-    },
-];
 
 describe("wire: profile (src/zalo/api/profile.js)", () => {
     let wire;
@@ -336,14 +317,19 @@ describe("wire: profile (src/zalo/api/profile.js)", () => {
             ["lostFocus", []],
             ["getListDevice", []],
         ];
-        for (const [method, args] of CALLS) {
-            it(`${method}(${args.map((a) => (a === IMAGE_PATH ? "<image>" : JSON.stringify(a))).join(", ")}): the code and message of each error`, async () => {
-                for (const answer of ERROR_ANSWERS) {
-                    const rec = await run(method, args, { error: answer.error });
-                    assert.deepEqual(rec.own.error, answer.expected, `${method}, ${answer.label}`);
-                }
-            });
-        }
+        it("every method: the code and message of each error answer", async () => {
+            // Red if any method swallows, rewraps or drops the code of one of the four answers; every
+            // failing method and answer is listed.
+            // The auth-host methods run through this file's own `run`, which also answers that host.
+            await checkErrorTable(
+                { run },
+                CALLS.map(([method, args]) => [
+                    method,
+                    args,
+                    `${method}(${args.map((a) => (a === IMAGE_PATH ? "<image>" : JSON.stringify(a))).join(", ")})`,
+                ]),
+            );
+        });
     });
 
     it("the area defines exactly the methods this file covers", () => {

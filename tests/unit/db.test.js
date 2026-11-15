@@ -12,6 +12,7 @@
 import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
+import { checkTableSync } from "../helpers/table.js";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -306,40 +307,55 @@ describe("thread type evidence at open", () => {
         return () => open(p);
     };
 
-    it("a pin notice in a DM does not turn the DM into a group", () => {
-        const again = reopen("dm-pin");
-        upsertThread({ threadId: "dm-pin", type: "dm", name: "P", lastUpdate: 1 });
-        insertMessage(msg({ msgId: "pin-1", threadId: "dm-pin", senderId: "me", type: "group_event" }));
-        again();
-        assert.equal(getThreadType("dm-pin"), "dm");
-    });
-
-    it("a group event the listener saw still repairs a downgraded group", () => {
-        const again = reopen("ge-repair");
-        upsertThread({ threadId: "grp-1", type: "dm", name: "G", lastUpdate: 1 });
-        insertMessage(msg({ msgId: "ge:grp-1:100:join", threadId: "grp-1", senderId: "u9", type: "group_event" }));
-        again();
-        assert.equal(getThreadType("grp-1"), "group");
-    });
-
-    it("a 1-1 wrongly made a group heals once the other person's own message is cached", () => {
-        const again = reopen("dm-heal");
-        upsertThread({ threadId: "peer-1", type: "group", name: "", lastUpdate: 1 });
-        insertMessage(msg({ msgId: "m-peer", threadId: "peer-1", senderId: "peer-1", type: "text" }));
-        again();
-        // In a DM the conversation id is the other person's uid; a group id never sends.
-        assert.equal(getThreadType("peer-1"), "dm");
-    });
-
-    it("a group stays a group: members' messages and system lines prove nothing", () => {
-        const again = reopen("grp-stays");
-        upsertThread({ threadId: "grp-2", type: "group", name: "G", lastUpdate: 1 });
-        insertMessage(msg({ msgId: "m-a", threadId: "grp-2", senderId: "member-a", type: "text" }));
-        // A system line whose actor field happens to hold the thread id must not heal it.
-        insertMessage(msg({ msgId: "ge:grp-2:5:update", threadId: "grp-2", senderId: "grp-2", type: "group_event" }));
-        insertMessage(msg({ msgId: "ev-1", threadId: "grp-2", senderId: "grp-2", type: "event" }));
-        again();
-        assert.equal(getThreadType("grp-2"), "group");
+    it("repairs a thread's type only on real evidence, and each case keeps its own file", () => {
+        // [case, file, thread, its stored type, cached messages, the type after the reopen]
+        const ROWS = [
+            [
+                "a pin notice in a DM does not turn the DM into a group",
+                "dm-pin",
+                { threadId: "dm-pin", type: "dm", name: "P" },
+                [{ msgId: "pin-1", senderId: "me", type: "group_event" }],
+                "dm",
+            ],
+            [
+                "a group event the listener saw still repairs a downgraded group",
+                "ge-repair",
+                { threadId: "grp-1", type: "dm", name: "G" },
+                [{ msgId: "ge:grp-1:100:join", senderId: "u9", type: "group_event" }],
+                "group",
+            ],
+            [
+                // In a DM the conversation id is the other person's uid; a group id never sends.
+                "a 1-1 wrongly made a group heals once the other person's own message is cached",
+                "dm-heal",
+                { threadId: "peer-1", type: "group", name: "" },
+                [{ msgId: "m-peer", senderId: "peer-1", type: "text" }],
+                "dm",
+            ],
+            [
+                // A system line whose actor field happens to hold the thread id must not heal it.
+                "a group stays a group: members' messages and system lines prove nothing",
+                "grp-stays",
+                { threadId: "grp-2", type: "group", name: "G" },
+                [
+                    { msgId: "m-a", senderId: "member-a", type: "text" },
+                    { msgId: "ge:grp-2:5:update", senderId: "grp-2", type: "group_event" },
+                    { msgId: "ev-1", senderId: "grp-2", type: "event" },
+                ],
+                "group",
+            ],
+        ];
+        checkTableSync(
+            ROWS,
+            ([what]) => what,
+            ([, file, thread, messages, type]) => {
+                const again = reopen(file);
+                upsertThread({ ...thread, lastUpdate: 1 });
+                for (const m of messages) insertMessage(msg({ ...m, threadId: thread.threadId }));
+                again();
+                assert.equal(getThreadType(thread.threadId), type);
+            },
+        );
     });
 });
 
@@ -433,8 +449,17 @@ describe("sync_gaps", () => {
 
     it("resolving twice is harmless", () => {
         const id = recordSyncGap(1, 2, "a");
+        recordSyncGap(3, 4, "b");
         resolveSyncGap(id);
-        assert.doesNotThrow(() => resolveSyncGap(id));
+        const once = countSyncGaps();
+        resolveSyncGap(id);
+        // Red if the second call re-opens the gap, resolves another one, or counts this one twice.
+        assert.deepEqual(countSyncGaps(), once);
+        assert.deepEqual(once, { pending: 1, resolved: 1 });
+        assert.deepEqual(
+            getPendingSyncGaps().map((g) => g.reason),
+            ["b"],
+        );
     });
 
     it("countSyncGaps counts each state, and zero of each on an empty table", () => {

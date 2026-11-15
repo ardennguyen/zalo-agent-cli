@@ -407,7 +407,7 @@ Thông tin xác thực Official Account được lưu riêng tại `~/.zalo-agen
 
 ## Tham chiếu nhanh lệnh CLI (qua `npx zalo-agent <lệnh>`)
 
-Thêm `--json` vào bất kỳ lệnh nào để nhận kết quả JSON phục vụ tự động hóa. Dưới đây là các lệnh tiêu biểu — tài liệu tham chiếu đầy đủ cho toàn bộ 322 lệnh nằm tại [skill/references/command-reference.md](skill/references/command-reference.md).
+Thêm `--json` vào bất kỳ lệnh nào để nhận kết quả JSON phục vụ tự động hóa. Dưới đây là các lệnh tiêu biểu — tài liệu tham chiếu đầy đủ cho toàn bộ 326 lệnh nằm tại [skill/references/command-reference.md](skill/references/command-reference.md).
 
 ### Phiên đăng nhập & bảo trì
 | Lệnh | Mô tả |
@@ -507,6 +507,7 @@ Xem file mẫu tại [`.env.example`](.env.example).
 | `ZALO_MCP_CONFIRM_MODE` / `ZALO_MCP_HIDDEN_CHATS` | Ai xác nhận thao tác phá hủy của tool (`agent`, `human`, `off`), và agent thấy gì của chat ẩn (`exclude`, `contentless`, `include`). Cả hai hỗ trợ `_<ownId>` |
 | `ZALO_MCP_TRUSTED_PROXIES` | Địa chỉ các reverse proxy được tin header `X-Forwarded-For` (ví dụ `127.0.0.1`); hỗ trợ `_<ownId>` |
 | `ZALO_RETENTION_MESSAGES` / `ZALO_RETENTION_MEDIA` | `keep` (mặc định) hoặc `<N>d`: cache cục bộ giữ tin nhắn và media bao lâu. Cả hai hỗ trợ `_<ownId>` |
+| `ZALO_STORAGE_MIN_FREE` | Dung lượng trống mà việc tải media và lần khôi phục sau khi đăng nhập QR chừa lại trên ổ đĩa (mặc định `2GB`, `0` để tắt); đè lên `quota.minFree` trong `storage.json` hoặc chính sách chạy |
 | `ZALO_GROUPS_ON_LEAVE` | `purge` (mặc định) hoặc `keep`: lịch sử cục bộ của một nhóm đã rời, bị xóa khỏi, bị chặn khỏi hoặc đã giải tán sẽ ra sao; hỗ trợ `_<ownId>` |
 
 Đây chỉ là danh sách rút gọn. Mọi biến môi trường, khóa `mcp-config.json`, khóa `storage.json` và khóa chính sách runtime, cùng thứ tự ưu tiên: [docs/configuration.vi.md](docs/configuration.vi.md).

@@ -9,10 +9,14 @@
  * - Routing by lowercase extension: `jpg jpeg png webp` are photos (`photo_original/*`), `gif` its own path
  *   (`upthumb`, then `gif` in chunks of 512000 bytes, up to six in flight), everything
  *   else, `mp4` included, a file (`asyncfile/*`).
- * - A local video sent as a video (`sendVideoFile`): the video goes up as a file
- *   (its URL arrives as the `video_done`/`file_done` push), the thumbnail as a photo unless a URL is given, and the
- *   message is the forward-video send of `sendVideo`. Not verified live: Zalo's own apps upload the thumbnail through
- *   the async-file path and read `oriUrl`/`hdUrl` from it; this sends it as a photo and reads the same names.
+ * - A local video sent as a video (`sendVideoFile`), in Zalo's order: the video through its own chunk path
+ *   (`video/file/upload`, its URL from the `video_done`/`file_done` push), then a local thumbnail through
+ *   `video/thumb/upload` (a photo-like upload: `photoId`, URLs from the reply or `photo_success`; the thumbnail
+ *   address is the original form to a group, the HD form to a user), then, while the account's `async_forward`
+ *   setting is on (it is unless the server says otherwise), `message/renewlink` for the video and the thumbnail
+ *   (`renewType` 1 and 0; an `async` answer waits for the `video` / `renew_link` push and asks again after 30, 60
+ *   and 90 s), then the forward-video send (`msgType` 5) with `{videoUrl, thumbUrl, duration (|| 1), width,
+ *   height, fileSize, properties: null, title}`.
  * - Limits from the login's `settings.features.sharefile`, all checked before the first request (the caption
  *   included): `max_file` (count), `max_size_share_file_v3` (MB), `restricted_ext_file` (denied extensions).
  * - A photo's embedded metadata (EXIF with its GPS position, camera and times, XMP, comments, text chunks) is
@@ -289,18 +293,30 @@ function threadParam(threadId, group) {
 }
 
 /**
+ * The chunk paths and command ids by what goes up: `[path, user cmd, group cmd]`. A video and its thumbnail have
+ * their own (`video/file/upload`, `video/thumb/upload`); everything else is a photo or a file.
+ */
+const CHUNK_PATHS = Object.freeze({
+    photo: ["photo_original/upload", 11772, 11820],
+    file: ["asyncfile/upload", 11776, 13000],
+    video: ["video/file/upload", 12058, 12061],
+    videoThumb: ["video/thumb/upload", 12059, 12062],
+});
+
+/**
  * The endpoint of one upload chunk.
  *
  * @param {"photo"|"file"} route
  * @param {boolean} group
+ * @param {"video"|"videoThumb"} [upload] - a video's or a video thumbnail's own path instead of the route's
  * @returns {object}
  */
-function chunkEndpoint(route, group) {
-    const photo = route === "photo";
+function chunkEndpoint(route, group, upload) {
+    const [where, userCmd, groupCmd] = CHUNK_PATHS[upload ?? route];
     return {
         host: "file",
-        path: `/api/${group ? "group" : "message"}/${photo ? "photo_original" : "asyncfile"}/upload`,
-        cmd: photo ? (group ? 11820 : 11772) : group ? 13000 : 11776,
+        path: `/api/${group ? "group" : "message"}/${where}`,
+        cmd: group ? groupCmd : userCmd,
         method: "multipart",
         body: (a) => a.params,
         query: () => ({ type: group ? 11 : 2 }),
@@ -470,14 +486,20 @@ function fromSettlement(route, settlement) {
 }
 
 /**
- * The URL(s) a replayed last chunk's reply gives, or null when it is not a valid answer for this upload.
+ * The URL(s) a replayed last chunk's reply gives, or null when it is not a valid answer for this upload. A video
+ * thumbnail's replay is read by its `normalUrl` alone, which stands for all three sizes.
  *
  * @param {"photo"|"file"} route
  * @param {string} id - the photoId or fileId
  * @param {object} data
+ * @param {"video"|"videoThumb"} [upload]
  * @returns {{fileUrl: string}|{normalUrl: string, hdUrl: string, thumbUrl: string}|null}
  */
-function fromReplay(route, id, data) {
+function fromReplay(route, id, data, upload) {
+    if (upload === "videoThumb") {
+        const url = String(data?.photoId) === id ? data?.normalUrl : null;
+        return typeof url === "string" && url ? { normalUrl: url, hdUrl: url, thumbUrl: url } : null;
+    }
     if (route === "photo") return String(data?.photoId) === id ? photoUrls(data) : null;
     return String(data?.fileId) === id && typeof data?.url === "string" && data.url ? { fileUrl: data.url } : null;
 }
@@ -502,12 +524,13 @@ function fromReplay(route, id, data) {
  * @param {() => Promise<{data: object, code: number}>} p.replay - send the last chunk again
  * @param {ReturnType<typeof uploadSettings>} p.cfg
  * @param {string} p.fileName - for the error
+ * @param {"video"|"videoThumb"} [p.upload] - a video's or a video thumbnail's own upload
  * @param {AbortSignal} [p.signal] - gives up waiting (the send failed elsewhere)
  * @returns {Promise<{fileUrl: string}|{normalUrl: string, hdUrl: string, thumbUrl: string}>}
  * @throws {ZaloApiError} code "UPLOAD_TIMEOUT" when nothing came within the wait and the last replay gave nothing,
  *   or {@link FINAL_REPLAY_GRACE_MS} after the wait whatever the last replay is doing
  */
-function awaitUrls(s, { route, id, size, replay, cfg, fileName, signal }) {
+function awaitUrls(s, { route, id, size, replay, cfg, fileName, upload, signal }) {
     return new Promise((resolve, reject) => {
         const stop = new AbortController();
         const start = s.now();
@@ -552,7 +575,7 @@ function awaitUrls(s, { route, id, size, replay, cfg, fileName, signal }) {
             let failure = null;
             try {
                 const reply = await replay();
-                urls = fromReplay(route, id, reply.data);
+                urls = fromReplay(route, id, reply.data, upload);
             } catch (e) {
                 failure = e;
             }
@@ -608,7 +631,7 @@ function awaitUrls(s, { route, id, size, replay, cfg, fileName, signal }) {
  */
 async function uploadChunks(s, item, { group, threadId, cfg, signal }) {
     const route = item.route;
-    const def = chunkEndpoint(route, group);
+    const def = chunkEndpoint(route, group, item.upload);
     const clientId = s.nextClientId();
     const totalChunk = Math.max(1, Math.ceil(item.size / cfg.chunkSize));
     const base = {
@@ -675,7 +698,16 @@ async function uploadChunks(s, item, { group, threadId, cfg, signal }) {
         // A duplicate with no URL is given up on (a retry would need a new clientId).
         throw new ZaloApiError(`Zalo reports ${item.fileName} as already uploaded but gave no URL for it`, 1);
     }
-    const wait = awaitUrls(s, { route, id, size: item.size, replay, cfg, fileName: item.fileName, signal });
+    const wait = awaitUrls(s, {
+        route,
+        id,
+        size: item.size,
+        replay,
+        cfg,
+        fileName: item.fileName,
+        upload: item.upload,
+        signal,
+    });
     wait.catch(() => {}); // awaited by the caller; never an unhandled rejection meanwhile
     return { item, clientId, reply: data, urls: null, wait };
 }
@@ -740,6 +772,133 @@ function uploadResult(u) {
         fileName: item.fileName,
         checksum: u.checksum,
     };
+}
+
+/** `POST {file}/api/{message|group}/forward`: the send that makes a video message from its uploaded addresses. */
+const forwardEndpoint = (group) => ({
+    host: "file",
+    path: `/api/${group ? "group" : "message"}/forward`,
+    cmd: group ? 11818 : 11199,
+    method: "post",
+    body: (a) => a.params,
+    reply: "session",
+});
+
+/** `POST {file}/api/message/renewlink`: a media address made good for the conversation it is forwarded to. */
+const RENEW_LINK = Object.freeze({
+    host: "file",
+    path: "/api/message/renewlink",
+    cmd: 12094,
+    method: "post",
+    body: (a) => a.params,
+    reply: "session",
+});
+
+/** The forward endpoint's `msgType` for a video. */
+const FORWARD_VIDEO = 5;
+
+/** The `zsource` of a forwarded video (the send-source tracker's value). */
+const ZSOURCE_FORWARD_VIDEO = 704;
+
+/** How long a renewal answered `async` may wait for its push before it fails (the default). */
+export const RENEW_WAIT_MS = 120000;
+
+/** The step of the renewal's ask-again delays (30, 60, 90 s: a Fibonacci run of this step). */
+export const RENEW_STEP_MS = 30000;
+
+/** The key a renewal's push settles under in the upload registry (src/zalo/listener/dispatch.js). */
+export const renewKey = (url) => `renew_link:${url}`;
+
+/**
+ * Whether the account forwards through link renewal: Zalo's `async_forward` setting, on for every account
+ * (`open_mode` 1) unless the server says otherwise; `open_mode` n opens it to the accounts whose id's last three
+ * digits are a multiple of n.
+ *
+ * @param {object} ctx
+ * @returns {boolean}
+ */
+export function renewsOnForward(ctx) {
+    const cfg = ctx?.settings?.features?.async_forward ?? {};
+    const on = cfg.on === undefined ? 1 : Number(cfg.on);
+    const mode = cfg.open_mode === undefined ? 1 : Number(cfg.open_mode);
+    if (!on || !mode || Number.isNaN(mode)) return false;
+    const tail = Number(String(ctx?.uid ?? "").slice(-3));
+    return String(ctx?.uid ?? "") !== "" && !Number.isNaN(tail) && tail % mode === 0;
+}
+
+/**
+ * What a renewal answer (its reply, or its push) gives: `{oriUrl, hdUrl, thumbUrl}` when it names a `normal` size,
+ * `{url}` when it names a `fileUrl` (`renewUrl` in the push), else null.
+ *
+ * @param {object} d
+ * @returns {{url: string}|{oriUrl: string, hdUrl: string, thumbUrl: string}|null}
+ */
+function renewedOf(d) {
+    if (!d || typeof d !== "object") return null;
+    if (d.normal) return { oriUrl: d.normal, hdUrl: d.hd || "", thumbUrl: d.thumb || "" };
+    if (typeof d.fileUrl === "string" && d.fileUrl) return { url: d.fileUrl };
+    return null;
+}
+
+/**
+ * Renew one address of a video forward: `renewlink` with the whole message info plus `renewType`, `isE2EE`,
+ * `isOriginal`. An `async` answer waits for the `renew_link` push (matched by the address) and asks again after
+ * 30, 60 and 90 s (each give or take up to ten seconds); it gives up once the next delay would reach the wait.
+ *
+ * @param {import("../api.js").Session} s
+ * @param {{thread: string, group: boolean, clientId: string, info: object, url: string, renewType: number,
+ *   isOriginal: number}} r
+ * @returns {Promise<{url: string}|{oriUrl: string, hdUrl: string, thumbUrl: string}>}
+ * @throws {ZaloApiError} when Zalo refuses it or nothing comes in time
+ */
+async function renewVideoLink(s, { thread, group, clientId, info, url, renewType, isOriginal }) {
+    const waitMs = Number(s.ctx?.settings?.features?.async_forward?.timeout_wait_ctrl) || RENEW_WAIT_MS;
+    const params = {
+        toId: thread,
+        msgType: FORWARD_VIDEO,
+        msgInfo: JSON.stringify({ ...info, renewType, isE2EE: 0, isOriginal }),
+        clientId,
+        imei: s.ctx.imei,
+        isGroup: group ? 1 : 0,
+    };
+    const stop = new AbortController();
+    const pushed = s.uploads.waitFor(renewKey(url), { signal: stop.signal }).then(
+        (settlement) => {
+            const d = settlement?.data ?? {};
+            if (Number(d.error ?? 0) !== 0) return { failed: Number(d.error) };
+            return typeof d.renewUrl === "string" && d.renewUrl ? { url: d.renewUrl } : { failed: "no address" };
+        },
+        () => null,
+    );
+    let pre = 0;
+    let cur = 1;
+    try {
+        for (;;) {
+            const d = await s.call(RENEW_LINK, { params });
+            if (!d?.async) {
+                const got = renewedOf(d);
+                if (!got) throw new ZaloApiError("Zalo did not renew the video's address");
+                return got;
+            }
+            const step = (pre + cur) * RENEW_STEP_MS;
+            [pre, cur] = [cur, pre + cur];
+            if (step >= waitMs) throw new ZaloApiError("Zalo did not renew the video's address in time");
+            const delay = step >= RENEW_STEP_MS ? step + 1000 * (Math.floor(20 * Math.random()) - 9) : step;
+            const until = s.now() + delay;
+            let timer = null;
+            const due = new Promise((resolve) => {
+                const tick = () => (s.now() >= until ? resolve(null) : (timer = setTimeout(tick, TICK_MS)));
+                tick();
+            });
+            const got = await Promise.race([pushed, due]);
+            clearTimeout(timer);
+            if (got?.failed !== undefined)
+                throw new ZaloApiError(`Zalo did not renew the video's address (${got.failed})`);
+            if (got) return got;
+        }
+    } finally {
+        stop.abort();
+    }
 }
 
 /**
@@ -928,15 +1087,17 @@ export function uploadMethods(s) {
     }
 
     /**
-     * Send a local video file as a video message: the
-     * video uploaded as a file (its URL comes from the listener's `video_done`/`file_done`), the thumbnail uploaded
-     * as a photo when it is a local file, then the forward-video send. Unverified live.
+     * Send a local video file as a video message, in Zalo's order: the video through its own chunk path (its URL
+     * from the listener's `video_done`/`file_done`), then a local thumbnail through the video-thumbnail path, then
+     * (while `async_forward` is on) the renewal of both addresses for the conversation, then the forward-video
+     * send. Confirmed live.
      *
      * @param {{file: string, thumbnailFile?: string, thumbnailUrl?: string, msg?: string, duration?: number,
      *   width: number, height: number, ttl?: number}} options - a local thumbnail or its URL; `duration` in ms
      * @param {string} threadId
      * @param {number} [type] - 0 a user, 1 a group
-     * @returns {Promise<{msgId: string, cliMsgId: string, videoUrl: string, thumbnailUrl: string}>}
+     * @returns {Promise<{msgId: string, cliMsgId: string, videoUrl: string, thumbnailUrl: string}>} the addresses
+     *   the message went out with
      * @throws {ZaloApiError} before any request, for no file, a file that is not a video's route (a photo or a GIF),
      *   no thumbnail, missing geometry or a thread type other than 0/1
      */
@@ -949,41 +1110,79 @@ export function uploadMethods(s) {
                 "A video needs a thumbnail: a local image (thumbnailFile) or its URL (thumbnailUrl)",
             );
         }
-        if (!(Number(options.width) > 0) || !(Number(options.height) > 0)) {
+        const width = Number(options.width);
+        const height = Number(options.height);
+        if (!(width > 0) || !(height > 0)) {
             throw new ZaloApiError("A video needs its width and height (Zalo refuses one without them, code 114)");
         }
         const cfg = uploadSettings(s.ctx);
         checkList([options.file], threadId, cfg);
         const [video] = await inspect(s.ctx, [options.file], cfg);
         if (video.route !== "file") throw new ZaloApiError(`${video.fileName} is not a video file`);
-        const items = [{ ...video, fileType: "video" }];
+        let thumb = null;
         if (options.thumbnailFile && !options.thumbnailUrl) {
-            const [thumb] = await inspect(s.ctx, [options.thumbnailFile], cfg);
+            [thumb] = await inspect(s.ctx, [options.thumbnailFile], cfg);
             if (thumb.route !== "photo") throw new ZaloApiError(`${thumb.fileName} is not a jpg, png or webp image`);
-            items.push(thumb);
         }
         const group = t === THREAD_TYPE.GROUP;
-        const uploads = await uploadAll(s, items, { group, threadId: String(threadId), cfg });
-        const videoUrl = uploads[0].urls?.fileUrl;
+        const thread = String(threadId);
+        const where = { group, threadId: thread, cfg };
+        // The message's clientId comes first: the uploads draw theirs after it.
+        const clientId = String(s.nextClientId());
+
+        // One upload after the other, each waiting for its address before the next begins.
+        const giveUp = new AbortController();
+        const upload = async (item) => {
+            const u = await uploadChunks(s, item, { ...where, signal: giveUp.signal });
+            return u.urls ?? (await u.wait);
+        };
+        let videoUrl;
+        let thumbnailUrl = options.thumbnailUrl;
+        try {
+            videoUrl = (await upload({ ...video, fileType: "video", upload: "video" })).fileUrl;
+            if (thumb) {
+                const urls = await upload({ ...thumb, upload: "videoThumb" });
+                thumbnailUrl = group ? urls.normalUrl : urls.hdUrl;
+            }
+        } catch (e) {
+            giveUp.abort(e);
+            throw e;
+        }
         if (!videoUrl) throw new ZaloApiError("Zalo gave no address for the uploaded video");
-        const thumbUrls = uploads[1]?.urls ?? {};
-        const thumbnailUrl = options.thumbnailUrl ?? thumbUrls.hdUrl ?? thumbUrls.normalUrl ?? thumbUrls.thumbUrl;
         if (!thumbnailUrl) throw new ZaloApiError("Zalo gave no address for the uploaded thumbnail");
-        const sent = await s.api.sendVideo(
-            {
-                videoUrl,
-                thumbnailUrl,
-                msg: options.msg,
-                duration: options.duration,
-                width: Number(options.width),
-                height: Number(options.height),
-                ttl: options.ttl,
-                fileSize: video.size,
-            },
-            threadId,
-            t,
-        );
-        return { ...sent, videoUrl, thumbnailUrl };
+
+        const info = {
+            videoUrl,
+            thumbUrl: thumbnailUrl,
+            duration: Number(options.duration) || 1,
+            width,
+            height,
+            fileSize: video.size,
+            properties: null,
+            title: options.msg ?? "",
+        };
+        if (Number(s.ctx?.settings?.features?.forward_messages?.enable_forward_video_rotation) === 1) {
+            info.videoRotation = 0;
+        }
+        if (renewsOnForward(s.ctx)) {
+            const renew = (url, renewType, isOriginal) =>
+                renewVideoLink(s, { thread, group, clientId, info, url, renewType, isOriginal });
+            const [renewedVideo, renewedThumb] = await Promise.all([
+                renew(info.videoUrl, 1, 0),
+                renew(info.thumbUrl, 0, 1).catch(() => null), // a thumbnail that is not renewed keeps its address
+            ]);
+            const thumbAt = renewedThumb?.oriUrl || renewedThumb?.hdUrl || renewedThumb?.thumbUrl;
+            if (thumbAt) info.thumbUrl = thumbAt;
+            if (renewedVideo?.url) info.videoUrl = renewedVideo.url;
+        }
+        const params = group ? { grid: thread, visibility: 0 } : { toId: thread, imei: s.ctx.imei };
+        params.ttl = options.ttl ?? 0;
+        params.zsource = ZSOURCE_FORWARD_VIDEO;
+        params.msgType = FORWARD_VIDEO;
+        params.clientId = clientId;
+        params.msgInfo = JSON.stringify(info);
+        const sent = stamped(await s.call(forwardEndpoint(group), { params }), clientId);
+        return { ...sent, videoUrl: info.videoUrl, thumbnailUrl: info.thumbUrl };
     }
 
     return { sendAttachments, uploadAttachment, sendVideoFile };

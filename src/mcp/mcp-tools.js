@@ -16,6 +16,7 @@
  */
 
 import { existsSync, unlinkSync } from "node:fs";
+import { withUserIdHint } from "../core/user-id-hint.js";
 import { resolve } from "node:path";
 import { z } from "zod";
 import { officialMeta, officialTool } from "./official-tool.js";
@@ -1338,7 +1339,7 @@ export function registerTools(
                 });
             } catch (e) {
                 console.error("[mcp-tools] zalo_send_message error:", e.message);
-                return err(e.message);
+                return err(withUserIdHint(e, threadId, threadType));
             }
         },
     );
@@ -1777,6 +1778,8 @@ export function registerTools(
 
                 let localPath = row?.localPath || null;
                 if (!localPath) {
+                    // The downloader uses the account's stored cloud key on its own (zCloud for an old file the index
+                    // lists, else the CDN at any age). This tool never takes a key as input.
                     // Same downloader as the CLI, so the file lands in the one
                     // per-conversation folder every other command reads from. It is asked for this message by
                     // id: a scan of the thread's newest pending attachments could leave an older one out.
@@ -1790,20 +1793,20 @@ export function registerTools(
                         mediaRoot: process.env.ZALO_MEDIA_DIR || mediaConfig.downloadDir || undefined,
                     });
                     localPath = getMessageById(msgId)?.localPath || null;
-                    // Past Zalo's keeping window: nothing was asked of its servers. A file kept in zCloud opens only
-                    // with the account's cloud key, which this tool never takes: the answer names the command that does.
+                    // Gone from Zalo's servers but kept in zCloud: it opens only with the account's cloud key, which
+                    // this tool never takes, so the answer names the command that stores it.
                     if (!localPath && stats.oldInCloud) {
                         return err(
-                            `The media of ${msgId} is past Zalo's keeping window (14 days) but kept in zCloud. It opens ` +
-                                "only with the account's cloud key, which this tool does not take. Run in a terminal: " +
-                                `zalo-agent sync-media --account ${accountId} --thread ${msgThread} --from-zcloud --key-prompt ` +
-                                "(or `zalo-agent cloud get <noiseId> --key-prompt -o <file>`), then call zalo_view_media again.",
+                            `The media of ${msgId} is gone from Zalo's servers but kept in zCloud. It opens only with ` +
+                                "the account's cloud key, which this tool does not take as input. Store the key once in " +
+                                `a terminal (zalo-agent cloud key setup --account ${accountId} --confirm; a QR login ` +
+                                "stores it too), then call zalo_view_media again.",
                         );
                     }
                     if (!localPath && stats.oldGone) {
                         return err(
-                            `The media of ${msgId} is past Zalo's keeping window (14 days, 7 for a file over 100 MB) and ` +
-                                "not in zCloud: it is no longer on Zalo's servers. Only a device that saved it still has it.",
+                            `The media of ${msgId} is no longer on Zalo's servers (it answered 404) and not in zCloud. ` +
+                                "Only a device that saved it still has it.",
                         );
                     }
                     if (!localPath) {

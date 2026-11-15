@@ -36,7 +36,8 @@ function threadsFor(opts) {
  *
  * @param {object} api - logged-in session
  * @param {{limit?: number, thread?: string, boards?: boolean, reminders?: boolean, concurrency?: number,
- *   onProgress?: (p: object) => void, onNote?: (message: string) => void}} opts
+ *   delayMs?: number, onProgress?: (p: object) => void, onNote?: (message: string) => void}} opts - `delayMs`: the
+ *   pause between calls, default syncBoards' own
  * @returns {Promise<{status: "ok"|"skipped", reason?: string, stats?: object, resumed?: boolean, note?: string}>}
  */
 export async function runBoardPass(api, opts = {}) {
@@ -76,6 +77,7 @@ export async function runBoardPass(api, opts = {}) {
         boards: opts.boards !== false,
         reminders: opts.reminders !== false,
         concurrency: opts.concurrency,
+        delayMs: opts.delayMs,
         onProgress: (p) => {
             if (p.phase === "thread" && p.ok) clearSyncState(`boardStale:${p.threadId}`);
             onProgress(p);

@@ -8,6 +8,7 @@ import { parseIntAtLeast, parseIntOption } from "../utils/parse-options.js";
 import { whileInterruptible } from "../utils/interrupt.js";
 import { promptSecret, readSecretFromStream } from "../utils/secret-input.js";
 import { importCloudPrivateKey } from "../zalo/zcloud-e2ee.js";
+import { loadCloudKey } from "../core/cloud-key-store.js";
 import { zcloudState } from "../core/account-status.js";
 import { SyncManager } from "../core/sync.js";
 import { SyncV2, resolveSyncWindow, FULL_HISTORY_FROM } from "../core/sync-v2/index.js";
@@ -272,13 +273,13 @@ export function registerSyncCommands(program) {
         )
         .option(
             "--all-ages",
-            "Also ask Zalo's servers for files past their keeping window (14 days after the message, 7 for a file " +
-                "over 100 MB). By default such a file gets no request: it is counted as kept in zCloud, or as gone",
+            "Kept for scripts: every file is asked for whatever its age (a link that answered 404 is not asked again; " +
+                "--retry-dead asks)",
         )
         .option(
             "--from-zcloud",
-            "Fetch the files kept in zCloud from there, decrypted with the account's cloud key (asked for at run time, " +
-                "never stored). Needs a zCloud plan; a file still on Zalo's servers is tried there first",
+            "Insist on zCloud: check the plan and use the account's cloud key, the stored one or one given with " +
+                "--key-stdin / --key-prompt. Without it, a stored key is used on its own",
         )
         .option(
             "--key-stdin",
@@ -443,8 +444,8 @@ async function runMediaDownload(activeAcc, opts) {
     }
 
     const pending = countPendingAttachments(opts.thread || null);
-    // Files sorted as gone are looked at again only by a run that can say something new about them.
-    const recheck = opts.fromZcloud || opts.allAges ? countGoneAttachments(opts.thread || null) : 0;
+    // Files sorted as gone are looked at again: a link that really answered 404 is skipped without a request.
+    const recheck = countGoneAttachments(opts.thread || null);
     if (!pending && !recheck) {
         success("No attachments waiting to be downloaded.");
         info("Run `zalo-agent sync-mobile --transfer` first if you have not synced yet.");
@@ -455,8 +456,8 @@ async function runMediaDownload(activeAcc, opts) {
     const goneBefore = countGoneAttachments(opts.thread || null);
     if (goneBefore) {
         info(
-            `${goneBefore} more are past Zalo's keeping window and were sorted as gone by an earlier run ` +
-                "(`--from-zcloud` or `--all-ages` looks at them again).",
+            `${goneBefore} more were sorted as gone by an earlier run; they are looked at again (a link that ` +
+                "answered 404 is not asked twice; `--retry-dead` asks).",
         );
     }
 
@@ -517,6 +518,11 @@ async function runMediaDownload(activeAcc, opts) {
         process.exit(0);
     }
     success(`Downloaded ${stats.downloaded}/${stats.considered} attachment(s) (${formatBytes(stats.bytes)}).`);
+    if (stats.outOfRoom) {
+        warning(
+            `Stopped: ${stats.outOfRoom.message}. The rest are still pending; free some space or raise the limit, then run it again.`,
+        );
+    }
     if (stats.interrupted) {
         warning(
             `Stopped after ${stats.attempted} of ${stats.considered}; the rest are still pending — run it again to continue.`,
@@ -1700,7 +1706,8 @@ export function mediaProgressPrinter({
 }
 
 /**
- * Say what the clock rule sorted (files past Zalo's keeping window, with no request) and what the zCloud source did.
+ * Say which old files are gone (404 from Zalo's servers), which are kept in zCloud with no key here, and what the
+ * zCloud source did.
  *
  * @param {object} stats - a download run's result
  * @param {string} ownId - the account, for the command it names
@@ -1708,15 +1715,15 @@ export function mediaProgressPrinter({
 function reportAgeAndCloud(stats, ownId) {
     if (stats.oldGone) {
         info(
-            `${stats.oldGone} file(s) are past Zalo's keeping window (14 days, 7 for a file over 100 MB) and not in ` +
-                "zCloud: no longer on Zalo's servers. They were not asked for, and later runs skip them " +
-                "(`--all-ages` asks anyway).",
+            `${stats.oldGone} old file(s) are no longer on Zalo's servers (they answered 404) and not in zCloud. ` +
+                "Later runs do not ask again (`--retry-dead` does).",
         );
     }
     if (stats.oldInCloud) {
         info(
-            `${stats.oldInCloud} file(s) are past Zalo's keeping window but kept in zCloud: ` +
-                `\`zalo-agent sync-media --account ${ownId} --from-zcloud --key-prompt\` fetches them with the account's cloud key.`,
+            `${stats.oldInCloud} old file(s) are gone from Zalo's servers but kept in zCloud: they open with the ` +
+                `account's cloud key. Store it once with \`zalo-agent cloud key setup --account ${ownId} --confirm\` ` +
+                "(a QR login stores it too); the next run fetches them.",
         );
     }
     if (stats.fromCloud) info(`${stats.fromCloud} file(s) came from zCloud.`);
@@ -1768,12 +1775,27 @@ export async function openCloudSource(api, opts, ownId, deps = {}) {
     const isTTY = deps.isTTY ?? Boolean(process.stdin.isTTY);
     let text;
     try {
-        if (opts.keyStdin) text = await (deps.readStdin ?? readSecretFromStream)();
-        else if (opts.keyPrompt || isTTY) {
+        if (opts.keyStdin) {
+            text = await (deps.readStdin ?? readSecretFromStream)();
+        } else if (opts.keyPrompt) {
             text = await (deps.prompt ?? promptSecret)("The account's zCloud key (not shown): ");
         } else {
-            error("--from-zcloud needs the account's cloud key: --key-stdin, or --key-prompt in a terminal.");
-            return null;
+            // No run-time key given: use a cloud key sealed by `cloud key setup`, if there is one.
+            const stored = (deps.loadStoredKey ?? loadCloudKey)(ownId);
+            if (stored?.privateKeyPkcs8Base64) {
+                const privateKey = importCloudPrivateKey(stored.privateKeyPkcs8Base64);
+                info(`Fetching files kept in zCloud for account ${ownId} with the stored cloud key.`);
+                return { privateKey };
+            }
+            if (isTTY) {
+                text = await (deps.prompt ?? promptSecret)("The account's zCloud key (not shown): ");
+            } else {
+                error(
+                    "--from-zcloud needs the account's cloud key: store it with `cloud key setup`, give --key-stdin, " +
+                        "or use --key-prompt in a terminal.",
+                );
+                return null;
+            }
         }
         const privateKey = importCloudPrivateKey(text);
         text = null;
@@ -1836,6 +1858,11 @@ async function fetchMediaAfterRestore(accountDir, api, since, { limit } = {}) {
         { onStop: mediaStoppingNotice },
     );
     success(`Downloaded ${stats.downloaded}/${stats.considered} file(s) (${formatBytes(stats.bytes)}).`);
+    if (stats.outOfRoom) {
+        warning(
+            `Stopped: ${stats.outOfRoom.message}. The rest are still pending; free some space or raise the limit, then run it again.`,
+        );
+    }
     if (stats.interrupted) {
         warning(
             `Stopped after ${stats.attempted} of ${stats.considered}; the rest are still pending — \`zalo-agent sync-media\` continues.`,

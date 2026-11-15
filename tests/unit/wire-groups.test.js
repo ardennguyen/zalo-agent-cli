@@ -23,6 +23,7 @@ import { jpegWithMetadata } from "../helpers/metadata-images.js";
 import { stripImageMetadata } from "../../src/zalo/strip-metadata.js";
 import { groupMethods } from "../../src/zalo/api/groups.js";
 import { FAKE, T0, expectGolden, openWire } from "../helpers/wire-diff/index.js";
+import { checkErrorTable, errorAnswers } from "../helpers/wire-diff/error-table.js";
 
 const G = "9000000000000000001";
 const G2 = "9000000000000000002";
@@ -484,32 +485,12 @@ describe("groups on the wire (wire-groups)", () => {
     });
 
     describe("errors: the code and message for every method", () => {
-        const ERRORS = [
-            [
-                "an outer error",
-                { outer: { error_code: 102, error_message: "fake outer" } },
-                { message: "fake outer", code: 102 },
-            ],
-            [
-                "an inner error",
-                { inner: { error_code: 114, error_message: "fake inner" } },
-                { message: "fake inner", code: 114 },
-            ],
-            ["HTTP 500", { status: 500 }, { message: "HTTP 500", code: null }],
-            [
-                "an undecryptable data",
-                { undecryptable: true },
-                { message: "Failed to parse response data", code: null },
-            ],
-        ];
-        for (const method of METHODS) {
-            it(method, async () => {
-                for (const [what, error, expected] of ERRORS) {
-                    const rec = await wire.run(method, ERROR_CALLS[method], { error });
-                    assert.deepEqual(rec.own.error, expected, `${method}, ${what}`);
-                }
-            });
-        }
+        it("every method: the code and message of each error answer", async () => {
+            // Red if any method swallows, rewraps or drops the code of one of the four answers; every failing
+            // method and answer is listed.
+            const calls = METHODS.map((method) => [method, ERROR_CALLS[method]]);
+            await checkErrorTable(wire, calls, errorAnswers({ outer: "fake outer", inner: "fake inner" }));
+        });
 
         it("keeps the codes the MCP tools map: 165 and 166 on kickout, 166 and 167 on leave", async () => {
             const cases = [

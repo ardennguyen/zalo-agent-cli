@@ -418,7 +418,7 @@ Lấy ảnh, sticker, tin nhắn thoại, video hoặc file đã nhận. File tr
 - **link**: `url` = `<publicUrl>/zalo/media/<token>`, dùng được 10 phút, hỗ trợ range (tua video). `auth: "bearer"` nghĩa là yêu cầu tải còn cần `Authorization` của chính server này; khi chạy stdio, link do một listener `127.0.0.1` phục vụ.
 - **tempfile**: `path`, một bản giải mã riêng trong `<config-dir>/tmp/media/`, bị xóa lúc `expiresAt`; chỉ cho client chạy trên cùng máy với server.
 
-Mặc định: ảnh và tin nhắn thoại inline, video và file là link. Cách nào không dùng được thì đổi, kèm `notes`: inline quá giới hạn kích thước hoặc kiểu không hiển thị được thành link; tempfile cho client HTTP ở máy khác thành link; cách bị `media.allowDeliver` cấm thì bị từ chối khi được yêu cầu. Sticker được tải từ Zalo khi cần và gửi inline, không lưu lại. Media của trò chuyện ẩn bị từ chối như tin nhắn của nó. Nếu chưa tải, tool gọi cùng downloader mà `sync-media` dùng trước. `zalo_get_history` và `zalo_search_messages` chỉ báo `mediaCached: true`, không đưa đường dẫn file (file đã mã hóa). Bản CLI tương ứng: `zalo-agent msg media <msgId>`.
+Mặc định: ảnh và tin nhắn thoại inline, video và file là link. Cách nào không dùng được thì đổi, kèm `notes`: inline quá giới hạn kích thước hoặc kiểu không hiển thị được thành link (ảnh chỉ inline khi là JPEG, PNG, GIF hoặc WebP; ảnh Zalo giữ ở dạng JPEG XL được lưu thành `.jxl` và đi dạng link); tempfile cho client HTTP ở máy khác thành link; cách bị `media.allowDeliver` cấm thì bị từ chối khi được yêu cầu. Sticker được tải từ Zalo khi cần và gửi inline, không lưu lại. Media của trò chuyện ẩn bị từ chối như tin nhắn của nó. Nếu chưa tải, tool gọi cùng downloader mà `sync-media` dùng trước, với tệp ở mọi độ tuổi; tệp không còn trên máy chủ Zalo được lấy từ zCloud khi khóa zCloud của tài khoản đã được lưu (tool không bao giờ nhận khóa làm tham số). `zalo_get_history` và `zalo_search_messages` chỉ báo `mediaCached: true`, không đưa đường dẫn file (file đã mã hóa). Bản CLI tương ứng: `zalo-agent msg media <msgId>`.
 
 **Tham số:**
 | Tên | Kiểu | Mô tả |
@@ -1073,5 +1073,4 @@ Claude Code / Gemini / MCP Client
 
 - Biểu mẫu custom connector của Claude từng cắt ngắn client secret dài 64 ký tự (khi đó yêu cầu token thất bại với `invalid_client`): hãy giữ `ZALO_MCP_OAUTH_CLIENT_SECRET` từ 40 ký tự trở xuống, ví dụ `openssl rand -hex 20`.
 - `zalo_get_history` và `msg history` chỉ lấy được từ Zalo các tin **kể từ lần đăng nhập này**; lịch sử cũ hơn cần `zalo-agent sync` (bấm xác nhận trên điện thoại).
-- Chưa được xác nhận trên tài khoản thật (phản hồi có `verified: false` khi có trường đó): `zalo_cloud` `apply`, `zalo_quick_message` `enable` / `disable`, bước `react_seen` của `zalo_conversation` `read`, `hiddenBy` của `zalo_friend` `last_online`, gửi video từ tệp cục bộ.
 - `zalo_conversation` `block_sharing` cần tài khoản zBusiness Max; tài khoản cá nhân nhận mã 829.

@@ -32,6 +32,7 @@ import { createApi } from "../../src/zalo/api.js";
 import { ENDPOINTS, HEAD_TIMEOUT_MS, messageMethods } from "../../src/zalo/api/messages.js";
 import { FAKE, T0, expectGolden, openWire } from "../helpers/wire-diff/index.js";
 import { normalizeRequest } from "../helpers/wire-diff/normalize.js";
+import { checkTable } from "../helpers/table.js";
 
 const USER = "2000000000000000002";
 const GROUP = "3000000000000000003";
@@ -705,29 +706,33 @@ describe("messages on the wire", () => {
         });
     }
 
-    describe("error answers", () => {
-        for (const [method, args] of ERROR_CALLS) {
-            for (const [kind, fixture] of Object.entries(ERRORS)) {
-                it(`${method}: ${kind}`, async () => {
-                    const rec = await wire.run(method, args, fixture);
-                    if (method === "getStickersDetail") {
-                        // A refused id is dropped, not thrown: the answer is [].
-                        assert.deepEqual(rec.own.result, []);
-                    } else if (kind === "http500") {
-                        // No code; the text is the kernel's own ("HTTP 500", K1).
-                        assert.deepEqual(rec.own.error, { message: "HTTP 500", code: null });
-                    } else {
-                        const expected = {
-                            outer: { message: "session expired", code: 102 },
-                            inner: { message: "invalid params", code: 114 },
-                            undecryptable: { message: "Failed to parse response data", code: null },
-                        }[kind];
-                        assert.deepEqual(rec.own.error, expected);
-                    }
-                    await expectGolden("messages", `${method}/error-${kind}`, rec.own);
-                });
-            }
-        }
+    it("error answers: every method against every kind, each against its golden record", async () => {
+        // One row per method and kind; every failing row is listed, and each row still has its own golden record.
+        const rows = ERROR_CALLS.flatMap(([method, args]) =>
+            Object.entries(ERRORS).map(([kind, fixture]) => ({ method, args, kind, fixture })),
+        );
+        await checkTable(
+            rows,
+            (r) => `${r.method}: ${r.kind}`,
+            async ({ method, args, kind, fixture }) => {
+                const rec = await wire.run(method, args, fixture);
+                if (method === "getStickersDetail") {
+                    // A refused id is dropped, not thrown: the answer is [].
+                    assert.deepEqual(rec.own.result, []);
+                } else if (kind === "http500") {
+                    // No code; the text is the kernel's own ("HTTP 500", K1).
+                    assert.deepEqual(rec.own.error, { message: "HTTP 500", code: null });
+                } else {
+                    const expected = {
+                        outer: { message: "session expired", code: 102 },
+                        inner: { message: "invalid params", code: 114 },
+                        undecryptable: { message: "Failed to parse response data", code: null },
+                    }[kind];
+                    assert.deepEqual(rec.own.error, expected);
+                }
+                await expectGolden("messages", `${method}/error-${kind}`, rec.own);
+            },
+        );
     });
 });
 

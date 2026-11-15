@@ -568,7 +568,7 @@ ${line("ZALO_MEDIA_DIR", v.mediaDir, "/srv/zalo/media")}
 export function renderStorageJson(provider = FLEET_DEFAULTS.provider) {
     const tail = `    "rowMac": { "verifyOnRead": "actions" },
     "retention": { "messages": "keep", "media": "keep", "outboxDead": "30d", "purgeEvery": "6h" },
-    "quota": { "account": { "limit": null }, "graceDays": 45, "warnAt": 0.8, "purgeOrder": "media-first" },
+    "quota": { "account": { "limit": null }, "graceDays": 45, "warnAt": 0.8, "purgeOrder": "media-first", "minFree": "2GB" },
     "groups": { "onLeave": "purge" }
 }
 `;
@@ -586,7 +586,7 @@ export function renderStorageJson(provider = FLEET_DEFAULTS.provider) {
     },
     "rowMac": { "verifyOnRead": "actions" },
     "retention": { "messages": "90d", "media": "30d", "outboxDead": "7d", "purgeEvery": "1h" },
-    "quota": { "account": { "limit": null }, "graceDays": 45, "warnAt": 0.8, "purgeOrder": "media-first" },
+    "quota": { "account": { "limit": null }, "graceDays": 45, "warnAt": 0.8, "purgeOrder": "media-first", "minFree": "2GB" },
     "groups": { "onLeave": "purge" }
 }
 `;

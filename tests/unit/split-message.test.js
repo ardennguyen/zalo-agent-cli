@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { markdownToZalo } from "../../src/zalo/format/markdown.js";
 import { MESSAGE_BYTE_LIMIT, sendParts, splitMessage } from "../../src/zalo/format/split-message.js";
+import { checkTableSync } from "../helpers/table.js";
 
 before(() => {
     assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR);
@@ -204,27 +205,32 @@ describe("every script, not only Chinese", () => {
     const segmenter = new Intl.Segmenter("und", { granularity: "grapheme" });
     const boundariesOf = (text) => new Set([...[...segmenter.segment(text)].map((g) => g.index), text.length]);
 
-    for (const [name, { unit, mark }] of Object.entries(SAMPLES)) {
-        it(`${name}: every part fits, nothing is lost, and no cut lands inside a character`, () => {
-            let text = "";
-            while (bytes(text) < 7500) text += unit;
-            const parts = splitMessage({ text });
-            assert.ok(parts.length >= 3, `${name}: ${bytes(text)} bytes became ${parts.length} part(s)`);
-            const ok = boundariesOf(text);
-            let at = 0;
-            for (const p of parts) {
-                assert.ok(cost(p) <= MESSAGE_BYTE_LIMIT, `${name}: a part costs ${cost(p)}`);
-                at = text.indexOf(p.text, at);
-                assert.ok(at >= 0, `${name}: a part is not a slice of the text`);
-                assert.ok(ok.has(at), `${name}: a part starts inside a character`);
-                assert.ok(ok.has(at + p.text.length), `${name}: a part ends inside a character`);
-                at += p.text.length;
-            }
-            assert.equal(squash(parts.map((p) => p.text).join("")), squash(text), `${name}: text lost`);
-            if (mark)
-                for (const p of parts.slice(0, -1)) assert.match(p.text, mark, `${name}: cut away from a sentence end`);
-        });
-    }
+    it("every script: every part fits, nothing is lost, and no cut lands inside a character", () => {
+        checkTableSync(
+            Object.entries(SAMPLES),
+            ([name]) => name,
+            ([name, { unit, mark }]) => {
+                let text = "";
+                while (bytes(text) < 7500) text += unit;
+                const parts = splitMessage({ text });
+                assert.ok(parts.length >= 3, `${name}: ${bytes(text)} bytes became ${parts.length} part(s)`);
+                const ok = boundariesOf(text);
+                let at = 0;
+                for (const p of parts) {
+                    assert.ok(cost(p) <= MESSAGE_BYTE_LIMIT, `${name}: a part costs ${cost(p)}`);
+                    at = text.indexOf(p.text, at);
+                    assert.ok(at >= 0, `${name}: a part is not a slice of the text`);
+                    assert.ok(ok.has(at), `${name}: a part starts inside a character`);
+                    assert.ok(ok.has(at + p.text.length), `${name}: a part ends inside a character`);
+                    at += p.text.length;
+                }
+                assert.equal(squash(parts.map((p) => p.text).join("")), squash(text), `${name}: text lost`);
+                if (mark)
+                    for (const p of parts.slice(0, -1))
+                        assert.match(p.text, mark, `${name}: cut away from a sentence end`);
+            },
+        );
+    });
 
     it("styled text in another script is budgeted with its styles too (Thai bullets)", () => {
         const md = markdownToZalo(Array.from({ length: 120 }, (_, i) => `- รายการที่ ${i} ภาษาไทย`).join("\n"));

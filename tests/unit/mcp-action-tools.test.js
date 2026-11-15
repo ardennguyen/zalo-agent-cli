@@ -356,16 +356,15 @@ const TABLES = {
 describe("action tools: the tests cover every action", () => {
     it("runs inside the test sandbox", () => assertSandboxed(CONFIG_DIR));
 
-    for (const [tool, table] of Object.entries(TABLES)) {
-        it(`${tool}: a happy path for each of its actions`, () => {
-            const covered = new Set(HAPPY[tool].map(([action]) => action));
-            assert.deepEqual(
-                Object.keys(table).filter((a) => !covered.has(a)),
-                [],
-                "an action without a happy path here",
-            );
+    it("every tool: a happy path for each of its actions", () => {
+        const uncovered = Object.entries(TABLES).flatMap(([tool, table]) => {
+            const covered = new Set((HAPPY[tool] ?? []).map(([action]) => action));
+            return Object.keys(table)
+                .filter((a) => !covered.has(a))
+                .map((a) => `${tool} ${a}`);
         });
-    }
+        assert.deepEqual(uncovered, [], "actions without a happy path here");
+    });
 
     it("every guarded row names a GUARDS key whose MCP name is this tool's action", () => {
         for (const [tool, table] of Object.entries(TABLES)) {
@@ -403,23 +402,25 @@ for (const [tool, rows] of Object.entries(HAPPY)) {
         }
     });
 
-    describe(`${tool}: refusals`, () => {
+    it(`${tool}: every action is refused without what it needs, or with an input the tool does not take`, async () => {
+        // One row per action; every failing row is listed, not just the first.
+        const wrong = [];
         for (const [action] of rows) {
             const def = TABLES[tool][action];
-            it(`${action}: refused without what it needs, or with an input the tool does not take`, async () => {
-                const fa = fakeApi();
-                const t = tools({ api: fa.api });
-                if (def.needs?.length) {
-                    const r = await t.call(tool, { action });
-                    assert.equal(r.isError, true);
-                    assert.match(r.text, /is required for action=/);
-                } else {
-                    const parsed = t.map.get(tool).meta.inputSchema.safeParse({ action, notAnInput: 1 });
-                    assert.equal(parsed.success, false, "an unknown key is refused");
+            const fa = fakeApi();
+            const t = tools({ api: fa.api });
+            if (def.needs?.length) {
+                const r = await t.call(tool, { action });
+                if (r.isError !== true || !/is required for action=/.test(r.text)) {
+                    wrong.push(`${action}: not refused without ${def.needs.join(", ")} (${r.text})`);
                 }
-                assert.deepEqual([fa.calls, fa.http], [[], []]);
-            });
+            } else {
+                const parsed = t.map.get(tool).meta.inputSchema.safeParse({ action, notAnInput: 1 });
+                if (parsed.success !== false) wrong.push(`${action}: an unknown key is not refused`);
+            }
+            if (fa.calls.length || fa.http.length) wrong.push(`${action}: reached Zalo while refused`);
         }
+        assert.deepEqual(wrong, []);
     });
 }
 

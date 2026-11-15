@@ -88,6 +88,8 @@ const fileIdOf = (name) => String(5000000000 + nameNumber(name));
 const msgIdOf = (id) => `6${String(id).slice(1)}`;
 const gifMsgIdOf = (name) => msgIdOf(3000000000 + nameNumber(name));
 const fileUrlOf = (name) => `https://file-cdn.zalo.invalid/${encodeURIComponent(name)}`;
+/** The address a renewal gives back for `url`. */
+const renewedOf = (url) => `${url}?renewed=1`;
 const photoUrlsOf = (name) => ({
     normalUrl: `https://photo.zalo.invalid/${encodeURIComponent(name)}/normal.jpg`,
     hdUrl: `https://photo.zalo.invalid/${encodeURIComponent(name)}/hd.jpg`,
@@ -123,12 +125,47 @@ function replies({ photoDuplicate = false, photoWithoutUrls = false } = {}) {
                 data: { finished: 1, fileId: fileIdOf(p.fileName), clientFileId: p.clientId, chunkId: p.chunkId },
             };
         },
+        "/video/file/upload": (r) => {
+            const p = r.params;
+            if (p.chunkId < p.totalChunk) return { data: { chunkId: p.chunkId, finished: 0, fileId: "-1" } };
+            return {
+                data: { finished: 1, fileId: fileIdOf(p.fileName), clientFileId: p.clientId, chunkId: p.chunkId },
+            };
+        },
+        "/video/thumb/upload": (r) => {
+            const p = r.params;
+            if (p.chunkId < p.totalChunk) return { data: { chunkId: p.chunkId, finished: 0, photoId: "-1" } };
+            return {
+                data: {
+                    finished: 1,
+                    photoId: photoIdOf(p.fileName),
+                    clientFileId: p.clientId,
+                    chunkId: p.chunkId,
+                    ...photoUrlsOf(p.fileName),
+                },
+            };
+        },
+        // A renewal answered at once: a video's address as `fileUrl`, a thumbnail's as its sizes.
+        "/renewlink": (r) => {
+            const info = JSON.parse(r.params.msgInfo);
+            if (info.renewType === 1) return { data: { fileUrl: renewedOf(info.videoUrl) } };
+            const url = renewedOf(info.thumbUrl);
+            return { data: { normal: url, hd: url, thumb: url } };
+        },
+        "/forward": (r) => ({ data: { msgId: VIDEO_MSG_ID, clientId: r.params.clientId } }),
         "/photo_original/send": (r) => ({ data: { msgId: msgIdOf(r.params.photoId) } }),
         "/asyncfile/msg": (r) => ({ data: { msgId: msgIdOf(r.params.fileId) } }),
         "/upthumb": { data: { url: "https://thumb.zalo.invalid/gif-thumb.png" } },
         "/gif": (r) => ({ data: { msgId: gifMsgIdOf(r.params.fileName) } }),
     };
 }
+
+/** A `video_done` control as the 601 frame carries it. */
+const videoDone = (id, url) => ({
+    actionId: "1",
+    controlId: "1",
+    content: { act_type: "video_done", fileId: id, data: { url } },
+});
 
 /** A `file_done` control as the 601 frame carries it. */
 const fileDone = (id, url) => ({
@@ -168,14 +205,16 @@ function playControl(reg, id, { url, kind, control }, listener) {
  * @param {import("../../src/zalo/kernel/session.js").UploadRegistry} reg
  * @param {string[]} names
  * @param {"callback"|"settle"} mode
+ * @param {"file_done"|"video_done"} [kind]
  */
-function playFileDone(reg, names, mode) {
+function playFileDone(reg, names, mode, kind = "file_done") {
     return async () => {
         for (const name of names) {
             const id = fileIdOf(name);
             await until(() => typeof reg.get(id) === "function", `the upload of ${name} to wait for its 601`);
             const url = fileUrlOf(name);
-            playControl(reg, id, { url, kind: "file_done", control: fileDone(id, url) }, mode);
+            const control = kind === "video_done" ? videoDone(id, url) : fileDone(id, url);
+            playControl(reg, id, { url, kind, control }, mode);
         }
     };
 }
@@ -184,7 +223,7 @@ function playFileDone(reg, names, mode) {
 
 /** Calls the stand-in text half received, with how many requests had gone out before each. */
 const captionCalls = [];
-/** Calls the stand-in forward-video send received (`sendVideoFile` ends in it). */
+/** Calls the stand-in hosted-URL video send received (`sendVideoFile` must not use it). */
 const videoCalls = [];
 const VIDEO_MSG_ID = "6100000002";
 let currentFake = null;
@@ -285,13 +324,16 @@ const named = (rec, name) => ({ ...rec, name });
  * The kind of upload-area request a normalized request is, by its path.
  *
  * @param {{path?: string}} req
- * @returns {"chunk"|"photo"|"file"|"upthumb"|"gif"|null}
+ * @returns {"chunk"|"photo"|"file"|"upthumb"|"gif"|"renew"|"forward"|null}
  */
 function requestKind(req) {
     const p = req?.path ?? "";
     if (/\/(photo_original|asyncfile)\/upload$/.test(p)) return "chunk";
     if (p.endsWith("/photo_original/send")) return "photo";
     if (p.endsWith("/asyncfile/msg")) return "file";
+    if (/\/video\/(file|thumb)\/upload$/.test(p)) return "chunk";
+    if (p.endsWith("/renewlink")) return "renew";
+    if (/\/(message|group)\/forward$/.test(p)) return "forward";
     if (p.endsWith("/upthumb")) return "upthumb";
     if (/\/(message|group)\/gif$/.test(p)) return "gif";
     return null;
@@ -523,7 +565,7 @@ describe("wire: attachments", () => {
         assert.equal(GIF_CHUNKS_IN_FLIGHT, 6);
     });
 
-    it("a local video goes up as a file, its thumbnail as a photo, then the forward-video send", async () => {
+    it("a local video: video upload, thumbnail upload, both addresses renewed, then the forward-video send", async () => {
         videoCalls.length = 0;
         const rec = await compared(
             "sendVideoFile/local",
@@ -540,21 +582,77 @@ describe("wire: attachments", () => {
                 USER,
                 0,
             ],
-            { replies: replies(), during: playFileDone(reg, ["clip.mp4"], "settle") },
+            { replies: replies(), during: playFileDone(reg, ["clip.mp4"], "settle", "video_done") },
         );
-        assert.deepEqual(rec.own.requests.map(requestKind), ["chunk", "chunk"], "two uploads, no file or photo send");
-        assert.equal(videoCalls.length, 1);
-        const [{ options, threadId, type }] = videoCalls;
-        // Red if the message did not carry the uploaded video's own address and the thumbnail's HD one.
-        assert.equal(options.videoUrl, fileUrlOf("clip.mp4"));
-        assert.equal(options.thumbnailUrl, photoUrlsOf("image-64x48.png").hdUrl);
+        const reqs = rec.own.requests;
+        // Red if the video went up the file path, the thumbnail the photo path, or the send was not a forward.
         assert.deepEqual(
-            [options.width, options.height, options.duration, options.fileSize, options.msg],
-            [640, 360, 4000, 3000, "clip"],
+            reqs.map((r) => r.path),
+            [
+                "/api/message/video/file/upload",
+                "/api/message/video/thumb/upload",
+                "/api/message/renewlink",
+                "/api/message/renewlink",
+                "/api/message/forward",
+            ],
         );
-        assert.deepEqual([threadId, type], [USER, 0]);
+        assert.equal(videoCalls.length, 0, "the hosted-URL send is not used");
+        const [videoChunk, thumbChunk, renewVideo, renewThumb, forward] = reqs;
+        assert.deepEqual([videoChunk.query.type, thumbChunk.query.type], ["2", "2"]);
+        // The message's clientId is drawn first; each upload draws its own after it.
+        assert.equal(forward.params.clientId, String(T0));
+        assert.deepEqual([videoChunk.params.clientId, thumbChunk.params.clientId], [T0 + 1, T0 + 2]);
+        const renewed = [renewVideo, renewThumb].map((r) => JSON.parse(r.params.msgInfo));
+        assert.deepEqual(
+            renewed.map((i) => [i.renewType, i.isE2EE, i.isOriginal]),
+            [
+                [1, 0, 0],
+                [0, 0, 1],
+            ],
+        );
+        assert.equal(renewed[0].videoUrl, fileUrlOf("clip.mp4"));
+        assert.equal(renewed[0].thumbUrl, photoUrlsOf("image-64x48.png").hdUrl, "a user's thumbnail is its HD form");
+        for (const r of [renewVideo, renewThumb]) {
+            assert.deepEqual([r.params.toId, r.params.msgType, r.params.isGroup], [USER, 5, 0]);
+            assert.equal(r.params.clientId, String(T0));
+        }
+        assert.deepEqual([forward.params.msgType, forward.params.zsource, forward.params.ttl], [5, 704, 0]);
+        // Red if the send did not carry the renewed addresses, or the geometry, size and caption it was given.
+        assert.deepEqual(JSON.parse(forward.params.msgInfo), {
+            videoUrl: renewedOf(fileUrlOf("clip.mp4")),
+            thumbUrl: renewedOf(photoUrlsOf("image-64x48.png").hdUrl),
+            duration: 4000,
+            width: 640,
+            height: 360,
+            fileSize: 3000,
+            properties: null,
+            title: "clip",
+        });
         assert.equal(rec.own.result.msgId, VIDEO_MSG_ID);
-        assert.equal(rec.own.result.videoUrl, fileUrlOf("clip.mp4"));
+        assert.equal(rec.own.result.cliMsgId, String(T0));
+        assert.equal(rec.own.result.videoUrl, renewedOf(fileUrlOf("clip.mp4")));
+        assert.equal(rec.own.result.thumbnailUrl, renewedOf(photoUrlsOf("image-64x48.png").hdUrl));
+    });
+
+    it("a local video to a group: group paths, the thumbnail's original form, no imei on the send", async () => {
+        const rec = await runOwn(
+            wire,
+            "sendVideoFile",
+            [{ file: made.clip, thumbnailFile: IMAGES.png.path, width: 2, height: 2 }, GROUP, 1],
+            { replies: replies(), during: playFileDone(reg, ["clip.mp4"], "callback") },
+        );
+        assert.equal(rec.error, null);
+        const [videoChunk, thumbChunk, renewVideo, , forward] = rec.requests;
+        assert.deepEqual(
+            [videoChunk.path, thumbChunk.path, forward.path],
+            ["/api/group/video/file/upload", "/api/group/video/thumb/upload", "/api/group/forward"],
+        );
+        assert.deepEqual([videoChunk.query.type, videoChunk.params.grid], ["11", GROUP]);
+        assert.deepEqual([renewVideo.params.toId, renewVideo.params.isGroup], [GROUP, 1]);
+        assert.equal(JSON.parse(renewVideo.params.msgInfo).thumbUrl, photoUrlsOf("image-64x48.png").normalUrl);
+        assert.deepEqual([forward.params.grid, forward.params.visibility, forward.params.imei], [GROUP, 0, undefined]);
+        // No duration given: Zalo's own send never puts 0 there.
+        assert.equal(JSON.parse(forward.params.msgInfo).duration, 1);
     });
 
     it("a local video with a thumbnail URL uploads the video only", async () => {
@@ -570,10 +668,86 @@ describe("wire: attachments", () => {
             },
         );
         assert.equal(rec.error, null);
-        assert.equal(rec.requests.length, 1);
+        assert.deepEqual(rec.requests.map(requestKind), ["chunk", "renew", "renew", "forward"]);
         assert.equal(rec.requests[0].params.grid, GROUP);
-        assert.equal(videoCalls[0].options.thumbnailUrl, thumb);
-        assert.equal(videoCalls[0].type, 1);
+        assert.equal(JSON.parse(rec.requests[2].params.msgInfo).thumbUrl, thumb);
+        assert.equal(rec.result.thumbnailUrl, renewedOf(thumb));
+        assert.equal(videoCalls.length, 0);
+    });
+
+    it("with async_forward off, the addresses go out as uploaded, with no renewal", async () => {
+        const own = await openUploadWire({ settings: { features: { async_forward: { on: 0 } } } });
+        try {
+            const rec = await runOwn(
+                own,
+                "sendVideoFile",
+                [{ file: made.clip, thumbnailFile: IMAGES.png.path, width: 2, height: 2 }, USER, 0],
+                { replies: replies(), during: playFileDone(own.ctx.uploadCallbacks, ["clip.mp4"], "callback") },
+            );
+            assert.equal(rec.error, null);
+            assert.deepEqual(rec.requests.map(requestKind), ["chunk", "chunk", "forward"]);
+            const info = JSON.parse(rec.requests[2].params.msgInfo);
+            assert.deepEqual(
+                [info.videoUrl, info.thumbUrl],
+                [fileUrlOf("clip.mp4"), photoUrlsOf("image-64x48.png").hdUrl],
+            );
+        } finally {
+            await own.close();
+            currentFake = wire.fake;
+        }
+    });
+
+    it("a renewal answered async waits for the video renew_link push", async () => {
+        const answers = {
+            ...replies(),
+            "/renewlink": (r) =>
+                JSON.parse(r.params.msgInfo).renewType === 1
+                    ? { data: { async: true } }
+                    : { data: { normal: "https://photo.zalo.invalid/r/n.jpg" } },
+        };
+        const pushed = "https://file-cdn.zalo.invalid/pushed.mp4";
+        const rec = await runOwn(
+            wire,
+            "sendVideoFile",
+            [{ file: made.clip, thumbnailFile: IMAGES.png.path, width: 2, height: 2 }, USER, 0],
+            {
+                replies: answers,
+                during: async () => {
+                    await playFileDone(reg, ["clip.mp4"], "callback")();
+                    await until(
+                        () => currentFake.requests.some((q) => String(q.url ?? q.path ?? "").includes("/renewlink")),
+                        "the renewal to be asked",
+                    );
+                    await sleep(20);
+                    reg.settle(`renew_link:${fileUrlOf("clip.mp4")}`, {
+                        url: pushed,
+                        kind: "renew_link",
+                        data: { originalUrl: fileUrlOf("clip.mp4"), renewUrl: pushed, error: 0 },
+                    });
+                },
+            },
+        );
+        assert.equal(rec.error, null);
+        const forwards = ofKind(rec.requests, "forward");
+        assert.equal(forwards.length, 1);
+        const info = JSON.parse(forwards[0].params.msgInfo);
+        assert.equal(info.videoUrl, pushed);
+        assert.equal(info.thumbUrl, "https://photo.zalo.invalid/r/n.jpg");
+    });
+
+    it("a video whose address Zalo will not renew is not sent", async () => {
+        const answers = {
+            ...replies(),
+            "/renewlink": { inner: { error_code: 114, error_message: "invalid" } },
+        };
+        const rec = await runOwn(
+            wire,
+            "sendVideoFile",
+            [{ file: made.clip, thumbnailUrl: "https://photo.zalo.invalid/t.jpg", width: 2, height: 2 }, USER, 0],
+            { replies: answers, during: playFileDone(reg, ["clip.mp4"], "callback") },
+        );
+        assert.ok(rec.error, "the send fails");
+        assert.equal(ofKind(rec.requests, "forward").length, 0);
     });
 
     it("sendVideoFile refuses, before any request, what cannot be a video message", async () => {
@@ -676,7 +850,7 @@ describe("wire: attachments", () => {
             [{ file: made.clip, thumbnailFile: made.exifPhoto, width: 640, height: 360 }, USER, 0],
             { replies: replies(), during: playFileDone(reg, ["clip.mp4"], "callback") },
         );
-        const photoChunk = ofKind(rec.own.requests, "chunk").find((c) => c.path.includes("photo_original"));
+        const photoChunk = ofKind(rec.own.requests, "chunk").find((c) => c.path.includes("video/thumb"));
         assert.equal(photoChunk.parts[0].sha256, sha256(clean));
         assert.equal(photoChunk.params.totalSize, clean.length);
     });

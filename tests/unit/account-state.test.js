@@ -19,6 +19,17 @@ import {
 import { createDaemonHealth, renderPrometheus } from "../../src/core/daemon-health.js";
 import { STATES, classifyAccount } from "../../src/core/fleet.js";
 import { createHTTPServer } from "../../src/mcp/mcp-http-transport.js";
+import {
+    boundToCall,
+    callsTo,
+    calleeName,
+    findAll,
+    forwardsTo,
+    isId,
+    methodCalls,
+    parseModule,
+    prop,
+} from "../helpers/ast-wiring.js";
 
 const OWN = "1000000000000000961";
 const SRC = join(import.meta.dirname, "..", "..", "src");
@@ -52,9 +63,45 @@ describe("which account_state events reach the MCP buffer a wait reads", () => {
     });
 
     it("mcp start pushes through the filter, and the CLI wait prints a system event as one", () => {
-        const src = readFileSync(join(SRC, "commands", "mcp.js"), "utf8");
-        assert.match(src, /if \(intoBuffer\(event\)\) buffer\.pushSystem\(accountStateSystemEvent\(event\)\)/);
-        assert.match(src, /if \(m\.system\) \{/);
+        // The daemon's wiring runs only with a live login, so it is read from the syntax tree (data flow, not text).
+        const ast = parseModule(join(SRC, "commands", "mcp.js"));
+        const [filter, ...extraFilters] = boundToCall(ast, "createBufferStateFilter");
+        assert.ok(filter && !extraFilters.length, "mcp start builds one buffer filter");
+        const trackers = callsTo(ast, "createAccountStateTracker");
+        assert.equal(trackers.length, 1);
+        const emit = prop(trackers[0].arguments[0], "emit");
+        assert.ok(emit?.params?.length, "the tracker's emit takes the event");
+        const event = emit.params[0].name;
+        // Red if the event reaches the buffer some other way, or unconverted, or around the filter.
+        const pushes = findAll(emit.body, (n) => n.type === "CallExpression" && calleeName(n) === "pushSystem");
+        assert.equal(pushes.length, 1, "the emit pushes into the buffer once");
+        const arg = pushes[0].arguments[0];
+        assert.ok(
+            arg?.type === "CallExpression" &&
+                calleeName(arg) === "accountStateSystemEvent" &&
+                isId(arg.arguments[0], event),
+            "it pushes the event as a system event",
+        );
+        const guarded = findAll(
+            emit.body,
+            (n) =>
+                n.type === "IfStatement" &&
+                n.test.type === "CallExpression" &&
+                isId(n.test.callee, filter) &&
+                isId(n.test.arguments[0], event) &&
+                findAll(n.consequent, (m) => m === pushes[0]).length === 1,
+        );
+        assert.equal(guarded.length, 1, "the push is behind the buffer filter");
+        // The CLI wait prints a system entry as one line and moves on, never as a message.
+        const system = findAll(
+            ast,
+            (n) =>
+                n.type === "IfStatement" &&
+                n.test.type === "MemberExpression" &&
+                n.test.property.name === "system" &&
+                findAll(n.consequent, (m) => m.type === "ContinueStatement").length === 1,
+        );
+        assert.equal(system.length, 1, "the wait's printer handles a system entry");
     });
 });
 
@@ -172,9 +219,38 @@ describe("both daemons wire account_state the same way (symmetry)", () => {
     for (const file of ["commands/mcp.js", "commands/listen.js"]) {
         const src = readFileSync(join(SRC, file), "utf8");
         it(`${file}: the tracker sees every supervisor state and the kick is said before exit 3`, () => {
-            assert.match(src, /createAccountStateTracker\(/);
-            assert.match(src, /noteSocketState: \(state\) => daemonPresence\.noteSocketState\(state\)/);
-            assert.match(src, /health\.setSource\("accountState", \(\) => accountState\.current\(\)\)/);
+            // Data flow from the syntax tree: the supervisor's states reach the tracker through the daemon's presence,
+            // and /status reads the tracker. Red if either daemon wires another object, or none.
+            const ast = parseModule(join(SRC, file));
+            const trackers = boundToCall(ast, "createAccountStateTracker");
+            assert.equal(trackers.length, 1, "one tracker");
+            const [tracker] = trackers;
+            const sources = methodCalls(ast, "health", "setSource").filter(
+                (c) => c.arguments[0]?.value === "accountState",
+            );
+            assert.equal(sources.length, 1, "/status has an accountState source");
+            const read = sources[0].arguments[1];
+            assert.ok(
+                read?.type === "ArrowFunctionExpression" &&
+                    read.body.type === "CallExpression" &&
+                    isId(read.body.callee.object, tracker) &&
+                    read.body.callee.property.name === "current",
+                "/status reads the tracker's current state",
+            );
+            const presences = boundToCall(ast, "createDaemonPresence");
+            assert.equal(presences.length, 1, "one daemon presence");
+            const created = callsTo(ast, "createDaemonPresence");
+            assert.ok(
+                isId(prop(created[0].arguments[0], "accountState"), tracker),
+                "the presence reports to the tracker",
+            );
+            const hosts = callsTo(ast, "createSocketHost");
+            assert.equal(hosts.length, 1, "one socket host");
+            const noteState = prop(prop(hosts[0].arguments[0], "health"), "noteSocketState");
+            assert.ok(
+                forwardsTo(noteState, presences[0], "noteSocketState"),
+                "the supervisor's states go to the presence",
+            );
             const kicked = src.slice(src.indexOf("onKicked: () => {"));
             const note = kicked.indexOf('accountState.note("kicked"');
             const exit = kicked.indexOf("process.exit(EXIT_CODE.KICKED)");

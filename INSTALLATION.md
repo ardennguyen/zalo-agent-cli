@@ -407,7 +407,7 @@ Official Account credentials are stored separately at `~/.zalo-agent/oa-credenti
 
 ## CLI Command Reference (via `npx zalo-agent <command>`)
 
-Append `--json` to any command for machine-readable output. This is a shortlist — the exhaustive reference for all 322 commands is [skill/references/command-reference.md](skill/references/command-reference.md).
+Append `--json` to any command for machine-readable output. This is a shortlist — the exhaustive reference for all 326 commands is [skill/references/command-reference.md](skill/references/command-reference.md).
 
 ### Session & maintenance
 | Command | Description |
@@ -507,6 +507,7 @@ See [`.env.example`](.env.example) for a template.
 | `ZALO_MCP_CONFIRM_MODE` / `ZALO_MCP_HIDDEN_CHATS` | Who confirms a destructive tool action (`agent`, `human`, `off`), and what agents see of hidden chats (`exclude`, `contentless`, `include`). Both support `_<ownId>` |
 | `ZALO_MCP_TRUSTED_PROXIES` | Reverse-proxy addresses whose `X-Forwarded-For` is believed (e.g. `127.0.0.1`); supports `_<ownId>` |
 | `ZALO_RETENTION_MESSAGES` / `ZALO_RETENTION_MEDIA` | `keep` (default) or `<N>d`: how long the local cache keeps messages and media. Both support `_<ownId>` |
+| `ZALO_STORAGE_MIN_FREE` | The free space media downloads and the restore after a QR login leave on the disk (default `2GB`, `0` for none); over `quota.minFree` in `storage.json` or the runtime policy |
 | `ZALO_GROUPS_ON_LEAVE` | `purge` (default) or `keep`: what happens to a left, removed-from, blocked-from or disbanded group's local history; supports `_<ownId>` |
 
 This is a shortlist. Every variable, `mcp-config.json` key, `storage.json` key and runtime-policy key, with its precedence: [docs/configuration.md](docs/configuration.md).

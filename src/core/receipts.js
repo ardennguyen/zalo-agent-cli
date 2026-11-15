@@ -281,7 +281,7 @@ function cachedRowsOf(threadId, read = getMessages) {
  *
  * 1. seenv2 for every cached incoming message newer than the read watermark, the newest 50, oldest first; end-to-end
  *    encrypted ones are left out (counted under `seen.skipped.e2ee`).
- * 2. react_seen when the conversation has an unread reaction (the listener's reaction marks; unverified).
+ * 2. react_seen when the conversation has an unread reaction (the listener's reaction marks).
  * 3. removeUnreadMark only when the manual unread mark is set, or not known to be clear.
  *
  * With `markOnly`, only step 3, always sent: the red dot goes, Zalo's real unread count stays, and nothing is marked

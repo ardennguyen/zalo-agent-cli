@@ -11,8 +11,12 @@ import { join } from "node:path";
 import { CONFIG_DIR, getAccountDbPath, getAccountDir } from "../../src/core/credentials.js";
 import { closeDb, getMessageById, initDb, insertMessage } from "../../src/core/db.js";
 import { runCli, stripAnsi } from "../helpers/cli.js";
+import { checkCli } from "../helpers/cli-fast.js";
 
 const options = { home: SANDBOX_HOME, timeout: 120_000 };
+// Commands run in the in-process CLI worker; a check that fails there is re-run as a real child process
+// (tests/helpers/cli-fast.js `checkCli`), so only a real process can fail a test.
+
 const OWN = "5353";
 const DAY = 86_400_000;
 const json = (r) => JSON.parse(stripAnsi(r.stdout));
@@ -43,32 +47,37 @@ describe("db usage / db purge", () => {
     });
 
     it("purge without --yes or --dry-run exits 2 and removes nothing", async () => {
+        // A real child process: the smoke check that the worker and a real process agree.
         const set = await runCli(["policy", "set", "retention.messages", "30d"], options);
         assert.equal(set.code, 0, set.all);
-        const r = await runCli(["db", "purge"], options);
-        assert.equal(r.code, 2, r.all);
-        initDb(getAccountDbPath(OWN));
-        assert.ok(getMessageById("m0"));
-        closeDb();
+        await checkCli(["db", "purge"], options, (r) => {
+            assert.equal(r.code, 2, r.all);
+            initDb(getAccountDbPath(OWN));
+            assert.ok(getMessageById("m0"));
+            closeDb();
+        });
     });
 
     it("--dry-run counts what is due; --yes removes it; usage shows the purge", async () => {
-        const dry = await runCli(["--json", "db", "purge", "--dry-run"], options);
-        assert.equal(dry.code, 0, dry.all);
-        assert.equal(json(dry).retention.messages.rows, 3);
-        assert.equal(json(dry).via, "local");
-        const run = await runCli(["--json", "db", "purge", "--yes"], options);
-        assert.equal(run.code, 0, run.all);
-        assert.equal(json(run).retention.messages.rows, 3);
-        initDb(getAccountDbPath(OWN));
-        assert.equal(getMessageById("m0"), null);
-        assert.ok(getMessageById("m5"));
-        closeDb();
-        const usage = await runCli(["--json", "db", "usage"], options);
-        assert.equal(usage.code, 0, usage.all);
-        const u = json(usage);
-        assert.equal(u.retention.messages, "30d");
-        assert.ok(u.usage.db > 0);
-        assert.ok(u.lastPurge?.at, "the purge is recorded");
+        await checkCli(["--json", "db", "purge", "--dry-run"], options, async (dry) => {
+            assert.equal(dry.code, 0, dry.all);
+            assert.equal(json(dry).retention.messages.rows, 3);
+            assert.equal(json(dry).via, "local");
+            await checkCli(["--json", "db", "purge", "--yes"], options, async (run) => {
+                assert.equal(run.code, 0, run.all);
+                assert.equal(json(run).retention.messages.rows, 3);
+                initDb(getAccountDbPath(OWN));
+                assert.equal(getMessageById("m0"), null);
+                assert.ok(getMessageById("m5"));
+                closeDb();
+                await checkCli(["--json", "db", "usage"], options, (usage) => {
+                    assert.equal(usage.code, 0, usage.all);
+                    const u = json(usage);
+                    assert.equal(u.retention.messages, "30d");
+                    assert.ok(u.usage.db > 0);
+                    assert.ok(u.lastPurge?.at, "the purge is recorded");
+                });
+            });
+        });
     });
 });

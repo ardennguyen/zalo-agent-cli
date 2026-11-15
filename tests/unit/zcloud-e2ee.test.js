@@ -7,7 +7,7 @@
  * the assertions are about the scheme, not about any real item. Every id and key is a throwaway.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
-import { describe, it, beforeEach } from "node:test";
+import { describe, it, beforeEach, before } from "node:test";
 import assert from "node:assert/strict";
 import { constants, createCipheriv, generateKeyPairSync, publicEncrypt, randomBytes } from "node:crypto";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
@@ -41,11 +41,10 @@ function seal(plainBytes) {
     return { data, wrapped: wrapped.toString("base64") };
 }
 
-describe("zcloud-e2ee: sandbox", () => {
-    it("runs inside the test sandbox", () => {
-        assertSandboxed(CONFIG_DIR);
-        assert.equal(CONFIG_DIR, SANDBOX_CONFIG_DIR);
-    });
+// Every test in this file runs in the sandbox: a failing hook fails them all.
+before(() => {
+    assertSandboxed(CONFIG_DIR);
+    assert.equal(CONFIG_DIR, SANDBOX_CONFIG_DIR);
 });
 
 describe("the download address Zalo expects", () => {
@@ -108,7 +107,7 @@ describe("the cloud key: RSA-OAEP SHA-256, then AES-256-GCM", () => {
         assert.throws(() => decryptCloudBlob(bad, wrapped, 1, importCloudPrivateKey(PKCS8)), /GCM tag/);
         assert.throws(() => importCloudPrivateKey("not a key"), /PKCS#8/);
         assert.throws(() => importCloudPrivateKey(""), /no cloud key/);
-        assert.throws(() => decryptCloudBlob(data, wrapped, 2, importCloudPrivateKey(PKCS8)), /block by block/);
+        assert.throws(() => decryptCloudBlob(data, wrapped, 2, importCloudPrivateKey(PKCS8)), /block-by-block key/);
     });
 
     it("builds the key request Zalo expects, and marks it never sent", () => {
@@ -197,5 +196,55 @@ describe("fetchCloudBlob: the whole open, offline", () => {
             assert.equal(e.http, true);
             return true;
         });
+    });
+});
+
+describe("importCloudPrivateKey accepts the PKCS#1 key the phone hands over", () => {
+    it("opens PKCS#1 and PKCS#8 alike, to the same key", async () => {
+        const { generateKeyPairSync } = await import("node:crypto");
+        const { importCloudPrivateKey: imp } = await import("../../src/zalo/zcloud-e2ee.js");
+        const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+        const pkcs1 = privateKey.export({ format: "der", type: "pkcs1" }).toString("base64");
+        const pkcs8 = privateKey.export({ format: "der", type: "pkcs8" }).toString("base64");
+        const a = imp(pkcs1).export({ format: "der", type: "pkcs8" });
+        const b = imp(pkcs8).export({ format: "der", type: "pkcs8" });
+        assert.deepEqual(a, b);
+    });
+
+    it("refuses something that is not an RSA private key", async () => {
+        const { importCloudPrivateKey: imp, CloudKeyError: Err } = await import("../../src/zalo/zcloud-e2ee.js");
+        assert.throws(() => imp(Buffer.from("not a key at all, just text").toString("base64")), Err);
+    });
+});
+
+describe("decryptCloudBlob, block by block (algoversion 2)", () => {
+    it("opens every 4096-byte block, and a short last one, each from the same IV", async () => {
+        const {
+            createCipheriv: cc,
+            generateKeyPairSync: gk,
+            publicEncrypt: pe,
+            randomBytes: rb,
+            constants: k,
+        } = await import("node:crypto");
+        const { decryptCloudBlob: dec, importCloudPrivateKey: imp } = await import("../../src/zalo/zcloud-e2ee.js");
+        const { privateKey, publicKey } = gk("rsa", { modulusLength: 2048 });
+        const plain = rb(4096 * 2 + 777);
+        const key = rb(32);
+        const iv = Buffer.concat([rb(12), Buffer.alloc(4)]);
+        const parts = [];
+        for (let at = 0; at < plain.length; at += 4096) {
+            const c = cc("aes-256-ctr", key, iv);
+            parts.push(c.update(plain.subarray(at, at + 4096)), c.final());
+        }
+        const wrapped = pe(
+            { key: publicKey, padding: k.RSA_PKCS1_OAEP_PADDING, oaepHash: "sha256" },
+            Buffer.concat([key, iv]),
+        ).toString("base64");
+        const pk = imp(privateKey.export({ format: "der", type: "pkcs8" }).toString("base64"));
+        assert.deepEqual(dec(Buffer.concat(parts), wrapped, "2", pk), plain);
+        // One continuous counter across blocks would be a different stream: the restart per block is what opens it.
+        const c = cc("aes-256-ctr", key, iv);
+        const continuous = Buffer.concat([c.update(plain), c.final()]);
+        assert.notDeepEqual(dec(continuous, wrapped, "2", pk), plain);
     });
 });

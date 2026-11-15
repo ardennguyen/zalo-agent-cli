@@ -5,7 +5,7 @@
  * what is under test is the decision: when to walk, when not to, and that nothing else is ever sent.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
-import { describe, it, after, beforeEach } from "node:test";
+import { describe, it, after, beforeEach, before } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -108,11 +108,10 @@ function build(over = {}) {
     return { verifier, calls, lines, tap, lock, advance: (ms) => (clock += ms) };
 }
 
-describe("cloud verify — sandbox", () => {
-    it("runs inside the test sandbox", () => {
-        assertSandboxed(CONFIG_DIR);
-        assert.equal(CONFIG_DIR, SANDBOX_CONFIG_DIR);
-    });
+// Every test in this file runs in the sandbox: a failing hook fails them all.
+before(() => {
+    assertSandboxed(CONFIG_DIR);
+    assert.equal(CONFIG_DIR, SANDBOX_CONFIG_DIR);
 });
 
 describe("reading the notice", () => {

@@ -118,6 +118,7 @@ function planOf(a, ctx) {
         filters: {
             threads: a.threadIds ?? [],
             kinds: a.kinds ?? [],
+            messages: a.msgIds ?? [],
             olderThanDays: a.olderThanDays ?? null,
             largerThanBytes: a.largerThanMb === undefined ? null : a.largerThanMb * MB,
             onlySavedLocally: Boolean(a.onlySavedLocally),
@@ -190,16 +191,16 @@ export const CLOUD_ACTIONS = {
         },
         guard: (a) => ({ key: "cloud.delete", target: a.applyTarget }),
         // Like `cloud apply --dry-run`: the plan itself.
-        preview: (a) => ({ warning: CLEANUP_WARNING, verified: false, plan: a.plan }),
+        preview: (a) => ({ warning: CLEANUP_WARNING, verified: true, plan: a.plan }),
         async run(a, ctx) {
-            if (!a.plan.listed) return { deleted: 0, failed: [], skipped: [], bytes: 0, matched: 0, verified: false };
+            if (!a.plan.listed) return { deleted: 0, failed: [], skipped: [], bytes: 0, matched: 0, verified: true };
             // As `cloud apply`: delete the chat message behind each item, for this account on every device.
             const result = await applyCloudCleanup({
                 items: a.plan.items,
                 ownId: ctx.ownId(),
                 deleteForMe: (t) => ctx.api.deleteMessage(t, true),
             });
-            return { ...result, matched: a.plan.matched, verified: false, warning: CLEANUP_WARNING };
+            return { ...result, matched: a.plan.matched, verified: true, warning: CLEANUP_WARNING };
         },
     },
 };
@@ -234,6 +235,12 @@ export const CLOUD_META = {
                 .min(1)
                 .optional()
                 .describe("For 'plan' and 'apply': only these kinds"),
+            msgIds: z
+                .array(z.string().regex(/^d+$/))
+                .min(1)
+                .max(100)
+                .optional()
+                .describe("For 'plan' and 'apply': only the items of these messages (msgId or cliMsgId)"),
             olderThanDays: z
                 .number()
                 .min(0)

@@ -73,9 +73,8 @@ function scripted(pages = {}) {
 
 const asks = (listener) => listener.sent.filter((p) => p.cmd === 603);
 
-describe("control replay — sandbox", () => {
-    it("runs inside the test sandbox", () => assertSandboxed(CONFIG_DIR));
-});
+// Every test in this file runs in the sandbox: a failing hook fails them all.
+before(() => assertSandboxed(CONFIG_DIR));
 
 describe("the control queues a handshake names", () => {
     it("takes the 603 queues in the handshake's order, and nothing else", () => {

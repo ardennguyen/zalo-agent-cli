@@ -43,6 +43,7 @@ import { PRESENCE_KEYS, resolvePresenceSettings } from "../../src/core/presence-
 import { generateFleetFiles } from "../../src/core/fleet.js";
 import { RENEW_DEFAULTS, resolveRenewSettings } from "../../src/core/session-renew.js";
 import { USE_CASES, generateFor } from "../helpers/use-case-manifest.js";
+import { checkTable } from "../helpers/table.js";
 
 before(() => {
     assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR);
@@ -73,8 +74,10 @@ describe("mcp-config samples", () => {
     const defaults = getDefaultConfig();
     const known = new Set([...Object.keys(defaults), "accounts"]);
 
-    for (const file of list("mcp-config", ".json")) {
-        it(`${file}: valid JSON that uses only keys the loader merges`, () => {
+    const configFiles = list("mcp-config", ".json");
+
+    it("every sample: valid JSON that uses only keys the loader merges", () =>
+        checkTable(configFiles, String, (file) => {
             const cfg = JSON.parse(read("mcp-config", file));
             for (const key of Object.keys(cfg)) assert.ok(known.has(key), `unknown top-level key "${key}"`);
             for (const section of ["notify", "limits", "media", "tls", "oauth", "approval", "admin", "presence"]) {
@@ -95,9 +98,10 @@ describe("mcp-config samples", () => {
             // And it merges: no section the loader spreads is replaced by a non-object.
             const merged = mergeMCPConfigLayer(defaults, cfg);
             assert.equal(typeof merged.limits, "object");
-        });
+        }));
 
-        it(`${file}: holds no real secret`, () => {
+    it("every sample: holds no real secret", () =>
+        checkTable(configFiles, String, (file) => {
             const cfg = JSON.parse(read("mcp-config", file));
             for (const secret of [
                 cfg.webhookSecret,
@@ -109,8 +113,7 @@ describe("mcp-config samples", () => {
                     "a secret in a sample must be a CHANGE_ME placeholder or null",
                 );
             }
-        });
-    }
+        }));
 
     it("crm-backend.json: the CRM reaches this server, and its one-time pages, at one public address", () => {
         const cfg = mergeMCPConfigLayer(defaults, JSON.parse(read("mcp-config", "crm-backend.json")));
@@ -214,23 +217,23 @@ describe("env samples", () => {
         join("systemd", "common.env"),
         join("systemd", "home.env"),
     ];
-    for (const file of files) {
-        it(`${file}: every variable is one the engine reads`, () => {
+    it("every env sample: every variable is one the engine reads", () =>
+        checkTable(files, String, (file) => {
             const found = assignments(read(file));
             assert.ok(found.length > 0, "the file sets something");
             for (const { name } of found) {
                 assert.ok(inSource.has(base(name)), `${name}: no source file reads ${base(name)}`);
             }
-        });
+        }));
 
-        it(`${file}: tokens and secrets are CHANGE_ME placeholders`, () => {
+    it("every env sample: tokens and secrets are CHANGE_ME placeholders", () =>
+        checkTable(files, String, (file) => {
             for (const { name, value } of assignments(read(file))) {
                 // A *_FILE names where a secret is kept (a path), never the secret itself.
                 if (/_FILE$/.test(name)) assert.match(value, /^\//, `${name} must be an absolute path`);
                 else if (/TOKEN|SECRET/.test(name)) assert.match(value, /^CHANGE_ME/, `${name} must be a placeholder`);
             }
-        });
-    }
+        }));
 
     it("multi-account.env: NAME_<ownId> wins for its account and the plain NAME covers the rest", () => {
         const env = parseEnv(read("env", "multi-account.env"));
@@ -497,8 +500,8 @@ describe("monitoring samples", () => {
 describe("storage samples", () => {
     // docs/config-samples/storage/*.json are what docs/security.md points operators at: each names a provider the key
     // layer knows and holds no key material (a key id or path only).
-    for (const file of list("storage", ".json")) {
-        it(`${file}: a known provider, a boolean dkeyLayer, no key material`, () => {
+    it("every storage sample: a known provider, a boolean dkeyLayer, no key material", () =>
+        checkTable(list("storage", ".json"), String, (file) => {
             const cfg = JSON.parse(read("storage", file));
             assert.ok(PROVIDER_NAMES.includes(cfg.provider), `${cfg.provider} is a provider`);
             assert.equal(typeof cfg.dkeyLayer, "boolean");
@@ -518,8 +521,7 @@ describe("storage samples", () => {
                 { allowNull: true },
             );
             assert.deepEqual(v.errors, [], JSON.stringify(v.errors));
-        });
-    }
+        }));
 });
 
 describe("use-case sample sets (docs/config-samples/use-cases/)", () => {
@@ -551,12 +553,24 @@ describe("use-case sample sets (docs/config-samples/use-cases/)", () => {
         assert.deepEqual(readdirSync(UC).sort(), Object.keys(USE_CASES).sort());
     });
 
-    for (const [uc, manifest] of Object.entries(USE_CASES)) {
-        it(`${uc}: holds its full set, nothing missing and nothing extra`, () => {
-            assert.deepEqual(walk(join(UC, uc)).sort(), Object.keys(manifest).sort());
-        });
+    const sets = Object.entries(USE_CASES);
+    const ucLabel = ([uc]) => uc;
+    /** `[uc, rel]` for each file of each set that `pick` selects. */
+    const filesOf = (pick) =>
+        sets.flatMap(([uc, manifest]) =>
+            Object.keys(manifest)
+                .filter(pick)
+                .map((rel) => [uc, rel]),
+        );
+    const relLabel = ([uc, rel]) => `${uc}/${rel}`;
 
-        it(`${uc}: every shared file is byte-identical to its building block or to fleet generate`, () => {
+    it("every set: holds its full set, nothing missing and nothing extra", () =>
+        checkTable(sets, ucLabel, ([uc, manifest]) => {
+            assert.deepEqual(walk(join(UC, uc)).sort(), Object.keys(manifest).sort());
+        }));
+
+    it("every set: every shared file is byte-identical to its building block or to fleet generate", () =>
+        checkTable(sets, ucLabel, ([uc, manifest]) => {
             for (const [rel, src] of Object.entries(manifest)) {
                 if (!src) continue;
                 const want = src.sample
@@ -566,9 +580,10 @@ describe("use-case sample sets (docs/config-samples/use-cases/)", () => {
                       : readFileSync(join(UC, src.useCase), "utf8");
                 assert.equal(ucRead(uc, rel), want, `${uc}/${rel} drifted from ${JSON.stringify(src)}`);
             }
-        });
+        }));
 
-        it(`${uc}: the README (EN and VN) names every file, and the two have the same sections`, () => {
+    it("every set: the README (EN and VN) names every file, and the two have the same sections", () =>
+        checkTable(sets, ucLabel, ([uc, manifest]) => {
             const files = Object.keys(manifest).filter((f) => !/^(README|MIGRATE)(\.vi)?\.md$/.test(f));
             for (const doc of ["README.md", "README.vi.md"]) {
                 const text = ucRead(uc, doc);
@@ -583,33 +598,36 @@ describe("use-case sample sets (docs/config-samples/use-cases/)", () => {
                 assert.equal(sections(ucRead(uc, vi)), sections(ucRead(uc, en)), `${uc}: ${vi} and ${en} sections`);
                 assert.ok(ucRead(uc, en).includes(vi) && ucRead(uc, vi).includes(en), `${uc}: ${en} and ${vi} link`);
             }
-        });
+        }));
 
-        it(`${uc}: no token on a command line, and no 0.0.0.0 bind`, () => {
+    it("every set: no token on a command line, and no 0.0.0.0 bind", () =>
+        checkTable(sets, ucLabel, ([uc, manifest]) => {
             for (const rel of Object.keys(manifest)) {
                 const text = ucRead(uc, rel);
                 assert.doesNotMatch(text, /--auth[ =]/, `${uc}/${rel}: a token on a command line is in ps and history`);
                 for (const line of text.split("\n").filter((l) => l.includes("0.0.0.0")))
                     assert.match(line, /\b(not|never|không)\b/, `${uc}/${rel}: bind an address, not every interface`);
             }
-        });
+        }));
 
-        const envFiles = Object.keys(manifest).filter((f) => /(^|\/)(\.env|[^/]+\.env)$/.test(f));
-        if (envFiles.length) {
-            it(`${uc}: every variable in its env files is one the engine reads, and every secret a placeholder`, () => {
-                for (const rel of envFiles) {
-                    for (const { name, value } of assignments(ucRead(uc, rel))) {
-                        assert.ok(inSource.has(base(name)), `${uc}/${rel}: no source file reads ${name}`);
-                        if (/_FILE$/.test(name)) assert.match(value, /^\//, `${uc}/${rel}: ${name} is a path`);
-                        else if (/TOKEN|SECRET/.test(name)) assert.match(value, /^CHANGE_ME/, `${uc}/${rel}: ${name}`);
-                    }
+    it("every env file of every set: each variable is one the engine reads, and every secret a placeholder", () =>
+        checkTable(
+            filesOf((f) => /(^|\/)(\.env|[^/]+\.env)$/.test(f)),
+            relLabel,
+            ([uc, rel]) => {
+                for (const { name, value } of assignments(ucRead(uc, rel))) {
+                    assert.ok(inSource.has(base(name)), `${uc}/${rel}: no source file reads ${name}`);
+                    if (/_FILE$/.test(name)) assert.match(value, /^\//, `${uc}/${rel}: ${name} is a path`);
+                    else if (/TOKEN|SECRET/.test(name)) assert.match(value, /^CHANGE_ME/, `${uc}/${rel}: ${name}`);
                 }
-            });
-        }
+            },
+        ));
 
-        const configs = Object.keys(manifest).filter((f) => f.endsWith("mcp-config.json"));
-        for (const rel of configs) {
-            it(`${uc}: ${rel} uses only keys the loader merges and sets every presence key`, () => {
+    it("every mcp-config.json of every set: only keys the loader merges, and every presence key set", () =>
+        checkTable(
+            filesOf((f) => f.endsWith("mcp-config.json")),
+            relLabel,
+            ([uc, rel]) => {
                 const defaults = getDefaultConfig();
                 const cfg = JSON.parse(ucRead(uc, rel));
                 for (const key of Object.keys(cfg)) assert.ok(key in defaults || key === "accounts", key);
@@ -618,18 +636,19 @@ describe("use-case sample sets (docs/config-samples/use-cases/)", () => {
                 for (const key of ["enabled", "daysBefore", "linkTtl"])
                     assert.notEqual(merged.session.renew[key], null, `session.renew.${key}`);
                 assert.equal(merged.media.downloadDir, null, "media under the account folder, inside ReadWritePaths");
-            });
-        }
+            },
+        ));
 
-        const storages = Object.keys(manifest).filter((f) => /storage(\.[a-z]+)?\.json$/.test(f));
-        for (const rel of storages) {
-            it(`${uc}: ${rel} names a known provider and holds no key`, () => {
+    it("every storage file of every set: names a known provider and holds no key", () =>
+        checkTable(
+            filesOf((f) => /storage(\.[a-z]+)?\.json$/.test(f)),
+            relLabel,
+            ([uc, rel]) => {
                 const cfg = JSON.parse(ucRead(uc, rel));
                 assert.ok(PROVIDER_NAMES.includes(cfg.provider));
                 assert.doesNotMatch(ucRead(uc, rel), /"(key|secret|passphrase)"\s*:\s*"[A-Za-z0-9+/=]{40,}"/);
-            });
-        }
-    }
+            },
+        ));
 
     const VPS = ["c-vps-few-accounts", "d-crm-backend", "e-saas-kms"];
     const HOME = "home/zalo/.zalo-agent-cli";

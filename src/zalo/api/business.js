@@ -11,8 +11,8 @@
  * - auto-reply create, update and delete: a POST whose sealed `params` ride in the query, with no body.
  *
  * `uploadProductPhoto` keeps the one-chunk upload the engine has always sent: the quick-message path (featureId
- * 1, `toid` = the account's own "my documents" thread). The catalog upload's own fields (featureId 2 and no `toid`)
- * are not confirmed, so its definition is `verified: false` until a live run.
+ * 1, `toid` = the account's own "my documents" thread), which works live for a product photo; the catalog upload's own
+ * fields (featureId 2 and no `toid`) are not used.
  * Every id stays a string. Nothing here writes to stdout or logs.
  */
 import { readFile } from "node:fs/promises";
@@ -156,14 +156,8 @@ export const PRODUCT_LIST = catalogCall("/product/list", 12039, (a) => ({
     page: a.page,
 }));
 
-/**
- * getProductInfo, 12057: one product by its id, `{product_id}` only. Not verified: no live answer has been seen (a
- * zBusiness catalog with a product is needed).
- */
-export const PRODUCT_VIEW = Object.freeze({
-    ...catalogCall("/product/view", 12057, (a) => ({ product_id: a.productId })),
-    verified: false,
-});
+/** getProductInfo, 12057: one product by its id, `{product_id}` only (confirmed live). */
+export const PRODUCT_VIEW = catalogCall("/product/view", 12057, (a) => ({ product_id: a.productId }));
 
 /** The product fields create and update share, after `product_id` on an update. */
 const productFields = (a) => ({
@@ -195,15 +189,14 @@ export const PRODUCT_DELETE = catalogCall("/product/mdelete", 12127, (a) => ({
 export const CATALOG_REGISTER = catalogCall("/catalog/register", 12031, (a) => ({ enable: a.enable ? 1 : 0 }));
 
 /**
- * `POST {file}/api/product/upload/photo`: one chunk, multipart, sealed params in the query (12036). Not verified: the
- * path is known but the fields are not, so they are the quick-message upload's (spec-sweep 1.3).
+ * `POST {file}/api/product/upload/photo`: one chunk, multipart, sealed params in the query (12036), with the
+ * quick-message upload's fields; confirmed live (the URL it answers serves as a product photo).
  */
 export const PRODUCT_PHOTO = Object.freeze({
     host: "file",
     path: "/api/product/upload/photo",
     cmd: 12036,
     method: "multipart",
-    verified: false,
     body: (a, ctx) => ({
         totalChunk: 1,
         fileName: `Base64_Img_Picker_${a.at}.jpg`,
@@ -523,7 +516,7 @@ export function businessMethods(s) {
             }),
 
         /**
-         * One product, by its id (unverified: no live answer seen).
+         * One product, by its id.
          *
          * @param {string} productId
          * @returns {Promise<object>} Zalo's answer: the product

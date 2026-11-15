@@ -9,7 +9,9 @@
  *   caller asks anyway (`--ask-anyway`, `askAnyway`) to see what Zalo answers.
  * - It asks `lastOnline` with `conv_type` 2 for an Official Account (a profile whose `type` is 1 or more), 1 for any
  *   other user. A profile tells which; this asks for the profile first, unless the caller says.
- * - The answer's `settings` carry the other user's own `show_online_status`; off is `hiddenBy: "them"`.
+ * - The answer's `settings.show_online_status` does not say the other user's choice (live: `true` for a user who hides
+ *   theirs). Zalo answers `lastOnline` 0 when either side hides it, so with this account's own status shown, an answer
+ *   with no time is `hiddenBy: "them"`: the user hides theirs (or has not been online at all).
  * - The 602 push `act_type: "profile"`, `act: "online_status"` (`{uid, lastOnline}`) moves a user's last-online time.
  *   {@link attachLastOnline} keeps it, in memory and in the account's db (`last_online`), for `--cached` reads that
  *   send nothing. Only the daemon (`listen`, `mcp start`) writes that table.
@@ -170,7 +172,8 @@ export async function lastOnlineStatus(
             /* the cache is best-effort */
         }
     }
-    const hiddenBy = theirs === 0 ? "them" : mine === false && !lastOnline ? "you" : null;
+    // Who hides it: this account (its own status is off), else the other user (no time while ours is shown).
+    const hiddenBy = lastOnline ? null : mine === false ? "you" : theirs === 0 || mine === true ? "them" : null;
     return {
         userId: id,
         lastOnline,

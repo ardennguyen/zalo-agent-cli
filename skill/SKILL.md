@@ -13,7 +13,7 @@ Automate Zalo messaging, groups, contacts, payments, and real-time events via `z
 Handles: login/logout, messaging (text/image/file/sticker/voice/video/link), reactions, mentions, recall, message history, friends, groups, conversations, profile, polls, reminders, auto-reply, quick messages, labels, catalogs, listen (WebSocket), webhooks, local SQLite cache + mobile sync, bank cards, VietQR, multi-account with proxy, **Official Account (OA) API v3.0** (OAuth login, OA messaging, followers, tags, articles, store, webhook listener), **MCP Server** (Model Context Protocol for Claude Code and MCP clients).
 Does NOT handle: Zalo Mini App, Zalo Ads, ZNS templates, non-Zalo platforms.
 
-Surface: **322 CLI commands** across 41 command containers (25 top-level groups + 11 OA subgroups + 3 ZBS subgroups + `mcp webhook` + `account security`) + **37 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
+Surface: **326 CLI commands** across 42 command containers (25 top-level groups + 11 OA subgroups + 3 ZBS subgroups + `mcp webhook` + `account security` + `cloud key`) + **37 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
 
 ## Prerequisites
 
@@ -54,7 +54,8 @@ Every `logout` and `account remove` refuse, changing nothing, while a `listen`/`
 zalo-agent login --qr-url &
 
 # QR. Tick "sync messages" on the phone at the confirm: the history is restored at once, no tap (--sync-days <n> limits it;
-# --no-sync only reports). Not ticked on a new device id: it prints the `zalo-agent sync --from <date>` to run
+# --no-sync only reports). Not ticked on a new device id: it prints the `zalo-agent sync --from <date>` to run.
+# An account with zCloud also gets its zCloud key from the phone, no prompt (--no-cloud-key skips it)
 zalo-agent login
 
 # Headless (re-use previously exported credentials)
@@ -157,7 +158,8 @@ zalo-agent sync-boards                       # Notes, pinned messages, polls, re
 zalo-agent sync-cloud                        # Walk the zCloud media index (records where backups live; follows removals; --full sweeps)
 zalo-agent cloud ls | cloud plan [--type video --older-than 365 --larger-than 50 --only-saved-locally]   # Reports on the local index: what a cleanup would cover. Deletes nothing
 zalo-agent cloud apply <same filters> --dry-run | --yes # Deletes the messages behind those items for this account, as Zalo's own cloud view does (no undo)
-zalo-agent cloud get <noiseId> -o <file> [--key-stdin]  # One item's file; an encrypted one needs the account's cloud key at run time, never stored
+zalo-agent cloud get <noiseId> -o <file>     # One item's file, opened with the stored zCloud key (--key-stdin/--key-prompt give one instead)
+zalo-agent cloud key status | setup --confirm  # Whether the zCloud key is stored (never shown); fetch it from the phone now
 
 # The cache is encrypted (SQLCipher): read it through db, never by opening zalo.db. All local, no login, safe beside a daemon.
 zalo-agent --json db query "SELECT msgId, text FROM messages WHERE threadId = '<id>' ORDER BY timestamp DESC LIMIT 20"   # One read-only statement; hidden chats left out
@@ -186,8 +188,8 @@ zalo-agent sync-media --prune 90 --dry-run   # Delete downloaded media older tha
 zalo-agent sync-media --prune all            # ...every downloaded file, regardless of age
 zalo-agent sync-media --prune-orphans        # ...media of conversations the account no longer has
 zalo-agent sync-media --include-pruned       # Re-fetch media you previously pruned
-zalo-agent sync-media --from-zcloud --key-prompt  # Files past Zalo's 14-day window, from zCloud (cloud key asked, never stored)
-zalo-agent sync-media --all-ages             # ...or ask Zalo's servers for them anyway
+zalo-agent sync-media --from-zcloud          # Insist on zCloud for old files (plan checked; the stored zCloud key, or --key-prompt gives one).
+                                             # Without it, any age is asked for, and a stored key is used on its own
 zalo-agent conv pin <threadId>               # Pin to the top of the list
 zalo-agent conv unpin <threadId>             # Unpin
 zalo-agent conv archive <threadId>           # Move to Zalo's Other tab
@@ -408,7 +410,7 @@ Every write changes something. 26 of the 27 have been answered by a live account
 
 | File | Contents |
 |------|----------|
-| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 322 commands + 37 MCP tools) |
+| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 326 commands + 37 MCP tools) |
 | `references/mcp-guide.md` | MCP tools, parameters, return shapes, `mcp-config.json`, architecture (Vietnamese) |
 | `references/oa-command-reference.md` | Official Account, ZBS and Social API reference: every `oa`/`zbs`/`social` command, webhook events and signature, error codes, ZBS permissions, webhook checklist |
 | `references/login-flow.md` | QR login, headless credentials login, multi-account, proxy formats, troubleshooting |
@@ -441,8 +443,7 @@ When any of these disagree, `references/command-reference.md` wins — it is gen
 - OA token expires ~25h → refreshed automatically once on `-216`/`-220` when a refresh token is stored; `oa refresh` renews it by hand
 - Some OA APIs require tier upgrade (error -224) → see zalo.cloud/oa/pricing
 - OA webhook needs HTTPS + verified domain + VN IP for full user data
-- `catalog` commands require a zBusiness Pro account
-- Not yet confirmed on a live account: `msg send-video` with a local file, `cloud apply`, `cloud get`, `quick-msg enable`/`disable`, `catalog product` (their `--json` reply says `verified: false` where it has that field). Tell the user before relying on one
+- `catalog` commands need Zalo Shop turned on (`catalog register on`). An account with no zBusiness package then has its default catalog; a zBusiness package sets how many catalogs and products it may create (`account status` shows the limits)
 
 ## Security Model
 - **No code execution**: This skill only invokes the `zalo-agent` CLI binary — it does not run arbitrary code, install packages, or modify system files

@@ -14,6 +14,7 @@ import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
+import { checkErrorTable } from "../helpers/wire-diff/error-table.js";
 import { FAKE, expectGolden, openWire } from "../helpers/wire-diff/index.js";
 import {
     parseBoardTopics,
@@ -30,26 +31,6 @@ const PEER = "4123456789012345678";
 const PEER2 = "1000000000000000002";
 /** The dummy phone the docs use. */
 const PHONE = "0901234567";
-
-/** The answers every method is run against for the error part, and what each must throw. */
-const ERROR_ANSWERS = [
-    {
-        label: "an outer error",
-        error: { outer: { error_code: 102, error_message: "outer failure" } },
-        expected: { message: "outer failure", code: 102 },
-    },
-    {
-        label: "an inner error",
-        error: { inner: { error_code: 114, error_message: "inner failure" } },
-        expected: { message: "inner failure", code: 114 },
-    },
-    { label: "HTTP 500", error: { status: 500 }, expected: { message: "HTTP 500", code: null } },
-    {
-        label: "an undecryptable data",
-        error: { undecryptable: true },
-        expected: { message: "Failed to parse response data", code: null },
-    },
-];
 
 describe("wire: people (src/zalo/api/people.js)", () => {
     let wire;
@@ -595,16 +576,11 @@ describe("wire: people (src/zalo/api/people.js)", () => {
             assert.deepEqual(CALLS.map(([n]) => n).sort(), names.sort());
         });
 
-        for (const [method, args] of CALLS) {
-            it(`${method}: outer, inner, HTTP 500, undecryptable`, async () => {
-                for (const { label, error, expected } of ERROR_ANSWERS) {
-                    const rec = await wire.run(method, args, { error });
-                    const where = `${method} on ${label}`;
-                    assert.deepEqual(rec.own.error, expected, where);
-                    assert.equal(rec.own.requests.length, 1, `${where}: one request, no retry`);
-                }
-            });
-        }
+        it("every method: the code and message of each error answer", async () => {
+            // Red if any method swallows, rewraps or drops the code of one of the four answers; every
+            // failing method and answer is listed.
+            await checkErrorTable(wire, CALLS);
+        });
     });
 
     describe("the module", () => {

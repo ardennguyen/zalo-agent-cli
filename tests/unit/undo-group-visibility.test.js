@@ -18,7 +18,7 @@ import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { initDb, insertMessage, upsertThread } from "../../src/core/db.js";
 import { groupVisibility, undoPayload } from "../../src/zalo/custom/group-visibility.js";
 import { registerTools } from "../../src/mcp/mcp-tools.js";
-import { seedAccount, seedThread, runOffline, requestsTo } from "./support/offline-cli.js";
+import { seedAccount, checkOffline, seedThread, requestsTo } from "./support/offline-cli.js";
 
 const GROUP = "200000000000000093";
 const PEER = "300000000000000093";
@@ -119,22 +119,32 @@ describe("msg undo in a group", () => {
     });
 
     it("recalls with the group's visibility from its info", async () => {
-        const r = await runOffline(["msg", "undo", MSG.msgId, GROUP, "-t", "1", "--yes"], {
-            responses: { "/api/group/getmg-v2": { gridInfoMap: { [GROUP]: { groupId: GROUP, visibility: 1 } } } },
-        });
-        const recalls = requestsTo(r.requests, "/api/group/undomsg");
-        assert.equal(recalls.length, 1, r.all);
-        // Red without the fix: the command sent no visibility, and the engine wrote 0.
-        assert.equal(recalls[0].params.visibility, 1, r.all);
-        assert.equal(recalls[0].params.cliMsgIdUndo, MSG.cliMsgId);
+        await checkOffline(
+            ["msg", "undo", MSG.msgId, GROUP, "-t", "1", "--yes"],
+            {
+                responses: { "/api/group/getmg-v2": { gridInfoMap: { [GROUP]: { groupId: GROUP, visibility: 1 } } } },
+            },
+            (r) => {
+                const recalls = requestsTo(r.requests, "/api/group/undomsg");
+                assert.equal(recalls.length, 1, r.all);
+                // Red without the fix: the command sent no visibility, and the engine wrote 0.
+                assert.equal(recalls[0].params.visibility, 1, r.all);
+                assert.equal(recalls[0].params.cliMsgIdUndo, MSG.cliMsgId);
+            },
+        );
     });
 
     it("still recalls, with 0, when the group's info cannot be read", async () => {
-        const r = await runOffline(["msg", "undo", MSG.msgId, GROUP, "-t", "1", "--yes"], {
-            responses: { "/api/group/getmg-v2": { __error: { code: 114, message: "offline refusal" } } },
-        });
-        const recalls = requestsTo(r.requests, "/api/group/undomsg");
-        assert.equal(recalls.length, 1, r.all);
-        assert.equal(recalls[0].params.visibility, 0);
+        await checkOffline(
+            ["msg", "undo", MSG.msgId, GROUP, "-t", "1", "--yes"],
+            {
+                responses: { "/api/group/getmg-v2": { __error: { code: 114, message: "offline refusal" } } },
+            },
+            (r) => {
+                const recalls = requestsTo(r.requests, "/api/group/undomsg");
+                assert.equal(recalls.length, 1, r.all);
+                assert.equal(recalls[0].params.visibility, 0);
+            },
+        );
     });
 });

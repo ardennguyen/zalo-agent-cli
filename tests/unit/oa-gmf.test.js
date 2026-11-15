@@ -45,7 +45,7 @@ import {
     walkPages,
 } from "../../src/core/oa/gmf.js";
 import { registerGmfCommands } from "../../src/commands/oa/gmf.js";
-import { runCli } from "../helpers/cli.js";
+import { checkCli } from "../helpers/cli-fast.js";
 import { _resetErrorLatch } from "../../src/utils/output.js";
 
 const OA_DIR = join(SANDBOX_HOME, ".zalo-agent");
@@ -566,26 +566,30 @@ describe("guarded `oa group` commands, as the real CLI", () => {
     const opts = { home, timeout: 240_000 };
 
     it("remove-members without --yes exits 2 and sends nothing", async () => {
-        const r = await runCli(["--json", "oa", "group", "remove-members", G, U1, U2], opts);
-        assert.equal(r.code, 2, r.all);
-        const out = JSON.parse(r.stdout);
-        assert.equal(out.confirmationRequired, true);
-        assert.equal(out.action, "oa group remove-members");
-        assert.deepEqual(out.target.userIds, [U1, U2]);
+        await checkCli(["--json", "oa", "group", "remove-members", G, U1, U2], opts, (r) => {
+            assert.equal(r.code, 2, r.all);
+            const out = JSON.parse(r.stdout);
+            assert.equal(out.confirmationRequired, true);
+            assert.equal(out.action, "oa group remove-members");
+            assert.deepEqual(out.target.userIds, [U1, U2]);
+        });
     });
 
     it("delete without --yes exits 2; --dry-run exits 0 and says nothing was sent", async () => {
-        const r = await runCli(["oa", "group", "delete", G], opts);
-        assert.equal(r.code, 2, r.all);
-        assert.match(r.all, /delete Official Account group chat/);
-        const d = await runCli(["--json", "oa", "group", "delete", G, "--dry-run"], opts);
-        assert.equal(d.code, 0, d.all);
-        assert.equal(JSON.parse(d.stdout).sent, false);
+        await checkCli(["oa", "group", "delete", G], opts, (r) => {
+            assert.equal(r.code, 2, r.all);
+            assert.match(r.all, /delete Official Account group chat/);
+        });
+        await checkCli(["--json", "oa", "group", "delete", G, "--dry-run"], opts, (d) => {
+            assert.equal(d.code, 0, d.all);
+            assert.equal(JSON.parse(d.stdout).sent, false);
+        });
     });
 
     it("with --yes the guard lets it through to the request (here: no OA configured, exit 1)", async () => {
-        const r = await runCli(["oa", "group", "delete", G, "--yes"], opts);
-        assert.equal(r.code, 1, r.all);
-        assert.match(r.all, /OA not configured/);
+        await checkCli(["oa", "group", "delete", G, "--yes"], opts, (r) => {
+            assert.equal(r.code, 1, r.all);
+            assert.match(r.all, /OA not configured/);
+        });
     });
 });

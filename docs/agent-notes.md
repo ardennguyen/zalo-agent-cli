@@ -15,7 +15,6 @@ rule stays there and the paragraph comes here.
 ```
 src/
 ├── index.js              # Commander entry point — registers every command group
-├── cli.test.js           # CLI-surface tests (--help/--version, no Zalo session)
 ├── commands/             # One file per command group; each exports register<X>Commands(program)
 │   ├── login.js  msg.js  friend.js  group.js  conv.js  account.js  profile.js
 │   ├── poll.js   reminder.js  auto-reply.js  quick-msg.js  label.js  catalog.js
@@ -112,11 +111,11 @@ Each of these reports success, or names the wrong cause. They were all learned t
 
 | Invariant | Current | Source of truth | How to check |
 |---|---|---|---|
-| CLI commands | **322** invokable leaves (228 personal + 94 OA/ZBS/Social) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
-| Command groups | **41** containers — 25 top-level + 11 OA subgroups + 3 ZBS subgroups + `mcp webhook` + `account security` | the live commander tree | walk it. The number of `register*` calls in `src/index.js` is neither number: `oa` registers 11 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
+| CLI commands | **326** invokable leaves (232 personal + 94 OA/ZBS/Social) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
+| Command groups | **42** containers — 25 top-level + 11 OA subgroups + 3 ZBS subgroups + `mcp webhook` + `account security` + `cloud key` | the live commander tree | walk it. The number of `register*` calls in `src/index.js` is neither number: `oa` registers 11 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **37** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA/ZBS/Social commands | **94** (70 `oa` + 18 `zbs` + 6 `social`) | `src/commands/oa.js` + `src/commands/oa/*.js`, `src/commands/zbs.js`, `src/commands/social.js` | `node scripts/count-surface.mjs`. `zbs` counts with `oa`: both are the official API on the OA's OAuth token, so "personal" stays the unofficial surface |
-| Offline tests | **6532** as of 2026-11-15 (6522 pass, 10 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **5636** as of 2026-11-16 (5626 pass, 10 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -1703,7 +1702,23 @@ account's RSA private key, which Zalo's own apps get from the phone: `GET req_cl
 user approves, and the key arrives on the chat socket as a `personal_cloud` control, wrapped in a Signal-style message
 addressed to the account's own E2EE session. Taking part needs a registered E2EE device identity, a state-changing step on
 the account whose effect on other devices is unknown, plus secure storage, key-version and `correct_cloud_key` handling and
-free-plan removal. None of it is built, and no live request for it was made.
+free-plan removal. None of it was built then. **D8 was reversed on 2026-11-15:** the device identity, the phone transfer
+(no prompt for a registered device) and both blob formats were built and confirmed live; the key is sealed under the
+account's data key (`accounts/<ownId>/cloud-key.json`) and a QR login fetches it for an account with zCloud
+(`src/core/cloud-key-setup.js`, `login --no-cloud-key` skips it).
+
+**The Signal slice is our own code (2026-11-15).** `cloud key setup` later built that device identity
+(`src/zalo/e2ee/`). Its first version ran on a GPL-3.0 Signal library, a release blocker for this license; it was replaced
+by `src/zalo/e2ee/signal-protocol.js` (X3DH both roles, the Double Ratchet, the two message types hand-coded) and
+`src/zalo/e2ee/curve.js` (Curve25519 and XEdDSA on `@noble/curves`, MIT). The variant's only difference from standard
+Signal v3 is the HKDF info labels: `ZaloText`, `ZaloRatchet`, `ZaloMessageKeys`. Before the library was removed, an
+interop run checked every flow both ways against it under those labels (our pre-key message and our replies came out
+byte-identical with the same randomness, each side decrypted the other's, 64 signatures each way); its outputs are the
+known-answer vectors in `tests/unit/e2ee-signal-vectors.test.js`. Two details matter: verification takes the Edwards sign
+bit from the top bit of the signature (27 of 64 signatures from the other implementation set it; a strict XEdDSA verifier
+would refuse them), and the session record keeps the layout the library wrote, so a device sealed before the change keeps
+its sessions with the phone and needs no new registration. The store accepts every peer identity and records the latest
+(the peers are the account's own devices; the library's lookup never refused one either).
 
 ## Reads: Zalo's read-only endpoints (v3.0, 2026-10-26)
 
@@ -2107,7 +2122,7 @@ the code and from read-only calls on both:
 | reactions, pinned and unread, boards | same | same | the socket (610/611) and REST |
 | cloud index | walks the queue; records where each backup lives | free plan with nothing in the cloud: no page asked for, stage reported as skipped | zCloud REST (`zcld.chat.zalo.me`) |
 | media downloads | from the CDN references the messages carry | the same | the CDN, until Zalo's copy expires |
-| media that expired from the CDN | listed in the cloud index; not downloadable (the blob is end-to-end encrypted under the account's cloud key, which this tool never holds, decision D8) | gone: nothing else holds it | none for this client |
+| media that expired from the CDN | listed in the cloud index; downloadable with `sync-media --from-zcloud` (the blob is end-to-end encrypted under the account's cloud key, which the login or `cloud key setup` fetches from the phone and seals; D8 was reversed on 2026-11-15) | gone: nothing else holds it | none for this client |
 
 Live reads of the two accounts (aggregate numbers only): the usage answer is `{plan, quota, usage, service_usage}` for
 both. Main: plan 0 (`zcloud`), quota 107374182400 B (100 GiB), 39,192,432,681 B used, `service_usage` keys `my_cloud`,
@@ -2159,10 +2174,10 @@ was done (items are the audit's ZP numbers):
     `cloud-viewer-key` only. The 404 above came from the bare URL. A My Cloud item is opened by its chat message first.
     Live check: `cloud get` on one key-less My Cloud item of the paid account.
   - *The key*: RSA-OAEP SHA-256 (2048, PKCS#8) unwraps `encryptKey` into key(32) | IV(12) | tag(16); data is AES-256-GCM
-    (the metadata, and `algoversion` 1 blobs); `algoversion` 2 is AES-CTR in 4096-byte blocks and is not built. The RSA
-    key comes only from the phone (`personalcloud_key/req_cloud_key`, then a Signal-wrapped `personal_cloud` control
-    opened with a registered device identity). No PIN path exists, so `cloud get` takes the
-    RSA key at run time (stdin or a hidden prompt) and never stores it. Missing: the Signal identity (D8).
+    (the metadata, and `algoversion` 1 blobs); `algoversion` 2 is AES-256-CTR in 4096-byte blocks, each from the same IV
+    (built 2026-11-15). The RSA key comes only from the phone (`personalcloud_key/req_cloud_key`, then a Signal-wrapped
+    `personal_cloud` control opened with a registered device identity). No PIN path exists. Since 2026-11-15 the key is
+    fetched by the login or `cloud key setup` and sealed; `--key-stdin`/`--key-prompt` still override it.
   - *Cloud delete* (`cloud apply`): Zalo's "Delete data" dialog deletes per conversation, per item,
     the delete-for-me sync (`msgId` = `glbMsgId` or `<cliMsgId>_001`, the sender `"0"` when it is the account). Live
     check: one disposable item with the owner watching.

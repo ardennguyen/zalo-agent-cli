@@ -443,8 +443,7 @@ When any of these disagree, `references/command-reference.md` wins — it is gen
 - OA token expires ~25h → refreshed automatically once on `-216`/`-220` when a refresh token is stored; `oa refresh` renews it by hand
 - Some OA APIs require tier upgrade (error -224) → see zalo.cloud/oa/pricing
 - OA webhook needs HTTPS + verified domain + VN IP for full user data
-- `catalog` commands require a zBusiness Pro account
-- Not yet confirmed on a live account: `msg send-video` with a local file (its `--json` reply says `verified: false` where it has that field). Tell the user before relying on one
+- `catalog` commands need Zalo Shop turned on (`catalog register on`). An account with no zBusiness package then has its default catalog; a zBusiness package sets how many catalogs and products it may create (`account status` shows the limits)
 
 ## Security Model
 - **No code execution**: This skill only invokes the `zalo-agent` CLI binary — it does not run arbitrary code, install packages, or modify system files

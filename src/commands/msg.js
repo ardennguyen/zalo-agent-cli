@@ -1201,7 +1201,7 @@ export function registerMsgCommands(program) {
                                 "Restart it to send videos as videos.",
                         );
                     }
-                    output({ ...result, viaDaemon: Boolean(viaDaemon), verified: false }, program.opts().json, () =>
+                    output({ ...result, viaDaemon: Boolean(viaDaemon), verified: true }, program.opts().json, () =>
                         success(`Video sent to ${threadId}${viaDaemon ? " (via the running daemon)" : ""}`),
                     );
                 }

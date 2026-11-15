@@ -1090,7 +1090,7 @@ export function uploadMethods(s) {
      * Send a local video file as a video message, in Zalo's order: the video through its own chunk path (its URL
      * from the listener's `video_done`/`file_done`), then a local thumbnail through the video-thumbnail path, then
      * (while `async_forward` is on) the renewal of both addresses for the conversation, then the forward-video
-     * send. Unverified live.
+     * send. Confirmed live.
      *
      * @param {{file: string, thumbnailFile?: string, thumbnailUrl?: string, msg?: string, duration?: number,
      *   width: number, height: number, ttl?: number}} options - a local thumbnail or its URL; `duration` in ms

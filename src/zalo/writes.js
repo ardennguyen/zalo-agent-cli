@@ -18,8 +18,8 @@
  * - `sendpt`, `sharefile`, `sendmp3`/`voicemp3`, `upthumb` and the local-GIF chunk send: Zalo does not use them
  *   or the engine already makes the same request (`asyncfile/*`, `photo_original/*`, the `upthumb` + `gif` chunks);
  * - `photo_url`: it only lets a forward skip the download and re-upload; `msg forward` reaches the same result;
- * - the video chunk uploads: a local video is sent as a file (`msg send-file`); only a forward-with-reupload flow
- *   uses them;
+ * - the video chunk uploads (`video/file/upload`, `video/thumb/upload`): `msg send-video <file>` already makes them
+ *   (src/zalo/api/upload.js `sendVideoFile`);
  * - the receipts (`seen`, `delivered` legacy forms, reaction receipts, `subtab/seen`): they change what other people
  *   see, and the v2 forms are already sent;
  * - `closefr/update` and `profile/mode`: Zalo answers 404, and Zalo's own toggle for them does nothing;

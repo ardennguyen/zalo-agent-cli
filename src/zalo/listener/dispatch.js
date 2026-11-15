@@ -261,6 +261,21 @@ function controlSteps(uid, control) {
             { emit: "upload_attachment", args: [{ fileUrl: url, fileId }] },
         ];
     }
+    // A video forward's link renewal answered later (`video` / `renew_link`, data `[{originalUrl, renewUrl, error,
+    // destId, destType}]`): each item settles the renewal waiting on its original address (src/zalo/api/upload.js).
+    if (actType === "video" && content.act === "renew_link") {
+        const items = controlData(content.data);
+        return (Array.isArray(items) ? items : [])
+            .filter((it) => it && typeof it.originalUrl === "string" && it.originalUrl)
+            .map((it) => ({
+                settle: {
+                    fileId: `renew_link:${it.originalUrl}`,
+                    url: typeof it.renewUrl === "string" ? it.renewUrl : null,
+                    kind: "renew_link",
+                    control: it,
+                },
+            }));
+    }
     if (actType === "group") {
         const ev = groupControlEvent(uid, content);
         return ev ? [{ emit: "group_event", args: [ev] }] : [];

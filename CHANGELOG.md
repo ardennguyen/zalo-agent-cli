@@ -21,6 +21,10 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 - **No file is written off by its age.** Media downloads ask for every file, whatever its age: an old file kept in zCloud comes from zCloud when the account's zCloud key is stored, any other from Zalo's servers, and zCloud is tried again when Zalo's servers fail. A file counts as gone only once Zalo's servers say it no longer exists, and files an earlier version set aside by age alone are looked at again. The stored key is used by every download (`sync`, `sync-media`, the automatic downloads of `listen` and `mcp start`, `zalo_view_media`); `sync-media --from-zcloud` now only insists on zCloud (it checks the plan, and takes a key at run time with `--key-stdin` or `--key-prompt`), and `--all-ages` is kept for scripts but no longer needed.
 - **Photos keep Zalo's format.** A photo Zalo keeps as JPEG XL is downloaded and saved as `.jxl`, no longer swapped for a JPEG copy; every picture is named by its own bytes. Over MCP a JPEG XL photo is sent as a link, since MCP clients take only JPEG, PNG, GIF and WebP inline.
 
+#### Fixed
+
+- **`msg send-video` with a local file.** The send no longer fails with Zalo's "invalid parameter": the video and a local thumbnail now go up through Zalo's own video upload, their addresses are renewed for the conversation, and the message is sent with them (the same applies to a local `video` in `zalo_send_message`). A video given without `--duration` is sent as 1 ms long instead of 0.
+
 #### Dependencies
 
 - Added `@noble/curves` 2.4.0 (MIT) for the end-to-end-encryption device. Its Signal protocol code is the engine's own; no GPL-licensed library is used.

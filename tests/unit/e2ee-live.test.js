@@ -10,13 +10,14 @@ import {
     describeShape,
     e2eeDebugEnabled,
     getKeyIdLive,
-    listDevicesLive,
+    listMyDevicesLive,
+    parseBundleReply,
     registerDeviceLive,
     sendSignalCommand,
     subscribeCloudControls,
     CMD_PUSH_CONTROLS,
 } from "../../src/core/e2ee-live.js";
-import { CMD_GET_LIST_DEVICES, bundleFromStore, generateDeviceIdentity } from "../../src/zalo/e2ee/index.js";
+import { bundleFromStore, generateDeviceIdentity } from "../../src/zalo/e2ee/index.js";
 
 /** A throwaway account id (repeated-digit core: a fake by the no-real-ids convention). */
 const OWN = "7000000000000000001";
@@ -98,26 +99,53 @@ describe("sendSignalCommand", () => {
     });
 });
 
-describe("listDevicesLive and getKeyIdLive", () => {
-    it("lists the account's devices from the reply", async () => {
-        const tap = fakeTap();
-        const result = await listDevicesLive({
-            send: (f) => {
-                assert.equal(f.cmd, CMD_GET_LIST_DEVICES);
-                queueMicrotask(() =>
-                    tap.emit(CMD_GET_LIST_DEVICES, {
-                        data: { reqId: f.data.reqId, data: { uids: [{ uid: "u1", devices: [{ deviceId: 1 }] }] } },
-                    }),
-                );
-            },
-            tap,
-            ownUid: "u1",
-            timeoutMs: 1000,
-        });
-        assert.deepEqual(result.occupiedSlots, [1]);
-        assert.equal(result.devices[0].platform, "WEB");
+/** A base64 bundle item for a freshly generated device on `slot` (the GET_BUNDLE inner shape). */
+async function bundleItemFor(slot) {
+    const gen = await generateDeviceIdentity({ preKeyCount: 1 });
+    const b = bundleFromStore(gen.store);
+    return {
+        deviceId: slot,
+        registrationId: b.registrationId,
+        identityKey: b.identityKey,
+        signedPreKey: b.signedPreKey,
+        preKey: b.preKeys[0],
+    };
+}
+
+/** The GET_BUNDLE(-1) reply shape: data.keys = [{uid, err, keys: [deviceBundles]}]. */
+function bundleReply(reqId, items) {
+    return { data: { reqId, data: { err: 0, keys: [{ uid: OWN, err: 0, keys: items }], errData: [] } } };
+}
+
+describe("parseBundleReply and listMyDevicesLive", () => {
+    it("parses the nested data.keys[uid].keys device bundles", async () => {
+        const items = [await bundleItemFor(0), await bundleItemFor(2)];
+        const parsed = parseBundleReply(bundleReply("r", items).data, OWN);
+        assert.deepEqual(parsed.map((p) => p.deviceId).sort(), [0, 2]);
     });
 
+    it("lists the account's devices and occupied slots from GET_BUNDLE(-1)", async () => {
+        const items = [await bundleItemFor(0), await bundleItemFor(2)];
+        const tap = fakeTap();
+        const result = await listMyDevicesLive({
+            send: (f) => {
+                assert.equal(f.cmd, 541);
+                assert.equal(f.data.data.uids[0].deviceId, -1, "asks for all devices");
+                queueMicrotask(() => tap.emit(541, bundleReply(f.data.reqId, items)));
+            },
+            tap,
+            ownUid: OWN,
+            timeoutMs: 1000,
+        });
+        assert.deepEqual(result.occupiedSlots, [0, 2]);
+        assert.deepEqual(
+            result.devices.map((d) => d.platform),
+            ["MOBILE", "PC"],
+        );
+    });
+});
+
+describe("getKeyIdLive", () => {
     it("reads the key id reply", async () => {
         const tap = fakeTap();
         const reply = await getKeyIdLive({
@@ -130,8 +158,11 @@ describe("listDevicesLive and getKeyIdLive", () => {
     });
 });
 
-/** A fake transport that answers the full registration round; records the order of commands sent. */
-function fakeRegistrationTransport({ peers, listSlots }) {
+/**
+ * A fake transport for the full registration round (564 -> 540 -> 541(-1) -> 543), recording the command order.
+ * `allDevices` are the bundle items GET_BUNDLE(-1) returns; `keyId`/`iid` drive the key-id match.
+ */
+function fakeRegistrationTransport({ allDevices, keyId = 16186, iid = 16186 }) {
     const subs = new Map();
     const order = [];
     const tap = {
@@ -148,41 +179,23 @@ function fakeRegistrationTransport({ peers, listSlots }) {
         order.push(frame.cmd);
         const reqId = frame.data.reqId;
         queueMicrotask(() => {
-            if (frame.cmd === 564) tap.emit(564, { data: { reqId, data: {} } });
-            else if (frame.cmd === 540) tap.emit(540, { data: { reqId, data: { ts: 123 } } });
-            else if (frame.cmd === 541) {
-                const slot = frame.data.data.uids[0].deviceId;
-                tap.emit(541, { data: { reqId, data: peers[slot] ? { keys: [peers[slot]] } : { keys: [] } } });
-            } else if (frame.cmd === 543) tap.emit(543, { data: { reqId, data: {} } });
-            else if (frame.cmd === 563) {
-                tap.emit(563, {
-                    data: { reqId, data: { uids: [{ uid: OWN, devices: listSlots.map((s) => ({ deviceId: s })) }] } },
-                });
-            }
+            if (frame.cmd === 564) tap.emit(564, { data: { reqId, data: { err: 0, keyId } } });
+            else if (frame.cmd === 540)
+                tap.emit(540, { data: { reqId, data: { err: 0, keyExists: 1, iid, ts: 1, devices: [] } } });
+            else if (frame.cmd === 541) tap.emit(541, bundleReply(reqId, allDevices));
+            else if (frame.cmd === 543) tap.emit(543, { data: { reqId, data: { err: 0 } } });
         });
     };
     return { send, tap, order };
 }
 
-/** A base64 bundle item for a freshly generated peer device on `slot`. */
-async function peerBundleItem(slot) {
-    const gen = await generateDeviceIdentity({ preKeyCount: 1 });
-    const b = bundleFromStore(gen.store);
-    return {
-        deviceId: slot,
-        registrationId: b.registrationId,
-        identityKey: b.identityKey,
-        signedPreKey: b.signedPreKey,
-        preKey: b.preKeys[0],
-    };
-}
-
-describe("registerDeviceLive — the full connect-time checklist", () => {
-    it("runs 564 -> 540 -> INIT_SUBDEVICE(541/543) -> 563 in order and registers only when 563 lists us", async () => {
+describe("registerDeviceLive — the full connect-time sequence", () => {
+    it("runs 564 -> 540 -> GET_BUNDLE(-1) -> INIT_SESSION(543); success is SUBMIT_BUNDLE, key id matches", async () => {
         const our = await generateDeviceIdentity({ preKeyCount: 2 });
         const bundle = bundleFromStore(our.store);
-        const peers = { 0: await peerBundleItem(0), 2: await peerBundleItem(2) };
-        const { send, tap, order } = fakeRegistrationTransport({ peers, listSlots: [1] });
+        // The account's device registry after our submit: our slot 1 plus the phone (0) and pc (2).
+        const allDevices = [await bundleItemFor(1), await bundleItemFor(0), await bundleItemFor(2)];
+        const { send, tap, order } = fakeRegistrationTransport({ allDevices, keyId: 16186, iid: 16186 });
         const reg = await registerDeviceLive({
             send,
             tap,
@@ -192,18 +205,21 @@ describe("registerDeviceLive — the full connect-time checklist", () => {
             store: our.store,
             timeoutMs: 2000,
         });
-        assert.equal(reg.registered, true);
-        assert.deepEqual(reg.subdevices.built.sort(), [0, 2]);
+        assert.equal(reg.registered, true, "SUBMIT_BUNDLE success = registered");
+        assert.equal(reg.keyMatches, true, "GET_KEY_ID keyId matches SUBMIT_BUNDLE iid");
+        assert.equal(reg.listedInBundles, true, "our slot appears in GET_BUNDLE(-1)");
+        assert.deepEqual(reg.subdevices.built.sort(), [0, 2], "sessions built to the other devices only");
         assert.equal(order[0], 564, "GET_KEY_ID first");
         assert.equal(order[1], 540, "SUBMIT_BUNDLE second");
-        assert.ok(order.includes(543), "INIT_SESSION sent after building subdevice sessions");
-        assert.equal(order[order.length - 1], 563, "GETLIST last");
+        assert.ok(order.includes(541), "GET_BUNDLE(-1) for the device registry");
+        assert.ok(order.includes(543), "INIT_SESSION built the subdevice sessions");
     });
 
-    it("reports not registered when the server list does not include our slot", async () => {
+    it("stays registered on SUBMIT_BUNDLE success even if our slot is not yet in the bundle list", async () => {
         const our = await generateDeviceIdentity({ preKeyCount: 1 });
         const bundle = bundleFromStore(our.store);
-        const { send, tap } = fakeRegistrationTransport({ peers: {}, listSlots: [] });
+        const allDevices = [await bundleItemFor(0), await bundleItemFor(2)]; // our slot 1 absent
+        const { send, tap } = fakeRegistrationTransport({ allDevices });
         const reg = await registerDeviceLive({
             send,
             tap,
@@ -213,10 +229,36 @@ describe("registerDeviceLive — the full connect-time checklist", () => {
             store: our.store,
             timeoutMs: 2000,
         });
-        assert.equal(reg.registered, false);
-        assert.deepEqual(reg.occupiedSlots, []);
-        // No peer bundles: INIT_SUBDEVICE builds nothing, which is tolerated.
-        assert.deepEqual(reg.subdevices.built, []);
+        assert.equal(reg.registered, true, "SUBMIT_BUNDLE success is the criterion, not the device list");
+        assert.equal(reg.listedInBundles, false);
+        assert.deepEqual(reg.subdevices.built.sort(), [0, 2]);
+    });
+
+    it("fails when SUBMIT_BUNDLE replies an error", async () => {
+        const our = await generateDeviceIdentity({ preKeyCount: 1 });
+        const bundle = bundleFromStore(our.store);
+        const subs = new Map();
+        const tap = {
+            on(cmd, fn) {
+                if (!subs.has(cmd)) subs.set(cmd, new Set());
+                subs.get(cmd).add(fn);
+                return () => subs.get(cmd)?.delete(fn);
+            },
+            emit(cmd, frame) {
+                for (const fn of [...(subs.get(cmd) ?? [])]) fn(frame);
+            },
+        };
+        const send = (frame) => {
+            const reqId = frame.data.reqId;
+            queueMicrotask(() => {
+                if (frame.cmd === 564) tap.emit(564, { data: { reqId, data: { err: 0, keyId: 1 } } });
+                else if (frame.cmd === 540) tap.emit(540, { data: { reqId, data: { err: -1 } } });
+            });
+        };
+        await assert.rejects(
+            registerDeviceLive({ send, tap, ownUid: OWN, deviceId: 1, bundle, store: our.store, timeoutMs: 2000 }),
+            SignalCommandError,
+        );
     });
 });
 

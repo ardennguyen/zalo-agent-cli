@@ -15,17 +15,18 @@ import { randomUUID } from "node:crypto";
 import { createSocketTap } from "../zalo/listener/socket-tap.js";
 import { readControls } from "../zalo/queues/control-queue.js";
 import {
-    LIST_SUBDEVICES,
     decodeBundleItem,
-    decodeDeviceList,
     encodeGetBundle,
     encodeGetKeyId,
     encodeInitSession,
-    encodeListDevices,
     encodeSubmitBundle,
+    platformName,
     replyError,
 } from "../zalo/e2ee/bundle-wire.js";
 import { buildSubdeviceInit } from "../zalo/e2ee/subdevice-init.js";
+
+/** The GET_BUNDLE device id that asks for every one of the account's registered devices at once. */
+export const ALL_DEVICES = -1;
 
 /** The control push (cmd 601) that carries the `pcloud_info` reply. */
 export const CMD_PUSH_CONTROLS = 601;
@@ -187,24 +188,67 @@ export function subscribeCloudControls(tap) {
 }
 
 /**
- * List the account's end-to-end-encryption devices and which platform slots are occupied (read-only; sends 563).
+ * Parse a GET_BUNDLE reply into the account's device bundles. The reply nests them as
+ * `data.keys = [{uid, err, keys: [ {deviceId, registrationId, identityKey, signedPreKey, preKey}, … ]}]` — one outer
+ * entry per uid, whose inner `keys` are the per-device bundles (the client's `_convertBundle` reads each inner entry).
+ *
+ * @param {object|null} reply - the decoded frame's `data` (`{reqId, data:{keys, errData}}`)
+ * @param {string} ownUid
+ * @returns {Array<ReturnType<typeof decodeBundleItem>>}
+ */
+export function parseBundleReply(reply, ownUid) {
+    const payload = reply?.data ?? null;
+    const outer = Array.isArray(payload?.keys) ? payload.keys : [];
+    const forUid = outer.find((e) => String(e?.uid) === String(ownUid)) ?? (outer.length === 1 ? outer[0] : null);
+    const inner = Array.isArray(forUid?.keys) ? forUid.keys : [];
+    const out = [];
+    for (const item of inner) {
+        try {
+            out.push(decodeBundleItem(item));
+        } catch {
+            /* a malformed per-device entry is skipped */
+        }
+    }
+    return out;
+}
+
+/**
+ * Fetch all of the account's registered device bundles in one GET_BUNDLE (deviceId -1), the way the client does for its
+ * subdevice init. This doubles as the account's end-to-end-encryption device registry.
  *
  * @param {object} args
  * @param {(payload: object) => void} args.send
  * @param {object} args.tap
  * @param {string} args.ownUid
  * @param {number} [args.timeoutMs]
- * @returns {Promise<{devices: Array<{deviceId: number, platform: string}>, occupiedSlots: number[], raw: object|null}>}
+ * @returns {Promise<{bundles: Array<ReturnType<typeof decodeBundleItem>>, raw: object|null}>}
  */
-export async function listDevicesLive({ send, tap, ownUid, timeoutMs }) {
+export async function getAllBundlesLive({ send, tap, ownUid, timeoutMs }) {
     const reply = await sendSignalCommand({
         send,
         tap,
-        frame: encodeListDevices({ reqId: randomUUID() }),
+        frame: encodeGetBundle({ uid: ownUid, deviceId: ALL_DEVICES, reqId: randomUUID() }),
         timeoutMs,
-        debugLabel: "GETLIST 563",
+        debugLabel: "GET_BUNDLE 541 (all devices)",
     });
-    return decodeDeviceList(reply, ownUid);
+    return { bundles: parseBundleReply(reply, ownUid), raw: reply?.data ?? null };
+}
+
+/**
+ * List the account's end-to-end-encryption devices and which platform slots are occupied, from the device bundles
+ * (GET_BUNDLE -1). This is the real device registry; cmd 563 returns chat sessions, not the device list.
+ *
+ * @param {object} args
+ * @param {(payload: object) => void} args.send
+ * @param {object} args.tap
+ * @param {string} args.ownUid
+ * @param {number} [args.timeoutMs]
+ * @returns {Promise<{devices: Array<{deviceId: number, platform: string}>, occupiedSlots: number[]}>}
+ */
+export async function listMyDevicesLive({ send, tap, ownUid, timeoutMs }) {
+    const { bundles } = await getAllBundlesLive({ send, tap, ownUid, timeoutMs });
+    const occupiedSlots = [...new Set(bundles.map((b) => b.deviceId))].sort((a, b) => a - b);
+    return { devices: occupiedSlots.map((id) => ({ deviceId: id, platform: platformName(id) })), occupiedSlots };
 }
 
 /**
@@ -225,42 +269,6 @@ export async function getKeyIdLive({ send, tap, deviceId, timeoutMs }) {
         timeoutMs,
         debugLabel: "GET_KEY_ID 564",
     });
-}
-
-/**
- * Fetch one of the account's own devices' bundles (GET_BUNDLE 541), decoded, or null when the server has no bundle for
- * that slot (e.g. that device is not an end-to-end-encryption device).
- *
- * @param {object} args
- * @param {(payload: object) => void} args.send
- * @param {object} args.tap
- * @param {string} args.ownUid
- * @param {number} args.deviceId
- * @param {number} [args.timeoutMs]
- * @returns {Promise<ReturnType<typeof decodeBundleItem>|null>}
- */
-export async function getBundleLive({ send, tap, ownUid, deviceId, timeoutMs }) {
-    const reply = await sendSignalCommand({
-        send,
-        tap,
-        frame: encodeGetBundle({ uid: ownUid, deviceId, reqId: randomUUID() }),
-        timeoutMs,
-        debugLabel: `GET_BUNDLE 541 slot ${deviceId}`,
-    });
-    // The reply's `data` carries the per-uid bundles; find this device's. Field names are the client's and unverified.
-    const payload = reply?.data ?? null;
-    const buckets = Array.isArray(payload?.keys) ? payload.keys : Array.isArray(payload?.uids) ? payload.uids : [];
-    let item = null;
-    for (const b of buckets) {
-        const list = Array.isArray(b?.keys) ? b.keys : Array.isArray(b?.devices) ? b.devices : b ? [b] : [];
-        item = list.find((d) => Number(d?.deviceId) === Number(deviceId)) ?? item;
-    }
-    if (!item && payload && Number(payload.deviceId) === Number(deviceId)) item = payload;
-    try {
-        return item ? decodeBundleItem(item) : null;
-    } catch {
-        return null;
-    }
 }
 
 /**
@@ -287,9 +295,11 @@ export async function submitBundleLive({ send, tap, bundle, deviceId, deleteExis
 }
 
 /**
- * The INIT_SUBDEVICE phase: for each platform slot other than ours, fetch its bundle, build a session, and announce the
- * sessions with one INIT_SESSION (543). Mutates `store` (it gains the sessions); the caller persists it. A slot with no
- * bundle (not an end-to-end-encryption device) is skipped. Never throws on a per-slot miss.
+ * The INIT_SUBDEVICE phase: from the account's device bundles (GET_BUNDLE -1), build a Signal session to each device
+ * other than ours and announce them with one INIT_SESSION (543). Mutates `store` (it gains the sessions); the caller
+ * persists it. This builds OUTBOUND sessions for sending end-to-end messages; it is NOT needed to receive the cloud key
+ * (that is a pre-key message addressed to our submitted bundle), so the caller does not block the key request on it.
+ * Never throws on a per-device miss.
  *
  * @param {object} args
  * @param {(payload: object) => void} args.send
@@ -297,35 +307,25 @@ export async function submitBundleLive({ send, tap, bundle, deviceId, deleteExis
  * @param {string} args.ownUid
  * @param {number} args.deviceId - our own slot
  * @param {import("../zalo/e2ee/signal-store.js").SignalProtocolStore} args.store
+ * @param {Array<ReturnType<typeof decodeBundleItem>>} args.bundles - the account's device bundles (GET_BUNDLE -1)
  * @param {number} [args.timeoutMs]
  * @returns {Promise<{built: number[], skipped: number[], reply: object|null}>}
  */
-export async function initSubdevicesLive({ send, tap, ownUid, deviceId, store, timeoutMs }) {
-    const slots = LIST_SUBDEVICES.filter((s) => s !== Number(deviceId));
+export async function initSubdevicesLive({ send, tap, ownUid, deviceId, store, bundles, timeoutMs }) {
+    const peers = (bundles ?? []).filter((b) => Number(b.deviceId) !== Number(deviceId));
     const entries = [];
     const built = [];
     const skipped = [];
-    for (const slot of slots) {
-        let bundleItem = null;
+    for (const bundleItem of peers) {
         try {
-            bundleItem = await getBundleLive({ send, tap, ownUid, deviceId: slot, timeoutMs });
+            const initMsg = await buildSubdeviceInit({ store, ownUid, deviceId: bundleItem.deviceId, bundleItem });
+            entries.push({ deviceId: bundleItem.deviceId, initMsg });
+            built.push(bundleItem.deviceId);
         } catch (e) {
-            e2eeDebug(`INIT_SUBDEVICE slot ${slot}: GET_BUNDLE failed`, { code: e?.code ?? null });
-            bundleItem = null;
-        }
-        if (!bundleItem) {
-            skipped.push(slot);
-            continue;
-        }
-        try {
-            const initMsg = await buildSubdeviceInit({ store, ownUid, deviceId: slot, bundleItem });
-            entries.push({ deviceId: slot, initMsg });
-            built.push(slot);
-        } catch (e) {
-            e2eeDebug(`INIT_SUBDEVICE slot ${slot}: build failed`, {
+            e2eeDebug(`INIT_SUBDEVICE slot ${bundleItem.deviceId}: build failed`, {
                 message: `str(${String(e?.message ?? "").length})`,
             });
-            skipped.push(slot);
+            skipped.push(bundleItem.deviceId);
         }
     }
     let reply = null;
@@ -345,8 +345,11 @@ export async function initSubdevicesLive({ send, tap, ownUid, deviceId, store, t
 
 /**
  * The full connect-time registration sequence the client runs after the socket authenticates:
- * GET_KEY_ID(564) → SUBMIT_BUNDLE(540) → INIT_SUBDEVICE → GETLIST(563). It then VERIFIES via 563 that our device
- * appears; registration counts only when it does. LIVE and unverified.
+ * GET_KEY_ID(564) → SUBMIT_BUNDLE(540) → INIT_SUBDEVICE. Registration is confirmed by SUBMIT_BUNDLE's success
+ * (`err:0`, which {@link sendSignalCommand} enforces, with its `iid` matching the GET_KEY_ID `keyId`) — NOT by cmd 563,
+ * which lists chat sessions, not the device registry. After submitting, the account's device bundles (GET_BUNDLE -1)
+ * should include our slot, which this also reports. The subdevice sessions are built best-effort and never gate the
+ * result. LIVE and unverified.
  *
  * @param {object} args
  * @param {(payload: object) => void} args.send
@@ -357,7 +360,8 @@ export async function initSubdevicesLive({ send, tap, ownUid, deviceId, store, t
  * @param {import("../zalo/e2ee/signal-store.js").SignalProtocolStore} args.store
  * @param {boolean} [args.deleteExistingSessions]
  * @param {number} [args.timeoutMs]
- * @returns {Promise<{registered: boolean, occupiedSlots: number[], devices: object[], subdevices: object}>}
+ * @returns {Promise<{registered: boolean, keyId: *, iid: *, keyMatches: boolean, listedInBundles: boolean,
+ *   occupiedSlots: number[], devices: object[], subdevices: object}>}
  */
 export async function registerDeviceLive({
     send,
@@ -369,18 +373,36 @@ export async function registerDeviceLive({
     deleteExistingSessions = false,
     timeoutMs,
 }) {
-    await getKeyIdLive({ send, tap, deviceId, timeoutMs });
-    await submitBundleLive({ send, tap, bundle, deviceId, deleteExistingSessions, timeoutMs });
-    const subdevices = await initSubdevicesLive({ send, tap, ownUid, deviceId, store, timeoutMs });
-    const list = await listDevicesLive({ send, tap, ownUid, timeoutMs });
-    const registered = list.occupiedSlots.includes(Number(deviceId));
+    const keyIdReply = await getKeyIdLive({ send, tap, deviceId, timeoutMs });
+    const keyId = keyIdReply?.data?.keyId ?? null;
+    // SUBMIT_BUNDLE throwing (err !== 0) is the only failure; resolving means the server accepted the bundle.
+    const submitReply = await submitBundleLive({ send, tap, bundle, deviceId, deleteExistingSessions, timeoutMs });
+    const iid = submitReply?.data?.iid ?? null;
+    // The account's device bundles now (GET_BUNDLE -1): our slot should appear, and the others feed INIT_SUBDEVICE.
+    const { bundles } = await getAllBundlesLive({ send, tap, ownUid, timeoutMs });
+    const listedInBundles = bundles.some((b) => Number(b.deviceId) === Number(deviceId));
+    const subdevices = await initSubdevicesLive({ send, tap, ownUid, deviceId, store, bundles, timeoutMs });
+    const occupiedSlots = [...new Set(bundles.map((b) => b.deviceId))].sort((a, b) => a - b);
+    const keyMatches = keyId !== null && iid !== null && String(keyId) === String(iid);
     e2eeDebug("registerDeviceLive result", {
         slot: Number(deviceId),
-        registered,
-        occupiedSlots: list.occupiedSlots,
+        registered: true,
+        keyMatches,
+        listedInBundles,
+        occupiedSlots,
         subdevicesBuilt: subdevices.built.length,
     });
-    return { registered, occupiedSlots: list.occupiedSlots, devices: list.devices, subdevices };
+    return {
+        // SUBMIT_BUNDLE accepted (it did not throw) = registered. The bundle list and iid match are confirmations.
+        registered: true,
+        keyId,
+        iid,
+        keyMatches,
+        listedInBundles,
+        occupiedSlots,
+        devices: occupiedSlots.map((id) => ({ deviceId: id, platform: platformName(id) })),
+        subdevices,
+    };
 }
 
 /**

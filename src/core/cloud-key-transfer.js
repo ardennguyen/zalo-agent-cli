@@ -135,6 +135,28 @@ export function readPcloudInfo(control) {
 }
 
 /**
+ * Read key material from the request's own HTTP reply, which may carry it directly (the server can release the key to a
+ * registered device without a separate control). Looks at the object and its `data` / `data.data` nestings for
+ * `encrypted_private_key`; returns null when none is present (then the key arrives as a 601 control instead).
+ *
+ * @param {*} reply - the session-decoded reply body
+ * @returns {{userAction: number, keyVersion: *, publicKey: *, encryptedPrivateKey: *}|null}
+ */
+export function readPcloudReply(reply) {
+    for (const d of [reply, reply?.data, reply?.data?.data]) {
+        if (d && typeof d === "object" && d.encrypted_private_key) {
+            return {
+                userAction: d.user_action === undefined ? PCLOUD_ACTION_APPROVED : Number(d.user_action),
+                keyVersion: d.key_version,
+                publicKey: d.public_key,
+                encryptedPrivateKey: d.encrypted_private_key,
+            };
+        }
+    }
+    return null;
+}
+
+/**
  * Request the key from the phone and wait, bounded, for the reply. Pure orchestration over injected transports; the
  * live entry {@link setupCloudKeyFromPhone} refuses before this is reached. The request is (re-)sent up to `maxRetry`
  * times, `retryGapMs` apart, while a single bounded wait runs for the reply control.
@@ -197,20 +219,15 @@ export function requestCloudKey({
             fn(value);
         };
 
-        const onControl = (control) => {
-            if (settled) return;
-            let info;
-            try {
-                info = readPcloudInfo(control);
-            } catch {
-                return;
-            }
-            if (!info || !matchesCloudKeySession(control, session)) return;
+        // Open the key material from a reply (a 601 control, or the key fields carried in the request's own HTTP reply).
+        const settleFromInfo = (info) => {
+            if (settled || !info) return;
             if (info.userAction === PCLOUD_ACTION_REFUSED) {
                 finish(reject, new CloudKeyRefusedError("the phone refused the cloud-key request"));
                 return;
             }
             if (info.userAction !== PCLOUD_ACTION_APPROVED) return;
+            if (!info.encryptedPrivateKey) return;
             Promise.resolve()
                 .then(() => unwrapPrivateKey(info.encryptedPrivateKey))
                 .then((privateKeyPkcs8Base64) => {
@@ -222,6 +239,18 @@ export function requestCloudKey({
                     });
                 })
                 .catch((e) => finish(reject, e));
+        };
+
+        const onControl = (control) => {
+            if (settled) return;
+            let info;
+            try {
+                info = readPcloudInfo(control);
+            } catch {
+                return;
+            }
+            if (!info || !matchesCloudKeySession(control, session)) return;
+            settleFromInfo(info);
         };
 
         try {
@@ -247,8 +276,13 @@ export function requestCloudKey({
             if (settled) return;
             attempt += 1;
             try {
-                await sendRequest(session);
+                // The request's own reply may already carry the key (the server can release it to a registered device
+                // without a separate control); if so, settle from it. Otherwise it is an ack and the key arrives as a
+                // 601 control handled by onControl.
+                const reply = await sendRequest(session);
                 if (attempt === 1) onPrompt();
+                const info = readPcloudReply(reply);
+                if (info) settleFromInfo(info);
             } catch (e) {
                 if (settled) return;
                 if (attempt >= maxRetry) {

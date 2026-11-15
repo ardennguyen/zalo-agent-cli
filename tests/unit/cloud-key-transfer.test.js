@@ -19,6 +19,7 @@ import {
     matchesCloudKeySession,
     newCloudKeySession,
     readPcloudInfo,
+    readPcloudReply,
     requestCloudKey,
     setupCloudKeyFromPhone,
 } from "../../src/core/cloud-key-transfer.js";
@@ -102,6 +103,33 @@ describe("cloud-key transfer scaffolding", () => {
         assert.deepEqual(res, { privateKeyPkcs8Base64: "opened:CIPHER", keyVersion: 3, publicKey: "pub" });
         assert.equal(sent, 1);
         assert.equal(prompted, 1);
+    });
+
+    it("readPcloudReply finds the key in the HTTP reply (direct and nested)", () => {
+        assert.equal(readPcloudReply(null), null);
+        assert.equal(readPcloudReply({ error_code: 0 }), null);
+        const direct = readPcloudReply({ encrypted_private_key: "C", key_version: 5, public_key: "P" });
+        assert.deepEqual(direct, { userAction: 1, keyVersion: 5, publicKey: "P", encryptedPrivateKey: "C" });
+        const nested = readPcloudReply({
+            data: { data: { user_action: 1, encrypted_private_key: "C2", key_version: 6 } },
+        });
+        assert.equal(nested.encryptedPrivateKey, "C2");
+        assert.equal(nested.keyVersion, 6);
+    });
+
+    it("resolves from the request's own HTTP reply when it carries the key (no 601)", async () => {
+        const session = newCloudKeySession("cli-box");
+        const res = await requestCloudKey({
+            session,
+            // The server releases the key in the request's reply itself; no control is ever delivered.
+            sendRequest: async () => ({
+                data: { encrypted_private_key: "HTTPCIPHER", key_version: 9, public_key: "pub9" },
+            }),
+            subscribe: () => () => {},
+            unwrapPrivateKey: (enc) => `opened:${enc}`,
+            waitMs: 5_000,
+        });
+        assert.deepEqual(res, { privateKeyPkcs8Base64: "opened:HTTPCIPHER", keyVersion: 9, publicKey: "pub9" });
     });
 
     it("rejects with CloudKeyRefusedError when the phone refuses", async () => {

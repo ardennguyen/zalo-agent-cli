@@ -729,7 +729,7 @@ function registerCloudKeyGroup(cloud, program) {
                             `Device registered (bundle accepted${reg.keyMatches ? ", key id matches" : ""}` +
                                 `${reg.listedInBundles ? ", listed in the account's devices" : ""}). ` +
                                 `${reg.subdevices.built.length} subdevice session(s) built. ` +
-                                "Requesting the cloud key — approve it on your phone.",
+                                "Requesting the cloud key (a trusted device usually gets it with no phone prompt; if your phone asks, approve it).",
                         );
                     }
                     // 4. Request the key over zCloud, wait for the pcloud_info control on the socket, decrypt and seal it.
@@ -746,7 +746,7 @@ function registerCloudKeyGroup(cloud, program) {
                         },
                         subscribe: subscribeCloudControls(tap),
                         onPrompt: () => {
-                            if (!jsonMode) info("Waiting for the phone to approve the cloud-key request…");
+                            if (!jsonMode) info("Waiting for the cloud key…");
                         },
                         waitMs: Number.isFinite(opts.wait) ? opts.wait * 1000 : undefined,
                     });

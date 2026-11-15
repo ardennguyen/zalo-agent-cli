@@ -359,19 +359,30 @@ async function zcloudGet(api, path, params = null) {
 // ── endpoints ───────────────────────────────────────────────────────────────
 
 /**
- * Ask the phone for the account's cloud key (a GET to `/personalcloud_key/req_cloud_key` with `{device_name,
- * session_id}`). The phone shows the owner a prompt; the key itself does NOT come back from this request — it arrives on
- * the chat socket as a `personal_cloud`/`pcloud_info` control (cmd 601), matched on the same ids. This send is a LIVE,
- * owner-present step, reached only by `cloud key setup`; it is UNVERIFIED on the wire.
+ * Ask for the account's cloud key: a GET to `<cloud-api domain>/personalcloud_key/req_cloud_key` with `{device_name,
+ * session_id}`. The client sends this over the ORDINARY session transport — params sealed with the session key
+ * (`_encodeParams`), reply decoded with the session key (`_get`) — NOT the zCloud viewer-key/enk path (that path is only
+ * for media blobs). The domain is the service map's cloud-api entry, the same host zCloud uses, falling back to the
+ * zCloud default.
+ *
+ * The reply is returned decoded. The key may come back here (its `data` may carry `encrypted_private_key` /
+ * `public_key` / `key_version` / `user_action`) and/or arrive on the socket as a `personal_cloud`/`pcloud_info` control
+ * (cmd 601); the caller handles both. This send is a LIVE step, reached only by `cloud key setup`; it is UNVERIFIED on
+ * the wire.
  *
  * @param {object} api
  * @param {{deviceName: string, sessionId: string}} session
- * @returns {Promise<any>} the request's immediate reply (an ack; the key comes later on the socket)
+ * @returns {Promise<any>} the session-decoded reply body (an ack, or the key material)
  */
 export async function requestCloudKeyFromPhone(api, { deviceName, sessionId }) {
-    return zcloudGet(api, "/personalcloud_key/req_cloud_key", {
-        device_name: String(deviceName),
-        session_id: String(sessionId),
+    const base = cloudDomains(api)[0];
+    const params = { device_name: String(deviceName), session_id: String(sessionId) };
+    return withSession(api, async (_ctx, utils) => {
+        const url = utils.makeURL(`${base}/personalcloud_key/req_cloud_key`, {
+            params: utils.encodeAES(JSON.stringify(params)),
+        });
+        const resp = await utils.request(url, { method: "GET" });
+        return utils.resolve(resp);
     });
 }
 

@@ -112,7 +112,7 @@ async function bundleItemFor(slot) {
     };
 }
 
-/** The GET_BUNDLE(-1) reply shape: data.keys = [{uid, err, keys: [deviceBundles]}]. */
+/** The GET_BUNDLE reply shape: data.keys = [{uid, err, keys: [deviceBundles]}]. */
 function bundleReply(reqId, items) {
     return { data: { reqId, data: { err: 0, keys: [{ uid: OWN, err: 0, keys: items }], errData: [] } } };
 }
@@ -124,14 +124,26 @@ describe("parseBundleReply and listMyDevicesLive", () => {
         assert.deepEqual(parsed.map((p) => p.deviceId).sort(), [0, 2]);
     });
 
-    it("lists the account's devices and occupied slots from GET_BUNDLE(-1)", async () => {
-        const items = [await bundleItemFor(0), await bundleItemFor(2)];
+    it("fills a missing deviceId from the requested slot (per-slot reply)", async () => {
+        const item = await bundleItemFor(0);
+        delete item.deviceId; // a per-slot reply may omit it
+        const parsed = parseBundleReply(bundleReply("r", [item]).data, OWN, 0);
+        assert.equal(parsed.length, 1);
+        assert.equal(parsed[0].deviceId, 0);
+    });
+
+    it("lists occupied slots by probing each platform slot (per-slot GET_BUNDLE)", async () => {
+        // The phone (0) and pc (2) have bundles; the web slot (1) has none (its probe replies an error).
+        const bySlot = { 0: await bundleItemFor(0), 2: await bundleItemFor(2) };
         const tap = fakeTap();
         const result = await listMyDevicesLive({
             send: (f) => {
                 assert.equal(f.cmd, 541);
-                assert.equal(f.data.data.uids[0].deviceId, -1, "asks for all devices");
-                queueMicrotask(() => tap.emit(541, bundleReply(f.data.reqId, items)));
+                const slot = f.data.data.uids[0].deviceId;
+                queueMicrotask(() => {
+                    if (bySlot[slot]) tap.emit(541, bundleReply(f.data.reqId, [bySlot[slot]]));
+                    else tap.emit(541, { data: { reqId: f.data.reqId, data: { err: -1 } } });
+                });
             },
             tap,
             ownUid: OWN,
@@ -159,8 +171,9 @@ describe("getKeyIdLive", () => {
 });
 
 /**
- * A fake transport for the full registration round (564 -> 540 -> 541(-1) -> 543), recording the command order.
- * `allDevices` are the bundle items GET_BUNDLE(-1) returns; `keyId`/`iid` drive the key-id match.
+ * A fake transport for the full registration round (564 -> 540 -> per-slot 541 -> 543), recording the command order.
+ * Every 541 probe returns `allDevices`; getBundleForSlot then picks the entry for the requested slot. `keyId`/`iid`
+ * drive the key-id match.
  */
 function fakeRegistrationTransport({ allDevices, keyId = 16186, iid = 16186 }) {
     const subs = new Map();

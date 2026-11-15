@@ -408,6 +408,18 @@ describe("openCloudSource: the plan gate and the run-time key", () => {
         assert.equal(result, null);
     });
 
+    it("uses a cloud key stored by `cloud key setup` when no run-time key is given", async () => {
+        const { result } = await quietly(() =>
+            openCloudSource(null, {}, "own1", {
+                usage: async () => ({ plan: 0 }),
+                isTTY: false,
+                loadStoredKey: () => ({ privateKeyPkcs8Base64: KEY_B64 }),
+            }),
+        );
+        assert.deepEqual(Object.keys(result), ["privateKey"]);
+        assert.equal(result.privateKey.asymmetricKeyType, "rsa");
+    });
+
     it("another account's key opens nothing: the download reports cloud-decrypt", async () => {
         const id = row({ daysAgo: 30 });
         inCloud(id);

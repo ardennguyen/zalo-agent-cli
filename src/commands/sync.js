@@ -8,6 +8,7 @@ import { parseIntAtLeast, parseIntOption } from "../utils/parse-options.js";
 import { whileInterruptible } from "../utils/interrupt.js";
 import { promptSecret, readSecretFromStream } from "../utils/secret-input.js";
 import { importCloudPrivateKey } from "../zalo/zcloud-e2ee.js";
+import { loadCloudKey } from "../core/cloud-key-store.js";
 import { zcloudState } from "../core/account-status.js";
 import { SyncManager } from "../core/sync.js";
 import { SyncV2, resolveSyncWindow, FULL_HISTORY_FROM } from "../core/sync-v2/index.js";
@@ -1768,12 +1769,27 @@ export async function openCloudSource(api, opts, ownId, deps = {}) {
     const isTTY = deps.isTTY ?? Boolean(process.stdin.isTTY);
     let text;
     try {
-        if (opts.keyStdin) text = await (deps.readStdin ?? readSecretFromStream)();
-        else if (opts.keyPrompt || isTTY) {
+        if (opts.keyStdin) {
+            text = await (deps.readStdin ?? readSecretFromStream)();
+        } else if (opts.keyPrompt) {
             text = await (deps.prompt ?? promptSecret)("The account's zCloud key (not shown): ");
         } else {
-            error("--from-zcloud needs the account's cloud key: --key-stdin, or --key-prompt in a terminal.");
-            return null;
+            // No run-time key given: use a cloud key sealed by `cloud key setup`, if there is one.
+            const stored = (deps.loadStoredKey ?? loadCloudKey)(ownId);
+            if (stored?.privateKeyPkcs8Base64) {
+                const privateKey = importCloudPrivateKey(stored.privateKeyPkcs8Base64);
+                info(`Fetching files kept in zCloud for account ${ownId} with the stored cloud key.`);
+                return { privateKey };
+            }
+            if (isTTY) {
+                text = await (deps.prompt ?? promptSecret)("The account's zCloud key (not shown): ");
+            } else {
+                error(
+                    "--from-zcloud needs the account's cloud key: store it with `cloud key setup`, give --key-stdin, " +
+                        "or use --key-prompt in a terminal.",
+                );
+                return null;
+            }
         }
         const privateKey = importCloudPrivateKey(text);
         text = null;

@@ -14,19 +14,37 @@
  */
 import { writeFileSync, chmodSync } from "node:fs";
 import { resolve } from "node:path";
-import { getAccountDbPath } from "../core/credentials.js";
+import { getAccountDbPath, getAccountDir } from "../core/credentials.js";
 import { scopeOf } from "../core/keystore/index.js";
 import { decryptMediaToFile } from "../core/keystore/media-seal.js";
 import { getActive } from "../core/accounts.js";
 import { findMessageByClientId, getCloudItems, getThreadNames, initDb } from "../core/db.js";
 import { CLEANUP_WARNING, applyCloudCleanup, planCloudCleanup } from "../core/cloud-plan.js";
 import { gateCli, guardSubcommand } from "../core/confirm-guard.js";
+import { getDaemonStatus } from "../core/daemon-channel.js";
 import { autoLogin, getApi } from "../core/zalo-client.js";
 import { error, info, output, success, warning } from "../utils/output.js";
 import { parseIntAtLeast } from "../utils/parse-options.js";
 import { promptSecret, readSecretFromStream } from "../utils/secret-input.js";
-import { fetchCloudBlob } from "../zalo/zcloud.js";
+import { fetchCloudBlob, requestCloudKeyFromPhone } from "../zalo/zcloud.js";
 import { decryptCloudBlob, decryptCloudInfo, importCloudPrivateKey } from "../zalo/zcloud-e2ee.js";
+import { bundleFromStore, DEVICE_IDS, platformName } from "../zalo/e2ee/index.js";
+import {
+    createE2eeDevice,
+    e2eeDeviceStatus,
+    forgetE2eeDevice,
+    hasE2eeDevice,
+    loadE2eeDevice,
+    markE2eeDeviceSubmitted,
+} from "../core/e2ee-device.js";
+import { cloudKeyStatus, forgetCloudKey, loadCloudKey } from "../core/cloud-key-store.js";
+import { listDevicesLive, submitBundleLive, subscribeCloudControls, withLiveSocket } from "../core/e2ee-live.js";
+import {
+    CloudKeyRefusedError,
+    CloudKeyTimeoutError,
+    CloudKeyUnsupportedError,
+    receiveCloudKeyFromPhone,
+} from "../core/cloud-key-transfer.js";
 
 const MB = 1024 * 1024;
 
@@ -381,7 +399,9 @@ export function registerCloudCommands(program) {
                 );
                 return;
             }
-            // The key is read before any request, so a wrong one fails without touching Zalo. Never stored.
+            // The key is read before any request, so a wrong one fails without touching Zalo. A key given at run time
+            // (--key-stdin/--key-prompt) overrides; otherwise a cloud key sealed by `cloud key setup` is used
+            // transparently. Never stored by this path.
             let privateKey = null;
             try {
                 if (opts.keyStdin || opts.keyPrompt) {
@@ -389,6 +409,9 @@ export function registerCloudCommands(program) {
                         ? await readSecretFromStream()
                         : await promptSecret("The account's zCloud key (not shown): ");
                     privateKey = importCloudPrivateKey(text);
+                } else {
+                    const stored = loadCloudKey(index.ownId);
+                    if (stored) privateKey = importCloudPrivateKey(stored.privateKeyPkcs8Base64);
                 }
             } catch (e) {
                 error(e.message);
@@ -418,8 +441,8 @@ export function registerCloudCommands(program) {
                         }
                     } else if (!opts.raw) {
                         error(
-                            "This item is encrypted. Give the account's cloud key (--key-stdin or --key-prompt), or " +
-                                "--raw to save it as downloaded.",
+                            "This item is encrypted. Store the account's cloud key with `cloud key setup`, give it at " +
+                                "run time (--key-stdin or --key-prompt), or use --raw to save it as downloaded.",
                         );
                         process.exit(1);
                     }
@@ -453,7 +476,273 @@ export function registerCloudCommands(program) {
         });
     // It logs in itself, after the key was read: a wrong key fails before anything is sent.
     get.zaloLocalOnly = true;
+    registerCloudKeyGroup(cloud, program);
     // Deleting is asked about first, as Zalo's confirm dialog does: --yes to act, --dry-run to preview. The action
     // settles it itself, after reading the plan (src/core/confirm-guard.js).
     guardSubcommand(cloud, "apply", "cloud.delete", { target: () => ({}), deferred: true, ownDryRun: true });
+}
+
+/** The active account, or exit 1. */
+function activeAccountOrExit() {
+    const account = getActive();
+    if (!account) {
+        error("No active account. Please login first.");
+        process.exit(1);
+    }
+    return account;
+}
+
+/**
+ * Refuse a live end-to-end-encryption step when a daemon holds the account's socket: only one WebSocket per account is
+ * allowed, so opening a second here would be kicked. The owner stops the daemon for this step, then starts it again.
+ *
+ * @param {string} accountDir
+ */
+function refuseIfDaemonHoldsSocket(accountDir) {
+    let running = false;
+    try {
+        running = Boolean(getDaemonStatus(accountDir)?.running);
+    } catch {
+        running = false;
+    }
+    if (running) {
+        error(
+            "A listen/mcp daemon holds this account's socket, and only one WebSocket per account is allowed. Stop it " +
+                "(`listen stop` or `mcp stop`), run this step, then start it again.",
+        );
+        process.exit(1);
+    }
+}
+
+/**
+ * `cloud key`: manage the account's cloud key and the end-to-end-encryption device that fetches it from the phone.
+ *
+ * `status` and `forget` are local. `devices` (read-only) and `setup` (gated, live) use the account's socket: `setup`
+ * registers a new, account-visible end-to-end-encryption device — it shows the current devices first and needs
+ * `--confirm`. The device claims a platform slot (this engine announces the web platform, so the web slot by default);
+ * if a real device already holds that slot, registering here may displace it.
+ *
+ * @param {import("commander").Command} cloud
+ * @param {import("commander").Command} program
+ */
+function registerCloudKeyGroup(cloud, program) {
+    const key = cloud
+        .command("key")
+        .description("Manage the account's cloud key and the device that fetches it from the phone");
+
+    const status = key
+        .command("status")
+        .description("Whether a cloud key and an end-to-end-encryption device are stored (never shows the key)")
+        .action(() => {
+            const jsonMode = program.opts().json;
+            const account = activeAccountOrExit();
+            const device = e2eeDeviceStatus(account.ownId);
+            const ck = cloudKeyStatus(account.ownId);
+            output({ device, cloudKey: ck }, jsonMode, () => {
+                if (device.registered && !device.locked) {
+                    info(
+                        `End-to-end-encryption device: registered on slot ${device.deviceId} (${device.platform}), ` +
+                            `${device.preKeyCount ?? "?"} one-time pre-key(s) left, ` +
+                            `${device.submittedAt ? "published to the account" : "not yet published"}.`,
+                    );
+                } else if (device.locked) {
+                    info("End-to-end-encryption device: stored but locked (log in to read it).");
+                } else {
+                    info("End-to-end-encryption device: none registered.");
+                }
+                if (ck.stored) {
+                    info(
+                        `Cloud key: stored${ck.keyVersion !== null ? ` (version ${ck.keyVersion})` : ""}` +
+                            `${ck.locked ? " but locked" : ""}. The key itself is never shown.`,
+                    );
+                } else {
+                    info(
+                        "Cloud key: none stored. `cloud get` and `sync-media --from-zcloud` ask for it, or " +
+                            "`cloud key setup` fetches it from the phone.",
+                    );
+                }
+            });
+        });
+    status.zaloLocalOnly = true;
+
+    const forget = key
+        .command("forget")
+        .description("Forget the stored cloud key (default), the device identity (--device), or both")
+        .option("--device", "Also forget the stored end-to-end-encryption device identity")
+        .option("--key", "Forget the stored cloud key")
+        .action((opts) => {
+            const jsonMode = program.opts().json;
+            const account = activeAccountOrExit();
+            const wantKey = opts.key || !opts.device;
+            const wantDevice = Boolean(opts.device);
+            const forgotKey = wantKey ? forgetCloudKey(account.ownId) : false;
+            const forgotDevice = wantDevice ? forgetE2eeDevice(account.ownId) : false;
+            output({ forgotCloudKey: forgotKey, forgotDevice }, jsonMode, () => {
+                if (forgotKey) success("The stored cloud key was forgotten.");
+                else if (wantKey) info("No cloud key was stored.");
+                if (forgotDevice) {
+                    success("The stored device identity was forgotten.");
+                    info(
+                        "Note: this only removes the local identity. The device may still be listed on the account; " +
+                            "remove it from the Zalo app's device list if needed.",
+                    );
+                } else if (wantDevice) {
+                    info("No device identity was stored.");
+                }
+            });
+        });
+    forget.zaloLocalOnly = true;
+
+    const devices = key
+        .command("devices")
+        .description(
+            "List the account's end-to-end-encryption devices and which platform slots are occupied (live, read-only)",
+        )
+        .action(async () => {
+            const jsonMode = program.opts().json;
+            const account = activeAccountOrExit();
+            refuseIfDaemonHoldsSocket(getAccountDir(account.ownId));
+            await autoLogin(jsonMode);
+            let api;
+            try {
+                api = getApi();
+            } catch (e) {
+                error(e.message);
+                process.exit(1);
+            }
+            try {
+                const result = await withLiveSocket(api, ({ send, tap }) =>
+                    listDevicesLive({ send, tap, ownUid: account.ownId }),
+                );
+                const web = DEVICE_IDS.WEB;
+                output(
+                    {
+                        devices: result.devices,
+                        occupiedSlots: result.occupiedSlots,
+                        webSlotFree: !result.occupiedSlots.includes(web),
+                    },
+                    jsonMode,
+                    () => {
+                        if (!result.devices.length) {
+                            info("No end-to-end-encryption devices are listed for this account.");
+                        } else {
+                            info("End-to-end-encryption devices on this account:");
+                            for (const d of result.devices) info(`  slot ${d.deviceId} (${d.platform})`);
+                        }
+                        info(
+                            result.occupiedSlots.includes(web)
+                                ? `The Web slot (${web}) is occupied; registering here may displace that device.`
+                                : `The Web slot (${web}) is free.`,
+                        );
+                    },
+                );
+            } catch (e) {
+                error(`Could not list devices: ${e.message}`);
+                process.exitCode = 1;
+            }
+        });
+    devices.zaloLocalOnly = true;
+
+    const setup = key
+        .command("setup")
+        .description(
+            "Register this engine as an end-to-end-encryption device and fetch the account's cloud key from the " +
+                "phone, then seal it for reuse (live). Shows the current devices first and needs --confirm; it adds " +
+                "an account-visible device that claims a platform slot and may displace a real one",
+        )
+        .option("--confirm", "Confirm registering a new, account-visible end-to-end-encryption device")
+        .option("--slot <n>", "The platform slot to claim: 0 mobile, 1 web, 2 pc (default: web)", (v) =>
+            parseInt(v, 10),
+        )
+        .option("--wait <seconds>", "How long to wait for the phone to approve the key request", (v) => parseInt(v, 10))
+        .option("--dry-run", "Show the current devices and what would happen, and send nothing")
+        .action(async (opts) => {
+            const jsonMode = program.opts().json;
+            const account = activeAccountOrExit();
+            const ownId = account.ownId;
+            refuseIfDaemonHoldsSocket(getAccountDir(ownId));
+            const slot = Number.isFinite(opts.slot) ? opts.slot : DEVICE_IDS.WEB;
+            await autoLogin(jsonMode);
+            let api;
+            try {
+                api = getApi();
+            } catch (e) {
+                error(e.message);
+                process.exit(1);
+            }
+            try {
+                await withLiveSocket(api, async ({ send, tap }) => {
+                    // 1. Show the current devices before anything is registered.
+                    const list = await listDevicesLive({ send, tap, ownUid: ownId });
+                    const slotOccupied = list.occupiedSlots.includes(slot);
+                    if (!jsonMode) {
+                        if (list.devices.length) {
+                            info("Current end-to-end-encryption devices on this account:");
+                            for (const d of list.devices) info(`  slot ${d.deviceId} (${d.platform})`);
+                        } else {
+                            info("No end-to-end-encryption devices are listed for this account yet.");
+                        }
+                        info(
+                            slotOccupied
+                                ? `Slot ${slot} (${platformName(slot)}) is occupied; registering may displace that device.`
+                                : `Slot ${slot} (${platformName(slot)}) is free.`,
+                        );
+                    }
+                    // 2. Gate: --confirm to act, --dry-run to preview. Adding an account-visible device is irreversible-ish.
+                    gateCli(
+                        "cloud.registerDevice",
+                        { platform: platformName(slot), slotOccupied },
+                        { yes: opts.confirm, dryRun: opts.dryRun },
+                        { json: jsonMode },
+                    );
+                    // 3. Register: reuse a stored identity for this slot, else make one, then publish the bundle (540).
+                    const existing = hasE2eeDevice(ownId) ? loadE2eeDevice(ownId) : null;
+                    let bundle;
+                    if (existing && existing.deviceId === slot) {
+                        bundle = bundleFromStore(existing.store);
+                    } else {
+                        bundle = (await createE2eeDevice(ownId, { deviceId: slot })).bundle;
+                    }
+                    await submitBundleLive({ send, tap, bundle, deviceId: slot });
+                    markE2eeDeviceSubmitted(ownId);
+                    if (!jsonMode) info("Device registered. Requesting the cloud key — approve it on your phone.");
+                    // 4. Request the key over zCloud, wait for the pcloud_info control on the socket, decrypt and seal it.
+                    const result = await receiveCloudKeyFromPhone({
+                        ownId,
+                        deviceName: "zalo-agent-cli",
+                        sendRequest: (session) =>
+                            requestCloudKeyFromPhone(api, {
+                                deviceName: session.deviceName,
+                                sessionId: session.sessionId,
+                            }),
+                        subscribe: subscribeCloudControls(tap),
+                        onPrompt: () => {
+                            if (!jsonMode) info("Waiting for the phone to approve the cloud-key request…");
+                        },
+                        waitMs: Number.isFinite(opts.wait) ? opts.wait * 1000 : undefined,
+                    });
+                    output(
+                        {
+                            registered: true,
+                            slot,
+                            platform: platformName(slot),
+                            cloudKey: { stored: true, keyVersion: result.keyVersion },
+                        },
+                        jsonMode,
+                        () =>
+                            success(
+                                "The cloud key was fetched and sealed. `cloud get` and `sync-media --from-zcloud` now " +
+                                    "use it automatically.",
+                            ),
+                    );
+                });
+            } catch (e) {
+                if (e instanceof CloudKeyRefusedError) error("The phone refused the cloud-key request.");
+                else if (e instanceof CloudKeyTimeoutError) error("No approval came from the phone in time.");
+                else if (e instanceof CloudKeyUnsupportedError) error(e.message);
+                else error(`Setup failed: ${e.message}`);
+                process.exitCode = 1;
+            }
+        });
+    setup.zaloLocalOnly = true;
 }

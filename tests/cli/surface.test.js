@@ -165,7 +165,7 @@ const COMMAND_SURFACE = {
     "auto-reply": ["list", "create", "update", "delete"],
     "quick-msg": ["list", "add", "update", "remove"],
     label: ["list", "update"],
-    cloud: ["ls", "plan", "apply", "get"],
+    cloud: ["ls", "plan", "apply", "get", "key"],
     bank: ["list", "accounts", "add", "update", "remove"],
     catalog: [
         "list",
@@ -255,6 +255,11 @@ const MCP_SUBGROUPS = {
 /** Nested subgroups of `account`: the at-rest protection of the account's files (docs/security.md). */
 const ACCOUNT_SUBGROUPS = {
     "account security": ["status", "migrate", "rekey", "provider"],
+};
+
+/** Nested subgroup of `cloud`: the cloud key and the device that fetches it from the phone. */
+const CLOUD_SUBGROUPS = {
+    "cloud key": ["status", "forget", "devices", "setup"],
 };
 
 /** Commands registered directly on the program, not inside a group. */
@@ -459,6 +464,8 @@ const FLAG_CONTRACT = {
     "catalog add-product": ["--photos"],
     "cloud apply": ["--yes", "--dry-run", "--conv", "--type", "--older-than", "--larger-than", "--limit"],
     "cloud get": ["--out", "--key-stdin", "--key-prompt", "--raw"],
+    "cloud key setup": ["--confirm", "--slot", "--wait", "--dry-run"],
+    "cloud key forget": ["--device", "--key"],
     "msg send-video": ["--thumb", "--width", "--height", "--duration", "--upload-timeout"],
     "friend add": ["--msg"],
     "profile update": ["--name", "--dob", "--gender"],
@@ -538,7 +545,7 @@ describe("command groups", () => {
 
 describe("nested subgroups", () => {
     const helps = {};
-    const NESTED = { ...OA_SUBGROUPS, ...MCP_SUBGROUPS, ...ACCOUNT_SUBGROUPS };
+    const NESTED = { ...OA_SUBGROUPS, ...MCP_SUBGROUPS, ...ACCOUNT_SUBGROUPS, ...CLOUD_SUBGROUPS };
 
     before(async () => {
         const keys = Object.keys(NESTED);

@@ -7,23 +7,27 @@
  * (`user_action` 1) the control carries `{key_version, public_key, encrypted_private_key}`; on refusal
  * (`user_action` 0) the phone rejected it.
  *
- * The part this engine cannot do is open `encrypted_private_key`: it is a libsignal (end-to-end-encryption) message
- * addressed to a device identity registered on the account (the account itself, device 0 = the phone, is the sender).
- * Opening it needs a full end-to-end-encryption device on the account — an identity key, a registration id, published
- * pre-keys and a session store kept across runs — which is a product-sized effort (decision D-D) that also changes the
- * account's device set. This engine registers no such device, so {@link setupCloudKeyFromPhone} refuses with
- * {@link CloudKeyUnsupportedError} before anything is sent to the phone.
+ * Opening `encrypted_private_key` needs this engine to be a registered end-to-end-encryption device on the account: the
+ * reply is a libsignal message the phone (device 0) encrypts to our device's Signal identity. That identity is built and
+ * sealed by src/core/e2ee-device.js (keys from the protocol layer, src/zalo/e2ee); when one exists, {@link
+ * makeCloudKeyUnwrapper} opens the reply with it and {@link receiveCloudKeyFromPhone} seals the resulting key
+ * (src/core/cloud-key-store.js) for reuse. When no device is registered, {@link setupCloudKeyFromPhone} refuses with
+ * {@link CloudKeyUnsupportedError} before anything is sent to the phone, and the account's cloud key is supplied at run
+ * time instead (`cloud get --key-stdin` / `--key-prompt`).
  *
- * The orchestration in {@link requestCloudKey} is written over injected transports so it runs offline in tests and is
- * ready to wire the day that device stack exists; it is never connected to tap the phone while the key it would return
- * cannot be opened. Until then the account's cloud key is supplied at run time (`cloud get --key-stdin` /
- * `--key-prompt`) and never fetched from the phone.
+ * The orchestration in {@link requestCloudKey} is written over injected transports so it runs offline in tests and so
+ * the live send (the socket, or the daemon channel when a daemon holds it) is supplied only by the explicit `cloud key
+ * setup` command — never by a code path that runs on its own. Registering the device and requesting the key are LIVE,
+ * owner-present steps; nothing here taps the phone unless that command is run.
  *
- * SECRETS: no key byte is logged, printed or stored by this module. A returned private key is held in memory by the
- * caller only.
+ * SECRETS: no key byte is logged, printed or put in `--json`. A returned/stored key is written only sealed, or held in
+ * the caller's memory.
  */
 import { randomUUID } from "node:crypto";
 import { cloudKeyRequestShape } from "../zalo/zcloud-e2ee.js";
+import { decryptCloudKeyReply } from "../zalo/e2ee/cloud-key-decrypt.js";
+import { hasE2eeDevice, loadE2eeDevice, saveE2eeDevice } from "./e2ee-device.js";
+import { saveCloudKey } from "./cloud-key-store.js";
 
 /** Lower bound on the wait for the phone's reply (the owner may be away from the phone). */
 export const CLOUD_KEY_WAIT_FLOOR_MS = 600_000;
@@ -262,33 +266,111 @@ export function requestCloudKey({
 
 /**
  * Whether this engine has a registered end-to-end-encryption device identity on the account for the phone to encrypt
- * the cloud key to. This engine registers none, so this is always false today; it is the single switch the day the
- * device stack (decision D-D) is built.
+ * the cloud key to. True once `cloud key setup` has sealed one (src/core/e2ee-device.js).
  *
+ * @param {string} [ownId]
  * @returns {boolean}
  */
-export function isE2eeDeviceRegistered() {
-    return false;
+export function isE2eeDeviceRegistered(ownId) {
+    return Boolean(ownId) && hasE2eeDevice(ownId);
 }
 
 /**
- * The live entry a command would call to fetch the cloud key from the phone. It refuses before tapping the phone,
- * because the reply would be a libsignal message this engine cannot open.
+ * An `unwrapPrivateKey` bound to an account's sealed device: it opens `encrypted_private_key` with the device's Signal
+ * identity and re-seals the device store (a pre-key reply consumes a one-time pre-key). Returned as a function so
+ * {@link requestCloudKey} can stay a pure orchestration.
  *
- * @param {object} [_opts] - reserved for the live wiring (account dir, device name, wait, daemon routing)
- * @returns {Promise<never>}
- * @throws {CloudKeyUnsupportedError} always, today
+ * @param {object} args
+ * @param {string} args.ownId - the account id; it is also the sender (own uid, device 0 = the phone)
+ * @returns {(encryptedPrivateKey: string) => Promise<string>} base64 PKCS#8
+ * @throws {CloudKeyUnsupportedError} when no device is registered
  */
-export async function setupCloudKeyFromPhone(_opts = {}) {
-    if (!isE2eeDeviceRegistered()) {
+export function makeCloudKeyUnwrapper({ ownId }) {
+    if (!isE2eeDeviceRegistered(ownId)) {
         throw new CloudKeyUnsupportedError(
-            "Fetching the cloud key from the phone needs a registered end-to-end-encryption device on the account, " +
-                "which this engine does not have: the phone encrypts the key to that device's identity, so the reply " +
-                "cannot be opened here. Supply the cloud key at run time instead (`cloud get --key-stdin` or " +
-                "`--key-prompt`).",
+            "no registered end-to-end-encryption device for this account; run `cloud key setup` first",
         );
     }
-    // Unreachable today. The live request + bounded wait (routed through the daemon channel when a daemon holds the
-    // one socket for this account) would be wired here once such a device exists.
-    throw new CloudKeyUnsupportedError("cloud-key transfer from the phone is not wired");
+    return async (encryptedPrivateKey) => {
+        const device = loadE2eeDevice(ownId);
+        if (!device) throw new CloudKeyUnsupportedError("the device identity could not be loaded (locked?)");
+        const pkcs8 = await decryptCloudKeyReply({ store: device.store, encryptedPrivateKey, ownUid: String(ownId) });
+        // The store changed (a one-time pre-key was consumed); persist it so it is not reused.
+        saveE2eeDevice(ownId, device);
+        return pkcs8;
+    };
+}
+
+/**
+ * Receive the cloud key from the phone and seal it. The caller supplies the live transports (`sendRequest`,
+ * `subscribe`) from the account's socket, or the daemon channel when a daemon holds it; this function is reached only by
+ * the explicit `cloud key setup` command, never automatically. It requires a registered device.
+ *
+ * @param {object} args
+ * @param {string} args.ownId
+ * @param {string} args.deviceName - label shown on the phone prompt
+ * @param {(session: object) => (void|Promise<void>)} args.sendRequest
+ * @param {(handler: (control: object) => void) => (void|(() => void))} args.subscribe
+ * @param {() => void} [args.onPrompt]
+ * @param {number} [args.waitMs]
+ * @param {{setTimeout: Function, clearTimeout: Function}} [args.timers]
+ * @returns {Promise<{stored: true, keyVersion: *, publicKey: *}>} never the key itself
+ */
+export async function receiveCloudKeyFromPhone({
+    ownId,
+    deviceName,
+    sendRequest,
+    subscribe,
+    onPrompt,
+    waitMs,
+    timers,
+}) {
+    const unwrapPrivateKey = makeCloudKeyUnwrapper({ ownId });
+    const session = newCloudKeySession(deviceName);
+    const result = await requestCloudKey({
+        session,
+        sendRequest,
+        subscribe,
+        unwrapPrivateKey,
+        onPrompt,
+        waitMs,
+        timers,
+    });
+    saveCloudKey(ownId, {
+        privateKeyPkcs8Base64: result.privateKeyPkcs8Base64,
+        keyVersion: result.keyVersion,
+        publicKey: result.publicKey,
+    });
+    return { stored: true, keyVersion: result.keyVersion, publicKey: result.publicKey };
+}
+
+/**
+ * The gated live entry `cloud key setup` reaches after it has registered the device. When no device is registered it
+ * refuses before tapping the phone; otherwise it receives and seals the key via {@link receiveCloudKeyFromPhone}. It is
+ * never invoked by a code path that runs on its own — only by the explicit command, with the owner present.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.ownId]
+ * @param {string} [opts.deviceName]
+ * @param {(session: object) => (void|Promise<void>)} [opts.sendRequest]
+ * @param {(handler: (control: object) => void) => (void|(() => void))} [opts.subscribe]
+ * @param {() => void} [opts.onPrompt]
+ * @param {number} [opts.waitMs]
+ * @param {{setTimeout: Function, clearTimeout: Function}} [opts.timers]
+ * @returns {Promise<{stored: true, keyVersion: *, publicKey: *}>}
+ * @throws {CloudKeyUnsupportedError} when no device is registered, or the live transports were not supplied
+ */
+export async function setupCloudKeyFromPhone(opts = {}) {
+    if (!isE2eeDeviceRegistered(opts.ownId)) {
+        throw new CloudKeyUnsupportedError(
+            "Fetching the cloud key from the phone needs a registered end-to-end-encryption device on the account, " +
+                "which this engine does not have yet: register one with `cloud key setup`, or supply the cloud key at " +
+                "run time instead (`cloud get --key-stdin` or `--key-prompt`).",
+        );
+    }
+    if (typeof opts.sendRequest !== "function" || typeof opts.subscribe !== "function") {
+        // The live socket transports are supplied only by the command; without them there is nothing to tap.
+        throw new CloudKeyUnsupportedError("cloud-key transfer needs a live socket; run it from `cloud key setup`");
+    }
+    return receiveCloudKeyFromPhone(opts);
 }

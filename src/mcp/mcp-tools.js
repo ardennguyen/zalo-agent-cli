@@ -37,6 +37,8 @@ import {
 import { searchPage } from "../core/search.js";
 import { parsePeriod } from "../utils/date-range.js";
 import { downloadSyncedMedia, DOWNLOADABLE_KINDS } from "../core/sync-v2/media.js";
+import { loadCloudKey } from "../core/cloud-key-store.js";
+import { importCloudPrivateKey } from "../zalo/zcloud-e2ee.js";
 import { mediaPlainSize } from "../core/keystore/media-seal.js";
 import { scopeOfDir } from "../core/keystore/keyring.js";
 import { getAccountDir } from "../core/credentials.js";
@@ -1777,6 +1779,17 @@ export function registerTools(
 
                 let localPath = row?.localPath || null;
                 if (!localPath) {
+                    // A cloud key sealed by `cloud key setup` lets a file past Zalo's keeping window be fetched from
+                    // zCloud transparently. This tool never takes a key as input; it only uses the stored one.
+                    let cloud = null;
+                    try {
+                        const stored = loadCloudKey(accountId);
+                        if (stored?.privateKeyPkcs8Base64) {
+                            cloud = { privateKey: importCloudPrivateKey(stored.privateKeyPkcs8Base64) };
+                        }
+                    } catch {
+                        /* a locked or unreadable key store just means no transparent zCloud fetch */
+                    }
                     // Same downloader as the CLI, so the file lands in the one
                     // per-conversation folder every other command reads from. It is asked for this message by
                     // id: a scan of the thread's newest pending attachments could leave an older one out.
@@ -1787,6 +1800,7 @@ export function registerTools(
                         msgIds: [String(row?.msgId ?? msgId)],
                         limit: 1,
                         concurrency: 1,
+                        cloud,
                         mediaRoot: process.env.ZALO_MEDIA_DIR || mediaConfig.downloadDir || undefined,
                     });
                     localPath = getMessageById(msgId)?.localPath || null;
@@ -1795,9 +1809,10 @@ export function registerTools(
                     if (!localPath && stats.oldInCloud) {
                         return err(
                             `The media of ${msgId} is past Zalo's keeping window (14 days) but kept in zCloud. It opens ` +
-                                "only with the account's cloud key, which this tool does not take. Run in a terminal: " +
-                                `zalo-agent sync-media --account ${accountId} --thread ${msgThread} --from-zcloud --key-prompt ` +
-                                "(or `zalo-agent cloud get <noiseId> --key-prompt -o <file>`), then call zalo_view_media again.",
+                                "only with the account's cloud key, which this tool does not take as input. Store the " +
+                                "key once in a terminal (`zalo-agent cloud key setup`, or fetch it with " +
+                                `zalo-agent sync-media --account ${accountId} --thread ${msgThread} --from-zcloud --key-prompt), ` +
+                                "then call zalo_view_media again.",
                         );
                     }
                     if (!localPath && stats.oldGone) {

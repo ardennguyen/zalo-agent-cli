@@ -359,6 +359,23 @@ async function zcloudGet(api, path, params = null) {
 // ── endpoints ───────────────────────────────────────────────────────────────
 
 /**
+ * Ask the phone for the account's cloud key (a GET to `/personalcloud_key/req_cloud_key` with `{device_name,
+ * session_id}`). The phone shows the owner a prompt; the key itself does NOT come back from this request — it arrives on
+ * the chat socket as a `personal_cloud`/`pcloud_info` control (cmd 601), matched on the same ids. This send is a LIVE,
+ * owner-present step, reached only by `cloud key setup`; it is UNVERIFIED on the wire.
+ *
+ * @param {object} api
+ * @param {{deviceName: string, sessionId: string}} session
+ * @returns {Promise<any>} the request's immediate reply (an ack; the key comes later on the socket)
+ */
+export async function requestCloudKeyFromPhone(api, { deviceName, sessionId }) {
+    return zcloudGet(api, "/personalcloud_key/req_cloud_key", {
+        device_name: String(deviceName),
+        session_id: String(sessionId),
+    });
+}
+
+/**
  * One page of the zCloud queue.
  *
  * @param {object} api

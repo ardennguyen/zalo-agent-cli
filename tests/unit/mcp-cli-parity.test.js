@@ -159,6 +159,13 @@ const CLI_ONLY = {
     "account export": "exports credentials: never handed to an agent",
     "account security status":
         "how this machine protects the account's files at rest: an operator's question, not an agent's; it names local paths and the key provider",
+    "cloud key status":
+        "whether a cloud key and an end-to-end-encryption device are stored on this machine: an operator's view",
+    "cloud key forget": "forgets the stored cloud key or device identity on this machine: an operator's step",
+    "cloud key devices":
+        "lists the account's end-to-end-encryption devices: an operator's check before registering one, not an agent's",
+    "cloud key setup":
+        "registers an account-visible end-to-end-encryption device and fetches the cloud key from the phone (owner approves on the phone): an operator's step, never an agent's; agents open stored items through zalo_view_media with the sealed key",
     "account security migrate": "seals this machine's files at rest: an operator's step, run once after an upgrade",
     "account security rekey": "replaces the keys protecting this machine's files: an operator's step, never an agent's",
     "account security provider": "moves the account's keys to another key store on this machine: an operator's step",

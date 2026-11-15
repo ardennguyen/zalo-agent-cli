@@ -44,12 +44,31 @@ import { lookupCloudBackup, messageZKey } from "./zcloud.js";
 import { pastCdnWindow } from "./media-age.js";
 import { createDownloadFetch } from "../../zalo/download-fetch.js";
 import { fetchCloudBlob } from "../../zalo/zcloud.js";
-import { CloudKeyError, decryptCloudBlob } from "../../zalo/zcloud-e2ee.js";
+import { CloudKeyError, decryptCloudBlob, importCloudPrivateKey } from "../../zalo/zcloud-e2ee.js";
 import { readSealedJson, writeSealedJson } from "../keystore/index.js";
 import { scopeOfDir } from "../keystore/keyring.js";
 import { mediaPlainSize, writeSealedMedia } from "../keystore/media-seal.js";
 import { openDeadLinks } from "./dead-links.js";
 import { checkDiskRoom } from "../storage-quota.js";
+import { loadCloudKey } from "../cloud-key-store.js";
+
+/**
+ * The zCloud source from the account's stored cloud key, or null when none is stored or it cannot be opened (a locked
+ * keystore, an older file). Never throws: no key just means no zCloud source.
+ *
+ * @param {string} ownId
+ * @returns {{privateKey: import("node:crypto").KeyObject}|null}
+ */
+function storedCloudSource(ownId) {
+    try {
+        const stored = loadCloudKey(ownId);
+        return stored?.privateKeyPkcs8Base64
+            ? { privateKey: importCloudPrivateKey(stored.privateKeyPkcs8Base64) }
+            : null;
+    } catch {
+        return null;
+    }
+}
 
 /** Kinds that point at a byte stream worth saving. */
 export const DOWNLOADABLE_KINDS = new Set(["photo", "video", "file", "gif", "voice", "audio", "doodle"]);
@@ -614,14 +633,14 @@ function writeConversationIndex(mediaRoot, names, scope) {
  *   0 disables the pause (tests)
  * @param {number} [opts.timeoutMs=60000] - per-request deadline over the whole exchange; without one a stalled
  *   connection blocks its worker indefinitely
- * @param {boolean} [opts.allAges=false] - ask the CDN for files past its window too. By default a file whose message
- *   is older than the window (./media-age.js: 14 days, 7 for a file over 100 MB; My Cloud exempt) gets no request: it
- *   is counted `oldInCloud` when the local zCloud index lists it, else `oldGone` (and its row is marked gone, so the
- *   automatic queue skips it from then on)
+ * @param {boolean} [opts.allAges] - kept for scripts: every file is asked for whatever its age (below)
  * @param {{privateKey?: import("node:crypto").KeyObject|null, fetchBlob?: Function}|null} [opts.cloud] - the zCloud
- *   source, opt-in: a file past the window that the index lists is fetched from zCloud and decrypted with
- *   `privateKey`; a fresh file whose CDN download failed is tried there too. `fetchBlob(item, {signal})` is the
- *   blob fetch (tests); default: the account's own. Rows already marked gone are looked at again
+ *   source. Omitted: the account's stored cloud key when it has one (src/core/cloud-key-store.js), else none; null:
+ *   none. Where a file comes from, in order: for a file past the CDN's window (./media-age.js: 14 days, 7 for a file
+ *   over 100 MB; My Cloud exempt) that the zCloud index lists, zCloud first; then the CDN, for every file of any age
+ *   (no file is written off by the clock alone: past the window the CDN may still have it, and on an account without
+ *   zCloud it is the only source); then, when the CDN failed, zCloud. A link that answered 404/410 is remembered and
+ *   not asked again (`retryDead`). `fetchBlob(item, {signal})` is the blob fetch (tests); default: the account's own
  * @param {string} [opts.ownId] - the account (its chat with itself is My Cloud); default: the account folder's id
  * @param {number} [opts.now] - the clock (tests)
  * @param {boolean} [opts.retryDead=false] - ask again for links remembered as dead (404/410 on an earlier run);
@@ -670,7 +689,6 @@ export async function downloadSyncedMedia(opts = {}) {
         backoffBaseMs = 1000,
         signal,
         retryDead = false,
-        allAges = false,
         cloud = null,
         onProgress = () => {},
     } = opts;
@@ -692,7 +710,9 @@ export async function downloadSyncedMedia(opts = {}) {
         onlyMissing: true,
         includePruned,
         // A row sorted as gone is looked at again only by a run that can say something new about it.
-        includeGone: allAges || Boolean(cloud),
+        // A row marked gone is looked at again: links that really answered 404/410 are skipped by the dead-link list
+        // without a request, and a row once sorted gone by the clock alone gets its one request.
+        includeGone: true,
     });
     const jobs = [];
     for (const row of rows) {
@@ -779,11 +799,12 @@ export async function downloadSyncedMedia(opts = {}) {
     // Always the account's own media folder, never a shared override root: the list is the account's alone.
     const deadLinks = opts.deadLinks ?? openDeadLinks(resolve(accountDir, "media"), scope);
     const ownId = opts.ownId ?? scope.id;
-    const cloudSource = cloud
+    const cloudGiven = opts.cloud === undefined ? storedCloudSource(ownId) : cloud;
+    const cloudSource = cloudGiven
         ? {
-              privateKey: cloud.privateKey ?? null,
+              privateKey: cloudGiven.privateKey ?? null,
               fetchBlob:
-                  cloud.fetchBlob ??
+                  cloudGiven.fetchBlob ??
                   ((item, o = {}) => fetchCloudBlob(api, item, { fetch: download, signal: o.signal })),
           }
         : null;
@@ -909,42 +930,33 @@ export async function downloadSyncedMedia(opts = {}) {
 
             let got;
             let source = "cdn";
-            if (!allAges && pastCdnWindow(row, att, { now, ownId })) {
-                // Past the CDN's window: no request to it, as Zalo sends none. Sorted locally.
-                const item = cloudItemOf(row);
-                if (!item) {
-                    stats.oldGone++;
-                    stats.skipped++;
-                    tally("old-gone");
-                    if (primary) {
-                        try {
-                            markMediaGone(row.msgId, now);
-                        } catch {
-                            /* a missing row is not worth failing the run over */
-                        }
-                    }
-                    return;
-                }
-                if (!cloudSource) {
-                    stats.oldInCloud++;
-                    stats.skipped++;
-                    tally("old-in-zcloud");
-                    return;
-                }
+            const pastWindow = pastCdnWindow(row, att, { now, ownId });
+            const item = cloudItemOf(row);
+            // 1. Past the CDN's window and kept in zCloud: zCloud first, as Zalo reads it.
+            // A zCloud failure is reported only when the CDN does not save the file either.
+            let cloudMiss = null;
+            if (pastWindow && item && cloudSource) {
                 got = await fetchFromCloud({ item, cloudConversation: myCloud, cloud: cloudSource, timeoutMs, signal });
                 if (got.aborted) return "stopped";
-                if (!got.ok) {
-                    cloudFail(got);
-                    return;
-                }
-                source = "cloud";
-            } else {
-                // Answered 404/410 on an earlier run: gone, so not asked again. Keyed by the link, so a new link a
-                // later sync hands out for the same message is tried normally.
+                if (got.ok) source = "cloud";
+                else cloudMiss = got;
+            }
+            // 2. The CDN, at any age. A link that answered 404/410 before is gone, so it is not asked again; keyed by the
+            //    link, so a new link a later sync hands out for the same message is tried normally.
+            if (!got?.ok) {
                 if (!retryDead && deadLinks.has(url)) {
-                    stats.dead++;
+                    if (cloudMiss) {
+                        cloudFail(cloudMiss);
+                        return;
+                    }
+                    if (pastWindow && item && !cloudSource) {
+                        stats.oldInCloud++;
+                        tally("old-in-zcloud");
+                    } else {
+                        stats.dead++;
+                        tally("dead");
+                    }
                     stats.skipped++;
-                    tally("dead");
                     return;
                 }
                 got = await fetchBytes(url, timeoutMs, download, signal);
@@ -953,24 +965,40 @@ export async function downloadSyncedMedia(opts = {}) {
                 // Only a status that says the object no longer exists is remembered; a lapsed-signature body, a
                 // timeout or a 5xx says nothing that lasts.
                 if (got.code === "not-found") deadLinks.add(url);
-                // The CDN failed a fresh file: zCloud next, when the run has the source and the index lists the file.
-                if (!got.ok && cloudSource) {
-                    const item = cloudItemOf(row);
-                    if (item) {
-                        const fromCloud = await fetchFromCloud({
-                            item,
-                            cloudConversation: myCloud,
-                            cloud: cloudSource,
-                            timeoutMs,
-                            signal,
-                        });
-                        if (fromCloud.aborted) return "stopped";
-                        if (fromCloud.ok) {
-                            got = fromCloud;
-                            source = "cloud";
-                        } else {
-                            stats.cloudFailed++;
-                            tally(fromCloud.code);
+                // 3. The CDN failed: zCloud, when the run has the source and the index lists the file.
+                if (!got.ok && cloudMiss) {
+                    cloudFail(cloudMiss);
+                    return;
+                }
+                if (!got.ok && cloudSource && item) {
+                    const fromCloud = await fetchFromCloud({
+                        item,
+                        cloudConversation: myCloud,
+                        cloud: cloudSource,
+                        timeoutMs,
+                        signal,
+                    });
+                    if (fromCloud.aborted) return "stopped";
+                    if (fromCloud.ok) {
+                        got = fromCloud;
+                        source = "cloud";
+                    } else {
+                        stats.cloudFailed++;
+                        tally(fromCloud.code);
+                    }
+                }
+                // Past the window, gone from the CDN and not openable from zCloud: counted for the summary; a file
+                // that zCloud keeps but this run has no key for says so.
+                if (!got.ok && pastWindow && got.code === "not-found") {
+                    if (item && !cloudSource) stats.oldInCloud++;
+                    else {
+                        stats.oldGone++;
+                        if (primary) {
+                            try {
+                                markMediaGone(row.msgId, now);
+                            } catch {
+                                /* a missing row is not worth failing the run over */
+                            }
                         }
                     }
                 }

@@ -444,7 +444,7 @@ When any of these disagree, `references/command-reference.md` wins — it is gen
 - Some OA APIs require tier upgrade (error -224) → see zalo.cloud/oa/pricing
 - OA webhook needs HTTPS + verified domain + VN IP for full user data
 - `catalog` commands require a zBusiness Pro account
-- Not yet confirmed on a live account: `msg send-video` with a local file, `cloud apply`, `cloud get`, `quick-msg enable`/`disable`, `catalog product` (their `--json` reply says `verified: false` where it has that field). Tell the user before relying on one
+- Not yet confirmed on a live account: `msg send-video` with a local file, `cloud apply`, `quick-msg enable`/`disable`, `catalog product` (their `--json` reply says `verified: false` where it has that field). Tell the user before relying on one
 
 ## Security Model
 - **No code execution**: This skill only invokes the `zalo-agent` CLI binary — it does not run arbitrary code, install packages, or modify system files

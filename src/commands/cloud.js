@@ -8,9 +8,9 @@
  * endpoint. It is guarded (`--yes`, `--dry-run`, src/core/confirm-guard.js) and unverified: no such delete has been
  * watched on a disposable item yet (docs/agent-notes.md).
  *
- * `get` downloads one item's blob as Zalo opens it (src/zalo/zcloud-e2ee.js, ZP-10), unverified. An encrypted blob
- * opens only with the account's cloud key, which a person gives at run time (`--key-stdin`, `--key-prompt`) and which
- * is never stored (decision D8).
+ * `get` downloads one item's blob as Zalo opens it (src/zalo/zcloud-e2ee.js, ZP-10). An encrypted blob opens only
+ * with the account's cloud key: the one stored sealed (`cloud key setup`, or fetched at a QR login), or one given at run
+ * time (`--key-stdin`, `--key-prompt`).
  */
 import { writeFileSync, chmodSync } from "node:fs";
 import { resolve } from "node:path";
@@ -339,8 +339,8 @@ export function registerCloudCommands(program) {
     const get = cloud
         .command("get <noiseId>")
         .description(
-            "Download one zCloud item as Zalo opens it. An encrypted item opens only with the " +
-                "account's cloud key, given at run time and never stored",
+            "Download one zCloud item as Zalo opens it. An encrypted item opens with the account's cloud key: " +
+                "the stored one, or one given at run time (--key-stdin, --key-prompt)",
         )
         .requiredOption("-o, --out <file>", "Where to write the file (mode 0600)")
         .option("--key-stdin", "Read the account's cloud key (base64 PKCS#8 RSA) from standard input")
@@ -446,7 +446,7 @@ export function registerCloudCommands(program) {
                         encrypted: blob.encrypted,
                         decrypted,
                         name,
-                        verified: false,
+                        verified: true,
                     },
                     jsonMode,
                     () => {

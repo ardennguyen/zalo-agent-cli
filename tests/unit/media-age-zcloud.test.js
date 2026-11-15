@@ -24,6 +24,7 @@ import {
     getMessages,
     initDb,
     insertMessage,
+    markMediaGone,
     upsertCloudItem,
     upsertThread,
 } from "../../src/core/db.js";
@@ -52,6 +53,8 @@ const PLAIN = Buffer.from("\xff\xd8\xff\xe0JFIF-the-photo-from-zcloud", "binary"
 const pair = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const other = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const KEY_B64 = pair.privateKey.export({ format: "der", type: "pkcs8" }).toString("base64");
+/** The account's cloud key, as a run holds it. */
+const key = () => importCloudPrivateKey(KEY_B64);
 const OTHER_B64 = other.privateKey.export({ format: "der", type: "pkcs8" }).toString("base64");
 
 /** Encrypt a file the way a zCloud blob is: AES-256-GCM, its key, IV and tag packed and RSA-OAEP-SHA256 wrapped. */
@@ -229,38 +232,62 @@ describe("the CDN's keeping window (media-age.js)", () => {
     });
 });
 
-describe("a file past the window gets no request", () => {
-    it("sorts an old file the zCloud index does not list as gone, and later runs skip its row for free", async () => {
+describe("a file past the window: no file is written off by the clock", () => {
+    it("asks the CDN for an old file zCloud does not list, and saves it when the CDN still has it", async () => {
         const id = row({ daysAgo: 20 });
-        const first = await run();
-        // Red if the CDN is asked: the whole point is that a stale file costs no request.
-        assert.equal(cdnHits(), 0);
-        assert.equal(first.oldGone, 1);
-        assert.equal(first.failed, 0);
-        assert.deepEqual(first.reasons, { "old-gone": 1 });
-        assert.equal(countPendingAttachments(), 0, "no longer counted as waiting");
-        assert.equal(countGoneAttachments(), 1);
-
-        const second = await run();
-        assert.equal(second.considered, 0, "the gone row is not even selected again");
-        assert.equal(cdnHits(), 0);
-
-        // --all-ages asks anyway.
-        const forced = await run({ allAges: true });
-        assert.equal(forced.downloaded, 1);
+        const stats = await run();
+        assert.equal(stats.downloaded, 1, "past the window is not proof of gone");
         assert.equal(hits["/cdn/ok.jpg"], 1);
         assert.ok(getMessages("t1").find((m) => m.msgId === id).localPath);
+        assert.equal(stats.oldGone, 0);
+    });
+
+    it("sorts it as gone only when the CDN answers 404, and never asks that link again", async () => {
+        row({ daysAgo: 20, path: "/cdn/gone.jpg" });
+        const first = await run();
+        assert.equal(hits["/cdn/gone.jpg"], 1);
+        assert.equal(first.oldGone, 1);
+        assert.equal(countGoneAttachments(), 1);
+        const second = await run();
+        assert.equal(hits["/cdn/gone.jpg"], 1, "the dead link is not asked again");
+        assert.equal(second.dead, 1);
+        const retried = await run({ retryDead: true });
+        assert.equal(hits["/cdn/gone.jpg"], 2, "--retry-dead asks again");
+        assert.equal(retried.downloaded, 0);
+    });
+
+    it("gives a row sorted gone by the old clock rule its one request", async () => {
+        const id = row({ daysAgo: 20 });
+        markMediaGone(id, NOW);
+        const stats = await run();
+        assert.equal(stats.downloaded, 1);
         assert.equal(countGoneAttachments(), 0, "a saved file is no longer gone");
     });
 
-    it("counts an old file the index lists as kept in zCloud, sends nothing, and leaves it pending", async () => {
+    it("an old file kept in zCloud, with no key: the CDN is still asked, and a 404 says it is in zCloud", async () => {
+        const id = row({ daysAgo: 20, path: "/cdn/gone.jpg" });
+        inCloud(id);
+        const stats = await run({ cloud: null });
+        assert.equal(hits["/cdn/gone.jpg"], 1);
+        assert.equal(stats.oldInCloud, 1);
+        assert.equal(countPendingAttachments(), 1, "left for a run with the cloud key");
+    });
+
+    it("an old file kept in zCloud, with the key: zCloud first, and the CDN is not asked", async () => {
         const id = row({ daysAgo: 20 });
         inCloud(id);
-        const stats = await run();
+        const stats = await run({ cloud: cloudWith(key()) });
+        assert.equal(stats.fromCloud, 1);
         assert.equal(cdnHits(), 0);
-        assert.equal(stats.oldInCloud, 1);
-        assert.deepEqual(stats.reasons, { "old-in-zcloud": 1 });
-        assert.equal(countPendingAttachments(), 1, "left for a run with the zCloud source");
+    });
+
+    it("zCloud fails for an old file: the CDN is the fallback", async () => {
+        const id = row({ daysAgo: 20 });
+        inCloud(id, { serve: false });
+        const stats = await run({ cloud: cloudWith(key()) });
+        assert.equal(stats.downloaded, 1);
+        assert.equal(stats.fromCloud, 0);
+        assert.equal(hits["/cdn/ok.jpg"], 1);
     });
 
     it("asks the CDN for a file inside the window, and for My Cloud at any age", async () => {
@@ -271,18 +298,9 @@ describe("a file past the window gets no request", () => {
         assert.equal(cdnHits(), 2);
         assert.equal(stats.oldGone + stats.oldInCloud, 0);
     });
-
-    it("uses the big-file window: a 150 MB file 8 days old is past it", async () => {
-        row({ daysAgo: 8, size: 150 * 1024 * 1024 });
-        const stats = await run();
-        assert.equal(stats.oldGone, 1);
-        assert.equal(cdnHits(), 0);
-    });
 });
 
 describe("the zCloud source", () => {
-    const key = () => importCloudPrivateKey(KEY_B64);
-
     it("fetches an old file from zCloud, decrypts it, seals it and records it like a CDN download", async () => {
         const id = row({ daysAgo: 30 });
         const noiseId = inCloud(id);
@@ -308,7 +326,7 @@ describe("the zCloud source", () => {
     });
 
     it("looks again at a row an earlier run sorted as gone, once the index lists it", async () => {
-        const id = row({ daysAgo: 30 });
+        const id = row({ daysAgo: 30, path: "/cdn/gone.jpg" });
         await run();
         assert.equal(countGoneAttachments(), 1);
         inCloud(id);
@@ -318,13 +336,15 @@ describe("the zCloud source", () => {
     });
 
     it("names each failure (no key, not found, does not decrypt) and opens a block-encrypted item", async () => {
-        const noKey = row({ daysAgo: 30 });
+        // Gone from the CDN too, so nothing rescues a zCloud failure.
+        const gone = { daysAgo: 30, path: "/cdn/gone.jpg" };
+        const noKey = row(gone);
         inCloud(noKey);
-        const notFound = row({ daysAgo: 30 });
+        const notFound = row(gone);
         inCloud(notFound, { serve: false });
-        const wrong = row({ daysAgo: 30 });
+        const wrong = row(gone);
         inCloud(wrong, { publicKey: other.publicKey });
-        const block = row({ daysAgo: 30 });
+        const block = row(gone);
         inCloud(block, { algoVersion: "2" });
 
         const withoutKey = await run({ cloud: cloudWith(null), msgIds: [noKey] });
@@ -460,7 +480,7 @@ describe("openCloudSource: the plan gate and the run-time key", () => {
     });
 
     it("another account's key opens nothing: the download reports cloud-decrypt", async () => {
-        const id = row({ daysAgo: 30 });
+        const id = row({ daysAgo: 30, path: "/cdn/gone.jpg" });
         inCloud(id);
         const stats = await run({ cloud: cloudWith(importCloudPrivateKey(OTHER_B64)) });
         assert.deepEqual(stats.reasons, { "cloud-decrypt": 1 });
@@ -473,7 +493,7 @@ describe("zalo_view_media never takes a key", () => {
         const accountDir = join(CONFIG_DIR, "accounts", ID);
         initDb(join(ROOT, `view${n}.sqlite`));
         upsertThread({ threadId: "t1", type: "group", name: "Team", lastUpdate: 1 });
-        const id = row({ msgId: "m-view-old", daysAgo: 40 });
+        const id = row({ msgId: "m-view-old", daysAgo: 40, path: "/cdn/gone.jpg" });
         inCloud(id);
         const tools = new Map();
         const server = { registerTool: (name, meta, handler) => tools.set(name, { meta, handler }) };
@@ -498,7 +518,7 @@ describe("zalo_view_media never takes a key", () => {
         assert.equal(res.isError, true);
         const text = res.content[0].text;
         assert.match(text, /kept in zCloud/);
-        assert.match(text, new RegExp(`zalo-agent sync-media --account ${ID} --thread t1 --from-zcloud`));
-        assert.equal(cdnHits(), 0, "and the CDN was not asked for it");
+        assert.match(text, new RegExp(`zalo-agent cloud key setup --account ${ID} --confirm`));
+        assert.equal(hits["/cdn/gone.jpg"], 1, "the CDN was asked first, and had nothing");
     });
 });

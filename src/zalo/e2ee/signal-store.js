@@ -1,16 +1,16 @@
 /**
  * An in-memory Signal protocol store for the narrow end-to-end-encryption device this engine can register.
  *
- * The off-the-shelf Signal library (loaded lazily by its siblings in this folder) drives a store that holds the
- * device's identity key pair, its registration id, its signed pre-key and one-time pre-keys, the per-peer sessions it
- * builds, and the identities it has seen. That store is normally a database; here it is a small object that
+ * The protocol code in this folder (./signal-protocol.js) drives a store that holds the device's identity key pair,
+ * its registration id, its signed pre-key and one-time pre-keys, the per-peer sessions it builds, and the identities
+ * it has seen. That store is normally a database; here it is a small object that
  * {@link SignalProtocolStore.toJSON} serializes to plain JSON (every key as base64) so the account layer can seal it to
  * disk (src/core/e2ee-device.js) and {@link SignalProtocolStore.fromJSON} reload it.
  *
- * This file is the protocol layer: it imports no `src/core` and no `src/utils`, only Node and the Signal library's
- * data shapes. It never touches the network and never reads or writes a file — persistence is the caller's job. The
- * only peer this store ever talks to is the account itself (the phone, device 0, is the sender of the cloud key), so
- * identities are trusted on first use.
+ * This file is the protocol layer: it imports no `src/core` and no `src/utils`, only Node. It never touches the
+ * network and never reads or writes a file — persistence is the caller's job. The only peers this store ever talks to
+ * are the account's own other devices (the phone, device 0, is the sender of the cloud key), whose bundles come from
+ * the account's own authenticated session, so every identity is accepted and the latest one is recorded.
  */
 
 /** The Signal protocol version these keys speak (X3DH + Double Ratchet, message version 3). */
@@ -119,7 +119,7 @@ export class SignalProtocolStore {
         return [...this._signedPreKeys.keys()];
     }
 
-    // ---- StorageType, what the Signal library calls --------------------------------------------------------------
+    // ---- what the protocol code calls (./signal-protocol.js) -----------------------------------------------------
 
     /** @returns {Promise<{pubKey: ArrayBuffer, privKey: ArrayBuffer}|undefined>} */
     async getIdentityKeyPair() {
@@ -132,17 +132,16 @@ export class SignalProtocolStore {
     }
 
     /**
-     * Trust on first use: this store only ever speaks to the account itself. A changed key for a known address is
-     * still rejected (it would mean a different device), so a saved identity is honored.
+     * Every identity is accepted: the peers are the account's own devices, and a device that is set up again (a phone
+     * reinstall) legitimately comes back with a new identity key, which a refusal would strand. {@link saveIdentity}
+     * records the latest key per address.
      *
-     * @param {string} identifier
-     * @param {ArrayBuffer} identityKey
+     * @param {string} _identifier - the encoded peer address
+     * @param {ArrayBuffer|Uint8Array} _identityKey
      * @returns {Promise<boolean>}
      */
-    async isTrustedIdentity(identifier, identityKey) {
-        const seen = this._identities.get(String(identifier));
-        if (!seen) return true;
-        return abToBase64(seen) === abToBase64(identityKey);
+    async isTrustedIdentity(_identifier, _identityKey) {
+        return true;
     }
 
     /**

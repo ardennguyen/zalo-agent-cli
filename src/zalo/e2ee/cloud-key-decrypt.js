@@ -10,10 +10,10 @@
  * Processing a pre-key message consumes the matched one-time pre-key (standard X3DH): the store must still hold it at
  * this point, and after this it is gone, so the caller persists the updated store.
  *
- * Protocol layer: no `src/core`, no `src/utils`. The library is loaded lazily (./signal-lib.js).
+ * Protocol layer: no `src/core`, no `src/utils`.
  */
 import { PRE_KEY_TYPE, WHISPER_TYPE, splitTypeAndMessage } from "./transport-tag.js";
-import { loadSignalLib } from "./signal-lib.js";
+import { decryptPreKeyWhisperMessage, decryptWhisperMessage, encodeAddress } from "./signal-protocol.js";
 
 /** Raised when the reply is not a pre-key message or will not decrypt. */
 export class CloudKeyDecryptError extends Error {
@@ -43,13 +43,12 @@ export async function decryptCloudKeyReply({ store, encryptedPrivateKey, ownUid,
     } catch (e) {
         throw new CloudKeyDecryptError(`the reply is not a readable encrypted payload: ${e.message}`);
     }
-    const lib = await loadSignalLib();
-    const address = new lib.SignalProtocolAddress(String(ownUid), Number(senderDeviceId));
+    const address = encodeAddress(ownUid, senderDeviceId);
     // The usual case: the phone answers on the session our subdevice init set up with it, as a normal (type-2) message.
     if (split.type === WHISPER_TYPE) {
         let plain;
         try {
-            plain = await new lib.SessionCipher(store, address).decryptWhisperMessage(split.message);
+            plain = await decryptWhisperMessage(store, address, split.message);
         } catch (e) {
             throw new CloudKeyDecryptError(
                 `the cloud-key message did not decrypt on the session with the phone: ${e?.message || e}`,
@@ -68,13 +67,13 @@ export async function decryptCloudKeyReply({ store, encryptedPrivateKey, ownUid,
     let plaintext;
     let firstError;
     try {
-        plaintext = await new lib.SessionCipher(store, address).decryptPreKeyWhisperMessage(split.message);
+        plaintext = await decryptPreKeyWhisperMessage(store, address, split.message);
     } catch (e) {
         firstError = e;
     }
     // The ids in the message are lookup handles chosen by whoever numbered the bundle; the key material is what
     // decrypts. When the referenced id is not held under that number, try each held key under the referenced id.
-    if (plaintext === undefined) plaintext = await decryptWithHeldKeys(lib, store, address, split.message, header);
+    if (plaintext === undefined) plaintext = await decryptWithHeldKeys(store, address, split.message, header);
     if (plaintext === undefined) {
         throw new CloudKeyDecryptError(
             `the cloud-key message did not decrypt: ${firstError?.message || firstError} ` +
@@ -93,16 +92,16 @@ export async function decryptCloudKeyReply({ store, encryptedPrivateKey, ownUid,
  * Each attempt runs on a scratch view of the store, so a failed attempt leaves no session or consumed key behind; the
  * winning attempt's session is copied back and its real one-time pre-key removed.
  *
- * @returns {Promise<ArrayBuffer|undefined>}
+ * @returns {Promise<Uint8Array|undefined>}
  */
-async function decryptWithHeldKeys(lib, store, address, message, header) {
+async function decryptWithHeldKeys(store, address, message, header) {
     if (!header || header.signedPreKeyId === undefined) return undefined;
     const oneTime = header.preKeyId === undefined ? [undefined] : [...store.preKeyIds(), undefined];
     for (const signedId of store.signedPreKeyIds()) {
         for (const preId of oneTime) {
             const view = aliasView(store, { header, signedId, preId });
             try {
-                const plaintext = await new lib.SessionCipher(view, address).decryptPreKeyWhisperMessage(message);
+                const plaintext = await decryptPreKeyWhisperMessage(view, address, message);
                 for (const [k, v] of view.scratchSessions) await store.storeSession(k, v);
                 if (preId !== undefined) await store.removePreKey(preId);
                 return plaintext;

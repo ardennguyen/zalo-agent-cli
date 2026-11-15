@@ -4,9 +4,7 @@
  * returns the `{version, cmd, subCmd, data}` frame to send (or reads a reply apart), so they are unit-testable without a
  * socket. Nothing here sends anything.
  *
- * The frame shapes are traced from the installed client (private notes in agent/docs); the field packing is the
- * client's own. They are UNVERIFIED on the wire — no capture of this traffic exists — so a live run is what confirms
- * them. Every key in a bundle is base64 (the generator in ./identity.js already produces base64).
+ * The frame shapes are Zalo's protocol, confirmed live (registration and the cloud-key transfer). Every key in a bundle is base64 (the generator in ./identity.js already produces base64).
  *
  * Protocol layer: no `src/core`, no `src/utils`.
  */
@@ -46,7 +44,7 @@ export function platformName(deviceId) {
  *   signature: string}, preKeys: Array<{keyId: number, publicKey: string}>}} args.bundle - from ./identity.js
  * @param {number} args.deviceId - the platform slot to claim (see {@link DEVICE_IDS})
  * @param {string|number} args.reqId
- * @param {boolean} [args.deleteExistingSessions=false] - the client's `delSS`: drop this slot's old sessions
+ * @param {boolean} [args.deleteExistingSessions=false] - `delSS`: drop this slot's old sessions
  * @returns {{version: number, cmd: number, subCmd: number, data: object}}
  */
 export function encodeSubmitBundle({ bundle, deviceId, reqId, deleteExistingSessions = false }) {
@@ -105,9 +103,9 @@ export function encodeSubmitPreKeys({ preKeys, registrationId, deviceId, reqId }
  * @param {object} args
  * @param {string} args.uidTo - the account's own id (sessions are to our own other devices)
  * @param {Array<{deviceId: number, initMsg: string}>} args.entries - one per subdevice: the type-tagged init message,
- *   sent on the wire as `{deviceId, data}` (the client's field name)
+ *   sent on the wire as `{deviceId, data}` (the protocol's field name)
  * @param {string|number} args.reqId
- * @param {boolean} [args.enable=true] - the client's `type`: 1 when forwarding to a peer's devices, 0 for the
+ * @param {boolean} [args.enable=true] - `type`: 1 when forwarding to a peer's devices, 0 for the
  *   connect-time init of our own subdevices
  * @returns {{version: number, cmd: number, subCmd: number, data: object}}
  */
@@ -201,7 +199,7 @@ export function replyError(reply) {
 }
 
 /**
- * Read a GET_BUNDLE reply item into the shape a session builder needs (the client's `_convertBundle`): base64 kept as
+ * Read a GET_BUNDLE reply item into the shape a session builder needs : base64 kept as
  * base64, so a caller decodes with its own helpers.
  *
  * @param {object} item - one device's bundle from the reply
@@ -244,7 +242,7 @@ export function decodeBundleItem(item) {
 /**
  * Read a GET_LIST_USER_E2EE (563) reply into the account's own devices and which platform slots are occupied. The
  * reply's `data.data` carries `uids` (per-user device lists); this picks the entry for `ownUid` and summarizes its
- * devices. The exact field names are the client's and UNVERIFIED on the wire, so it reads defensively.
+ * devices. It reads the field names defensively.
  *
  * @param {object|null} reply - the decoded frame's parsed body (the `data` object, i.e. `{reqId, data:{...}}`)
  * @param {string} ownUid

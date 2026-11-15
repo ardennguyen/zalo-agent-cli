@@ -1,9 +1,8 @@
 /**
  * The one-byte message-type tag a Zalo end-to-end payload carries in front of the standard Signal message.
  *
- * The standard Signal library keeps a ciphertext's type in a separate field (`{type, body}`); the installed clients
- * instead prepend that type as a single byte to the body and base64 the pair (their `concatMsgWithType`), and strip it
- * again before decrypting (their `splitTypeAndMsg`). So a Zalo `encrypted_private_key` is
+ * The standard Signal library keeps a ciphertext's type in a separate field (`{type, body}`); Zalo's protocol
+ * instead prepends that type as a single byte to the body and base64s the pair, and strips it again before decrypting. So a Zalo `encrypted_private_key` is
  * `base64( [typeByte] ++ serializedSignalMessage )`, and to decrypt it we take the first byte as the type and hand the
  * rest to the session cipher. For the cloud key the type is always PRE_KEY (3): a pre-key message that sets up the
  * session on our side.

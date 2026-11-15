@@ -35,7 +35,11 @@ import {
     bundleFromStore,
     concatTypeAndMessage,
     decodeBundleItem,
-    loadSignalLib,
+    encodeAddress,
+    encryptMessage,
+    generateIdentityKeyPair,
+    generateRegistrationId,
+    processPreKeyBundle,
 } from "../../src/zalo/e2ee/index.js";
 import { generateKeyPairSync } from "node:crypto";
 
@@ -149,7 +153,6 @@ describe("the sealed cloud key", () => {
 describe("device-backed receive seals the cloud key", () => {
     it("decrypts the phone's reply with the sealed device and stores the key", async () => {
         const ownId = freshId();
-        const lib = await loadSignalLib();
         const { bundle } = await createE2eeDevice(ownId, { preKeyCount: 2 });
 
         // A stand-in phone encrypts a known cloud key to our published bundle.
@@ -164,9 +167,9 @@ describe("device-backed receive seals the cloud key", () => {
             preKey: bundle.preKeys[0],
         });
         const phoneStore = new SignalProtocolStore();
-        phoneStore.setIdentity(await lib.KeyHelper.generateIdentityKeyPair(), lib.KeyHelper.generateRegistrationId());
-        const usAddr = new lib.SignalProtocolAddress(ownId, DEVICE_IDS.WEB);
-        await new lib.SessionBuilder(phoneStore, usAddr).processPreKey({
+        phoneStore.setIdentity(generateIdentityKeyPair(), generateRegistrationId());
+        const usAddr = encodeAddress(ownId, DEVICE_IDS.WEB);
+        await processPreKeyBundle(phoneStore, usAddr, {
             registrationId: item.registrationId,
             identityKey: base64ToAb(item.identityKey),
             signedPreKey: {
@@ -179,7 +182,7 @@ describe("device-backed receive seals the cloud key", () => {
         const kb = Buffer.from(cloudPkcs8, "utf8");
         const ab = new ArrayBuffer(kb.length);
         new Uint8Array(ab).set(kb);
-        const ct = await new lib.SessionCipher(phoneStore, usAddr).encrypt(ab);
+        const ct = await encryptMessage(phoneStore, usAddr, ab);
         const encryptedPrivateKey = concatTypeAndMessage(ct.type, ct.body);
 
         // The live transports, faked: the request captures the session, then the matching reply is delivered.

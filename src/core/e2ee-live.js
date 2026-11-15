@@ -6,10 +6,10 @@
  *
  * The correlation primitives ({@link sendSignalCommand}, {@link subscribeCloudControls}) take an injected sender and tap
  * so they are unit-testable offline. {@link withLiveSocket} wraps the real listener lifecycle for the command; that
- * wrapper is LIVE and unverified (no capture of this traffic exists) — it is the owner's to run.
+ * wrapper is LIVE: it registers an account-visible device.
  *
  * One WebSocket per account (AGENTS.md §13): a running daemon holds the socket, so the command checks for one and does
- * not open a second. The decisive field shapes are the client's own, traced from its code, and UNVERIFIED on the wire.
+ * not open a second.
  */
 import { randomUUID } from "node:crypto";
 import { createSocketTap } from "../zalo/listener/socket-tap.js";
@@ -129,7 +129,7 @@ export function subscribeCloudControls(tap) {
 /**
  * Parse a GET_BUNDLE reply into device bundles. The reply nests them as
  * `data.keys = [{uid, err, keys: [ {deviceId, registrationId, identityKey, signedPreKey, preKey}, … ]}]` — one outer
- * entry per uid, whose inner `keys` are the per-device bundles (the client's `_convertBundle` reads each inner entry).
+ * entry per uid, whose inner `keys` are the per-device bundles .
  * A per-device request may omit the inner `deviceId`; `fallbackDeviceId` fills it in then.
  *
  * @param {object|null} reply - the decoded frame's `data` (`{reqId, data:{keys, errData}}`)
@@ -255,7 +255,7 @@ export async function submitBundleLive({ send, tap, bundle, deviceId, deleteExis
  * The INIT_SUBDEVICE phase: from the account's device bundles (GET_BUNDLE -1), build a Signal session to each device
  * other than ours and announce them with one INIT_SESSION (543). Mutates `store` (it gains the sessions); the caller
  * persists it. The phone answers the cloud-key request on the session this announcement sets up (a normal message on
- * it), so the announcement has to reach the phone in the clients' format. Never throws on a per-device miss.
+ * it), so the announcement has to reach the phone in the protocol's current format. Never throws on a per-device miss.
  *
  * @param {object} args
  * @param {(payload: object) => void} args.send
@@ -294,12 +294,12 @@ export async function initSubdevicesLive({ send, tap, ownUid, deviceId, store, b
 }
 
 /**
- * The full connect-time registration sequence the client runs after the socket authenticates:
+ * The full registration sequence a device runs after its socket authenticates:
  * GET_KEY_ID(564) → SUBMIT_BUNDLE(540) → INIT_SUBDEVICE. Registration is confirmed by SUBMIT_BUNDLE's success
  * (`err:0`, which {@link sendSignalCommand} enforces, with its `iid` matching the GET_KEY_ID `keyId`) — NOT by cmd 563,
  * which lists chat sessions, not the device registry. After submitting, it probes each platform slot's bundle
  * (per-slot GET_BUNDLE): our slot should appear, and the others feed INIT_SUBDEVICE. The subdevice sessions are built
- * best-effort and never gate the result. LIVE and unverified.
+ * best-effort and never gate the result. LIVE.
  *
  * @param {object} args
  * @param {(payload: object) => void} args.send
@@ -308,7 +308,7 @@ export async function initSubdevicesLive({ send, tap, ownUid, deviceId, store, b
  * @param {number} args.deviceId
  * @param {object} args.bundle - from bundleFromStore
  * @param {import("../zalo/e2ee/signal-store.js").SignalProtocolStore} args.store
- * @param {boolean} [args.deleteExistingSessions] - default true, as the client sends it (delSS=1): the server
+ * @param {boolean} [args.deleteExistingSessions] - default true (delSS=1): the server
  *   then tells the account's other devices to drop their sessions with this slot, so they fetch the new bundle instead
  *   of encrypting to one they cached
  * @param {number} [args.timeoutMs]
@@ -365,7 +365,7 @@ export async function registerDeviceLive({
 }
 
 /**
- * Run `fn({ send, tap })` over a one-off live socket for a logged-in account, then close it. LIVE and unverified; it
+ * Run `fn({ send, tap })` over a one-off live socket for a logged-in account, then close it. LIVE; it
  * starts the listener, waits for the handshake's cipher key, attaches a socket tap, and tears everything down after.
  * The caller must have confirmed no daemon holds the socket (one WebSocket per account).
  *

@@ -116,7 +116,7 @@ Each of these reports success, or names the wrong cause. They were all learned t
 | Command groups | **42** containers — 25 top-level + 11 OA subgroups + 3 ZBS subgroups + `mcp webhook` + `account security` + `cloud key` | the live commander tree | walk it. The number of `register*` calls in `src/index.js` is neither number: `oa` registers 11 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **37** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA/ZBS/Social commands | **94** (70 `oa` + 18 `zbs` + 6 `social`) | `src/commands/oa.js` + `src/commands/oa/*.js`, `src/commands/zbs.js`, `src/commands/social.js` | `node scripts/count-surface.mjs`. `zbs` counts with `oa`: both are the official API on the OA's OAuth token, so "personal" stays the unofficial surface |
-| Offline tests | **6610** as of 2026-11-16 (6600 pass, 10 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **6625** as of 2026-11-16 (6615 pass, 10 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -1704,6 +1704,19 @@ user approves, and the key arrives on the chat socket as a `personal_cloud` cont
 addressed to the account's own E2EE session. Taking part needs a registered E2EE device identity, a state-changing step on
 the account whose effect on other devices is unknown, plus secure storage, key-version and `correct_cloud_key` handling and
 free-plan removal. None of it is built, and no live request for it was made.
+
+**The Signal slice is our own code (2026-11-15).** `cloud key setup` later built that device identity
+(`src/zalo/e2ee/`). Its first version ran on a GPL-3.0 Signal library, a release blocker for this license; it was replaced
+by `src/zalo/e2ee/signal-protocol.js` (X3DH both roles, the Double Ratchet, the two message types hand-coded) and
+`src/zalo/e2ee/curve.js` (Curve25519 and XEdDSA on `@noble/curves`, MIT). The variant's only difference from standard
+Signal v3 is the HKDF info labels: `ZaloText`, `ZaloRatchet`, `ZaloMessageKeys`. Before the library was removed, an
+interop run checked every flow both ways against it under those labels (our pre-key message and our replies came out
+byte-identical with the same randomness, each side decrypted the other's, 64 signatures each way); its outputs are the
+known-answer vectors in `tests/unit/e2ee-signal-vectors.test.js`. Two details matter: verification takes the Edwards sign
+bit from the top bit of the signature (27 of 64 signatures from the other implementation set it; a strict XEdDSA verifier
+would refuse them), and the session record keeps the layout the library wrote, so a device sealed before the change keeps
+its sessions with the phone and needs no new registration. The store accepts every peer identity and records the latest
+(the peers are the account's own devices; the library's lookup never refused one either).
 
 ## Reads: Zalo's read-only endpoints (v3.0, 2026-10-26)
 

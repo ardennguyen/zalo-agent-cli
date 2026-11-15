@@ -13,8 +13,8 @@ describe("maskProxy", () => {
 
     it("masks long password", () => {
         assert.equal(
-            maskProxy("http://3AccFfq:pkLbHLRjhqids_session-Ntekoom2@geo.iproyal.com:12321"),
-            "http://3AccFfq:***@geo.iproyal.com:12321",
+            maskProxy("http://user-example:a-long-example-password_session-0000@proxy.example.invalid:12321"),
+            "http://user-example:***@proxy.example.invalid:12321",
         );
     });
 

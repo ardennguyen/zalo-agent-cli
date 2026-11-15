@@ -2,20 +2,25 @@
  * Generate the Signal keys a device publishes, and read a device bundle back from its store.
  *
  * A device needs a fixed set of keys to be addressable: an identity key pair, a registration id, a signed pre-key with
- * its signature, and a batch of one-time pre-keys. {@link generateDeviceIdentity} makes all of them with the library's
- * KeyHelper and fills a {@link SignalProtocolStore}; the account layer seals that store to disk. {@link bundleFromStore}
+ * its signature, and a batch of one-time pre-keys. {@link generateDeviceIdentity} makes all of them (./signal-protocol.js)
+ * and fills a {@link SignalProtocolStore}; the account layer seals that store to disk. {@link bundleFromStore}
  * reads the public half back out, in the order a SUBMIT_BUNDLE needs (src/zalo/e2ee/bundle-wire.js).
  *
- * Protocol layer: no `src/core`, no `src/utils`. The library is loaded lazily (./signal-lib.js).
+ * Protocol layer: no `src/core`, no `src/utils`.
  */
 import { SignalProtocolStore } from "./signal-store.js";
-import { loadSignalLib } from "./signal-lib.js";
+import {
+    generateIdentityKeyPair,
+    generatePreKey,
+    generateRegistrationId,
+    generateSignedPreKey,
+} from "./signal-protocol.js";
 
-/** How many one-time pre-keys a fresh device publishes (the installed clients publish a batch of 20). */
+/** How many one-time pre-keys a fresh device publishes (Zalo's devices publish a batch of 20). */
 export const DEFAULT_ONE_TIME_PREKEY_COUNT = 20;
 /**
  * Fallback signed pre-key id for a store built by hand. A generated identity numbers its signed pre-key
- * registrationId + 1, as the installed clients do.
+ * registrationId + 1, as Zalo's devices do.
  */
 export const SIGNED_PREKEY_ID = 1;
 /** The id of the first one-time pre-key in a batch; ids run upward from here. */
@@ -36,21 +41,20 @@ export async function generateDeviceIdentity({
     signedPreKeyId,
     firstPreKeyId = FIRST_ONE_TIME_PREKEY_ID,
 } = {}) {
-    const lib = await loadSignalLib();
     const store = new SignalProtocolStore();
 
-    const identityKeyPair = await lib.KeyHelper.generateIdentityKeyPair();
-    const registrationId = lib.KeyHelper.generateRegistrationId();
+    const identityKeyPair = generateIdentityKeyPair();
+    const registrationId = generateRegistrationId();
     store.setIdentity(identityKeyPair, registrationId);
     signedPreKeyId = signedPreKeyId ?? registrationId + 1;
 
-    const signed = await lib.KeyHelper.generateSignedPreKey(identityKeyPair, signedPreKeyId);
+    const signed = generateSignedPreKey(identityKeyPair, signedPreKeyId);
     store.addSignedPreKey(signed.keyId, signed.keyPair, signed.signature);
 
     const preKeyIds = [];
     for (let i = 0; i < Math.max(1, preKeyCount); i++) {
         const id = firstPreKeyId + i;
-        const pk = await lib.KeyHelper.generatePreKey(id);
+        const pk = generatePreKey(id);
         store.addPreKey(pk.keyId, pk.keyPair);
         preKeyIds.push(id);
     }
@@ -68,13 +72,12 @@ export async function generateDeviceIdentity({
  * @returns {Promise<number[]>} the ids added
  */
 export async function generateOneTimePreKeys(store, { count = DEFAULT_ONE_TIME_PREKEY_COUNT, firstPreKeyId } = {}) {
-    const lib = await loadSignalLib();
     const start =
         firstPreKeyId ?? (store.preKeyIds().length ? Math.max(...store.preKeyIds()) + 1 : FIRST_ONE_TIME_PREKEY_ID);
     const ids = [];
     for (let i = 0; i < Math.max(1, count); i++) {
         const id = start + i;
-        const pk = await lib.KeyHelper.generatePreKey(id);
+        const pk = generatePreKey(id);
         store.addPreKey(pk.keyId, pk.keyPair);
         ids.push(id);
     }
@@ -83,7 +86,7 @@ export async function generateOneTimePreKeys(store, { count = DEFAULT_ONE_TIME_P
 
 /**
  * The public bundle a store publishes, with every key as base64 (what SUBMIT_BUNDLE sends). One one-time pre-key is
- * offered per bundle, the lowest id still held, as the installed clients do.
+ * offered per bundle, the lowest id still held, as Zalo's devices do.
  *
  * @param {SignalProtocolStore} store
  * @returns {{registrationId: number, identityKey: string, signedPreKey: {keyId: number, publicKey: string,

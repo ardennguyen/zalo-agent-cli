@@ -22,7 +22,7 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 #### Dependencies
 
-- Added `@noble/curves` (MIT) for the end-to-end-encryption device.
+- Added `@noble/curves` 2.4.0 (MIT) for the end-to-end-encryption device. Its Signal protocol code is the engine's own; no GPL-licensed library is used.
 
 ## [3.0.1] — 2026-11-15
 

@@ -170,6 +170,15 @@ describe("chooseDelivery", () => {
         assert.equal(pick("file"), "link");
     });
 
+    it("sends a JPEG XL photo as a link: MCP clients take only JPEG, PNG, GIF and WebP inline", () => {
+        const pick = (mime) =>
+            chooseDelivery({ kind: "photo", size: 1000, mime, policy: policy(), stdio: false, clientLoopback: false })
+                .mode;
+        assert.equal(pick("image/jxl"), "link");
+        for (const m of ["image/jpeg", "image/png", "image/gif", "image/webp"]) assert.equal(pick(m), "inline", m);
+        assert.equal(mediaMime({ ext: "jxl" }), "image/jxl");
+    });
+
     it("sends a picture over the size cutoff, or of a type a client cannot render, as a link", () => {
         const big = chooseDelivery({
             kind: "photo",

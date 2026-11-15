@@ -42,59 +42,6 @@ export class SignalCommandError extends Error {
 }
 
 /**
- * Whether the secret-free diagnostic mode is on (`ZALO_E2EE_DEBUG=1`), for tracing the registration round live.
- *
- * @param {object} [env]
- * @returns {boolean}
- */
-export function e2eeDebugEnabled(env = process.env) {
-    const v = env.ZALO_E2EE_DEBUG;
-    return Boolean(v) && v !== "0" && String(v).toLowerCase() !== "false";
-}
-
-/**
- * A secret-free description of a value: field names, numeric values (error/status codes, user_action, counts),
- * booleans, and string/array LENGTHS only — never a string's or buffer's contents. Used by {@link e2eeDebug}.
- *
- * @param {*} v
- * @param {number} [depth]
- * @returns {*}
- */
-export function describeShape(v, depth = 3) {
-    if (v === null || v === undefined) return v === null ? null : "undefined";
-    if (typeof v === "number" || typeof v === "boolean") return v;
-    if (typeof v === "string") return `str(${v.length})`;
-    if (Array.isArray(v)) {
-        if (depth <= 0) return `arr(${v.length})`;
-        return { _array: v.length, first: v.length ? describeShape(v[0], depth - 1) : undefined };
-    }
-    if (typeof v === "object") {
-        if (depth <= 0) return `obj{${Object.keys(v).join(",")}}`;
-        const out = {};
-        for (const k of Object.keys(v)) out[k] = describeShape(v[k], depth - 1);
-        return out;
-    }
-    return typeof v;
-}
-
-/**
- * Log, to stderr, the shape of a labeled value when {@link e2eeDebugEnabled}. Never logs key bytes, private keys,
- * encrypted payloads, tokens or cookies — only field names, numeric codes, booleans and lengths.
- *
- * @param {string} label
- * @param {*} value
- * @param {number} [depth] - how deep to describe (default 3)
- */
-export function e2eeDebug(label, value, depth = 3) {
-    if (!e2eeDebugEnabled()) return;
-    try {
-        console.error(`[e2ee-debug] ${label}: ${JSON.stringify(describeShape(value, depth))}`);
-    } catch {
-        console.error(`[e2ee-debug] ${label}: <unprintable>`);
-    }
-}
-
-/**
  * Send one `{version, cmd, subCmd, data:{reqId, …}}` frame and await the reply of the same cmd whose `data.reqId`
  * matches. Pure over the injected sender and tap, so a fake pair drives it in tests.
  *
@@ -113,7 +60,6 @@ export function sendSignalCommand({
     frame,
     timeoutMs = SIGNAL_REPLY_TIMEOUT_MS,
     timers = { setTimeout, clearTimeout },
-    debugLabel = null,
 }) {
     const reqId = String(frame?.data?.reqId ?? "");
     const cmd = Number(frame?.cmd);
@@ -137,7 +83,6 @@ export function sendSignalCommand({
                 tap.on(cmd, (replyFrame) => {
                     const body = replyFrame?.data;
                     if (!body || (reqId && String(body.reqId ?? "") !== reqId)) return;
-                    if (debugLabel) e2eeDebug(`${debugLabel} reply (cmd ${cmd})`, body);
                     const err = replyError(body);
                     if (err !== null) {
                         finish(reject, new SignalCommandError(`cmd ${cmd} replied error ${err}`, err));
@@ -176,11 +121,6 @@ export function subscribeCloudControls(tap) {
     return (handler) =>
         tap.on(CMD_PUSH_CONTROLS, (frame) => {
             for (const c of readControls(frame?.data)) {
-                if (c.actType === "personal_cloud") {
-                    // Surface the control's shape (user_action is a numeric code; encrypted_private_key shows only its
-                    // length) so a live round shows an approval vs a refusal vs a malformed reply.
-                    e2eeDebug(`pcloud control ${c.act}`, c.data);
-                }
                 handler({ actType: c.actType, act: c.act, data: c.data });
             }
         });
@@ -238,17 +178,13 @@ export async function getBundleForSlot({ send, tap, ownUid, deviceId, timeoutMs 
             tap,
             frame: encodeGetBundle({ uid: ownUid, deviceId, reqId: randomUUID() }),
             timeoutMs,
-            debugLabel: `GET_BUNDLE 541 slot ${deviceId}`,
         });
-    } catch (e) {
+    } catch {
         // A slot with no device replies an error; that is "no bundle", not a failure.
-        e2eeDebug(`GET_BUNDLE 541 slot ${deviceId} error`, { code: e?.code ?? null });
         return null;
     }
     // Match the requested slot. parseBundleReply fills a missing deviceId with the slot, so a single per-slot bundle
     // matches; a multi-device reply only yields the entry for this slot (never a misattributed first item).
-    // Ids only (registration id, signed/one-time pre-key ids); key bytes print as lengths.
-    e2eeDebug(`GET_BUNDLE 541 slot ${deviceId} bundle ids`, reply?.data?.keys, 7);
     const items = parseBundleReply(reply, ownUid, Number(deviceId));
     return items.find((i) => Number(i.deviceId) === Number(deviceId)) ?? null;
 }
@@ -290,7 +226,6 @@ export async function getKeyIdLive({ send, tap, deviceId, timeoutMs }) {
         tap,
         frame: encodeGetKeyId({ deviceId, reqId: randomUUID() }),
         timeoutMs,
-        debugLabel: "GET_KEY_ID 564",
     });
 }
 
@@ -313,7 +248,6 @@ export async function submitBundleLive({ send, tap, bundle, deviceId, deleteExis
         tap,
         frame: encodeSubmitBundle({ bundle, deviceId, reqId: randomUUID(), deleteExistingSessions }),
         timeoutMs,
-        debugLabel: "SUBMIT_BUNDLE 540",
     });
 }
 
@@ -343,10 +277,7 @@ export async function initSubdevicesLive({ send, tap, ownUid, deviceId, store, b
             const initMsg = await buildSubdeviceInit({ store, ownUid, deviceId: bundleItem.deviceId, bundleItem });
             entries.push({ deviceId: bundleItem.deviceId, initMsg });
             built.push(bundleItem.deviceId);
-        } catch (e) {
-            e2eeDebug(`INIT_SUBDEVICE slot ${bundleItem.deviceId}: build failed`, {
-                message: `str(${String(e?.message ?? "").length})`,
-            });
+        } catch {
             skipped.push(bundleItem.deviceId);
         }
     }
@@ -357,10 +288,7 @@ export async function initSubdevicesLive({ send, tap, ownUid, deviceId, store, b
             tap,
             frame: encodeInitSession({ uidTo: ownUid, entries, reqId: randomUUID(), enable: false }),
             timeoutMs,
-            debugLabel: "INIT_SESSION 543",
         });
-    } else {
-        e2eeDebug("INIT_SUBDEVICE", { built: 0, skipped: skipped.length });
     }
     return { built, skipped, reply };
 }
@@ -423,14 +351,6 @@ export async function registerDeviceLive({
         timeoutMs,
     });
     const keyMatches = keyId !== null && iid !== null && String(keyId) === String(iid);
-    e2eeDebug("registerDeviceLive result", {
-        slot: Number(deviceId),
-        registered: true,
-        keyMatches,
-        listedInBundles,
-        occupiedSlots,
-        subdevicesBuilt: subdevices.built.length,
-    });
     return {
         // SUBMIT_BUNDLE accepted (it did not throw) = registered. The bundle list and iid match are confirmations.
         registered: true,

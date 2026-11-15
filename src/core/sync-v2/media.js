@@ -49,6 +49,7 @@ import { readSealedJson, writeSealedJson } from "../keystore/index.js";
 import { scopeOfDir } from "../keystore/keyring.js";
 import { mediaPlainSize, writeSealedMedia } from "../keystore/media-seal.js";
 import { openDeadLinks } from "./dead-links.js";
+import { checkDiskRoom } from "../storage-quota.js";
 
 /** Kinds that point at a byte stream worth saving. */
 export const DOWNLOADABLE_KINDS = new Set(["photo", "video", "file", "gif", "voice", "audio", "doodle"]);
@@ -85,12 +86,15 @@ export function sanitize(name) {
     return out.trim().slice(0, 80) || "unknown";
 }
 
+/** Kinds whose file is a picture, named by its bytes. */
+const IMAGE_KINDS = new Set(["photo", "doodle"]);
 const DEFAULT_EXT = { photo: "jpg", video: "mp4", gif: "gif", voice: "mp3", audio: "mp3", doodle: "jpg", file: "bin" };
 const CONTENT_TYPE_EXT = {
     "image/jpeg": "jpg",
     "image/png": "png",
     "image/gif": "gif",
     "image/webp": "webp",
+    "image/jxl": "jxl",
     "video/mp4": "mp4",
     "video/quicktime": "mov",
     "audio/mpeg": "mp3",
@@ -99,29 +103,33 @@ const CONTENT_TYPE_EXT = {
 };
 
 /**
- * The JPEG twin of a JPEG XL photo URL, the form Zalo serves to a client that cannot decode JPEG XL:
- * `…/jxl/…/x.jxl?jxlstatus=1` becomes `…/jpg/…/x.jpg`. A JPEG XL file opens in almost no viewer and no model, so the
- * CLI always takes the JPEG. An end-to-end encrypted session's URL keeps its form; any other URL is returned unchanged.
+ * The image format the bytes themselves are, by their signature: what Zalo stored is what is kept, so a picture that
+ * Zalo keeps as JPEG XL is saved as `.jxl` even when its URL or the message says `.jpg`. Null when not an image this
+ * knows.
  *
- * @param {string} url
- * @returns {string}
+ * @param {Buffer|Uint8Array|null|undefined} buf
+ * @returns {string|null}
  */
-export function jpegUrl(url) {
-    if (typeof url !== "string" || !/^https?:\/\/.*\/jxl\/.*\.jxl/.test(url)) return url;
-    let u;
-    try {
-        u = new URL(url);
-    } catch {
-        return url;
-    }
-    u.searchParams.delete("jxlstatus");
-    u.search = decodeURIComponent(u.search);
-    if (url.includes("?e2esession")) return u.href;
-    return u.href.replace("/jxl/", "/jpg/").replace(".jxl", ".jpg");
+export function sniffImageExt(buf) {
+    if (!buf || buf.length < 12) return null;
+    const b = buf;
+    if (b[0] === 0xff && b[1] === 0x0a) return "jxl"; // JPEG XL codestream
+    if (b[0] === 0 && b[1] === 0 && b[2] === 0 && b[3] === 0x0c && b[4] === 0x4a && b[5] === 0x58 && b[6] === 0x4c)
+        return "jxl"; // JPEG XL container
+    if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "jpg";
+    if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return "png";
+    if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return "gif";
+    if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && b[8] === 0x57 && b[9] === 0x45)
+        return "webp";
+    return null;
 }
 
-/** Extension from the filename, then the URL, then content-type, then the kind. */
-function guessExt(att, url, contentType) {
+/** Extension: a picture's own format first (its bytes), then the filename, the URL, the content-type and the kind. */
+function guessExt(att, url, contentType, buf) {
+    if (IMAGE_KINDS.has(att.kind)) {
+        const sniffed = sniffImageExt(buf);
+        if (sniffed) return sniffed;
+    }
     if (att.ext) return String(att.ext).replace(/^\./, "").toLowerCase().slice(0, 8);
     if (att.fileName && /\.([A-Za-z0-9]{1,8})$/.test(att.fileName)) return RegExp.$1.toLowerCase();
     const inUrl = /\.([A-Za-z0-9]{2,5})(?:\?|$)/.exec(String(url || "").split("#")[0]);
@@ -625,12 +633,17 @@ function writeConversationIndex(mediaRoot, names, scope) {
  * @param {(msgId: string, zKey?: string|null) => {found: boolean}} [opts.cloudLookup] - whether the local zCloud index lists a message's
  *   backup (defaults to {@link lookupCloudBackup}); a file that is gone from the CDN and listed there is counted in
  *   `cloudBacked`: it exists, but the copy is end-to-end encrypted under the account's cloud key, which this client never holds
+ * @param {(addedBytes: number) => {ok: boolean, reason: string|null, message: string|null}} [opts.room] - whether
+ *   there is room for more after `addedBytes` (tests); default: the disk reserve and the account quota
+ *   (src/core/storage-quota.js checkDiskRoom). Checked before the run and before each file; out of room, the run stops
+ *   and `outOfRoom` says why
  * @param {(p: object) => void} [opts.onProgress] - `saved` per file written, `fail` per failure, `throttled` per
  *   backoff, and `attempted` once per file finished either way (`{attempted, total, downloaded, failed, dead, bytes}`), so a
  *   run whose files all fail still shows it is moving
  * @returns {Promise<{considered:number, attempted:number, downloaded:number, skipped:number, failed:number, dead:number,
  *   expired:number, cloudBacked:number, throttled:number, unknown:number, renewed:number, bytes:number,
- *   abortedEarly:boolean, interrupted:boolean, deferred:number, reasons:Record<string,number>, failures:Array<object>}>}
+ *   abortedEarly:boolean, interrupted:boolean, outOfRoom: {reason: string, message: string}|null, deferred:number,
+ *   reasons:Record<string,number>, failures:Array<object>}>}
  *   `renewed` is always 0 (no link is renewed; kept so a reader of the result keeps its shape).
  *   `throttled` counts only responses that said to slow down; `unknown` counts the retryable
  *   failures that explained nothing. `reasons` tallies the observed codes — pass it to
@@ -687,9 +700,8 @@ export async function downloadSyncedMedia(opts = {}) {
         for (const att of attachmentsOf(row)) {
             // The full file, else the HD one, else (for a picture with nothing better) the thumbnail: a row counts as
             // having an attachment when any of these is there, so taking only `url` left such rows pending forever.
-            const url = jpegUrl(
-                att.url || att.hdUrl || (thumbs || THUMB_IS_THE_PICTURE.has(att.kind) ? att.thumbUrl : null),
-            );
+            // Fetched as Zalo serves it: a JPEG XL picture stays JPEG XL.
+            const url = att.url || att.hdUrl || (thumbs || THUMB_IS_THE_PICTURE.has(att.kind) ? att.thumbUrl : null);
             if (!url || !kinds.has(att.kind)) continue;
             if (maxBytes && att.size && att.size > maxBytes) continue;
             jobs.push({ row, att, url, index: index++ });
@@ -734,6 +746,8 @@ export async function downloadSyncedMedia(opts = {}) {
         abortedEarly: false,
         // Stopped by the caller's signal; what was not saved is still pending.
         interrupted: false,
+        // Stopped for lack of room ({reason: "disk"|"quota", message}); what was not saved is still pending.
+        outOfRoom: null,
         // code -> count over the jobs that ultimately failed, for the summary.
         reasons: {},
         failures: [],
@@ -791,6 +805,24 @@ export async function downloadSyncedMedia(opts = {}) {
     // get an account flagged -- so the run backs off and then gives up.
     let throttleStreak = 0;
     let stopAll = false;
+    // Room to store more: the disk keeps its reserve and the account its quota (../storage-quota.js). Usage is measured
+    // once; the bytes this run saves are added to it. A run that runs out of room stops; what is left stays pending.
+    let usedAtStart = null;
+    const room =
+        opts.room ??
+        ((added) => {
+            const r = checkDiskRoom(ownId, { mediaRoot, addedBytes: added, usedBytes: usedAtStart });
+            if (usedAtStart === null && Number.isFinite(r.usedBytes)) usedAtStart = r.usedBytes;
+            return r;
+        });
+    const outOfRoom = () => {
+        const r = room(stats.bytes);
+        if (r.ok) return false;
+        stats.outOfRoom = { reason: r.reason, message: r.message };
+        onProgress({ phase: "out-of-room", detail: r.message });
+        return true;
+    };
+    if (outOfRoom()) return stats;
     const backoff = async () => {
         const wait = Math.min(30000, backoffBaseMs * 2 ** Math.min(throttleStreak, 5));
         onProgress({ phase: "throttled", detail: `backing off ${Math.round(wait / 1000)}s`, streak: throttleStreak });
@@ -802,6 +834,10 @@ export async function downloadSyncedMedia(opts = {}) {
             if (stopAll || cursor >= jobs.length) return;
             if (signal?.aborted) {
                 stats.interrupted = true;
+                return;
+            }
+            if (outOfRoom()) {
+                stopAll = true;
                 return;
             }
             const job = jobs[cursor++];
@@ -978,7 +1014,7 @@ export async function downloadSyncedMedia(opts = {}) {
                 return;
             }
 
-            const ext = guessExt(att, url, got.contentType);
+            const ext = guessExt(att, url, got.contentType, got.buf);
             const path = destPath(dir, row, att, ext, job.index);
             try {
                 fs.mkdirSync(dirname(path), { recursive: true });

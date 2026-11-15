@@ -33,7 +33,7 @@ import {
     DEFAULT_REQUEST_TIMEOUT_MS,
     THROTTLE_GIVE_UP,
     pruneDownloadedMedia,
-    jpegUrl,
+    sniffImageExt,
 } from "../../src/core/sync-v2/media.js";
 import { extractRenewedUrls } from "../../src/zalo/custom/renewlink.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
@@ -64,6 +64,8 @@ let heads = [];
 const T0 = Date.now() - 3_600_000;
 
 const PHOTO_BYTES = Buffer.from("\xff\xd8\xff\xe0JFIF-pretend-jpeg", "binary");
+/** A JPEG XL codestream's signature, then filler: what Zalo keeps many photos as. */
+const JXL_BYTES = Buffer.from("\xff\x0a\x2a\x12-pretend-jpeg-xl", "binary");
 /**
  * A 149-byte CSV, the size and shape of the two `data.csv` attachments that
  * were stuck in a live cache across four runs on 2026-09-29 while the CLI
@@ -84,7 +86,11 @@ before(async () => {
         }
         if (path.endsWith(".jxl")) {
             res.writeHead(200, { "content-type": "image/jxl" });
-            return res.end(Buffer.from("pretend-jxl"));
+            return res.end(JXL_BYTES);
+        }
+        if (path === "/jxl-behind.jpg") {
+            res.writeHead(200, { "content-type": "image/jpeg" });
+            return res.end(JXL_BYTES);
         }
         if (path === "/ok.jpg") {
             res.writeHead(200, { "content-type": "image/jpeg" });
@@ -248,13 +254,20 @@ describe("downloadSyncedMedia — happy path", () => {
         assert.deepEqual(plainOf(saved.localPath, dir, saved.msgId), PHOTO_BYTES);
     });
 
-    it("fetches a JPEG XL photo as its JPEG twin, as Zalo does for a client without JPEG XL (bug-reports #8)", async () => {
+    it("keeps a JPEG XL photo as Zalo serves it: fetched from its own URL, saved as .jxl", async () => {
         const id = row({}, [photo("/jxl/9/abc.jxl?jxlstatus=1")]);
         const stats = await downloadSyncedMedia({ accountDir: dir, limit: 10 });
         assert.equal(stats.downloaded, 1);
+        assert.equal(hits["/jxl/9/abc.jxl"], 1, "the JPEG XL file itself was fetched");
         const saved = getMessages("t1").find((m) => m.msgId === id);
-        assert.match(saved.localPath, /\.jpg$/, "saved as .jxl, which most viewers and models cannot open");
-        assert.deepEqual(plainOf(saved.localPath, dir, saved.msgId), PHOTO_BYTES);
+        assert.match(saved.localPath, /\.jxl$/);
+        assert.deepEqual(plainOf(saved.localPath, dir, saved.msgId), JXL_BYTES);
+    });
+
+    it("names a photo by its bytes: JPEG XL behind a .jpg link is saved as .jxl", async () => {
+        const id = row({}, [photo("/jxl-behind.jpg")]);
+        await downloadSyncedMedia({ accountDir: dir, limit: 10 });
+        assert.match(getMessages("t1").find((m) => m.msgId === id).localPath, /\.jxl$/);
     });
 
     it("a photo that has only an HD or only a thumbnail link is still fetched, not skipped forever", async () => {
@@ -1545,25 +1558,20 @@ describe("pruneDownloadedMedia — all mode", () => {
     });
 });
 
-describe("jpegUrl", () => {
-    it("turns a JPEG XL photo URL into its JPEG twin and drops the marker", () => {
-        assert.equal(
-            jpegUrl("https://f20-zpc.zdn.vn/jxl/123/abcdef.jxl?jxlstatus=1"),
-            "https://f20-zpc.zdn.vn/jpg/123/abcdef.jpg",
-        );
-        assert.equal(
-            jpegUrl("https://f20-zpc.zdn.vn/jxl/123/abcdef.jxl?jxlstatus=1&x=2"),
-            "https://f20-zpc.zdn.vn/jpg/123/abcdef.jpg?x=2",
-        );
+describe("sniffImageExt: a picture is named by its own bytes", () => {
+    const pad = (head) => Buffer.concat([Buffer.from(head), Buffer.alloc(16)]);
+    it("knows JPEG XL (codestream and container), JPEG, PNG, GIF and WebP", () => {
+        assert.equal(sniffImageExt(pad([0xff, 0x0a, 0x2a, 0x12])), "jxl");
+        assert.equal(sniffImageExt(pad([0, 0, 0, 0x0c, 0x4a, 0x58, 0x4c, 0x20])), "jxl");
+        assert.equal(sniffImageExt(pad([0xff, 0xd8, 0xff, 0xe0])), "jpg");
+        assert.equal(sniffImageExt(pad([0x89, 0x50, 0x4e, 0x47])), "png");
+        assert.equal(sniffImageExt(pad([0x47, 0x49, 0x46, 0x38])), "gif");
+        assert.equal(sniffImageExt(pad([0x52, 0x49, 0x46, 0x46, 1, 2, 3, 4, 0x57, 0x45, 0x42, 0x50])), "webp");
     });
 
-    it("leaves every other URL alone, and an encrypted session's URL in its own form", () => {
-        for (const u of ["https://f20-zpc.zdn.vn/jpg/1/a.jpg", "https://example.invalid/f.pdf", null, undefined]) {
-            assert.equal(jpegUrl(u), u);
-        }
-        assert.equal(
-            jpegUrl("https://f20-zpc.zdn.vn/jxl/1/a.jxl?e2esession=1&jxlstatus=1"),
-            "https://f20-zpc.zdn.vn/jxl/1/a.jxl?e2esession=1",
-        );
+    it("says nothing for other bytes or too few of them", () => {
+        assert.equal(sniffImageExt(pad([0, 0, 0, 0x1c, 0x66, 0x74, 0x79, 0x70])), null);
+        assert.equal(sniffImageExt(Buffer.from([0xff, 0x0a])), null);
+        assert.equal(sniffImageExt(null), null);
     });
 });

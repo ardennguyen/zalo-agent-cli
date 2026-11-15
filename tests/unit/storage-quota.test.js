@@ -33,6 +33,8 @@ import {
     memberUsage,
     quotaSystemEvent,
     readQuotaState,
+    checkDiskRoom,
+    resolveMinFree,
     resolveQuota,
     resolveRetention,
     runStoragePass,
@@ -567,5 +569,47 @@ describe("storage quota: a tenant member whose daemon is down", () => {
             JSON.stringify(events),
         );
         assert.ok(lines.some((l) => l.includes("measured its database read-only")));
+    });
+});
+
+describe("storage quota: room to store more (checkDiskRoom)", () => {
+    const GB = 1024 ** 3;
+    const disk = (freeBytes) => () => ({ bavail: freeBytes / 4096, bsize: 4096 });
+
+    it("keeps 2 GB free by default, and stops short of eating into it", () => {
+        const id = freshId();
+        assert.equal(resolveMinFree(id, { env: {} }), 2 * GB);
+        assert.equal(checkDiskRoom(id, { env: {}, statfs: disk(10 * GB) }).ok, true);
+        const tight = checkDiskRoom(id, { env: {}, statfs: disk(10 * GB), addedBytes: 9 * GB });
+        assert.equal(tight.ok, false);
+        assert.equal(tight.reason, "disk");
+        assert.match(tight.message, /kept free/);
+    });
+
+    it("takes the reserve from the environment or storage.json, and 0 turns the check off", () => {
+        const id = freshId();
+        assert.equal(resolveMinFree(id, { env: { ZALO_STORAGE_MIN_FREE: "500MB" } }), 500 * 1024 ** 2);
+        assert.equal(checkDiskRoom(id, { env: { ZALO_STORAGE_MIN_FREE: "0" }, statfs: disk(4096) }).ok, true);
+        writeStorageFile({ provider: "test", quota: { minFree: "20GB" } });
+        try {
+            assert.equal(resolveMinFree(id, { env: {} }), 20 * GB);
+            assert.equal(checkDiskRoom(id, { env: {}, statfs: disk(10 * GB) }).reason, "disk");
+        } finally {
+            writeStorageFile({ provider: "test" });
+        }
+    });
+
+    it("stops at the account's quota when one is set", () => {
+        const id = freshId();
+        writeStorageFile({ provider: "test", quota: { account: { limit: "1GB" } } });
+        try {
+            const opts = { env: {}, statfs: disk(100 * GB), usedBytes: 900 * 1024 ** 2 };
+            assert.equal(checkDiskRoom(id, opts).ok, true);
+            const over = checkDiskRoom(id, { ...opts, addedBytes: 200 * 1024 ** 2 });
+            assert.equal(over.ok, false);
+            assert.equal(over.reason, "quota");
+        } finally {
+            writeStorageFile({ provider: "test" });
+        }
     });
 });

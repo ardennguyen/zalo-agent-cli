@@ -1,8 +1,6 @@
 /**
- * The scaffolding that would request the account's zCloud cloud key from the phone
- * (src/core/cloud-key-transfer.js). The request + bounded wait + reply handling run offline here over injected
- * transports; the live entry refuses because this engine registers no end-to-end-encryption device for the phone to
- * encrypt the key to. Every id and key is a throwaway made in this file.
+ * Requesting the account's zCloud key from the phone (src/core/cloud-key-transfer.js): the request, the bounded wait
+ * and the reply handling, run offline over injected transports. Every id and key is a throwaway made in this file.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it } from "node:test";

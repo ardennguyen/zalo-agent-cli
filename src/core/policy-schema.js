@@ -103,6 +103,11 @@ const bytes = (value) => {
     const b = parseBytes(value);
     return b === null ? { error: 'is not a size (bytes, or e.g. "2GB", or "unlimited")' } : { value };
 };
+const reserve = (value) => {
+    if (value === 0 || String(value ?? "").trim() === "0") return { value: 0 };
+    const b = parseBytes(value);
+    return typeof b === "number" ? { value } : { error: 'is not a size (bytes, or e.g. "2GB", or 0 for none)' };
+};
 const deliverMap = (value) => {
     if (typeof value === "string") {
         const v = value.trim().toLowerCase();
@@ -197,6 +202,7 @@ export const POLICY_KEYS = Object.freeze({
     "quota.graceDays": { check: wholeNumber(0, 3650) },
     "quota.warnAt": { check: fraction },
     "quota.purgeOrder": { check: oneOf(["media-first"]) },
+    "quota.minFree": { check: reserve },
     "retention.messages": { check: keepOrDays },
     "retention.media": { check: keepOrDays },
     "retention.outboxDead": {

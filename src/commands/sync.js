@@ -518,6 +518,11 @@ async function runMediaDownload(activeAcc, opts) {
         process.exit(0);
     }
     success(`Downloaded ${stats.downloaded}/${stats.considered} attachment(s) (${formatBytes(stats.bytes)}).`);
+    if (stats.outOfRoom) {
+        warning(
+            `Stopped: ${stats.outOfRoom.message}. The rest are still pending; free some space or raise the limit, then run it again.`,
+        );
+    }
     if (stats.interrupted) {
         warning(
             `Stopped after ${stats.attempted} of ${stats.considered}; the rest are still pending — run it again to continue.`,
@@ -1852,6 +1857,11 @@ async function fetchMediaAfterRestore(accountDir, api, since, { limit } = {}) {
         { onStop: mediaStoppingNotice },
     );
     success(`Downloaded ${stats.downloaded}/${stats.considered} file(s) (${formatBytes(stats.bytes)}).`);
+    if (stats.outOfRoom) {
+        warning(
+            `Stopped: ${stats.outOfRoom.message}. The rest are still pending; free some space or raise the limit, then run it again.`,
+        );
+    }
     if (stats.interrupted) {
         warning(
             `Stopped after ${stats.attempted} of ${stats.considered}; the rest are still pending — \`zalo-agent sync-media\` continues.`,

@@ -30,7 +30,16 @@ export const INLINE_KINDS = Object.freeze({
     audio: "audio",
 });
 
-const IMAGE_MIME = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp" };
+const IMAGE_MIME = {
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    png: "image/png",
+    gif: "image/gif",
+    webp: "image/webp",
+    jxl: "image/jxl",
+};
+/** The picture types an MCP client takes inline. Another (JPEG XL, as Zalo keeps many photos) goes as a link. */
+const INLINE_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 const AUDIO_MIME = {
     aac: "audio/aac",
     m4a: "audio/mp4",
@@ -98,7 +107,10 @@ export function chooseDelivery({ kind, size, mime = null, requested = null, open
         Boolean(INLINE_KINDS[kind]) &&
         Number.isFinite(size) &&
         size <= policy.inlineMaxBytes &&
-        (!mime || mime.startsWith(`${INLINE_KINDS[kind]}/`));
+        (!mime ||
+            (INLINE_KINDS[kind] === "image"
+                ? INLINE_IMAGE_MIMES.has(mime)
+                : mime.startsWith(`${INLINE_KINDS[kind]}/`)));
     let mode = null;
     if (requested) {
         if (!allowed.includes(requested)) {

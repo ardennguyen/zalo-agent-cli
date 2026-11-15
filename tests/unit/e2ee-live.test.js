@@ -7,8 +7,6 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
     SignalCommandError,
-    describeShape,
-    e2eeDebugEnabled,
     getKeyIdLive,
     listMyDevicesLive,
     parseBundleReply,
@@ -290,33 +288,7 @@ describe("registerDeviceLive — the full connect-time sequence", () => {
     });
 });
 
-describe("the secret-free debug mode", () => {
-    it("describeShape shows field names, numbers and lengths but never string contents", () => {
-        const shape = describeShape({
-            err: -205,
-            user_action: 1,
-            ok: true,
-            encrypted_private_key: "AAAABBBBCCCCDDDD",
-            nested: { token: "super-secret-value", n: 3 },
-        });
-        assert.equal(shape.err, -205);
-        assert.equal(shape.user_action, 1);
-        assert.equal(shape.ok, true);
-        assert.equal(shape.encrypted_private_key, "str(16)");
-        assert.equal(shape.nested.token, "str(18)");
-        assert.equal(shape.nested.n, 3);
-        const flat = JSON.stringify(shape);
-        assert.equal(flat.includes("super-secret-value"), false);
-        assert.equal(flat.includes("AAAABBBB"), false);
-    });
-
-    it("e2eeDebugEnabled reads the env flag", () => {
-        assert.equal(e2eeDebugEnabled({}), false);
-        assert.equal(e2eeDebugEnabled({ ZALO_E2EE_DEBUG: "0" }), false);
-        assert.equal(e2eeDebugEnabled({ ZALO_E2EE_DEBUG: "false" }), false);
-        assert.equal(e2eeDebugEnabled({ ZALO_E2EE_DEBUG: "1" }), true);
-    });
-});
+describe("the secret-free debug mode", () => {});
 
 describe("subscribeCloudControls", () => {
     it("delivers pcloud_info controls from a 601 frame", () => {

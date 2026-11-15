@@ -11,15 +11,18 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 #### Added
 
-- **`cloud key` — store the account's zCloud cloud key and fetch it from the phone.** The engine can register a narrow end-to-end-encryption device so the phone delivers the account's cloud key (an end-to-end-encryption message to that device's Signal identity), decrypt it, and seal it per account for reuse. New commands: `cloud key status` (whether a key and a device are stored; never prints the key), `cloud key forget` (`--device`, `--key`), `cloud key devices` (list the account's end-to-end-encryption devices and which platform slots are occupied; read-only), and `cloud key setup` (live, gated: shows the devices first and needs `--confirm`, then registers and fetches the key). Once stored, `cloud get`, `sync-media --from-zcloud` and the `zalo_view_media` MCP tool use the sealed key automatically; `--key-stdin` / `--key-prompt` still override, and the MCP tool never takes a key as input. New sealed per-account files `e2ee-device.json` and `cloud-key.json` (0600, under the account data key).
+- **zCloud files download.** Files the account keeps in zCloud now download and open: the account's zCloud key is fetched from the phone and stored sealed under the account's data key, and `cloud get`, `sync-media --from-zcloud` and the `zalo_view_media` MCP tool use it on their own. Both of zCloud's file formats open.
+- **The key comes with the login.** After a QR login, an account that keeps files in zCloud gets its key with no phone prompt (`--no-cloud-key` skips it). `cloud key setup --confirm` fetches it for an account already logged in.
+- **`cloud key` commands**: `status` (whether a key is stored; never prints it), `devices` (the account's end-to-end-encryption devices), `setup` (fetch the key now) and `forget`. Getting the key adds this engine as one of the account's end-to-end-encryption devices, in the web slot.
+- **Room checks.** Media downloads stop before the disk runs low or the account passes its quota, and leave the rest pending; the restore after a QR login is skipped, with the command to run later, when there is no room. The free space kept is `quota.minFree` in `storage.json` (default `2GB`, `0` for none) or `ZALO_STORAGE_MIN_FREE`.
 
-  `cloud key setup` runs the full connect-time registration sequence the client uses after its socket authenticates (GET_KEY_ID, SUBMIT_BUNDLE, then the subdevice-session init); registration is confirmed when the server accepts the bundle (its key id matches, and the account's device list then includes the device), not by the chat-session list. The cloud key is requested over the ordinary session transport (not the media viewer-key path) after the bundle is accepted — it does not wait on the subdevice sessions, which are only for sending end-to-end messages; a device already trusted by its QR login usually gets the key with no phone prompt, and the key may come in the request's own reply or as a control. `ZALO_E2EE_DEBUG=1` logs the secret-free shape of every server reply (field names, numeric codes, booleans, lengths — never key bytes) for diagnosing a live round.
+#### Changed
 
-  **Not yet confirmed on a live account:** the device registration and the phone key transfer need an owner-present phone session to verify, and the account must have end-to-end encryption enabled. Registering adds an **account-visible** end-to-end-encryption device that claims a platform slot — if a real device (such as a browser session) holds that slot, registering may displace it.
+- **Photos keep Zalo's format.** A photo Zalo keeps as JPEG XL is downloaded and saved as `.jxl`, no longer swapped for a JPEG copy; every picture is named by its own bytes. Over MCP a JPEG XL photo is sent as a link, since MCP clients take only JPEG, PNG, GIF and WebP inline.
 
 #### Dependencies
 
-- Added `@privacyresearch/libsignal-protocol-typescript` (pure JS, loaded lazily only when the end-to-end-encryption device feature is used).
+- Added `@noble/curves` (MIT) for the end-to-end-encryption device.
 
 ## [3.0.1] — 2026-11-15
 

@@ -155,10 +155,28 @@ async function watchLoginOffer(ownId, opts, { newDevice, jsonMode }) {
         const win = resolveSyncWindow(opts.syncDays, Date.now());
         const startedAt = Date.now();
         if (!jsonMode) info("Checking whether 'sync messages' was ticked on the phone...");
+        // Honor the phone's choice, but not at the price of a full disk: no room, no restore (`sync` does it later).
+        let restoreWhenTicked = opts.sync !== false;
+        if (restoreWhenTicked) {
+            const { checkDiskRoom } = await import("../core/storage-quota.js");
+            const room = checkDiskRoom(ownId);
+            if (!room.ok) {
+                restoreWhenTicked = false;
+                const advice = await restoreAdvice(ownId);
+                say(
+                    "no-room",
+                    `Not restoring after this login: ${room.message}. Free some space, then: \`${advice}\`.`,
+                    {
+                        reason: room.reason,
+                        command: advice,
+                    },
+                );
+            }
+        }
         const out = await autoSyncAfterLogin(getApi(), ownId, {
             days: opts.syncDays ?? null,
             cursorOf: await controlCursorsOf(ownId),
-            restoreWhenTicked: opts.sync !== false,
+            restoreWhenTicked,
             onStatus: ({ phase, detail }) => {
                 if (jsonMode) return;
                 if (phase === "confirm") warning(detail);
@@ -206,6 +224,34 @@ async function watchLoginOffer(ownId, opts, { newDevice, jsonMode }) {
     }
 }
 
+/**
+ * After a QR login: fetch the account's zCloud key from the phone and seal it, when the account keeps files in zCloud
+ * and no key is stored yet. A registered device gets the key with no phone prompt. Failure is a warning, never a failed
+ * login; `cloud key setup --confirm` retries it.
+ *
+ * @param {string} ownId
+ * @param {{cloudKey?: boolean}} opts - `cloudKey` false: `--no-cloud-key`
+ * @param {{jsonMode: boolean}} ctx
+ */
+async function fetchCloudKeyAfterLogin(ownId, opts, { jsonMode }) {
+    if (opts.cloudKey === false) return;
+    try {
+        const { cloudKeyStatus } = await import("../core/cloud-key-store.js");
+        if (cloudKeyStatus(ownId).stored) return;
+        const api = getApi();
+        const { accountWantsCloudKey, obtainCloudKey } = await import("../core/cloud-key-setup.js");
+        if (!(await accountWantsCloudKey(api))) return;
+        if (!jsonMode) info("This account keeps files in zCloud: fetching its cloud key from the phone…");
+        const { withLiveSocket } = await import("../core/e2ee-live.js");
+        const { keyVersion } = await withLiveSocket(api, ({ send, tap }) => obtainCloudKey({ api, ownId, send, tap }));
+        if (jsonMode) console.log(JSON.stringify({ event: "cloud_key_stored", ownId, keyVersion }));
+        else success("The zCloud key was fetched and sealed: files kept in zCloud now download.");
+    } catch (e) {
+        if (jsonMode) console.log(JSON.stringify({ event: "cloud_key_failed", ownId, message: e.message }));
+        else warning(`Could not fetch the zCloud key now (${e.message}). Later: zalo-agent cloud key setup --confirm`);
+    }
+}
+
 export function registerLoginCommands(program) {
     program
         .command("login")
@@ -231,6 +277,10 @@ export function registerLoginCommands(program) {
         .option(
             "--verbose",
             "After a QR login, list the control queues read for the 'sync messages' offer and every control seen (never its key)",
+        )
+        .option(
+            "--no-cloud-key",
+            "Do not fetch the zCloud key after the QR login (by default it is fetched, with no phone prompt, when the account keeps files in zCloud)",
         )
         .action(async (opts) => {
             // Credential-based login (headless/CI)
@@ -316,6 +366,7 @@ export function registerLoginCommands(program) {
                 // The QR page says so too, and closes once it has.
                 await login.finish("done");
                 await watchLoginOffer(ownId, opts, { newDevice: device.newDevice, jsonMode });
+                await fetchCloudKeyAfterLogin(ownId, opts, { jsonMode });
             } catch (e) {
                 if (jsonMode) {
                     console.log(JSON.stringify({ event: "login_error", message: e.message }));

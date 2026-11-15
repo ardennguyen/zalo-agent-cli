@@ -338,6 +338,29 @@ describe("the zCloud source", () => {
         assert.equal(countPendingAttachments(), 3, "the failed ones stay pending");
     });
 
+    it("stops when there is no room left, leaving the rest pending", async () => {
+        const first = row({ daysAgo: 30 });
+        inCloud(first);
+        const second = row({ daysAgo: 30 });
+        inCloud(second);
+        let checks = 0;
+        const room = (added) => {
+            checks++;
+            return added > 0
+                ? {
+                      ok: false,
+                      reason: "disk",
+                      message: "the disk has 1 MB free and 2147 MB is kept free (quota.minFree)",
+                  }
+                : { ok: true, reason: null, message: null };
+        };
+        const stats = await run({ cloud: cloudWith(key()), concurrency: 1, room });
+        assert.equal(stats.fromCloud, 1, "the first file fits, then the room runs out");
+        assert.equal(stats.outOfRoom.reason, "disk");
+        assert.ok(checks >= 2);
+        assert.equal(countPendingAttachments(), 1, "the one not fetched stays pending");
+    });
+
     it("keeps the key out of the result and off the disk", async () => {
         const id = row({ daysAgo: 30 });
         inCloud(id);

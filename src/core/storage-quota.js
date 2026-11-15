@@ -27,7 +27,16 @@
  * Settings, lowest first: built-in defaults, `storage.json` (`quota`, `retention`, and `accounts.<ownId>` over them),
  * `ZALO_RETENTION_MESSAGES[_<ownId>]` / `ZALO_RETENTION_MEDIA[_<ownId>]`, then the runtime policy (./policy-store.js).
  */
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import {
+    copyFileSync,
+    existsSync,
+    mkdtempSync,
+    readFileSync,
+    readdirSync,
+    rmSync,
+    statSync,
+    statfsSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getAccountDir, resolveMediaRoot } from "./credentials.js";
@@ -218,6 +227,93 @@ export function resolveQuota(ownId, { policy } = {}) {
         purgeOrder: "media-first",
         tenants: tenantQuotas(ownId),
     };
+}
+
+/** The free space kept on the account's disk when nothing sets one: restores and downloads stop short of it. */
+export const DEFAULT_MIN_FREE = "2GB";
+
+/**
+ * The free space a restore or a download must leave on the account's disk: `ZALO_STORAGE_MIN_FREE`, else the policy's
+ * or storage.json's `quota.minFree` (`accounts.<ownId>` over the top level), else {@link DEFAULT_MIN_FREE}. `0` turns the check off.
+ *
+ * @param {string} ownId
+ * @param {{env?: object}} [opts]
+ * @returns {number} bytes
+ */
+export function resolveMinFree(ownId, { env = process.env } = {}) {
+    const [value] = pick(
+        [env.ZALO_STORAGE_MIN_FREE, "env"],
+        [policyFor(ownId)?.quota?.minFree, "policy"],
+        [storageSettings(ownId).quota?.minFree, "storage.json"],
+    );
+    if (value === undefined) return parseBytes(DEFAULT_MIN_FREE);
+    if (String(value).trim() === "0") return 0;
+    const b = parseBytes(value);
+    return typeof b === "number" ? b : parseBytes(DEFAULT_MIN_FREE);
+}
+
+/**
+ * Whether there is room to store more for an account: the disk keeps its reserve ({@link resolveMinFree}) after
+ * `addedBytes`, and the account stays within its quota when one is set. Used before a login's restore and while
+ * media downloads, so neither fills the disk.
+ *
+ * @param {string} ownId
+ * @param {object} [opts]
+ * @param {string|null} [opts.mediaRoot] - where media goes, when not under the account folder
+ * @param {number} [opts.addedBytes=0] - bytes about to be (or already) written since `usedBytes` was measured
+ * @param {number|null} [opts.usedBytes] - the account's usage, when the caller measured it (else measured here, only
+ *   when a quota is set)
+ * @param {object} [opts.env]
+ * @param {(dir: string) => {bavail: number|bigint, bsize: number|bigint}} [opts.statfs] - (tests)
+ * @returns {{ok: boolean, reason: "disk"|"quota"|null, freeBytes: number|null, minFreeBytes: number,
+ *   limitBytes: number|null, usedBytes: number|null, message: string|null}}
+ */
+export function checkDiskRoom(
+    ownId,
+    { mediaRoot = null, addedBytes = 0, usedBytes = null, env = process.env, statfs = statfsSync } = {},
+) {
+    const dir = getAccountDir(String(ownId));
+    const minFreeBytes = resolveMinFree(ownId, { env });
+    let freeBytes = null;
+    for (const d of new Set([dir, resolveMediaRoot(dir, mediaRoot)])) {
+        try {
+            const fs = statfs(existsSync(d) ? d : dir);
+            const free = Number(fs.bavail) * Number(fs.bsize);
+            freeBytes = freeBytes === null ? free : Math.min(freeBytes, free);
+        } catch {
+            /* statfs unsupported here: no disk check */
+        }
+    }
+    const added = Math.max(0, Number(addedBytes) || 0);
+    const mb = (n) => `${Math.floor(n / 1e6)} MB`;
+    if (freeBytes !== null && minFreeBytes > 0 && freeBytes - added < minFreeBytes) {
+        return {
+            ok: false,
+            reason: "disk",
+            freeBytes,
+            minFreeBytes,
+            limitBytes: null,
+            usedBytes,
+            message: `the disk has ${mb(freeBytes)} free and ${mb(minFreeBytes)} is kept free (quota.minFree)`,
+        };
+    }
+    const limitBytes = resolveQuota(ownId).accountLimit;
+    if (limitBytes !== null) {
+        const used = Number.isFinite(usedBytes) ? usedBytes : measureUsage(ownId, { mediaRoot }).total;
+        if (used + added >= limitBytes) {
+            return {
+                ok: false,
+                reason: "quota",
+                freeBytes,
+                minFreeBytes,
+                limitBytes,
+                usedBytes: used,
+                message: `the account uses ${mb(used + added)} of its ${mb(limitBytes)} quota`,
+            };
+        }
+        return { ok: true, reason: null, freeBytes, minFreeBytes, limitBytes, usedBytes: used, message: null };
+    }
+    return { ok: true, reason: null, freeBytes, minFreeBytes, limitBytes: null, usedBytes, message: null };
 }
 
 /** The tenants (from the policy store) that list this account and set a limit. Loaded lazily to keep imports light. */

@@ -26,33 +26,14 @@ import { autoLogin, getApi } from "../core/zalo-client.js";
 import { error, info, output, success, warning } from "../utils/output.js";
 import { parseIntAtLeast } from "../utils/parse-options.js";
 import { promptSecret, readSecretFromStream } from "../utils/secret-input.js";
-import { ZCloudError, fetchCloudBlob, requestCloudKeyFromPhone } from "../zalo/zcloud.js";
+import { ZCloudError, fetchCloudBlob } from "../zalo/zcloud.js";
 import { decryptCloudBlob, decryptCloudInfo, importCloudPrivateKey } from "../zalo/zcloud-e2ee.js";
-import { bundleFromStore, CloudKeyDecryptError, DEVICE_IDS, platformName } from "../zalo/e2ee/index.js";
-import {
-    createE2eeDevice,
-    e2eeDeviceStatus,
-    forgetE2eeDevice,
-    hasE2eeDevice,
-    loadE2eeDevice,
-    markE2eeDeviceSubmitted,
-    saveE2eeDevice,
-} from "../core/e2ee-device.js";
+import { CloudKeyDecryptError, DEVICE_IDS, platformName } from "../zalo/e2ee/index.js";
+import { e2eeDeviceStatus, forgetE2eeDevice } from "../core/e2ee-device.js";
 import { cloudKeyStatus, forgetCloudKey, loadCloudKey } from "../core/cloud-key-store.js";
-import {
-    e2eeDebug,
-    listMyDevicesLive,
-    getKeyIdLive,
-    registerDeviceLive,
-    subscribeCloudControls,
-    withLiveSocket,
-} from "../core/e2ee-live.js";
-import {
-    CloudKeyRefusedError,
-    CloudKeyTimeoutError,
-    CloudKeyUnsupportedError,
-    receiveCloudKeyFromPhone,
-} from "../core/cloud-key-transfer.js";
+import { listMyDevicesLive, withLiveSocket } from "../core/e2ee-live.js";
+import { obtainCloudKey } from "../core/cloud-key-setup.js";
+import { CloudKeyRefusedError, CloudKeyTimeoutError, CloudKeyUnsupportedError } from "../core/cloud-key-transfer.js";
 
 const MB = 1024 * 1024;
 
@@ -703,59 +684,25 @@ function registerCloudKeyGroup(cloud, program) {
                         { yes: opts.confirm, dryRun: opts.dryRun },
                         { json: jsonMode },
                     );
-                    // 3. Register with the FULL connect-time sequence the client runs after it authenticates:
-                    //    GET_KEY_ID(564) -> SUBMIT_BUNDLE(540) -> INIT_SUBDEVICE. Reuse a stored identity for this slot,
-                    //    else make one. The store gains sessions during INIT_SUBDEVICE and is re-sealed afterward.
-                    //    Registration is confirmed by SUBMIT_BUNDLE succeeding (it throws on a server error), not by the
-                    //    chat-session list; the cloud key is a pre-key message to our submitted bundle, so it does not
-                    //    need the outbound subdevice sessions.
-                    // Debug: what the account's other devices answer to our init (ids/shape only).
-                    for (const cmd of [543, 544, 545]) tap.on(cmd, (f) => e2eeDebug(`inbound ${cmd}`, f, 5));
-                    // Reuse the stored identity only while the server still holds it for this slot (GET_KEY_ID names the
-                    // registration id it serves). Otherwise make a fresh one, as the client does on a mismatch: the server
-                    // keeps a bundle it already knows and will not take the same identity back.
-                    const existing = hasE2eeDevice(ownId) && loadE2eeDevice(ownId);
-                    const served = (await getKeyIdLive({ send, tap, deviceId: slot }))?.data?.keyId ?? null;
-                    const reuse =
-                        existing && existing.deviceId === slot && Number(served) === Number(existing.registrationId);
-                    e2eeDebug("identity", { served, reuse: Boolean(reuse) });
-                    const device = reuse ? existing : (await createE2eeDevice(ownId, { deviceId: slot })).record;
-                    const bundle = bundleFromStore(device.store);
-                    const reg = await registerDeviceLive({
+                    // 3. Register (or reuse the identity the server still serves) and receive the key from the phone.
+                    const { reg, keyVersion } = await obtainCloudKey({
+                        api,
+                        ownId,
                         send,
                         tap,
-                        ownUid: ownId,
-                        deviceId: slot,
-                        bundle,
-                        store: device.store,
-                    });
-                    saveE2eeDevice(ownId, device); // persist the sessions built during INIT_SUBDEVICE
-                    markE2eeDeviceSubmitted(ownId);
-                    if (!jsonMode) {
-                        info(
-                            `Device registered (bundle accepted${reg.keyMatches ? ", key id matches" : ""}` +
-                                `${reg.listedInBundles ? ", listed in the account's devices" : ""}). ` +
-                                `${reg.subdevices.built.length} subdevice session(s) built. ` +
-                                "Requesting the cloud key (a trusted device usually gets it with no phone prompt; if your phone asks, approve it).",
-                        );
-                    }
-                    // 4. Request the key over zCloud, wait for the pcloud_info control on the socket, decrypt and seal it.
-                    const result = await receiveCloudKeyFromPhone({
-                        ownId,
-                        deviceName: "zalo-agent-cli",
-                        sendRequest: async (session) => {
-                            const ack = await requestCloudKeyFromPhone(api, {
-                                deviceName: session.deviceName,
-                                sessionId: session.sessionId,
-                            });
-                            e2eeDebug("req_cloud_key ack", ack);
-                            return ack;
+                        slot,
+                        waitMs: Number.isFinite(opts.wait) ? opts.wait * 1000 : undefined,
+                        onRegistered: (r) => {
+                            if (!jsonMode) {
+                                info(
+                                    `Device registered (bundle accepted${r.keyMatches ? ", key id matches" : ""}). ` +
+                                        `${r.subdevices.built.length} subdevice session(s) built. Requesting the cloud key.`,
+                                );
+                            }
                         },
-                        subscribe: subscribeCloudControls(tap),
                         onPrompt: () => {
                             if (!jsonMode) info("Waiting for the cloud key…");
                         },
-                        waitMs: Number.isFinite(opts.wait) ? opts.wait * 1000 : undefined,
                     });
                     output(
                         {
@@ -765,7 +712,7 @@ function registerCloudKeyGroup(cloud, program) {
                             keyMatches: reg.keyMatches,
                             listedInBundles: reg.listedInBundles,
                             subdevicesBuilt: reg.subdevices.built.length,
-                            cloudKey: { stored: true, keyVersion: result.keyVersion },
+                            cloudKey: { stored: true, keyVersion },
                         },
                         jsonMode,
                         () =>

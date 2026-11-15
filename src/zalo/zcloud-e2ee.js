@@ -23,13 +23,11 @@
  * AES-256-GCM. A block-by-block blob (`algoversion` 2) is AES-256-CTR in 4096-byte blocks: the packed key is the AES key
  * and a 16-byte IV (no tag), and every block starts the counter afresh from that IV.
  *
- * Where the private key comes from is the part this client cannot do: a client asks
- * `{zcloud}/personalcloud_key/req_cloud_key` (`{device_name, session_id}`), the phone shows a prompt, and on approval
- * the key arrives on the chat socket (a `personal_cloud` control) as a Signal message addressed to the account's own
- * end-to-end session, opened with the device's registered Signal identity. Zalo does not derive
- * the key from a PIN: no PIN, passcode or Google step for zCloud exists. So the key is something a person
- * hands this process at run time (`cloud get --key-stdin`), never something it stores: nothing here writes a key to
- * disk or to a log, and a key object lives only as long as the call that was given it.
+ * Where the private key comes from: a client asks `{zcloud}/personalcloud_key/req_cloud_key` (`{device_name,
+ * session_id}`), and the phone answers on the chat socket (a `personal_cloud` control) with the key as a Signal message
+ * to this device's end-to-end session (src/core/cloud-key-setup.js). It arrives as PKCS#1 or PKCS#8. Zalo does not
+ * derive the key from a PIN: no PIN, passcode or Google step for zCloud exists. This module only uses a key it is
+ * given; it writes none to disk or to a log (the sealed copy is src/core/cloud-key-store.js's).
  */
 import { createDecipheriv, createPrivateKey, constants, privateDecrypt } from "node:crypto";
 

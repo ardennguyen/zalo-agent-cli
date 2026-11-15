@@ -83,11 +83,12 @@ export function describeShape(v, depth = 3) {
  *
  * @param {string} label
  * @param {*} value
+ * @param {number} [depth] - how deep to describe (default 3)
  */
-export function e2eeDebug(label, value) {
+export function e2eeDebug(label, value, depth = 3) {
     if (!e2eeDebugEnabled()) return;
     try {
-        console.error(`[e2ee-debug] ${label}: ${JSON.stringify(describeShape(value))}`);
+        console.error(`[e2ee-debug] ${label}: ${JSON.stringify(describeShape(value, depth))}`);
     } catch {
         console.error(`[e2ee-debug] ${label}: <unprintable>`);
     }
@@ -246,6 +247,8 @@ export async function getBundleForSlot({ send, tap, ownUid, deviceId, timeoutMs 
     }
     // Match the requested slot. parseBundleReply fills a missing deviceId with the slot, so a single per-slot bundle
     // matches; a multi-device reply only yields the entry for this slot (never a misattributed first item).
+    // Ids only (registration id, signed/one-time pre-key ids); key bytes print as lengths.
+    e2eeDebug(`GET_BUNDLE 541 slot ${deviceId} bundle ids`, reply?.data?.keys, 7);
     const items = parseBundleReply(reply, ownUid, Number(deviceId));
     return items.find((i) => Number(i.deviceId) === Number(deviceId)) ?? null;
 }
@@ -378,7 +381,9 @@ export async function initSubdevicesLive({ send, tap, ownUid, deviceId, store, b
  * @param {number} args.deviceId
  * @param {object} args.bundle - from bundleFromStore
  * @param {import("../zalo/e2ee/signal-store.js").SignalProtocolStore} args.store
- * @param {boolean} [args.deleteExistingSessions]
+ * @param {boolean} [args.deleteExistingSessions] - default true, as the client sends it (delSS=1): the server
+ *   then tells the account's other devices to drop their sessions with this slot, so they fetch the new bundle instead
+ *   of encrypting to one they cached
  * @param {number} [args.timeoutMs]
  * @returns {Promise<{registered: boolean, keyId: *, iid: *, keyMatches: boolean, listedInBundles: boolean,
  *   occupiedSlots: number[], devices: object[], subdevices: object}>}
@@ -390,7 +395,7 @@ export async function registerDeviceLive({
     deviceId,
     bundle,
     store,
-    deleteExistingSessions = false,
+    deleteExistingSessions = true,
     timeoutMs,
 }) {
     const keyIdReply = await getKeyIdLive({ send, tap, deviceId, timeoutMs });

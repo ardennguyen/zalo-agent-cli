@@ -326,3 +326,29 @@ describe("decrypting when the message names key ids we hold under other numbers"
         assert.equal(store.preKeyCount(), 2);
     });
 });
+
+describe("decodeBundleItem reads the nested GET_BUNDLE wire shape", () => {
+    it("maps iKey/spKey/opKeys to registration id, identity, signed and one-time pre-keys", () => {
+        const item = decodeBundleItem({
+            deviceId: 2,
+            preKey: { iKey: { id: 5860, key: "aWs=" }, signature: "c2ln", spKey: { id: 5861, key: "c3A=" } },
+            opKeys: [{ id: 5913, key: "b3A=" }],
+        });
+        assert.deepEqual(item, {
+            deviceId: 2,
+            registrationId: 5860,
+            identityKey: "aWs=",
+            signedPreKey: { keyId: 5861, publicKey: "c3A=", signature: "c2ln" },
+            preKey: { keyId: 5913, publicKey: "b3A=" },
+        });
+    });
+
+    it("has no one-time pre-key when opKeys is empty", () => {
+        const item = decodeBundleItem({
+            deviceId: 0,
+            preKey: { iKey: { id: 1, key: "aw==" }, signature: "cw==", spKey: { id: 2, key: "cA==" } },
+            opKeys: [],
+        });
+        assert.equal(item.preKey, null);
+    });
+});

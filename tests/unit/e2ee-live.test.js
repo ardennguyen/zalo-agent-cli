@@ -99,16 +99,21 @@ describe("sendSignalCommand", () => {
     });
 });
 
-/** A base64 bundle item for a freshly generated device on `slot` (the GET_BUNDLE inner shape). */
+/**
+ * A base64 bundle item for a freshly generated device on `slot`, in the nested shape GET_BUNDLE really returns:
+ * `{deviceId, preKey:{iKey:{id,key}, signature, spKey:{id,key}}, opKeys:[{id,key}]}` (the mirror of SUBMIT_BUNDLE).
+ */
 async function bundleItemFor(slot) {
     const gen = await generateDeviceIdentity({ preKeyCount: 1 });
     const b = bundleFromStore(gen.store);
     return {
         deviceId: slot,
-        registrationId: b.registrationId,
-        identityKey: b.identityKey,
-        signedPreKey: b.signedPreKey,
-        preKey: b.preKeys[0],
+        preKey: {
+            iKey: { id: b.registrationId, key: b.identityKey },
+            signature: b.signedPreKey.signature,
+            spKey: { id: b.signedPreKey.keyId, key: b.signedPreKey.publicKey },
+        },
+        opKeys: [{ id: b.preKeys[0].keyId, key: b.preKeys[0].publicKey }],
     };
 }
 
@@ -178,6 +183,7 @@ describe("getKeyIdLive", () => {
 function fakeRegistrationTransport({ allDevices, keyId = 16186, iid = 16186 }) {
     const subs = new Map();
     const order = [];
+    const frames = [];
     const tap = {
         on(cmd, fn) {
             if (!subs.has(cmd)) subs.set(cmd, new Set());
@@ -190,6 +196,7 @@ function fakeRegistrationTransport({ allDevices, keyId = 16186, iid = 16186 }) {
     };
     const send = (frame) => {
         order.push(frame.cmd);
+        frames.push(frame);
         const reqId = frame.data.reqId;
         queueMicrotask(() => {
             if (frame.cmd === 564) tap.emit(564, { data: { reqId, data: { err: 0, keyId } } });
@@ -199,7 +206,7 @@ function fakeRegistrationTransport({ allDevices, keyId = 16186, iid = 16186 }) {
             else if (frame.cmd === 543) tap.emit(543, { data: { reqId, data: { err: 0 } } });
         });
     };
-    return { send, tap, order };
+    return { send, tap, order, frames };
 }
 
 describe("registerDeviceLive — the full connect-time sequence", () => {
@@ -208,7 +215,7 @@ describe("registerDeviceLive — the full connect-time sequence", () => {
         const bundle = bundleFromStore(our.store);
         // The account's device registry after our submit: our slot 1 plus the phone (0) and pc (2).
         const allDevices = [await bundleItemFor(1), await bundleItemFor(0), await bundleItemFor(2)];
-        const { send, tap, order } = fakeRegistrationTransport({ allDevices, keyId: 16186, iid: 16186 });
+        const { send, tap, order, frames } = fakeRegistrationTransport({ allDevices, keyId: 16186, iid: 16186 });
         const reg = await registerDeviceLive({
             send,
             tap,
@@ -224,6 +231,7 @@ describe("registerDeviceLive — the full connect-time sequence", () => {
         assert.deepEqual(reg.subdevices.built.sort(), [0, 2], "sessions built to the other devices only");
         assert.equal(order[0], 564, "GET_KEY_ID first");
         assert.equal(order[1], 540, "SUBMIT_BUNDLE second");
+        assert.equal(frames[1].data.data.delSS, 1, "SUBMIT_BUNDLE asks the other devices to drop stale sessions");
         assert.ok(order.includes(541), "GET_BUNDLE(-1) for the device registry");
         assert.ok(order.includes(543), "INIT_SESSION built the subdevice sessions");
     });

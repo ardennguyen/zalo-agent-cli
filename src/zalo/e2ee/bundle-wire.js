@@ -209,6 +209,23 @@ export function replyError(reply) {
  */
 export function decodeBundleItem(item) {
     if (!item || item.deviceId === undefined || item.deviceId === null) throw new Error("bundle item has no deviceId");
+    // The wire shape GET_BUNDLE returns: {deviceId, preKey:{iKey:{id,key}, signature, spKey:{id,key}}, opKeys:[{id,key}]}
+    // (the mirror of SUBMIT_BUNDLE's key). Read into the flat shape below.
+    if (item.preKey?.iKey && item.preKey?.spKey) {
+        if (!item.preKey.iKey.key || !item.preKey.spKey.key) throw new Error("bundle item is missing a key");
+        const op = Array.isArray(item.opKeys) && item.opKeys[0]?.key ? item.opKeys[0] : null;
+        return {
+            deviceId: Number(item.deviceId),
+            registrationId: Number(item.preKey.iKey.id),
+            identityKey: item.preKey.iKey.key,
+            signedPreKey: {
+                keyId: Number(item.preKey.spKey.id),
+                publicKey: item.preKey.spKey.key,
+                signature: item.preKey.signature,
+            },
+            preKey: op ? { keyId: Number(op.id), publicKey: op.key } : null,
+        };
+    }
     return {
         deviceId: Number(item.deviceId),
         registrationId: Number(item.registrationId),

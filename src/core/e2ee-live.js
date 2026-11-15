@@ -15,12 +15,17 @@ import { randomUUID } from "node:crypto";
 import { createSocketTap } from "../zalo/listener/socket-tap.js";
 import { readControls } from "../zalo/queues/control-queue.js";
 import {
+    LIST_SUBDEVICES,
+    decodeBundleItem,
     decodeDeviceList,
+    encodeGetBundle,
     encodeGetKeyId,
+    encodeInitSession,
     encodeListDevices,
     encodeSubmitBundle,
     replyError,
 } from "../zalo/e2ee/bundle-wire.js";
+import { buildSubdeviceInit } from "../zalo/e2ee/subdevice-init.js";
 
 /** The control push (cmd 601) that carries the `pcloud_info` reply. */
 export const CMD_PUSH_CONTROLS = 601;
@@ -34,6 +39,58 @@ export class SignalCommandError extends Error {
         super(message);
         this.name = "SignalCommandError";
         this.code = code;
+    }
+}
+
+/**
+ * Whether the secret-free diagnostic mode is on (`ZALO_E2EE_DEBUG=1`), for tracing the registration round live.
+ *
+ * @param {object} [env]
+ * @returns {boolean}
+ */
+export function e2eeDebugEnabled(env = process.env) {
+    const v = env.ZALO_E2EE_DEBUG;
+    return Boolean(v) && v !== "0" && String(v).toLowerCase() !== "false";
+}
+
+/**
+ * A secret-free description of a value: field names, numeric values (error/status codes, user_action, counts),
+ * booleans, and string/array LENGTHS only — never a string's or buffer's contents. Used by {@link e2eeDebug}.
+ *
+ * @param {*} v
+ * @param {number} [depth]
+ * @returns {*}
+ */
+export function describeShape(v, depth = 3) {
+    if (v === null || v === undefined) return v === null ? null : "undefined";
+    if (typeof v === "number" || typeof v === "boolean") return v;
+    if (typeof v === "string") return `str(${v.length})`;
+    if (Array.isArray(v)) {
+        if (depth <= 0) return `arr(${v.length})`;
+        return { _array: v.length, first: v.length ? describeShape(v[0], depth - 1) : undefined };
+    }
+    if (typeof v === "object") {
+        if (depth <= 0) return `obj{${Object.keys(v).join(",")}}`;
+        const out = {};
+        for (const k of Object.keys(v)) out[k] = describeShape(v[k], depth - 1);
+        return out;
+    }
+    return typeof v;
+}
+
+/**
+ * Log, to stderr, the shape of a labeled value when {@link e2eeDebugEnabled}. Never logs key bytes, private keys,
+ * encrypted payloads, tokens or cookies — only field names, numeric codes, booleans and lengths.
+ *
+ * @param {string} label
+ * @param {*} value
+ */
+export function e2eeDebug(label, value) {
+    if (!e2eeDebugEnabled()) return;
+    try {
+        console.error(`[e2ee-debug] ${label}: ${JSON.stringify(describeShape(value))}`);
+    } catch {
+        console.error(`[e2ee-debug] ${label}: <unprintable>`);
     }
 }
 
@@ -56,6 +113,7 @@ export function sendSignalCommand({
     frame,
     timeoutMs = SIGNAL_REPLY_TIMEOUT_MS,
     timers = { setTimeout, clearTimeout },
+    debugLabel = null,
 }) {
     const reqId = String(frame?.data?.reqId ?? "");
     const cmd = Number(frame?.cmd);
@@ -79,6 +137,7 @@ export function sendSignalCommand({
                 tap.on(cmd, (replyFrame) => {
                     const body = replyFrame?.data;
                     if (!body || (reqId && String(body.reqId ?? "") !== reqId)) return;
+                    if (debugLabel) e2eeDebug(`${debugLabel} reply (cmd ${cmd})`, body);
                     const err = replyError(body);
                     if (err !== null) {
                         finish(reject, new SignalCommandError(`cmd ${cmd} replied error ${err}`, err));
@@ -117,6 +176,11 @@ export function subscribeCloudControls(tap) {
     return (handler) =>
         tap.on(CMD_PUSH_CONTROLS, (frame) => {
             for (const c of readControls(frame?.data)) {
+                if (c.actType === "personal_cloud") {
+                    // Surface the control's shape (user_action is a numeric code; encrypted_private_key shows only its
+                    // length) so a live round shows an approval vs a refusal vs a malformed reply.
+                    e2eeDebug(`pcloud control ${c.act}`, c.data);
+                }
                 handler({ actType: c.actType, act: c.act, data: c.data });
             }
         });
@@ -133,7 +197,13 @@ export function subscribeCloudControls(tap) {
  * @returns {Promise<{devices: Array<{deviceId: number, platform: string}>, occupiedSlots: number[], raw: object|null}>}
  */
 export async function listDevicesLive({ send, tap, ownUid, timeoutMs }) {
-    const reply = await sendSignalCommand({ send, tap, frame: encodeListDevices({ reqId: randomUUID() }), timeoutMs });
+    const reply = await sendSignalCommand({
+        send,
+        tap,
+        frame: encodeListDevices({ reqId: randomUUID() }),
+        timeoutMs,
+        debugLabel: "GETLIST 563",
+    });
     return decodeDeviceList(reply, ownUid);
 }
 
@@ -148,7 +218,49 @@ export async function listDevicesLive({ send, tap, ownUid, timeoutMs }) {
  * @returns {Promise<object>} the reply's `data`
  */
 export async function getKeyIdLive({ send, tap, deviceId, timeoutMs }) {
-    return sendSignalCommand({ send, tap, frame: encodeGetKeyId({ deviceId, reqId: randomUUID() }), timeoutMs });
+    return sendSignalCommand({
+        send,
+        tap,
+        frame: encodeGetKeyId({ deviceId, reqId: randomUUID() }),
+        timeoutMs,
+        debugLabel: "GET_KEY_ID 564",
+    });
+}
+
+/**
+ * Fetch one of the account's own devices' bundles (GET_BUNDLE 541), decoded, or null when the server has no bundle for
+ * that slot (e.g. that device is not an end-to-end-encryption device).
+ *
+ * @param {object} args
+ * @param {(payload: object) => void} args.send
+ * @param {object} args.tap
+ * @param {string} args.ownUid
+ * @param {number} args.deviceId
+ * @param {number} [args.timeoutMs]
+ * @returns {Promise<ReturnType<typeof decodeBundleItem>|null>}
+ */
+export async function getBundleLive({ send, tap, ownUid, deviceId, timeoutMs }) {
+    const reply = await sendSignalCommand({
+        send,
+        tap,
+        frame: encodeGetBundle({ uid: ownUid, deviceId, reqId: randomUUID() }),
+        timeoutMs,
+        debugLabel: `GET_BUNDLE 541 slot ${deviceId}`,
+    });
+    // The reply's `data` carries the per-uid bundles; find this device's. Field names are the client's and unverified.
+    const payload = reply?.data ?? null;
+    const buckets = Array.isArray(payload?.keys) ? payload.keys : Array.isArray(payload?.uids) ? payload.uids : [];
+    let item = null;
+    for (const b of buckets) {
+        const list = Array.isArray(b?.keys) ? b.keys : Array.isArray(b?.devices) ? b.devices : b ? [b] : [];
+        item = list.find((d) => Number(d?.deviceId) === Number(deviceId)) ?? item;
+    }
+    if (!item && payload && Number(payload.deviceId) === Number(deviceId)) item = payload;
+    try {
+        return item ? decodeBundleItem(item) : null;
+    } catch {
+        return null;
+    }
 }
 
 /**
@@ -170,7 +282,105 @@ export async function submitBundleLive({ send, tap, bundle, deviceId, deleteExis
         tap,
         frame: encodeSubmitBundle({ bundle, deviceId, reqId: randomUUID(), deleteExistingSessions }),
         timeoutMs,
+        debugLabel: "SUBMIT_BUNDLE 540",
     });
+}
+
+/**
+ * The INIT_SUBDEVICE phase: for each platform slot other than ours, fetch its bundle, build a session, and announce the
+ * sessions with one INIT_SESSION (543). Mutates `store` (it gains the sessions); the caller persists it. A slot with no
+ * bundle (not an end-to-end-encryption device) is skipped. Never throws on a per-slot miss.
+ *
+ * @param {object} args
+ * @param {(payload: object) => void} args.send
+ * @param {object} args.tap
+ * @param {string} args.ownUid
+ * @param {number} args.deviceId - our own slot
+ * @param {import("../zalo/e2ee/signal-store.js").SignalProtocolStore} args.store
+ * @param {number} [args.timeoutMs]
+ * @returns {Promise<{built: number[], skipped: number[], reply: object|null}>}
+ */
+export async function initSubdevicesLive({ send, tap, ownUid, deviceId, store, timeoutMs }) {
+    const slots = LIST_SUBDEVICES.filter((s) => s !== Number(deviceId));
+    const entries = [];
+    const built = [];
+    const skipped = [];
+    for (const slot of slots) {
+        let bundleItem = null;
+        try {
+            bundleItem = await getBundleLive({ send, tap, ownUid, deviceId: slot, timeoutMs });
+        } catch (e) {
+            e2eeDebug(`INIT_SUBDEVICE slot ${slot}: GET_BUNDLE failed`, { code: e?.code ?? null });
+            bundleItem = null;
+        }
+        if (!bundleItem) {
+            skipped.push(slot);
+            continue;
+        }
+        try {
+            const initMsg = await buildSubdeviceInit({ store, ownUid, deviceId: slot, bundleItem });
+            entries.push({ deviceId: slot, initMsg });
+            built.push(slot);
+        } catch (e) {
+            e2eeDebug(`INIT_SUBDEVICE slot ${slot}: build failed`, {
+                message: `str(${String(e?.message ?? "").length})`,
+            });
+            skipped.push(slot);
+        }
+    }
+    let reply = null;
+    if (entries.length) {
+        reply = await sendSignalCommand({
+            send,
+            tap,
+            frame: encodeInitSession({ uidTo: ownUid, entries, reqId: randomUUID() }),
+            timeoutMs,
+            debugLabel: "INIT_SESSION 543",
+        });
+    } else {
+        e2eeDebug("INIT_SUBDEVICE", { built: 0, skipped: skipped.length });
+    }
+    return { built, skipped, reply };
+}
+
+/**
+ * The full connect-time registration sequence the client runs after the socket authenticates:
+ * GET_KEY_ID(564) → SUBMIT_BUNDLE(540) → INIT_SUBDEVICE → GETLIST(563). It then VERIFIES via 563 that our device
+ * appears; registration counts only when it does. LIVE and unverified.
+ *
+ * @param {object} args
+ * @param {(payload: object) => void} args.send
+ * @param {object} args.tap
+ * @param {string} args.ownUid
+ * @param {number} args.deviceId
+ * @param {object} args.bundle - from bundleFromStore
+ * @param {import("../zalo/e2ee/signal-store.js").SignalProtocolStore} args.store
+ * @param {boolean} [args.deleteExistingSessions]
+ * @param {number} [args.timeoutMs]
+ * @returns {Promise<{registered: boolean, occupiedSlots: number[], devices: object[], subdevices: object}>}
+ */
+export async function registerDeviceLive({
+    send,
+    tap,
+    ownUid,
+    deviceId,
+    bundle,
+    store,
+    deleteExistingSessions = false,
+    timeoutMs,
+}) {
+    await getKeyIdLive({ send, tap, deviceId, timeoutMs });
+    await submitBundleLive({ send, tap, bundle, deviceId, deleteExistingSessions, timeoutMs });
+    const subdevices = await initSubdevicesLive({ send, tap, ownUid, deviceId, store, timeoutMs });
+    const list = await listDevicesLive({ send, tap, ownUid, timeoutMs });
+    const registered = list.occupiedSlots.includes(Number(deviceId));
+    e2eeDebug("registerDeviceLive result", {
+        slot: Number(deviceId),
+        registered,
+        occupiedSlots: list.occupiedSlots,
+        subdevicesBuilt: subdevices.built.length,
+    });
+    return { registered, occupiedSlots: list.occupiedSlots, devices: list.devices, subdevices };
 }
 
 /**

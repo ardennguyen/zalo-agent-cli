@@ -7,13 +7,19 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
     SignalCommandError,
+    describeShape,
+    e2eeDebugEnabled,
     getKeyIdLive,
     listDevicesLive,
+    registerDeviceLive,
     sendSignalCommand,
     subscribeCloudControls,
     CMD_PUSH_CONTROLS,
 } from "../../src/core/e2ee-live.js";
-import { CMD_GET_LIST_DEVICES } from "../../src/zalo/e2ee/index.js";
+import { CMD_GET_LIST_DEVICES, bundleFromStore, generateDeviceIdentity } from "../../src/zalo/e2ee/index.js";
+
+/** A throwaway account id (repeated-digit core: a fake by the no-real-ids convention). */
+const OWN = "7000000000000000001";
 
 /** A fake tap: `on(cmd, fn)` registers; `emit(cmd, frame)` delivers to current subscribers. */
 function fakeTap() {
@@ -121,6 +127,124 @@ describe("listDevicesLive and getKeyIdLive", () => {
             timeoutMs: 1000,
         });
         assert.equal(reply.data.keyId, 42);
+    });
+});
+
+/** A fake transport that answers the full registration round; records the order of commands sent. */
+function fakeRegistrationTransport({ peers, listSlots }) {
+    const subs = new Map();
+    const order = [];
+    const tap = {
+        on(cmd, fn) {
+            if (!subs.has(cmd)) subs.set(cmd, new Set());
+            subs.get(cmd).add(fn);
+            return () => subs.get(cmd)?.delete(fn);
+        },
+        emit(cmd, frame) {
+            for (const fn of [...(subs.get(cmd) ?? [])]) fn(frame);
+        },
+    };
+    const send = (frame) => {
+        order.push(frame.cmd);
+        const reqId = frame.data.reqId;
+        queueMicrotask(() => {
+            if (frame.cmd === 564) tap.emit(564, { data: { reqId, data: {} } });
+            else if (frame.cmd === 540) tap.emit(540, { data: { reqId, data: { ts: 123 } } });
+            else if (frame.cmd === 541) {
+                const slot = frame.data.data.uids[0].deviceId;
+                tap.emit(541, { data: { reqId, data: peers[slot] ? { keys: [peers[slot]] } : { keys: [] } } });
+            } else if (frame.cmd === 543) tap.emit(543, { data: { reqId, data: {} } });
+            else if (frame.cmd === 563) {
+                tap.emit(563, {
+                    data: { reqId, data: { uids: [{ uid: OWN, devices: listSlots.map((s) => ({ deviceId: s })) }] } },
+                });
+            }
+        });
+    };
+    return { send, tap, order };
+}
+
+/** A base64 bundle item for a freshly generated peer device on `slot`. */
+async function peerBundleItem(slot) {
+    const gen = await generateDeviceIdentity({ preKeyCount: 1 });
+    const b = bundleFromStore(gen.store);
+    return {
+        deviceId: slot,
+        registrationId: b.registrationId,
+        identityKey: b.identityKey,
+        signedPreKey: b.signedPreKey,
+        preKey: b.preKeys[0],
+    };
+}
+
+describe("registerDeviceLive — the full connect-time checklist", () => {
+    it("runs 564 -> 540 -> INIT_SUBDEVICE(541/543) -> 563 in order and registers only when 563 lists us", async () => {
+        const our = await generateDeviceIdentity({ preKeyCount: 2 });
+        const bundle = bundleFromStore(our.store);
+        const peers = { 0: await peerBundleItem(0), 2: await peerBundleItem(2) };
+        const { send, tap, order } = fakeRegistrationTransport({ peers, listSlots: [1] });
+        const reg = await registerDeviceLive({
+            send,
+            tap,
+            ownUid: OWN,
+            deviceId: 1,
+            bundle,
+            store: our.store,
+            timeoutMs: 2000,
+        });
+        assert.equal(reg.registered, true);
+        assert.deepEqual(reg.subdevices.built.sort(), [0, 2]);
+        assert.equal(order[0], 564, "GET_KEY_ID first");
+        assert.equal(order[1], 540, "SUBMIT_BUNDLE second");
+        assert.ok(order.includes(543), "INIT_SESSION sent after building subdevice sessions");
+        assert.equal(order[order.length - 1], 563, "GETLIST last");
+    });
+
+    it("reports not registered when the server list does not include our slot", async () => {
+        const our = await generateDeviceIdentity({ preKeyCount: 1 });
+        const bundle = bundleFromStore(our.store);
+        const { send, tap } = fakeRegistrationTransport({ peers: {}, listSlots: [] });
+        const reg = await registerDeviceLive({
+            send,
+            tap,
+            ownUid: OWN,
+            deviceId: 1,
+            bundle,
+            store: our.store,
+            timeoutMs: 2000,
+        });
+        assert.equal(reg.registered, false);
+        assert.deepEqual(reg.occupiedSlots, []);
+        // No peer bundles: INIT_SUBDEVICE builds nothing, which is tolerated.
+        assert.deepEqual(reg.subdevices.built, []);
+    });
+});
+
+describe("the secret-free debug mode", () => {
+    it("describeShape shows field names, numbers and lengths but never string contents", () => {
+        const shape = describeShape({
+            err: -205,
+            user_action: 1,
+            ok: true,
+            encrypted_private_key: "AAAABBBBCCCCDDDD",
+            nested: { token: "super-secret-value", n: 3 },
+        });
+        assert.equal(shape.err, -205);
+        assert.equal(shape.user_action, 1);
+        assert.equal(shape.ok, true);
+        assert.equal(shape.encrypted_private_key, "str(16)");
+        assert.equal(shape.nested.token, "str(18)");
+        assert.equal(shape.nested.n, 3);
+        const flat = JSON.stringify(shape);
+        assert.equal(flat.includes("super-secret-value"), false);
+        assert.equal(flat.includes("AAAABBBB"), false);
+    });
+
+    it("e2eeDebugEnabled reads the env flag", () => {
+        assert.equal(e2eeDebugEnabled({}), false);
+        assert.equal(e2eeDebugEnabled({ ZALO_E2EE_DEBUG: "0" }), false);
+        assert.equal(e2eeDebugEnabled({ ZALO_E2EE_DEBUG: "false" }), false);
+        assert.equal(e2eeDebugEnabled({ ZALO_E2EE_DEBUG: "1" }), true);
     });
 });
 

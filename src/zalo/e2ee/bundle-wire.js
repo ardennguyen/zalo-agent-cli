@@ -15,8 +15,12 @@
 export const CMD_SUBMIT_BUNDLE = 540;
 export const CMD_GET_BUNDLE = 541;
 export const CMD_SUBMIT_PREKEYS = 542;
+export const CMD_INIT_SESSION = 543;
 export const CMD_GET_LIST_DEVICES = 563;
 export const CMD_GET_KEY_ID = 564;
+
+/** The platform slots a device can hold; the init step builds a session to each other one. */
+export const LIST_SUBDEVICES = Object.freeze([0, 1, 2]);
 
 /**
  * The per-platform Signal device id. A device claims the slot of its platform, and there is one bundle per slot: this
@@ -89,6 +93,33 @@ export function encodeSubmitPreKeys({ preKeys, registrationId, deviceId, reqId }
                 deviceId: Number(deviceId),
                 id: Number(registrationId),
                 opKeys: preKeys.map((k) => ({ id: k.keyId, key: k.publicKey })),
+            },
+        },
+    };
+}
+
+/**
+ * INIT_SESSION (543): announce the sessions this device just built to the account's other devices. Part of the
+ * INIT_SUBDEVICE phase of the connect-time init sequence; the server surfaces a device as live once it has run this.
+ *
+ * @param {object} args
+ * @param {string} args.uidTo - the account's own id (sessions are to our own other devices)
+ * @param {Array<{deviceId: number, initMsg: string}>} args.entries - one per subdevice: the type-tagged init message
+ * @param {string|number} args.reqId
+ * @param {boolean} [args.enable=true] - the client's `type` (1 = enable)
+ * @returns {{version: number, cmd: number, subCmd: number, data: object}}
+ */
+export function encodeInitSession({ uidTo, entries, reqId, enable = true }) {
+    return {
+        version: 1,
+        cmd: CMD_INIT_SESSION,
+        subCmd: 0,
+        data: {
+            reqId: String(reqId),
+            data: {
+                type: enable ? 1 : 0,
+                uidTo: String(uidTo),
+                data: entries.map((e) => ({ deviceId: Number(e.deviceId), initMsg: e.initMsg })),
             },
         },
     };

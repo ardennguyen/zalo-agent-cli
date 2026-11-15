@@ -1,0 +1,52 @@
+/**
+ * The INIT_SUBDEVICE phase of registration: build a Signal session from our device to one of the account's other
+ * devices (its published bundle) and encrypt the init message the server expects, so the device counts as live.
+ *
+ * The installed client runs this for every platform slot except its own after submitting its bundle: fetch the peer's
+ * bundle (GET_BUNDLE 541), build a session, encrypt the fixed init message `"ZaloE2ee"`, and announce the result with
+ * INIT_SESSION (543). Here we build just the per-device init message; the live layer (src/core/e2ee-live.js) does the
+ * socket round-trips.
+ *
+ * Protocol layer: no `src/core`, no `src/utils`. The library is loaded lazily.
+ */
+import { base64ToAb } from "./signal-store.js";
+import { concatTypeAndMessage } from "./transport-tag.js";
+import { loadSignalLib } from "./signal-lib.js";
+
+/** The fixed init-message plaintext the client encrypts when announcing a new session. */
+export const INIT_MESSAGE = "ZaloE2ee";
+
+/**
+ * Build the type-tagged init message for one subdevice: process its bundle into a session in our store, then encrypt
+ * {@link INIT_MESSAGE}. Mutates `store` (it gains the session) — the caller persists it.
+ *
+ * @param {object} args
+ * @param {import("./signal-store.js").SignalProtocolStore} args.store - our device's store
+ * @param {string} args.ownUid - the account's own id (the peer is our own other device)
+ * @param {number} args.deviceId - the peer platform slot
+ * @param {{registrationId: number, identityKey: string, signedPreKey: {keyId: number, publicKey: string,
+ *   signature: string}, preKey: {keyId: number, publicKey: string}|null}} args.bundleItem - from decodeBundleItem
+ * @returns {Promise<string>} the type-tagged init message (base64), for INIT_SESSION's `data[].initMsg`
+ */
+export async function buildSubdeviceInit({ store, ownUid, deviceId, bundleItem }) {
+    const lib = await loadSignalLib();
+    const address = new lib.SignalProtocolAddress(String(ownUid), Number(deviceId));
+    const processed = {
+        registrationId: bundleItem.registrationId,
+        identityKey: base64ToAb(bundleItem.identityKey),
+        signedPreKey: {
+            keyId: bundleItem.signedPreKey.keyId,
+            publicKey: base64ToAb(bundleItem.signedPreKey.publicKey),
+            signature: base64ToAb(bundleItem.signedPreKey.signature),
+        },
+    };
+    if (bundleItem.preKey) {
+        processed.preKey = { keyId: bundleItem.preKey.keyId, publicKey: base64ToAb(bundleItem.preKey.publicKey) };
+    }
+    await new lib.SessionBuilder(store, address).processPreKey(processed);
+    const msg = new TextEncoder().encode(INIT_MESSAGE);
+    const ab = new ArrayBuffer(msg.byteLength);
+    new Uint8Array(ab).set(msg);
+    const ciphertext = await new lib.SessionCipher(store, address).encrypt(ab);
+    return concatTypeAndMessage(ciphertext.type, ciphertext.body);
+}

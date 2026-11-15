@@ -19,12 +19,15 @@ export {
     CMD_SUBMIT_BUNDLE,
     CMD_GET_BUNDLE,
     CMD_SUBMIT_PREKEYS,
+    CMD_INIT_SESSION,
     CMD_GET_LIST_DEVICES,
     CMD_GET_KEY_ID,
+    LIST_SUBDEVICES,
     DEVICE_IDS,
     platformName,
     encodeSubmitBundle,
     encodeSubmitPreKeys,
+    encodeInitSession,
     encodeGetBundle,
     encodeGetKeyId,
     encodeListDevices,
@@ -32,6 +35,7 @@ export {
     decodeBundleItem,
     decodeDeviceList,
 } from "./bundle-wire.js";
+export { buildSubdeviceInit, INIT_MESSAGE } from "./subdevice-init.js";
 export {
     WHISPER_TYPE,
     PRE_KEY_TYPE,

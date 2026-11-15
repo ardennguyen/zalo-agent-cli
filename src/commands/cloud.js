@@ -26,9 +26,9 @@ import { autoLogin, getApi } from "../core/zalo-client.js";
 import { error, info, output, success, warning } from "../utils/output.js";
 import { parseIntAtLeast } from "../utils/parse-options.js";
 import { promptSecret, readSecretFromStream } from "../utils/secret-input.js";
-import { fetchCloudBlob, requestCloudKeyFromPhone } from "../zalo/zcloud.js";
+import { ZCloudError, fetchCloudBlob, requestCloudKeyFromPhone } from "../zalo/zcloud.js";
 import { decryptCloudBlob, decryptCloudInfo, importCloudPrivateKey } from "../zalo/zcloud-e2ee.js";
-import { bundleFromStore, DEVICE_IDS, platformName } from "../zalo/e2ee/index.js";
+import { bundleFromStore, CloudKeyDecryptError, DEVICE_IDS, platformName } from "../zalo/e2ee/index.js";
 import {
     createE2eeDevice,
     e2eeDeviceStatus,
@@ -36,9 +36,16 @@ import {
     hasE2eeDevice,
     loadE2eeDevice,
     markE2eeDeviceSubmitted,
+    saveE2eeDevice,
 } from "../core/e2ee-device.js";
 import { cloudKeyStatus, forgetCloudKey, loadCloudKey } from "../core/cloud-key-store.js";
-import { listDevicesLive, submitBundleLive, subscribeCloudControls, withLiveSocket } from "../core/e2ee-live.js";
+import {
+    e2eeDebug,
+    listDevicesLive,
+    registerDeviceLive,
+    subscribeCloudControls,
+    withLiveSocket,
+} from "../core/e2ee-live.js";
 import {
     CloudKeyRefusedError,
     CloudKeyTimeoutError,
@@ -695,26 +702,53 @@ function registerCloudKeyGroup(cloud, program) {
                         { yes: opts.confirm, dryRun: opts.dryRun },
                         { json: jsonMode },
                     );
-                    // 3. Register: reuse a stored identity for this slot, else make one, then publish the bundle (540).
-                    const existing = hasE2eeDevice(ownId) ? loadE2eeDevice(ownId) : null;
-                    let bundle;
-                    if (existing && existing.deviceId === slot) {
-                        bundle = bundleFromStore(existing.store);
-                    } else {
-                        bundle = (await createE2eeDevice(ownId, { deviceId: slot })).bundle;
+                    // 3. Register with the FULL connect-time sequence the client runs after it authenticates:
+                    //    GET_KEY_ID(564) -> SUBMIT_BUNDLE(540) -> INIT_SUBDEVICE -> GETLIST(563). Reuse a stored
+                    //    identity for this slot, else make one. The store gains sessions during INIT_SUBDEVICE and is
+                    //    re-sealed afterward.
+                    const existing = hasE2eeDevice(ownId) && loadE2eeDevice(ownId);
+                    const device =
+                        existing && existing.deviceId === slot
+                            ? existing
+                            : (await createE2eeDevice(ownId, { deviceId: slot })).record;
+                    const bundle = bundleFromStore(device.store);
+                    const reg = await registerDeviceLive({
+                        send,
+                        tap,
+                        ownUid: ownId,
+                        deviceId: slot,
+                        bundle,
+                        store: device.store,
+                    });
+                    saveE2eeDevice(ownId, device); // persist the sessions built during INIT_SUBDEVICE
+                    // Registration counts only when the server's device list (563) actually shows our device.
+                    if (!reg.registered) {
+                        error(
+                            `The server did not list this device on slot ${slot} after registration (occupied slots: ` +
+                                `${reg.occupiedSlots.join(", ") || "none"}). The account may not have end-to-end ` +
+                                "encryption enabled, or the server rejected the bundle. Run again with " +
+                                "ZALO_E2EE_DEBUG=1 to see the server's replies. The cloud key was NOT requested.",
+                        );
+                        process.exitCode = 1;
+                        return;
                     }
-                    await submitBundleLive({ send, tap, bundle, deviceId: slot });
                     markE2eeDeviceSubmitted(ownId);
-                    if (!jsonMode) info("Device registered. Requesting the cloud key — approve it on your phone.");
+                    if (!jsonMode)
+                        info(
+                            "Device registered and listed by the server. Requesting the cloud key — approve it on your phone.",
+                        );
                     // 4. Request the key over zCloud, wait for the pcloud_info control on the socket, decrypt and seal it.
                     const result = await receiveCloudKeyFromPhone({
                         ownId,
                         deviceName: "zalo-agent-cli",
-                        sendRequest: (session) =>
-                            requestCloudKeyFromPhone(api, {
+                        sendRequest: async (session) => {
+                            const ack = await requestCloudKeyFromPhone(api, {
                                 deviceName: session.deviceName,
                                 sessionId: session.sessionId,
-                            }),
+                            });
+                            e2eeDebug("req_cloud_key ack", ack);
+                            return ack;
+                        },
                         subscribe: subscribeCloudControls(tap),
                         onPrompt: () => {
                             if (!jsonMode) info("Waiting for the phone to approve the cloud-key request…");
@@ -740,6 +774,10 @@ function registerCloudKeyGroup(cloud, program) {
                 if (e instanceof CloudKeyRefusedError) error("The phone refused the cloud-key request.");
                 else if (e instanceof CloudKeyTimeoutError) error("No approval came from the phone in time.");
                 else if (e instanceof CloudKeyUnsupportedError) error(e.message);
+                else if (e instanceof CloudKeyDecryptError)
+                    error(`Could not decrypt the key the phone sent (end-to-end layer): ${e.message}`);
+                else if (e instanceof ZCloudError)
+                    error(`The cloud-key request to zCloud failed (transport layer): ${e.message}`);
                 else error(`Setup failed: ${e.message}`);
                 process.exitCode = 1;
             }

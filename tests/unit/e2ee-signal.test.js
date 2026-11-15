@@ -352,3 +352,54 @@ describe("decodeBundleItem reads the nested GET_BUNDLE wire shape", () => {
         assert.equal(item.preKey, null);
     });
 });
+
+describe("the subdevice init message (v2)", () => {
+    it("is the JSON the clients send, and the peer device decrypts exactly that", async () => {
+        const { buildSubdeviceInit, INIT_MESSAGE } = await import("../../src/zalo/e2ee/subdevice-init.js");
+        assert.equal(INIT_MESSAGE, '{"subDevice":[]}');
+        const lib = await loadSignalLib();
+        const ours = await generateDeviceIdentity({ preKeyCount: 1 });
+        const phone = await generateDeviceIdentity({ preKeyCount: 1 });
+        const pb = bundleFromStore(phone.store);
+        const tagged = await buildSubdeviceInit({
+            store: ours.store,
+            ownUid: OWN_UID,
+            deviceId: DEVICE_IDS.MOBILE,
+            bundleItem: {
+                deviceId: DEVICE_IDS.MOBILE,
+                registrationId: pb.registrationId,
+                identityKey: pb.identityKey,
+                signedPreKey: pb.signedPreKey,
+                preKey: pb.preKeys[0],
+            },
+        });
+        const { type, message } = splitTypeAndMessage(tagged);
+        assert.equal(type, PRE_KEY_TYPE);
+        const from = new lib.SignalProtocolAddress(OWN_UID, DEVICE_IDS.WEB);
+        const plain = await new lib.SessionCipher(phone.store, from).decryptPreKeyWhisperMessage(message);
+        assert.equal(Buffer.from(new Uint8Array(plain)).toString("utf8"), '{"subDevice":[]}');
+    });
+});
+
+describe("Zalo's key-derivation labels", () => {
+    it("the library derives under ZaloText/ZaloRatchet/ZaloMessageKeys, not the standard labels", async () => {
+        const { hkdfSync } = await import("node:crypto");
+        const { createRequire } = await import("node:module");
+        await loadSignalLib();
+        const require = createRequire(import.meta.url);
+        const internal = require("@privacyresearch/libsignal-protocol-typescript/lib/internal/crypto.js");
+        const input = new Uint8Array(32).fill(7).buffer;
+        const salt = new ArrayBuffer(32);
+        for (const [standard, zalo] of [
+            ["WhisperText", "ZaloText"],
+            ["WhisperRatchet", "ZaloRatchet"],
+            ["WhisperMessageKeys", "ZaloMessageKeys"],
+        ]) {
+            const [first] = await internal.HKDF(input, salt, standard);
+            const want = Buffer.from(hkdfSync("sha256", Buffer.from(input), Buffer.from(salt), zalo, 32));
+            const notWant = Buffer.from(hkdfSync("sha256", Buffer.from(input), Buffer.from(salt), standard, 32));
+            assert.deepEqual(Buffer.from(first), want, `${standard} derives as ${zalo}`);
+            assert.notDeepEqual(Buffer.from(first), notWant);
+        }
+    });
+});

@@ -320,9 +320,8 @@ export async function submitBundleLive({ send, tap, bundle, deviceId, deleteExis
 /**
  * The INIT_SUBDEVICE phase: from the account's device bundles (GET_BUNDLE -1), build a Signal session to each device
  * other than ours and announce them with one INIT_SESSION (543). Mutates `store` (it gains the sessions); the caller
- * persists it. This builds OUTBOUND sessions for sending end-to-end messages; it is NOT needed to receive the cloud key
- * (that is a pre-key message addressed to our submitted bundle), so the caller does not block the key request on it.
- * Never throws on a per-device miss.
+ * persists it. The phone answers the cloud-key request on the session this announcement sets up (a normal message on
+ * it), so the announcement has to reach the phone in the clients' format. Never throws on a per-device miss.
  *
  * @param {object} args
  * @param {(payload: object) => void} args.send
@@ -356,7 +355,7 @@ export async function initSubdevicesLive({ send, tap, ownUid, deviceId, store, b
         reply = await sendSignalCommand({
             send,
             tap,
-            frame: encodeInitSession({ uidTo: ownUid, entries, reqId: randomUUID() }),
+            frame: encodeInitSession({ uidTo: ownUid, entries, reqId: randomUUID(), enable: false }),
             timeoutMs,
             debugLabel: "INIT_SESSION 543",
         });

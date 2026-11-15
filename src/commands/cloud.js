@@ -42,6 +42,7 @@ import { cloudKeyStatus, forgetCloudKey, loadCloudKey } from "../core/cloud-key-
 import {
     e2eeDebug,
     listMyDevicesLive,
+    getKeyIdLive,
     registerDeviceLive,
     subscribeCloudControls,
     withLiveSocket,
@@ -708,11 +709,17 @@ function registerCloudKeyGroup(cloud, program) {
                     //    Registration is confirmed by SUBMIT_BUNDLE succeeding (it throws on a server error), not by the
                     //    chat-session list; the cloud key is a pre-key message to our submitted bundle, so it does not
                     //    need the outbound subdevice sessions.
+                    // Debug: what the account's other devices answer to our init (ids/shape only).
+                    for (const cmd of [543, 544, 545]) tap.on(cmd, (f) => e2eeDebug(`inbound ${cmd}`, f, 5));
+                    // Reuse the stored identity only while the server still holds it for this slot (GET_KEY_ID names the
+                    // registration id it serves). Otherwise make a fresh one, as the client does on a mismatch: the server
+                    // keeps a bundle it already knows and will not take the same identity back.
                     const existing = hasE2eeDevice(ownId) && loadE2eeDevice(ownId);
-                    const device =
-                        existing && existing.deviceId === slot
-                            ? existing
-                            : (await createE2eeDevice(ownId, { deviceId: slot })).record;
+                    const served = (await getKeyIdLive({ send, tap, deviceId: slot }))?.data?.keyId ?? null;
+                    const reuse =
+                        existing && existing.deviceId === slot && Number(served) === Number(existing.registrationId);
+                    e2eeDebug("identity", { served, reuse: Boolean(reuse) });
+                    const device = reuse ? existing : (await createE2eeDevice(ownId, { deviceId: slot })).record;
                     const bundle = bundleFromStore(device.store);
                     const reg = await registerDeviceLive({
                         send,

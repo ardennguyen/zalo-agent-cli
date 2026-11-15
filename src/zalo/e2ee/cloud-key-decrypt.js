@@ -1,18 +1,18 @@
 /**
  * Open the cloud key the phone encrypted to this device.
  *
- * The phone (the account itself, device 0) fetches this device's published bundle, runs X3DH on its side, and sends a
- * pre-key (type-3) Signal message as `encrypted_private_key`. Here we strip the one-byte transport tag
- * (./transport-tag.js), then let the session cipher build the session from the message's embedded base key / identity /
- * pre-key ids together with our stored identity, signed pre-key and the matching one-time pre-key, and decrypt. The
- * plaintext is the account's cloud RSA private key as base64 PKCS#8 text.
+ * The phone (the account itself, device 0) answers on the Signal session our subdevice init set up with it: a normal
+ * (type-2) message, decrypted on that session. A pre-key (type-3) message is also handled: the session cipher builds the
+ * session from the message's embedded base key / identity / pre-key ids together with our stored identity, signed
+ * pre-key and the matching one-time pre-key. Either way we first strip the one-byte transport tag (./transport-tag.js).
+ * The plaintext is the account's cloud RSA private key as base64 PKCS#8 text.
  *
  * Processing a pre-key message consumes the matched one-time pre-key (standard X3DH): the store must still hold it at
  * this point, and after this it is gone, so the caller persists the updated store.
  *
  * Protocol layer: no `src/core`, no `src/utils`. The library is loaded lazily (./signal-lib.js).
  */
-import { PRE_KEY_TYPE, splitTypeAndMessage } from "./transport-tag.js";
+import { PRE_KEY_TYPE, WHISPER_TYPE, splitTypeAndMessage } from "./transport-tag.js";
 import { loadSignalLib } from "./signal-lib.js";
 
 /** Raised when the reply is not a pre-key message or will not decrypt. */
@@ -43,13 +43,27 @@ export async function decryptCloudKeyReply({ store, encryptedPrivateKey, ownUid,
     } catch (e) {
         throw new CloudKeyDecryptError(`the reply is not a readable encrypted payload: ${e.message}`);
     }
-    if (split.type !== PRE_KEY_TYPE) {
-        throw new CloudKeyDecryptError(
-            `the reply is message type ${split.type}, not a pre-key message (${PRE_KEY_TYPE}); no session can be built from it`,
-        );
-    }
     const lib = await loadSignalLib();
     const address = new lib.SignalProtocolAddress(String(ownUid), Number(senderDeviceId));
+    // The usual case: the phone answers on the session our subdevice init set up with it, as a normal (type-2) message.
+    if (split.type === WHISPER_TYPE) {
+        let plain;
+        try {
+            plain = await new lib.SessionCipher(store, address).decryptWhisperMessage(split.message);
+        } catch (e) {
+            throw new CloudKeyDecryptError(
+                `the cloud-key message did not decrypt on the session with the phone: ${e?.message || e}`,
+            );
+        }
+        const out = Buffer.from(new Uint8Array(plain)).toString("utf8").trim();
+        if (!out) throw new CloudKeyDecryptError("the decrypted cloud key was empty");
+        return out;
+    }
+    if (split.type !== PRE_KEY_TYPE) {
+        throw new CloudKeyDecryptError(
+            `the reply is message type ${split.type}, neither a session (${WHISPER_TYPE}) nor a pre-key (${PRE_KEY_TYPE}) message`,
+        );
+    }
     const header = readPreKeyHeader(split.message);
     let plaintext;
     let firstError;

@@ -44,7 +44,7 @@ import { lookupCloudBackup, messageZKey } from "./zcloud.js";
 import { pastCdnWindow } from "./media-age.js";
 import { createDownloadFetch } from "../../zalo/download-fetch.js";
 import { fetchCloudBlob } from "../../zalo/zcloud.js";
-import { ALGO_BLOCK, CloudKeyError, decryptCloudBlob } from "../../zalo/zcloud-e2ee.js";
+import { CloudKeyError, decryptCloudBlob } from "../../zalo/zcloud-e2ee.js";
 import { readSealedJson, writeSealedJson } from "../keystore/index.js";
 import { scopeOfDir } from "../keystore/keyring.js";
 import { mediaPlainSize, writeSealedMedia } from "../keystore/media-seal.js";
@@ -506,9 +506,6 @@ async function fetchFromCloud({ item, cloudConversation, cloud, timeoutMs, signa
         : null;
     const encryptInfo = raw.encryptInfo ? { algoVersion: item?.algoVersion ?? undefined, ...raw.encryptInfo } : fromRow;
     const encrypted = !cloudConversation && Boolean(encryptInfo?.encryptKey);
-    if (encrypted && String(encryptInfo.algoVersion ?? "") === ALGO_BLOCK) {
-        return { ok: false, code: "cloud-unsupported", reason: "zCloud: block-encrypted item (algoversion 2)" };
-    }
     if (encrypted && !cloud.privateKey) {
         return { ok: false, code: "cloud-no-key", reason: "zCloud: encrypted, and no cloud key was given" };
     }
@@ -531,9 +528,6 @@ async function fetchFromCloud({ item, cloudConversation, cloud, timeoutMs, signa
     const blob = r.value;
     let buf = Buffer.from(blob?.bytes ?? []);
     if (blob?.encrypted) {
-        if (String(blob.algoVersion ?? "") === ALGO_BLOCK) {
-            return { ok: false, code: "cloud-unsupported", reason: "zCloud: block-encrypted item (algoversion 2)" };
-        }
         try {
             buf = decryptCloudBlob(buf, blob.wrappedKey, blob.algoVersion, cloud.privateKey);
         } catch (e) {

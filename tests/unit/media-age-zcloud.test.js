@@ -68,6 +68,22 @@ function encryptBlob(plain, publicKey) {
     return { enc, wrapped: wrapped.toString("base64") };
 }
 
+/** The block-by-block version: AES-256-CTR per 4096-byte block, each from the same IV; the packed key has no tag. */
+function encryptBlocks(plain, publicKey) {
+    const key = randomBytes(32);
+    const iv = Buffer.concat([randomBytes(12), Buffer.alloc(4)]);
+    const parts = [];
+    for (let at = 0; at < plain.length; at += 4096) {
+        const c = createCipheriv("aes-256-ctr", key, iv);
+        parts.push(c.update(plain.subarray(at, at + 4096)), c.final());
+    }
+    const wrapped = publicEncrypt(
+        { key: publicKey, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: "sha256" },
+        Buffer.concat([key, iv]),
+    );
+    return { enc: Buffer.concat(parts), wrapped: wrapped.toString("base64") };
+}
+
 let server;
 let base;
 let hits;
@@ -145,7 +161,7 @@ function row({ msgId, daysAgo, threadId = "t1", path = "/cdn/ok.jpg", size } = {
 /** List a message in the local zCloud index, its blob encrypted for `publicKey` and served at /cloud/<noiseId>. */
 function inCloud(msgId, { threadId = "t1", publicKey = pair.publicKey, algoVersion, serve = true } = {}) {
     const noiseId = `n-${msgId}`;
-    const { enc, wrapped } = encryptBlob(PLAIN, publicKey);
+    const { enc, wrapped } = algoVersion === "2" ? encryptBlocks(PLAIN, publicKey) : encryptBlob(PLAIN, publicKey);
     if (serve) blobs.set(noiseId, enc);
     upsertCloudItem({
         noiseId,
@@ -301,7 +317,7 @@ describe("the zCloud source", () => {
         assert.equal(countGoneAttachments(), 0);
     });
 
-    it("names each failure: no key, not found, does not decrypt, block-encrypted", async () => {
+    it("names each failure (no key, not found, does not decrypt) and opens a block-encrypted item", async () => {
         const noKey = row({ daysAgo: 30 });
         inCloud(noKey);
         const notFound = row({ daysAgo: 30 });
@@ -309,17 +325,17 @@ describe("the zCloud source", () => {
         const wrong = row({ daysAgo: 30 });
         inCloud(wrong, { publicKey: other.publicKey });
         const block = row({ daysAgo: 30 });
-        const blockNoise = inCloud(block, { algoVersion: "2" });
+        inCloud(block, { algoVersion: "2" });
 
         const withoutKey = await run({ cloud: cloudWith(null), msgIds: [noKey] });
         assert.deepEqual(withoutKey.reasons, { "cloud-no-key": 1 });
 
         const s = await run({ cloud: cloudWith(key()), msgIds: [notFound, wrong, block] });
-        assert.deepEqual(s.reasons, { "cloud-not-found": 1, "cloud-decrypt": 1, "cloud-unsupported": 1 });
-        assert.equal(s.cloudFailed, 3);
-        assert.equal(s.failed, 3);
-        assert.equal(hits[`/cloud/${blockNoise}`], undefined, "a block-encrypted item is not even fetched");
-        assert.equal(countPendingAttachments(), 4, "all still pending");
+        assert.deepEqual(s.reasons, { "cloud-not-found": 1, "cloud-decrypt": 1 });
+        assert.equal(s.cloudFailed, 2);
+        assert.equal(s.failed, 2);
+        assert.equal(s.fromCloud, 1, "the block-encrypted item was fetched and opened");
+        assert.equal(countPendingAttachments(), 3, "the failed ones stay pending");
     });
 
     it("keeps the key out of the result and off the disk", async () => {

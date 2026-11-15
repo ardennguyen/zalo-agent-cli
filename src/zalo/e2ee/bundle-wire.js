@@ -104,9 +104,11 @@ export function encodeSubmitPreKeys({ preKeys, registrationId, deviceId, reqId }
  *
  * @param {object} args
  * @param {string} args.uidTo - the account's own id (sessions are to our own other devices)
- * @param {Array<{deviceId: number, initMsg: string}>} args.entries - one per subdevice: the type-tagged init message
+ * @param {Array<{deviceId: number, initMsg: string}>} args.entries - one per subdevice: the type-tagged init message,
+ *   sent on the wire as `{deviceId, data}` (the client's field name)
  * @param {string|number} args.reqId
- * @param {boolean} [args.enable=true] - the client's `type` (1 = enable)
+ * @param {boolean} [args.enable=true] - the client's `type`: 1 when forwarding to a peer's devices, 0 for the
+ *   connect-time init of our own subdevices
  * @returns {{version: number, cmd: number, subCmd: number, data: object}}
  */
 export function encodeInitSession({ uidTo, entries, reqId, enable = true }) {
@@ -119,7 +121,7 @@ export function encodeInitSession({ uidTo, entries, reqId, enable = true }) {
             data: {
                 type: enable ? 1 : 0,
                 uidTo: String(uidTo),
-                data: entries.map((e) => ({ deviceId: Number(e.deviceId), initMsg: e.initMsg })),
+                data: entries.map((e) => ({ deviceId: Number(e.deviceId), data: e.initMsg })),
             },
         },
     };

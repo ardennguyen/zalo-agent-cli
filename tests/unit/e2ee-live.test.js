@@ -234,6 +234,13 @@ describe("registerDeviceLive — the full connect-time sequence", () => {
         assert.equal(frames[1].data.data.delSS, 1, "SUBMIT_BUNDLE asks the other devices to drop stale sessions");
         assert.ok(order.includes(541), "GET_BUNDLE(-1) for the device registry");
         assert.ok(order.includes(543), "INIT_SESSION built the subdevice sessions");
+        const init = frames.find((f) => f.cmd === 543).data.data;
+        assert.equal(init.type, 0, "the connect-time subdevice init is type 0");
+        assert.deepEqual(init.data.map((e) => e.deviceId).sort(), [0, 2]);
+        for (const e of init.data) {
+            assert.equal(typeof e.data, "string", "the encrypted init message rides in `data`, as the client sends it");
+            assert.equal(e.initMsg, undefined);
+        }
     });
 
     it("stays registered on SUBMIT_BUNDLE success even if our slot is not yet in the bundle list", async () => {

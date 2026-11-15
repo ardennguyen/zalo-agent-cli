@@ -24,6 +24,7 @@ function recordingApi(refuse = null) {
     };
 }
 
+// The other tests pass delayMs: 0 so 250 threads do not take a minute of real pauses; this one holds the default.
 describe("runBoardPass", () => {
     let db;
     let seq = 0;
@@ -37,7 +38,7 @@ describe("runBoardPass", () => {
 
     it("-T fetches exactly that thread even when it is older than the 200 most recent", async () => {
         const api = recordingApi();
-        const r = await runBoardPass(api, { thread: "g0", reminders: false });
+        const r = await runBoardPass(api, { thread: "g0", reminders: false, delayMs: 0 });
         // Red under the old code: it read the 200 most recent threads, filtered for g0, found none and skipped.
         assert.equal(r.status, "ok");
         assert.deepEqual(api.asked, ["g0"]);
@@ -45,20 +46,30 @@ describe("runBoardPass", () => {
 
     it("visits every cached thread by default (no 200 cap)", async () => {
         const api = recordingApi();
-        const r = await runBoardPass(api, { reminders: false });
+        const r = await runBoardPass(api, { reminders: false, delayMs: 0 });
         assert.equal(r.stats.threads, 250);
         assert.equal(new Set(api.asked).size, 250);
     });
 
     it("an explicit limit still bounds the pass", async () => {
         const api = recordingApi();
-        await runBoardPass(api, { reminders: false, limit: 5 });
+        await runBoardPass(api, { reminders: false, limit: 5, delayMs: 0 });
         assert.deepEqual(api.asked.sort(), ["g245", "g246", "g247", "g248", "g249"]);
+    });
+
+    it("paces its calls by default: about 120 ms between one worker's threads", async () => {
+        const at = [];
+        const api = { getListBoard: async () => (at.push(Date.now()), { items: [] }) };
+        await runBoardPass(api, { reminders: false, limit: 4, concurrency: 1 });
+        const gaps = at.slice(1).map((t, i) => t - at[i]);
+        // Red if the default pause is dropped, or if runBoardPass forwards a 0 when no delayMs was given.
+        assert.equal(gaps.length, 3);
+        for (const g of gaps) assert.ok(g >= 100, `gaps ${gaps.join(", ")} ms: the pass is not paced`);
     });
 
     it("on 221 stops, notes the stop, and the next pass resumes at the refused thread", async () => {
         const first = recordingApi("g100");
-        const r = await runBoardPass(first, { reminders: false, concurrency: 1 });
+        const r = await runBoardPass(first, { reminders: false, concurrency: 1, delayMs: 0 });
         assert.equal(r.stats.stoppedBy, "rate-limit");
         assert.match(r.note, /221/);
         assert.equal(getSyncState(BOARD_RESUME_KEY), "g100");
@@ -66,7 +77,7 @@ describe("runBoardPass", () => {
         assert.equal(r.stats.threads, 149);
 
         const second = recordingApi();
-        const again = await runBoardPass(second, { reminders: false, concurrency: 1 });
+        const again = await runBoardPass(second, { reminders: false, concurrency: 1, delayMs: 0 });
         assert.equal(again.resumed, true);
         assert.equal(second.asked[0], "g100");
         assert.equal(again.stats.threads, 250);

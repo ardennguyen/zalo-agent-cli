@@ -19,15 +19,18 @@
  *
  * Usage (environment as tests/helpers/cli.js `runCli` sets it): `node cli-batch-worker.mjs <cases.json> <out.json>`
  * where cases.json is `[{ id, argv, env?, timeoutMs? }]` (`env`: variables set for that case only); out.json receives `[{ id, code, stdout, stderr, timedOut }]`.
+ * Or `node cli-batch-worker.mjs --serve` under `child_process.fork`: one case per IPC message, one result back per
+ * case (tests/helpers/cli-fast.js).
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import "./no-network.mjs";
+// A preloaded offline session (tests/unit/support/offline-session.js) brings its own stub network.
+if (!globalThis.__zaloOfflineSession) await import("./no-network.mjs");
 
 const CLI = resolve(import.meta.dirname, "..", "..", "src", "index.js");
+const SERVE = process.argv[2] === "--serve";
 const [casesPath, outPath] = process.argv.slice(2);
-const cases = JSON.parse(readFileSync(casesPath, "utf8"));
 
 class ExitSignal extends Error {
     constructor(code) {
@@ -39,6 +42,38 @@ class ExitSignal extends Error {
 const { Command } = await import("commander");
 const { _resetErrorLatch } = await import(pathToFileURL(resolve(CLI, "..", "utils", "output.js")).href);
 const { setPinnedAccount } = await import(pathToFileURL(resolve(CLI, "..", "core", "accounts.js")).href);
+const src = (p) => import(pathToFileURL(resolve(CLI, "..", ...p.split("/"))).href);
+const { clearSession } = await src("core/zalo-client.js");
+const { closeDb } = await src("core/db.js");
+const { resetPolicyCache } = await src("core/policy-store.js");
+const { resetAliasBook } = await src("core/contact-names.js");
+const { resetHiddenChatsRegistry } = await src("core/hidden-chats.js");
+const { clearLastOnlineMemory } = await src("core/last-online.js");
+const { resetPublicUrlNote } = await src("core/deploy-policy.js");
+const { lockAll } = await src("core/keystore/keyring.js");
+
+/**
+ * Forget what the previous case left in module state that a fresh process would not have: the logged-in
+ * session, the open cache, and the caches read from files a test may have rewritten between cases.
+ */
+function resetModuleState() {
+    _resetErrorLatch();
+    delete process.env.ZALO_JSON_MODE;
+    setPinnedAccount(null);
+    process.exitCode = undefined;
+    try {
+        clearSession();
+    } catch {
+        /* nothing was logged in */
+    }
+    closeDb();
+    resetPolicyCache();
+    resetAliasBook();
+    resetHiddenChatsRegistry();
+    clearLastOnlineMemory();
+    resetPublicUrlNote();
+    lockAll();
+}
 
 const realExit = process.exit.bind(process);
 let current = null;
@@ -86,13 +121,16 @@ Command.prototype.parseAsync = function (...args) {
     return lastRun;
 };
 
-const results = [];
 let n = 0;
-for (const c of cases) {
-    _resetErrorLatch();
-    delete process.env.ZALO_JSON_MODE;
-    setPinnedAccount(null);
-    process.exitCode = undefined;
+
+/**
+ * Run one case and resolve with its result.
+ *
+ * @param {{id: string, argv: string[], env?: object, timeoutMs?: number}} c
+ * @returns {Promise<{id: string, code: number|null, stdout: string, stderr: string, timedOut: boolean}>}
+ */
+async function runCase(c) {
+    resetModuleState();
     process.argv = [process.execPath, CLI, ...c.argv];
     const savedEnv = Object.fromEntries(Object.keys(c.env ?? {}).map((k) => [k, process.env[k]]));
     Object.assign(process.env, c.env ?? {});
@@ -126,9 +164,21 @@ for (const c of cases) {
         state.code = Number(process.exitCode) || 0;
     }
     current = null;
-    results.push({ id: c.id, code: state.code, stdout: state.stdout, stderr: state.stderr, timedOut: state.timedOut });
+    return { id: c.id, code: state.code, stdout: state.stdout, stderr: state.stderr, timedOut: state.timedOut };
 }
 
-writeFileSync(outPath, JSON.stringify(results));
-// Timers and handles a case left behind (a listener, a db) must not keep the worker alive.
-realExit(0);
+if (SERVE) {
+    // Serve mode (tests/helpers/cli-fast.js): one case per IPC message, one at a time, until the parent goes.
+    let queue = Promise.resolve();
+    process.on("message", (c) => {
+        queue = queue.then(async () => process.send(await runCase(c)));
+    });
+    process.on("disconnect", () => realExit(0));
+} else {
+    const cases = JSON.parse(readFileSync(casesPath, "utf8"));
+    const results = [];
+    for (const c of cases) results.push(await runCase(c));
+    writeFileSync(outPath, JSON.stringify(results));
+    // Timers and handles a case left behind (a listener, a db) must not keep the worker alive.
+    realExit(0);
+}

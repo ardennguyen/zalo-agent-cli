@@ -10,15 +10,17 @@ import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { openOutbox } from "../../src/core/webhook-outbox.js";
 import { runCli, stripAnsi } from "../helpers/cli.js";
+import { checkCli } from "../helpers/cli-fast.js";
 
 const OWN = "301";
 const options = { home: SANDBOX_HOME, timeout: 60_000 };
 const accountDir = join(CONFIG_DIR, "accounts", OWN);
-const run = (...args) => runCli(["--account", OWN, "mcp", "webhook", ...args], options);
-const runJson = async (...args) => {
-    const r = await runCli(["--json", "--account", OWN, "mcp", "webhook", ...args], options);
-    return JSON.parse(stripAnsi(r.stdout).slice(stripAnsi(r.stdout).indexOf("{")));
-};
+const argv = (args) => ["--account", OWN, "mcp", "webhook", ...args];
+const parse = (r) => JSON.parse(stripAnsi(r.stdout).slice(stripAnsi(r.stdout).indexOf("{")));
+// Each runs in the in-process CLI worker and hands its result to `check`; a check that fails there is re-run as a
+// real child process (tests/helpers/cli-fast.js `checkCli`). The first test also spawns one real process.
+const run = (args, check) => checkCli(argv(args), options, check);
+const runJson = (args, check) => checkCli(["--json", ...argv(args)], options, (r) => check(parse(r)));
 
 before(() => assertSandboxed(CONFIG_DIR));
 
@@ -44,90 +46,97 @@ function seed() {
 
 describe("mcp webhook", () => {
     it("says plainly that an account with no webhook has no outbox, and does not create one", async () => {
-        const r = await run("status");
+        // A real child process: the smoke check that the worker and a real process agree.
+        const r = await runCli(argv(["status"]), options);
         assert.equal(r.code, 0);
         assert.match(stripAnsi(r.all), /no webhook outbox/);
-        const j = await runJson("status");
-        assert.equal(j.outbox, null);
-        assert.equal(j.accountId, OWN);
-        const again = await run("list");
-        assert.match(stripAnsi(again.all), /no webhook outbox/);
-        assert.equal((await runJson("retry")).requeued ?? 0, 0);
+        await runJson(["status"], (j) => {
+            assert.equal(j.outbox, null);
+            assert.equal(j.accountId, OWN);
+        });
+        await run(["list"], (again) => assert.match(stripAnsi(again.all), /no webhook outbox/));
+        await runJson(["retry"], (j) => assert.equal(j.requeued ?? 0, 0));
     });
 
     it("status reports the backlog, the dead letters and the last error", async () => {
         seed();
-        const j = await runJson("status");
-        assert.equal(j.outbox.pending, 2);
-        assert.equal(j.outbox.dead, 2);
-        assert.equal(j.outbox.lastError, "HTTP 503");
-        assert.equal(j.outbox.lastStatus, 503);
-        assert.ok(j.outbox.oldestPendingAgeMs >= 0);
-        assert.equal(j.daemon.running, false);
-        const text = stripAnsi((await run("status")).all);
-        assert.match(text, /Queued: 2/);
-        assert.match(text, /Dead-lettered: 2/);
-        assert.match(text, /Last error: HTTP 503/);
-        assert.match(text, /sent when `mcp start` \/ `listen` runs again/);
+        await runJson(["status"], (j) => {
+            assert.equal(j.outbox.pending, 2);
+            assert.equal(j.outbox.dead, 2);
+            assert.equal(j.outbox.lastError, "HTTP 503");
+            assert.equal(j.outbox.lastStatus, 503);
+            assert.ok(j.outbox.oldestPendingAgeMs >= 0);
+            assert.equal(j.daemon.running, false);
+        });
+        await run(["status"], (r) => {
+            const text = stripAnsi(r.all);
+            assert.match(text, /Queued: 2/);
+            assert.match(text, /Dead-lettered: 2/);
+            assert.match(text, /Last error: HTTP 503/);
+            assert.match(text, /sent when `mcp start` \/ `listen` runs again/);
+        });
     });
 
     it("list shows queued and dead events with their ids, and filters", async () => {
         seed();
-        const all = await runJson("list");
-        assert.deepEqual(
-            all.events.map((e) => [e.seq, e.status, e.id]),
-            [
-                [1, "pending", "m1"],
-                [2, "pending", "m2"],
-                [3, "dead", "m3"],
-                [4, "dead", "m4"],
-            ],
+        await runJson(["list"], (all) => {
+            assert.deepEqual(
+                all.events.map((e) => [e.seq, e.status, e.id]),
+                [
+                    [1, "pending", "m1"],
+                    [2, "pending", "m2"],
+                    [3, "dead", "m3"],
+                    [4, "dead", "m4"],
+                ],
+            );
+            assert.equal(all.events[0].attempts, 1);
+            assert.equal(all.events[2].lastError, "rejected by the receiver: HTTP 422");
+        });
+        await runJson(["list", "--dead"], (j) =>
+            assert.deepEqual(
+                j.events.map((e) => e.id),
+                ["m3", "m4"],
+            ),
         );
-        assert.equal(all.events[0].attempts, 1);
-        assert.equal(all.events[2].lastError, "rejected by the receiver: HTTP 422");
-        assert.deepEqual(
-            (await runJson("list", "--dead")).events.map((e) => e.id),
-            ["m3", "m4"],
+        await runJson(["list", "--pending", "-n", "1"], (j) =>
+            assert.deepEqual(
+                j.events.map((e) => e.id),
+                ["m1"],
+            ),
         );
-        assert.deepEqual(
-            (await runJson("list", "--pending", "-n", "1")).events.map((e) => e.id),
-            ["m1"],
-        );
-        const both = await run("list", "--dead", "--pending");
-        assert.equal(both.code, 1);
-        assert.match(stripAnsi(both.stdout + both.stderr), /not both/);
-        const bad = await run("list", "-n", "0");
-        assert.equal(bad.code, 1);
+        await run(["list", "--dead", "--pending"], (both) => {
+            assert.equal(both.code, 1);
+            assert.match(stripAnsi(both.stdout + both.stderr), /not both/);
+        });
+        await run(["list", "-n", "0"], (bad) => assert.equal(bad.code, 1));
     });
 
     it("retry puts one dead event back, then the rest; queued events are untouched", async () => {
         seed();
-        assert.equal((await runJson("retry", "3")).requeued, 1);
-        let s = (await runJson("status")).outbox;
-        assert.deepEqual([s.pending, s.dead], [3, 1]);
-        assert.equal((await runJson("retry")).requeued, 1);
-        s = (await runJson("status")).outbox;
-        assert.deepEqual([s.pending, s.dead], [4, 0]);
-        assert.equal((await runJson("retry")).requeued, 0);
-        const none = stripAnsi((await run("retry")).all);
-        assert.match(none, /No dead-lettered events/);
+        const counts = (j) => [j.outbox.pending, j.outbox.dead];
+        await runJson(["retry", "3"], (j) => assert.equal(j.requeued, 1));
+        await runJson(["status"], (j) => assert.deepEqual(counts(j), [3, 1]));
+        await runJson(["retry"], (j) => assert.equal(j.requeued, 1));
+        await runJson(["status"], (j) => assert.deepEqual(counts(j), [4, 0]));
+        await runJson(["retry"], (j) => assert.equal(j.requeued, 0));
+        await run(["retry"], (r) => assert.match(stripAnsi(r.all), /No dead-lettered events/));
     });
 
     it("purge deletes dead events for good, one or all, and never a queued one", async () => {
         seed();
-        assert.equal((await runJson("purge", "4", "--yes")).deleted, 1);
-        assert.equal((await runJson("purge", "1", "--yes")).deleted, 0, "event 1 is queued, not dead");
-        assert.equal((await runJson("purge", "--yes")).deleted, 1);
-        const s = (await runJson("status")).outbox;
-        assert.deepEqual([s.pending, s.dead], [2, 0]);
+        await runJson(["purge", "4", "--yes"], (j) => assert.equal(j.deleted, 1));
+        await runJson(["purge", "1", "--yes"], (j) => assert.equal(j.deleted, 0, "event 1 is queued, not dead"));
+        await runJson(["purge", "--yes"], (j) => assert.equal(j.deleted, 1));
+        await runJson(["status"], (j) => assert.deepEqual([j.outbox.pending, j.outbox.dead], [2, 0]));
     });
 
     it("rejects an event number that is not a positive integer", async () => {
         seed();
         for (const bad of ["abc", "0", "-1", "1.5"]) {
-            const r = await run("retry", bad);
-            assert.equal(r.code, 1, bad);
-            assert.match(stripAnsi(r.stdout + r.stderr), /Invalid event number/);
+            await run(["retry", bad], (r) => {
+                assert.equal(r.code, 1, bad);
+                assert.match(stripAnsi(r.stdout + r.stderr), /Invalid event number/);
+            });
         }
     });
 });

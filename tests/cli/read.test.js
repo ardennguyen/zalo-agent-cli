@@ -8,9 +8,14 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { runCli, stripAnsi } from "../helpers/cli.js";
+import { checkCli } from "../helpers/cli-fast.js";
 import { READ_NAMES } from "../../src/zalo/reads.js";
 
 const options = { home: SANDBOX_HOME, timeout: 120_000 };
+// Commands run in the in-process CLI worker; a check that fails there is re-run as a real child process
+// (tests/helpers/cli-fast.js `checkCli`), so only a real process can fail a test.
+const textOf = (args, stream, check) => checkCli(args, options, (r) => check(stripAnsi(r[stream])));
+const parsedOf = (args, check) => checkCli(args, options, (r) => check(JSON.parse(stripAnsi(r.stdout))));
 
 describe("read", () => {
     before(() => {
@@ -24,6 +29,7 @@ describe("read", () => {
     });
 
     it("lists its subcommands", async () => {
+        // A real child process: the smoke check that the worker and a real process agree.
         const r = await runCli(["read", "--help"], options);
         assert.equal(r.code, 0);
         assert.match(r.all, /list/);
@@ -31,28 +37,32 @@ describe("read", () => {
     });
 
     it("lists every read as JSON, with no login", async () => {
-        const r = await runCli(["--json", "read", "list"], options);
-        assert.equal(r.code, 0, r.all);
-        const reads = JSON.parse(stripAnsi(r.stdout));
-        assert.deepEqual(
-            reads.map((x) => x.name),
-            READ_NAMES,
-        );
-        assert.ok(reads.every((x) => typeof x.what === "string" && Array.isArray(x.args)));
-        assert.doesNotMatch(r.all, /AutoLogin|Auto-login|login failed/i, "listing the table logs in to nothing");
+        await checkCli(["--json", "read", "list"], options, (r) => {
+            assert.equal(r.code, 0, r.all);
+            const reads = JSON.parse(stripAnsi(r.stdout));
+            assert.deepEqual(
+                reads.map((x) => x.name),
+                READ_NAMES,
+            );
+            assert.ok(reads.every((x) => typeof x.what === "string" && Array.isArray(x.args)));
+            assert.doesNotMatch(r.all, /AutoLogin|Auto-login|login failed/i, "listing the table logs in to nothing");
+        });
     });
 
     it("lists only the answered reads with --verified, and says what the marks mean", async () => {
-        const all = JSON.parse(stripAnsi((await runCli(["--json", "read", "list"], options)).stdout));
-        const some = JSON.parse(stripAnsi((await runCli(["--json", "read", "list", "--verified"], options)).stdout));
-        // Every read has been answered by a live account since the unanswered todo reads were removed, so the filter
-        // keeps them all; what it must never do is keep one that was not answered.
-        assert.ok(some.length > 0);
-        assert.equal(some.length, all.filter((x) => x.verified).length);
-        assert.ok(some.every((x) => x.verified));
-        const text = stripAnsi((await runCli(["read", "list"], options)).all);
-        assert.match(text, /profile-rank/);
-        assert.match(text, /answered by a live account/);
+        await parsedOf(["--json", "read", "list"], async (all) => {
+            await parsedOf(["--json", "read", "list", "--verified"], async (some) => {
+                // Every read has been answered by a live account since the unanswered todo reads were removed, so the filter
+                // keeps them all; what it must never do is keep one that was not answered.
+                assert.ok(some.length > 0);
+                assert.equal(some.length, all.filter((x) => x.verified).length);
+                assert.ok(some.every((x) => x.verified));
+                await textOf(["read", "list"], "all", (text) => {
+                    assert.match(text, /profile-rank/);
+                    assert.match(text, /answered by a live account/);
+                });
+            });
+        });
     });
 
     it("refuses an unknown read, a bad argument and unparseable JSON with a message and a failing exit", async () => {
@@ -63,9 +73,10 @@ describe("read", () => {
             ["read", "run", "profile-rank", "--args", "{not json"],
             ["read", "run", "gif-search", "--arg", "limit=lots", "--arg", "keyword=cat"],
         ]) {
-            const r = await runCli(args, options);
-            assert.equal(r.code, 1, args.join(" "));
-            assert.match(stripAnsi(r.all), /✗/, args.join(" "));
+            await checkCli(args, options, (r) => {
+                assert.equal(r.code, 1, args.join(" "));
+                assert.match(stripAnsi(r.all), /✗/, args.join(" "));
+            });
         }
     });
 });

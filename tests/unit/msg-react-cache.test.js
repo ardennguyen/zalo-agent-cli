@@ -20,7 +20,7 @@ import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { seedAccount, seedThread, seedMessage, runOffline, requestsTo, OWN_UID } from "./support/offline-cli.js";
+import { seedAccount, checkOffline, seedThread, seedMessage, requestsTo, OWN_UID } from "./support/offline-cli.js";
 
 const GROUP = "200000000000000011";
 const PEER = "300000000000000011";
@@ -64,70 +64,70 @@ function reactedMessage(reactions) {
 
 describe("msg react takes the cliMsgId from the local cache when -c is omitted", () => {
     it("group: cMsgID is the cached cliMsgId, gMsgID the msgId", async () => {
-        const r = await runOffline(["msg", "react", GROUP_MSG.msgId, GROUP, "/-strong", "-t", "1"]);
-        const reactions = requestsTo(r.requests, "/api/group/reaction");
-        const rMsg = reactedMessage(reactions);
-        // Red if cMsgID is anything but the cached client id -- in particular
-        // the msgId, which is what the command used to send.
-        assert.equal(rMsg.cMsgID, Number(GROUP_MSG.cliMsgId), r.all);
-        assert.equal(String(rMsg.gMsgID), GROUP_MSG.msgId);
-        assert.equal(reactions[0].params.grid, GROUP);
-        assert.equal(reactions[0].service, "reaction");
+        await checkOffline(["msg", "react", GROUP_MSG.msgId, GROUP, "/-strong", "-t", "1"], {}, (r) => {
+            const reactions = requestsTo(r.requests, "/api/group/reaction");
+            const rMsg = reactedMessage(reactions);
+            // Red if cMsgID is anything but the cached client id -- in particular
+            // the msgId, which is what the command used to send.
+            assert.equal(rMsg.cMsgID, Number(GROUP_MSG.cliMsgId), r.all);
+            assert.equal(String(rMsg.gMsgID), GROUP_MSG.msgId);
+            assert.equal(reactions[0].params.grid, GROUP);
+            assert.equal(reactions[0].service, "reaction");
+        });
     });
 
     it("DM: same lookup, sent to the 1-1 endpoint", async () => {
-        const r = await runOffline(["msg", "react", DM_MSG.msgId, PEER, "/-heart"]);
-        const reactions = requestsTo(r.requests, "/api/message/reaction");
-        const rMsg = reactedMessage(reactions);
-        assert.equal(rMsg.cMsgID, Number(DM_MSG.cliMsgId), r.all);
-        assert.equal(reactions[0].params.toid, PEER);
+        await checkOffline(["msg", "react", DM_MSG.msgId, PEER, "/-heart"], {}, (r) => {
+            const reactions = requestsTo(r.requests, "/api/message/reaction");
+            const rMsg = reactedMessage(reactions);
+            assert.equal(rMsg.cMsgID, Number(DM_MSG.cliMsgId), r.all);
+            assert.equal(reactions[0].params.toid, PEER);
+        });
     });
 
     it("an explicit -c still wins over the cache", async () => {
-        const r = await runOffline([
-            "msg",
-            "react",
-            GROUP_MSG.msgId,
-            GROUP,
-            "/-strong",
-            "-t",
-            "1",
-            "-c",
-            "1700000000999",
-        ]);
-        const rMsg = reactedMessage(requestsTo(r.requests, "/api/group/reaction"));
-        assert.equal(rMsg.cMsgID, 1700000000999);
+        await checkOffline(
+            ["msg", "react", GROUP_MSG.msgId, GROUP, "/-strong", "-t", "1", "-c", "1700000000999"],
+            {},
+            (r) => {
+                const rMsg = reactedMessage(requestsTo(r.requests, "/api/group/reaction"));
+                assert.equal(rMsg.cMsgID, 1700000000999);
+            },
+        );
     });
 });
 
 describe("msg react refuses rather than send a reaction that cannot show", () => {
     it("an uncached message without -c: no request at all, and the way out is named", async () => {
-        const r = await runOffline(["msg", "react", UNCACHED_MSG, GROUP, "/-strong", "-t", "1"]);
-        // Red if any reaction goes out: without a real cliMsgId it would be
-        // accepted by Zalo and never displayed.
-        assert.deepEqual(requestsTo(r.requests, "/reaction"), [], r.all);
-        assert.notEqual(r.code, 0, "a refusal must not report success");
-        assert.match(r.all, /not in the local cache/);
-        assert.match(r.all, /\blisten\b/, "names the listener as a way to cache it");
-        assert.match(r.all, /\bsync\b/, "names sync as a way to cache it");
-        assert.match(r.all, /(^|\s)-c\b|--cli-msg-id/, "names -c as the override");
+        await checkOffline(["msg", "react", UNCACHED_MSG, GROUP, "/-strong", "-t", "1"], {}, (r) => {
+            // Red if any reaction goes out: without a real cliMsgId it would be
+            // accepted by Zalo and never displayed.
+            assert.deepEqual(requestsTo(r.requests, "/reaction"), [], r.all);
+            assert.notEqual(r.code, 0, "a refusal must not report success");
+            assert.match(r.all, /not in the local cache/);
+            assert.match(r.all, /\blisten\b/, "names the listener as a way to cache it");
+            assert.match(r.all, /\bsync\b/, "names sync as a way to cache it");
+            assert.match(r.all, /(^|\s)-c\b|--cli-msg-id/, "names -c as the override");
+        });
     });
 
     it("a msgId cached under a different thread is not this thread's message", async () => {
         // msgIds are account-wide; a cached row from another conversation must
         // not lend its cliMsgId to a reaction aimed somewhere else.
-        const r = await runOffline(["msg", "react", GROUP_MSG.msgId, PEER, "/-strong"]);
-        assert.deepEqual(requestsTo(r.requests, "/reaction"), [], r.all);
-        assert.match(r.all, /not in the local cache/);
+        await checkOffline(["msg", "react", GROUP_MSG.msgId, PEER, "/-strong"], {}, (r) => {
+            assert.deepEqual(requestsTo(r.requests, "/reaction"), [], r.all);
+            assert.match(r.all, /not in the local cache/);
+        });
     });
 });
 
 describe("msg send --react", () => {
     it("reacts with the clientId the send itself put on the wire", async () => {
-        const r = await runOffline(["msg", "send", PEER, "offline auto-react target", "--react", "/-heart"]);
-        const [sent] = requestsTo(r.requests, "/api/message/sms");
-        assert.ok(sent, r.all);
-        const rMsg = reactedMessage(requestsTo(r.requests, "/api/message/reaction"));
-        assert.equal(rMsg.cMsgID, sent.params.clientId, "the reaction must name the message that was just sent");
+        await checkOffline(["msg", "send", PEER, "offline auto-react target", "--react", "/-heart"], {}, (r) => {
+            const [sent] = requestsTo(r.requests, "/api/message/sms");
+            assert.ok(sent, r.all);
+            const rMsg = reactedMessage(requestsTo(r.requests, "/api/message/reaction"));
+            assert.equal(rMsg.cMsgID, sent.params.clientId, "the reaction must name the message that was just sent");
+        });
     });
 });

@@ -20,6 +20,7 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync, mkdtempSync } from 
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { runCli } from "../../helpers/cli.js";
+import { noteRetry, runCliFast } from "../../helpers/cli-fast.js";
 import { initDb, insertMessage, upsertThread } from "../../../src/core/db.js";
 
 const PRELOAD = pathToFileURL(join(import.meta.dirname, "offline-session.js")).href;
@@ -108,6 +109,35 @@ export function seedMessage(m) {
  * @returns {Promise<{code:number, stdout:string, stderr:string, all:string, requests:object[]}>}
  */
 export async function runOffline(args, opts = {}) {
+    const { env, log } = offlineEnv(opts);
+    const r = await runCli(args, { home: SANDBOX_HOME, timeout: opts.timeout || 60_000, env });
+    return { ...r, requests: readRequests(log) };
+}
+
+/**
+ * {@link runOffline} in the in-process CLI worker (tests/helpers/cli-fast.js), with its safeguard: `check` runs on
+ * the worker's result, and when it throws, the command runs again as a real child ({@link runOffline}) and `check`
+ * runs on that result instead. Only the real process can fail the test.
+ *
+ * @template T
+ * @param {string[]} args
+ * @param {object} opts - as {@link runOffline}
+ * @param {(r: {code:number, stdout:string, stderr:string, all:string, requests:object[]}) => T | Promise<T>} check
+ * @returns {Promise<T>} what `check` returned
+ */
+export async function checkOffline(args, opts, check) {
+    const { env, log } = offlineEnv(opts);
+    const r = await runCliFast(args, { home: SANDBOX_HOME, timeout: opts.timeout || 60_000, env });
+    try {
+        return await check({ ...r, requests: readRequests(log) });
+    } catch (e) {
+        noteRetry(args, e);
+        return check(await runOffline(args, opts));
+    }
+}
+
+/** A fresh request log and the environment that points a run at it. */
+function offlineEnv(opts) {
     const dir = mkdtempSync(join(SANDBOX_HOME, "offline-run-"));
     const log = join(dir, "requests.jsonl");
     const env = {
@@ -121,14 +151,17 @@ export async function runOffline(args, opts = {}) {
         writeFileSync(file, JSON.stringify(opts.responses));
         env.ZALO_OFFLINE_RESPONSES = file;
     }
-    const r = await runCli(args, { home: SANDBOX_HOME, timeout: opts.timeout || 60_000, env });
-    const requests = existsSync(log)
+    return { env, log };
+}
+
+/** The requests a run logged. */
+function readRequests(log) {
+    return existsSync(log)
         ? readFileSync(log, "utf8")
               .split("\n")
               .filter(Boolean)
               .map((l) => JSON.parse(l))
         : [];
-    return { ...r, requests };
 }
 
 /**

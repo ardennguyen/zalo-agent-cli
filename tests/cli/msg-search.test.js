@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { CONFIG_DIR, getAccountDbPath } from "../../src/core/credentials.js";
 import { initDb, insertMessage, replaceUserAliases, upsertThread } from "../../src/core/db.js";
 import { runCli, stripAnsi } from "../helpers/cli.js";
+import { checkCli } from "../helpers/cli-fast.js";
 import { indexProgressReporter } from "../../src/commands/msg-search.js";
 
 const options = { home: SANDBOX_HOME, timeout: 120_000 };
@@ -19,6 +20,12 @@ const DAY = 86_400_000;
 function json(result) {
     return JSON.parse(stripAnsi(result.stdout));
 }
+
+/**
+ * Run `--json <args>` in the in-process CLI worker and hand the parsed reply to `check`; a check that fails there
+ * is re-run as a real child process (tests/helpers/cli-fast.js `checkCli`). `lists its options` spawns for real.
+ */
+const search = (args, check) => checkCli(["--json", ...args], options, (r) => check(json(r)));
 
 describe("msg search", () => {
     before(() => {
@@ -52,6 +59,7 @@ describe("msg search", () => {
     });
 
     it("lists its options", async () => {
+        // A real child process: the smoke check that the worker and a real process agree.
         const r = await runCli(["msg", "search", "--help"], options);
         assert.equal(r.code, 0);
         for (const flag of [
@@ -71,111 +79,122 @@ describe("msg search", () => {
     });
 
     it("finds a word typed without accents, offline and without logging in", async () => {
-        const r = await runCli(["--json", "msg", "search", "duoc"], options);
-        assert.equal(r.code, 0, r.all);
-        const out = json(r);
-        assert.equal(out.accents, "fold");
-        assert.deepEqual(
-            out.hits.map((h) => h.msgId),
-            ["a3", "a2", "a1", "a4"],
-        );
-        assert.equal(out.hits[0].threadName, "Nhóm Dự Án");
-        assert.equal(
-            out.hits[0].snippet.text.slice(out.hits[0].snippet.matchStart, out.hits[0].snippet.matchEnd),
-            "được",
-        );
-        assert.deepEqual(out.counts, { text: 3, file: 1 });
-        assert.match(out.coverage.note, /local cache only/);
-        assert.doesNotMatch(
-            r.all,
-            /AutoLogin|Auto-login|login failed/i,
-            "a search that reads the cache logs in to nothing",
-        );
+        await checkCli(["--json", "msg", "search", "duoc"], options, (r) => {
+            assert.equal(r.code, 0, r.all);
+            const out = json(r);
+            assert.equal(out.accents, "fold");
+            assert.deepEqual(
+                out.hits.map((h) => h.msgId),
+                ["a3", "a2", "a1", "a4"],
+            );
+            assert.equal(out.hits[0].threadName, "Nhóm Dự Án");
+            assert.equal(
+                out.hits[0].snippet.text.slice(out.hits[0].snippet.matchStart, out.hits[0].snippet.matchEnd),
+                "được",
+            );
+            assert.deepEqual(out.counts, { text: 3, file: 1 });
+            assert.match(out.coverage.note, /local cache only/);
+            assert.doesNotMatch(
+                r.all,
+                /AutoLogin|Auto-login|login failed/i,
+                "a search that reads the cache logs in to nothing",
+            );
+        });
     });
 
     it("needs accents to match with --exact, and --type narrows to files", async () => {
-        const exact = json(await runCli(["--json", "msg", "search", "duoc", "--exact"], options));
-        assert.deepEqual(
-            exact.hits.map((h) => h.msgId),
-            ["a2"],
-        );
-        assert.equal(exact.accents, "exact");
-        const files = json(await runCli(["--json", "msg", "search", "duoc", "--type", "files"], options));
-        assert.deepEqual(
-            files.hits.map((h) => h.msgId),
-            ["a3"],
-        );
+        await search(["msg", "search", "duoc", "--exact"], async (exact) => {
+            assert.deepEqual(
+                exact.hits.map((h) => h.msgId),
+                ["a2"],
+            );
+            assert.equal(exact.accents, "exact");
+            await search(["msg", "search", "duoc", "--type", "files"], (files) => {
+                assert.deepEqual(
+                    files.hits.map((h) => h.msgId),
+                    ["a3"],
+                );
+            });
+        });
     });
 
     it("filters by period, date, sender and conversation", async () => {
-        const last = json(await runCli(["--json", "msg", "search", "duoc", "--last", "7d"], options));
-        assert.deepEqual(
-            last.hits.map((h) => h.msgId),
-            ["a3", "a2", "a1"],
-            "the one from 60 days ago is out",
-        );
-        const day = new Date(NOW - 2 * DAY);
-        const ymd = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
-        const one = json(await runCli(["--json", "msg", "search", "duoc", "--since", ymd, "--until", ymd], options));
-        assert.deepEqual(
-            one.hits.map((h) => h.msgId),
-            ["a2"],
-        );
-        const mine = json(await runCli(["--json", "msg", "search", "duoc", "--from", "me"], options));
-        assert.deepEqual(
-            mine.hits.map((h) => h.msgId),
-            ["a2"],
-            "--from me is the active account",
-        );
-        const here = json(await runCli(["--json", "msg", "search", "duoc", "--thread", "nowhere"], options));
-        assert.equal(here.count, 0);
+        await search(["msg", "search", "duoc", "--last", "7d"], async (last) => {
+            assert.deepEqual(
+                last.hits.map((h) => h.msgId),
+                ["a3", "a2", "a1"],
+                "the one from 60 days ago is out",
+            );
+            const day = new Date(NOW - 2 * DAY);
+            const ymd = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+            await search(["msg", "search", "duoc", "--since", ymd, "--until", ymd], async (one) => {
+                assert.deepEqual(
+                    one.hits.map((h) => h.msgId),
+                    ["a2"],
+                );
+                await search(["msg", "search", "duoc", "--from", "me"], async (mine) => {
+                    assert.deepEqual(
+                        mine.hits.map((h) => h.msgId),
+                        ["a2"],
+                        "--from me is the active account",
+                    );
+                    await search(["msg", "search", "duoc", "--thread", "nowhere"], (here) => {
+                        assert.equal(here.count, 0);
+                    });
+                });
+            });
+        });
     });
 
     it("pages with a cursor and shows context", async () => {
-        const first = json(await runCli(["--json", "msg", "search", "duoc", "--limit", "2"], options));
-        assert.equal(first.hasMore, true);
-        const second = json(
-            await runCli(["--json", "msg", "search", "duoc", "--limit", "2", "--cursor", first.nextCursor], options),
-        );
-        assert.deepEqual(
-            [...first.hits, ...second.hits].map((h) => h.msgId),
-            ["a3", "a2", "a1", "a4"],
-        );
-        assert.equal(second.hasMore, false);
-        const ctx = json(await runCli(["--json", "msg", "search", "duoc", "--exact", "--context", "1"], options));
-        assert.deepEqual(
-            ctx.hits[0].context.before.map((m) => m.msgId),
-            ["a1"],
-        );
-        assert.deepEqual(
-            ctx.hits[0].context.after.map((m) => m.msgId),
-            ["a3"],
-        );
+        await search(["msg", "search", "duoc", "--limit", "2"], async (first) => {
+            assert.equal(first.hasMore, true);
+            await search(["msg", "search", "duoc", "--limit", "2", "--cursor", first.nextCursor], async (second) => {
+                assert.deepEqual(
+                    [...first.hits, ...second.hits].map((h) => h.msgId),
+                    ["a3", "a2", "a1", "a4"],
+                );
+                assert.equal(second.hasMore, false);
+                await search(["msg", "search", "duoc", "--exact", "--context", "1"], (ctx) => {
+                    assert.deepEqual(
+                        ctx.hits[0].context.before.map((m) => m.msgId),
+                        ["a1"],
+                    );
+                    assert.deepEqual(
+                        ctx.hits[0].context.after.map((m) => m.msgId),
+                        ["a3"],
+                    );
+                });
+            });
+        });
     });
 
     it("prints a readable result with the coverage line, and the next-page hint", async () => {
-        const r = await runCli(["msg", "search", "duoc", "--limit", "1"], options);
-        const text = stripAnsi(r.all);
-        assert.equal(r.code, 0, text);
-        assert.match(text, /1 result\(s\) for "duoc" \(accents ignored\), more below/);
-        assert.match(text, /Nhóm Dự Án/);
-        assert.match(text, /More: add --cursor /);
-        assert.match(text, /Matches by type: text 3 · file 1/);
-        assert.match(text, /Searched the local cache only/);
+        await checkCli(["msg", "search", "duoc", "--limit", "1"], options, (r) => {
+            const text = stripAnsi(r.all);
+            assert.equal(r.code, 0, text);
+            assert.match(text, /1 result\(s\) for "duoc" \(accents ignored\), more below/);
+            assert.match(text, /Nhóm Dự Án/);
+            assert.match(text, /More: add --cursor /);
+            assert.match(text, /Matches by type: text 3 · file 1/);
+            assert.match(text, /Searched the local cache only/);
+        });
     });
 
     it("names a sender by the owner's alias, keeping the name the message carried", async () => {
         // The alias snapshot a daemon keeps in the account's db (src/core/contact-names.js).
         replaceUserAliases(new Map([["u2", "Minh Sales"]]));
         try {
-            const r = await runCli(["--json", "msg", "search", "hen gap"], options);
-            assert.equal(r.code, 0, r.all);
-            const hit = json(r).hits.find((h) => h.msgId === "a1");
-            assert.equal(hit.senderName, "Minh Sales");
-            assert.equal(hit.senderAlias, "Minh Sales");
-            assert.equal(hit.senderZaloName, "Anh Minh");
-            const human = stripAnsi((await runCli(["msg", "search", "hen gap"], options)).all);
-            assert.match(human, /Minh Sales/);
+            await checkCli(["--json", "msg", "search", "hen gap"], options, async (r) => {
+                assert.equal(r.code, 0, r.all);
+                const hit = json(r).hits.find((h) => h.msgId === "a1");
+                assert.equal(hit.senderName, "Minh Sales");
+                assert.equal(hit.senderAlias, "Minh Sales");
+                assert.equal(hit.senderZaloName, "Anh Minh");
+                await checkCli(["msg", "search", "hen gap"], options, (h) =>
+                    assert.match(stripAnsi(h.all), /Minh Sales/),
+                );
+            });
         } finally {
             replaceUserAliases(new Map());
         }
@@ -189,9 +208,10 @@ describe("msg search", () => {
             ["msg", "search", "x", "--since", "2026-10-02", "--until", "2026-10-01"],
             ["msg", "search", "x", "--cursor", "garbage"],
         ]) {
-            const r = await runCli(args, options);
-            assert.equal(r.code, 1, args.join(" "));
-            assert.match(stripAnsi(r.all), /✗/, args.join(" "));
+            await checkCli(args, options, (r) => {
+                assert.equal(r.code, 1, args.join(" "));
+                assert.match(stripAnsi(r.all), /✗/, args.join(" "));
+            });
         }
     });
 });

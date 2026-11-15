@@ -5,7 +5,7 @@
  * socket tap and frame decoder with ./support/fake-socket.js; every id is made up.
  */
 import { assertSandboxed } from "../helpers/sandbox.js";
-import { describe, it, afterEach, mock } from "node:test";
+import { describe, it, afterEach, mock, before } from "node:test";
 import assert from "node:assert/strict";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { createSocketTap } from "../../src/zalo/listener/socket-tap.js";
@@ -43,9 +43,8 @@ const flush = async () => {
     for (let i = 0; i < 5; i++) await Promise.resolve();
 };
 
-describe("offline queue drain — sandbox", () => {
-    it("runs inside the test sandbox", () => assertSandboxed(CONFIG_DIR));
-});
+// Every test in this file runs in the sandbox: a failing hook fails them all.
+before(() => assertSandboxed(CONFIG_DIR));
 
 describe("one deadline for the whole drain", () => {
     afterEach(() => mock.timers.reset());

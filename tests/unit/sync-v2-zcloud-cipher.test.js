@@ -20,7 +20,7 @@
  */
 
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
-import { describe, it } from "node:test";
+import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { createCipheriv } from "node:crypto";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
@@ -63,11 +63,10 @@ function isWebFormat(ct, enk, plaintext) {
 
 const PAYLOAD = { lastNoiseId: "jYCdDehHGa+w3Z9nD0fWzA==", loadType: 1, listNoiseIds: [], note: "xin chào" };
 
-describe("zcloud-cipher — sandbox", () => {
-    it("runs inside the test sandbox", () => {
-        assertSandboxed(CONFIG_DIR);
-        assert.equal(CONFIG_DIR, SANDBOX_CONFIG_DIR);
-    });
+// Every test in this file runs in the sandbox: a failing hook fails them all.
+before(() => {
+    assertSandboxed(CONFIG_DIR);
+    assert.equal(CONFIG_DIR, SANDBOX_CONFIG_DIR);
 });
 
 describe("zcloud-cipher", () => {

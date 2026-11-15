@@ -2,16 +2,17 @@
  * `read run`'s arguments: what a person types becomes what the read declares.
  */
 import { assertSandboxed } from "../helpers/sandbox.js";
-import { describe, it } from "node:test";
+import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { Command } from "commander";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { argsFromOptions, registerReadCommands } from "../../src/commands/read.js";
 import { ReadUsageError } from "../../src/zalo/reads.js";
 
-describe("argsFromOptions", () => {
-    it("runs inside the test sandbox", () => assertSandboxed(CONFIG_DIR));
+// Every test in this file runs in the sandbox: a failing hook fails them all.
+before(() => assertSandboxed(CONFIG_DIR));
 
+describe("argsFromOptions", () => {
     it("keeps a Zalo id a string: nineteen digits are more than a number holds", () => {
         const a = argsFromOptions("profile-rank", { arg: ["id=1000000000000000001"] });
         assert.equal(a.id, "1000000000000000001");

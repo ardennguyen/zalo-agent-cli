@@ -13,7 +13,7 @@
  */
 
 import { assertSandboxed } from "../helpers/sandbox.js";
-import { describe, it, beforeEach, after } from "node:test";
+import { describe, it, beforeEach, after, before } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -29,10 +29,9 @@ import { hiddenChatsFor } from "../../src/core/hidden-chats.js";
 import { MessageBuffer } from "../../src/mcp/message-buffer.js";
 import { initDb, insertMessage, upsertThread, upsertContact } from "../../src/core/db.js";
 
-describe("mcp tools — sandbox", () => {
-    // The local read `voice-transcript` reaches credentials.js, so this file must not touch the real home.
-    it("runs inside the test sandbox", () => assertSandboxed(CONFIG_DIR));
-});
+// The local read `voice-transcript` reaches credentials.js, so this file must not touch the real home.
+// Every test in this file runs in the sandbox: a failing hook fails them all.
+before(() => assertSandboxed(CONFIG_DIR));
 
 /** The exact tool surface. Changing this list is a deliberate act — see AGENTS.md §10. */
 const EXPECTED_TOOLS = [

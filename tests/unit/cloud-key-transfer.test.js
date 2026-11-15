@@ -3,7 +3,7 @@
  * and the reply handling, run offline over injected transports. Every id and key is a throwaway made in this file.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
-import { describe, it } from "node:test";
+import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { createCipheriv, createDecipheriv, generateKeyPairSync, randomBytes } from "node:crypto";
 import { importCloudPrivateKey } from "../../src/zalo/zcloud-e2ee.js";
@@ -228,6 +228,11 @@ describe("cloud-key transfer scaffolding", () => {
     });
 });
 
+// Every test in this file runs in the sandbox: a failing hook fails them all.
+before(() => {
+    assertSandboxed(SANDBOX_CONFIG_DIR);
+});
+
 describe("cloud-key transfer: live entry is gated", () => {
     it("has no end-to-end-encryption device registered", () => {
         assert.equal(isE2eeDeviceRegistered(), false);
@@ -240,9 +245,5 @@ describe("cloud-key transfer: live entry is gated", () => {
             assert.match(e.message, /--key-stdin|--key-prompt/);
             return true;
         });
-    });
-
-    it("keeps the test home sandboxed", () => {
-        assertSandboxed(SANDBOX_CONFIG_DIR);
     });
 });

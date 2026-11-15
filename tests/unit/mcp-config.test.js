@@ -8,7 +8,7 @@
  */
 
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
-import { describe, it, beforeEach } from "node:test";
+import { describe, it, beforeEach, before } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -31,9 +31,8 @@ function write(obj) {
     writeFileSync(CONFIG_FILE, typeof obj === "string" ? obj : JSON.stringify(obj), "utf-8");
 }
 
-describe("mcp-config — sandboxing", () => {
-    it("reads and writes inside the test sandbox", () => assertSandboxed(CONFIG_DIR));
-});
+// Every test in this file runs in the sandbox: a failing hook fails them all.
+before(() => assertSandboxed(CONFIG_DIR));
 
 describe("getDefaultConfig", () => {
     it("watches both DM and group threads by default", () => {

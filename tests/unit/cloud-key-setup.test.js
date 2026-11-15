@@ -3,13 +3,12 @@
  * opens. Offline.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
-import { describe, it } from "node:test";
+import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { cloudKeyWanted } from "../../src/core/cloud-key-setup.js";
 
-describe("cloud key setup — sandbox", () => {
-    it("runs inside the test sandbox", () => assertSandboxed(SANDBOX_CONFIG_DIR));
-});
+// Every test in this file runs in the sandbox: a failing hook fails them all.
+before(() => assertSandboxed(SANDBOX_CONFIG_DIR));
 
 describe("cloudKeyWanted", () => {
     it("wants the key on a zCloud plan or in its grace period", () => {

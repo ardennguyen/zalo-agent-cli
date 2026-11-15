@@ -8,7 +8,7 @@
  * agreement order, ratchet step, or XEdDSA verification — each changes or breaks the bytes compared here.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
-import { describe, it } from "node:test";
+import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -125,9 +125,8 @@ const RESPONDER = {
     },
 };
 
-describe("e2ee signal vectors — sandbox", () => {
-    it("runs inside the test sandbox", () => assertSandboxed(SANDBOX_CONFIG_DIR));
-});
+// Every test in this file runs in the sandbox: a failing hook fails them all.
+before(() => assertSandboxed(SANDBOX_CONFIG_DIR));
 
 describe("Zalo's key-derivation labels", () => {
     it("replace the three standard labels", () => {

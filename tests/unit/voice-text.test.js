@@ -3,7 +3,7 @@
  * `read run voice-transcript` can give it back to a command that has no socket to hear it on.
  */
 import { assertSandboxed } from "../helpers/sandbox.js";
-import { describe, it, after } from "node:test";
+import { describe, it, after, before } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -38,9 +38,8 @@ const frame = (data, { actType = "voice2text", act = "convert_finish" } = {}) =>
     controls: [{ actionId: "1", controlId: "2", content: { act_type: actType, act, data: JSON.stringify(data) } }],
 });
 
-describe("voice text — sandbox", () => {
-    it("runs inside the test sandbox", () => assertSandboxed(CONFIG_DIR));
-});
+// Every test in this file runs in the sandbox: a failing hook fails them all.
+before(() => assertSandboxed(CONFIG_DIR));
 
 describe("recording a transcript", () => {
     it("keeps the text, the request and when, and says so in the log without the text", () => {

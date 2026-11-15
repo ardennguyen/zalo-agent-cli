@@ -5,7 +5,7 @@
  * running daemon can warn about in advance. Only a date may come out of here, never a cookie's value.
  */
 import { assertSandboxed } from "../helpers/sandbox.js";
-import { describe, it } from "node:test";
+import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -26,9 +26,8 @@ const NOW = Date.parse("2026-10-27T00:00:00Z");
 const now = () => NOW;
 const cookie = (extra) => ({ key: SESSION_COOKIE, value: "SECRET-VALUE", domain: "chat.zalo.me", ...extra });
 
-describe("session expiry — sandbox", () => {
-    it("runs inside the test sandbox", () => assertSandboxed(CONFIG_DIR));
-});
+// Every test in this file runs in the sandbox: a failing hook fails them all.
+before(() => assertSandboxed(CONFIG_DIR));
 
 describe("sessionExpiryOf", () => {
     it("is the creation time plus the max-age of the session cookie, in a serialized tough-cookie jar", () => {

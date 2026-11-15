@@ -1,7 +1,7 @@
 /**
  * The narrow end-to-end-encryption device layer: generate and persist a Signal identity, build the key-stack socket
- * commands, and decrypt the cloud key the phone encrypts to this device. The crypto is an off-the-shelf Signal library,
- * loaded lazily so nothing of it is pulled in unless this feature is used.
+ * commands, and decrypt the cloud key the phone encrypts to this device. The crypto is this folder's own slice of the
+ * Signal protocol (./signal-protocol.js, ./curve.js) under Zalo's key-derivation labels.
  *
  * Protocol layer (src/zalo): it imports no `src/core` and no `src/utils`. Persistence (sealing the store, sealing the
  * cloud key) is the account layer's job (src/core/e2ee-device.js, src/core/cloud-key-store.js).
@@ -45,4 +45,17 @@ export {
     concatTypeAndMessage,
 } from "./transport-tag.js";
 export { decryptCloudKeyReply, CloudKeyDecryptError } from "./cloud-key-decrypt.js";
-export { loadSignalLib, SignalLibMissingError } from "./signal-lib.js";
+export {
+    ZALO_KDF_LABELS,
+    MessageCounterError,
+    encodeAddress,
+    processPreKeyBundle,
+    encryptMessage,
+    decryptWhisperMessage,
+    decryptPreKeyWhisperMessage,
+    generateIdentityKeyPair,
+    generateRegistrationId,
+    generateSignedPreKey,
+    generatePreKey,
+} from "./signal-protocol.js";
+export { xeddsaSign, xeddsaVerify, calculateAgreement, generateKeyPair } from "./curve.js";

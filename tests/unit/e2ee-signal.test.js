@@ -2,8 +2,8 @@
  * The narrow end-to-end-encryption device crypto and wire (src/zalo/e2ee): the key-stack socket command shapes, the
  * one-byte transport tag, and a full interop round-trip — a stand-in "phone" encrypts a pre-key (type-3) message
  * carrying a known PKCS#8 key to our generated bundle, and our code decrypts it to the exact bytes, consuming the
- * matched one-time pre-key. Every id and key here is a throwaway made in this file. Offline: the Signal library is pure
- * JS, no network.
+ * matched one-time pre-key. Every id and key here is a throwaway made in this file. Offline: the protocol code is
+ * node:crypto and a pure-JS curve library, no network. Known-answer vectors are in e2ee-signal-vectors.test.js.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it } from "node:test";
@@ -32,7 +32,12 @@ import {
     replyError,
     splitTypeAndMessage,
     PRE_KEY_TYPE,
-    loadSignalLib,
+    decryptPreKeyWhisperMessage,
+    encodeAddress,
+    encryptMessage,
+    generateIdentityKeyPair,
+    generateRegistrationId,
+    processPreKeyBundle,
 } from "../../src/zalo/e2ee/index.js";
 import { CloudKeyDecryptError, decryptCloudKeyReply, readPreKeyHeader } from "../../src/zalo/e2ee/cloud-key-decrypt.js";
 
@@ -208,7 +213,6 @@ describe("the one-byte transport tag", () => {
 
 describe("full interop round-trip (a stand-in phone encrypts the cloud key to our bundle)", () => {
     it("decrypts the exact PKCS#8 and consumes the matched one-time pre-key", async () => {
-        const lib = await loadSignalLib();
         // Our device registers.
         const { store } = await generateDeviceIdentity({ preKeyCount: 3 });
         const bundle = bundleFromStore(store);
@@ -225,9 +229,9 @@ describe("full interop round-trip (a stand-in phone encrypts the cloud key to ou
             preKey: bundle.preKeys[0],
         });
         const phoneStore = new SignalProtocolStore();
-        phoneStore.setIdentity(await lib.KeyHelper.generateIdentityKeyPair(), lib.KeyHelper.generateRegistrationId());
-        const usAddr = new lib.SignalProtocolAddress(OWN_UID, DEVICE_IDS.WEB);
-        await new lib.SessionBuilder(phoneStore, usAddr).processPreKey({
+        phoneStore.setIdentity(generateIdentityKeyPair(), generateRegistrationId());
+        const usAddr = encodeAddress(OWN_UID, DEVICE_IDS.WEB);
+        await processPreKeyBundle(phoneStore, usAddr, {
             registrationId: item.registrationId,
             identityKey: base64ToAb(item.identityKey),
             signedPreKey: {
@@ -237,7 +241,7 @@ describe("full interop round-trip (a stand-in phone encrypts the cloud key to ou
             },
             preKey: { keyId: item.preKey.keyId, publicKey: base64ToAb(item.preKey.publicKey) },
         });
-        const ciphertext = await new lib.SessionCipher(phoneStore, usAddr).encrypt(utf8Ab(CLOUD_PKCS8));
+        const ciphertext = await encryptMessage(phoneStore, usAddr, utf8Ab(CLOUD_PKCS8));
         assert.equal(ciphertext.type, PRE_KEY_TYPE);
         const encryptedPrivateKey = concatTypeAndMessage(ciphertext.type, ciphertext.body);
 
@@ -268,11 +272,10 @@ describe("full interop round-trip (a stand-in phone encrypts the cloud key to ou
 describe("decrypting when the message names key ids we hold under other numbers", () => {
     /** The stand-in phone encrypts the cloud key to a bundle, optionally renumbering its ids. */
     async function phoneEncrypt(bundle, { signedId, preId } = {}) {
-        const lib = await loadSignalLib();
         const phoneStore = new SignalProtocolStore();
-        phoneStore.setIdentity(await lib.KeyHelper.generateIdentityKeyPair(), lib.KeyHelper.generateRegistrationId());
-        const usAddr = new lib.SignalProtocolAddress(OWN_UID, DEVICE_IDS.WEB);
-        await new lib.SessionBuilder(phoneStore, usAddr).processPreKey({
+        phoneStore.setIdentity(generateIdentityKeyPair(), generateRegistrationId());
+        const usAddr = encodeAddress(OWN_UID, DEVICE_IDS.WEB);
+        await processPreKeyBundle(phoneStore, usAddr, {
             registrationId: bundle.registrationId,
             identityKey: base64ToAb(bundle.identityKey),
             signedPreKey: {
@@ -282,7 +285,7 @@ describe("decrypting when the message names key ids we hold under other numbers"
             },
             preKey: { keyId: preId ?? bundle.preKeys[1].keyId, publicKey: base64ToAb(bundle.preKeys[1].publicKey) },
         });
-        const ct = await new lib.SessionCipher(phoneStore, usAddr).encrypt(utf8Ab(CLOUD_PKCS8));
+        const ct = await encryptMessage(phoneStore, usAddr, utf8Ab(CLOUD_PKCS8));
         return concatTypeAndMessage(ct.type, ct.body);
     }
 
@@ -357,7 +360,6 @@ describe("the subdevice init message (v2)", () => {
     it("is the JSON the clients send, and the peer device decrypts exactly that", async () => {
         const { buildSubdeviceInit, INIT_MESSAGE } = await import("../../src/zalo/e2ee/subdevice-init.js");
         assert.equal(INIT_MESSAGE, '{"subDevice":[]}');
-        const lib = await loadSignalLib();
         const ours = await generateDeviceIdentity({ preKeyCount: 1 });
         const phone = await generateDeviceIdentity({ preKeyCount: 1 });
         const pb = bundleFromStore(phone.store);
@@ -375,31 +377,8 @@ describe("the subdevice init message (v2)", () => {
         });
         const { type, message } = splitTypeAndMessage(tagged);
         assert.equal(type, PRE_KEY_TYPE);
-        const from = new lib.SignalProtocolAddress(OWN_UID, DEVICE_IDS.WEB);
-        const plain = await new lib.SessionCipher(phone.store, from).decryptPreKeyWhisperMessage(message);
+        const from = encodeAddress(OWN_UID, DEVICE_IDS.WEB);
+        const plain = await decryptPreKeyWhisperMessage(phone.store, from, message);
         assert.equal(Buffer.from(new Uint8Array(plain)).toString("utf8"), '{"subDevice":[]}');
-    });
-});
-
-describe("Zalo's key-derivation labels", () => {
-    it("the library derives under ZaloText/ZaloRatchet/ZaloMessageKeys, not the standard labels", async () => {
-        const { hkdfSync } = await import("node:crypto");
-        const { createRequire } = await import("node:module");
-        await loadSignalLib();
-        const require = createRequire(import.meta.url);
-        const internal = require("@privacyresearch/libsignal-protocol-typescript/lib/internal/crypto.js");
-        const input = new Uint8Array(32).fill(7).buffer;
-        const salt = new ArrayBuffer(32);
-        for (const [standard, zalo] of [
-            ["WhisperText", "ZaloText"],
-            ["WhisperRatchet", "ZaloRatchet"],
-            ["WhisperMessageKeys", "ZaloMessageKeys"],
-        ]) {
-            const [first] = await internal.HKDF(input, salt, standard);
-            const want = Buffer.from(hkdfSync("sha256", Buffer.from(input), Buffer.from(salt), zalo, 32));
-            const notWant = Buffer.from(hkdfSync("sha256", Buffer.from(input), Buffer.from(salt), standard, 32));
-            assert.deepEqual(Buffer.from(first), want, `${standard} derives as ${zalo}`);
-            assert.notDeepEqual(Buffer.from(first), notWant);
-        }
     });
 });

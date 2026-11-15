@@ -7,11 +7,11 @@
  * INIT_SESSION (543). Here we build just the per-device init message; the live layer (src/core/e2ee-live.js) does the
  * socket round-trips.
  *
- * Protocol layer: no `src/core`, no `src/utils`. The library is loaded lazily.
+ * Protocol layer: no `src/core`, no `src/utils`.
  */
 import { base64ToAb } from "./signal-store.js";
 import { concatTypeAndMessage } from "./transport-tag.js";
-import { loadSignalLib } from "./signal-lib.js";
+import { encodeAddress, encryptMessage, processPreKeyBundle } from "./signal-protocol.js";
 
 /**
  * The init-message plaintext the client encrypts when announcing a session to its own other devices: the v2 format,
@@ -33,8 +33,7 @@ export const INIT_MESSAGE = JSON.stringify({ subDevice: [] });
  * @returns {Promise<string>} the type-tagged init message (base64), for INIT_SESSION's `data[].initMsg`
  */
 export async function buildSubdeviceInit({ store, ownUid, deviceId, bundleItem }) {
-    const lib = await loadSignalLib();
-    const address = new lib.SignalProtocolAddress(String(ownUid), Number(deviceId));
+    const address = encodeAddress(ownUid, deviceId);
     const processed = {
         registrationId: bundleItem.registrationId,
         identityKey: base64ToAb(bundleItem.identityKey),
@@ -47,10 +46,7 @@ export async function buildSubdeviceInit({ store, ownUid, deviceId, bundleItem }
     if (bundleItem.preKey) {
         processed.preKey = { keyId: bundleItem.preKey.keyId, publicKey: base64ToAb(bundleItem.preKey.publicKey) };
     }
-    await new lib.SessionBuilder(store, address).processPreKey(processed);
-    const msg = new TextEncoder().encode(INIT_MESSAGE);
-    const ab = new ArrayBuffer(msg.byteLength);
-    new Uint8Array(ab).set(msg);
-    const ciphertext = await new lib.SessionCipher(store, address).encrypt(ab);
+    await processPreKeyBundle(store, address, processed);
+    const ciphertext = await encryptMessage(store, address, new TextEncoder().encode(INIT_MESSAGE));
     return concatTypeAndMessage(ciphertext.type, ciphertext.body);
 }

@@ -19,7 +19,7 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 #### Dependencies
 
-- Added `@privacyresearch/libsignal-protocol-typescript` (pure JS, loaded lazily only when the end-to-end-encryption device feature is used).
+- Added `@noble/curves` 2.4.0 (MIT) for the Curve25519 arithmetic of the end-to-end-encryption device. The Signal protocol slice the device needs (X3DH, the Double Ratchet, XEdDSA signatures) is the engine's own code on top of it and `node:crypto`; no GPL-licensed Signal library is used.
 
 ## [3.0.1] — 2026-11-15
 

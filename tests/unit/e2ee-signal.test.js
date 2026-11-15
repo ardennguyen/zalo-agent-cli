@@ -34,6 +34,7 @@ import {
     PRE_KEY_TYPE,
     loadSignalLib,
 } from "../../src/zalo/e2ee/index.js";
+import { CloudKeyDecryptError, decryptCloudKeyReply, readPreKeyHeader } from "../../src/zalo/e2ee/cloud-key-decrypt.js";
 
 // A throwaway account id and the account's throwaway cloud RSA key (PKCS#8 base64), the plaintext the phone sends.
 const OWN_UID = "7000000000000000001";
@@ -57,7 +58,7 @@ describe("device identity generation", () => {
     it("makes an identity, a registration id, a signed pre-key and a batch of one-time pre-keys", async () => {
         const { store, registrationId, signedPreKeyId, preKeyIds } = await generateDeviceIdentity({ preKeyCount: 4 });
         assert.equal(typeof registrationId, "number");
-        assert.equal(signedPreKeyId, 1);
+        assert.equal(signedPreKeyId, registrationId + 1);
         assert.equal(preKeyIds.length, 4);
         assert.equal(store.preKeyCount(), 4);
         const bundle = bundleFromStore(store);
@@ -261,5 +262,67 @@ describe("full interop round-trip (a stand-in phone encrypts the cloud key to ou
             decryptCloudKeyReply({ store, encryptedPrivateKey: tagged, ownUid: OWN_UID }),
             CloudKeyDecryptError,
         );
+    });
+});
+
+describe("decrypting when the message names key ids we hold under other numbers", () => {
+    /** The stand-in phone encrypts the cloud key to a bundle, optionally renumbering its ids. */
+    async function phoneEncrypt(bundle, { signedId, preId } = {}) {
+        const lib = await loadSignalLib();
+        const phoneStore = new SignalProtocolStore();
+        phoneStore.setIdentity(await lib.KeyHelper.generateIdentityKeyPair(), lib.KeyHelper.generateRegistrationId());
+        const usAddr = new lib.SignalProtocolAddress(OWN_UID, DEVICE_IDS.WEB);
+        await new lib.SessionBuilder(phoneStore, usAddr).processPreKey({
+            registrationId: bundle.registrationId,
+            identityKey: base64ToAb(bundle.identityKey),
+            signedPreKey: {
+                keyId: signedId ?? bundle.signedPreKey.keyId,
+                publicKey: base64ToAb(bundle.signedPreKey.publicKey),
+                signature: base64ToAb(bundle.signedPreKey.signature),
+            },
+            preKey: { keyId: preId ?? bundle.preKeys[1].keyId, publicKey: base64ToAb(bundle.preKeys[1].publicKey) },
+        });
+        const ct = await new lib.SessionCipher(phoneStore, usAddr).encrypt(utf8Ab(CLOUD_PKCS8));
+        return concatTypeAndMessage(ct.type, ct.body);
+    }
+
+    it("a generated identity numbers its signed pre-key registrationId + 1", async () => {
+        const { registrationId, signedPreKeyId, store } = await generateDeviceIdentity({ preKeyCount: 1 });
+        assert.equal(signedPreKeyId, registrationId + 1);
+        assert.deepEqual(store.signedPreKeyIds(), [registrationId + 1]);
+    });
+
+    it("reads the public header ids of a pre-key message", async () => {
+        const { store } = await generateDeviceIdentity({ preKeyCount: 3 });
+        const tagged = await phoneEncrypt(bundleFromStore(store), { signedId: 4242, preId: 777 });
+        const header = readPreKeyHeader(splitTypeAndMessage(tagged).message);
+        assert.equal(header.signedPreKeyId, 4242);
+        assert.equal(header.preKeyId, 777);
+        assert.equal(typeof header.registrationId, "number");
+    });
+
+    it("opens a message whose signed and one-time pre-key ids were renumbered, consuming the right key", async () => {
+        const { store } = await generateDeviceIdentity({ preKeyCount: 3 });
+        const bundle = bundleFromStore(store);
+        const tagged = await phoneEncrypt(bundle, { signedId: 4242, preId: 777 });
+        const opened = await decryptCloudKeyReply({ store, encryptedPrivateKey: tagged, ownUid: OWN_UID });
+        assert.equal(opened, CLOUD_PKCS8);
+        // Exactly the one-time pre-key the phone used (the bundle's second) is gone; the other two stay.
+        assert.equal(store.preKeyCount(), 2);
+        assert.ok(!store.preKeyIds().includes(bundle.preKeys[1].keyId));
+    });
+
+    it("fails on a bundle we never held, naming the ids involved and changing nothing", async () => {
+        const { store } = await generateDeviceIdentity({ preKeyCount: 2 });
+        const { store: foreign } = await generateDeviceIdentity({ preKeyCount: 2 });
+        const tagged = await phoneEncrypt(bundleFromStore(foreign), { signedId: 4242, preId: 777 });
+        await assert.rejects(
+            decryptCloudKeyReply({ store, encryptedPrivateKey: tagged, ownUid: OWN_UID }),
+            (e) =>
+                e instanceof CloudKeyDecryptError &&
+                /signed pre-key 4242/.test(e.message) &&
+                /one-time pre-key 777/.test(e.message),
+        );
+        assert.equal(store.preKeyCount(), 2);
     });
 });

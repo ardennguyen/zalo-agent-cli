@@ -13,7 +13,10 @@ import { loadSignalLib } from "./signal-lib.js";
 
 /** How many one-time pre-keys a fresh device publishes (the installed clients publish a batch of 20). */
 export const DEFAULT_ONE_TIME_PREKEY_COUNT = 20;
-/** The signed pre-key's id. Fixed, as the installed clients fix it, so a re-submission reuses the slot. */
+/**
+ * Fallback signed pre-key id for a store built by hand. A generated identity numbers its signed pre-key
+ * registrationId + 1, as the installed clients do.
+ */
 export const SIGNED_PREKEY_ID = 1;
 /** The id of the first one-time pre-key in a batch; ids run upward from here. */
 export const FIRST_ONE_TIME_PREKEY_ID = 100;
@@ -23,14 +26,14 @@ export const FIRST_ONE_TIME_PREKEY_ID = 100;
  *
  * @param {object} [opts]
  * @param {number} [opts.preKeyCount] - how many one-time pre-keys to make
- * @param {number} [opts.signedPreKeyId]
+ * @param {number} [opts.signedPreKeyId] - default registrationId + 1
  * @param {number} [opts.firstPreKeyId]
  * @returns {Promise<{store: SignalProtocolStore, registrationId: number, signedPreKeyId: number,
  *   preKeyIds: number[]}>}
  */
 export async function generateDeviceIdentity({
     preKeyCount = DEFAULT_ONE_TIME_PREKEY_COUNT,
-    signedPreKeyId = SIGNED_PREKEY_ID,
+    signedPreKeyId,
     firstPreKeyId = FIRST_ONE_TIME_PREKEY_ID,
 } = {}) {
     const lib = await loadSignalLib();
@@ -39,6 +42,7 @@ export async function generateDeviceIdentity({
     const identityKeyPair = await lib.KeyHelper.generateIdentityKeyPair();
     const registrationId = lib.KeyHelper.generateRegistrationId();
     store.setIdentity(identityKeyPair, registrationId);
+    signedPreKeyId = signedPreKeyId ?? registrationId + 1;
 
     const signed = await lib.KeyHelper.generateSignedPreKey(identityKeyPair, signedPreKeyId);
     store.addSignedPreKey(signed.keyId, signed.keyPair, signed.signature);

@@ -114,6 +114,11 @@ export class SignalProtocolStore {
         return [...this._preKeys.keys()];
     }
 
+    /** The ids of the signed pre-keys held. */
+    signedPreKeyIds() {
+        return [...this._signedPreKeys.keys()];
+    }
+
     // ---- StorageType, what the Signal library calls --------------------------------------------------------------
 
     /** @returns {Promise<{pubKey: ArrayBuffer, privKey: ArrayBuffer}|undefined>} */

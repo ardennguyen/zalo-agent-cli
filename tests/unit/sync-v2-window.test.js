@@ -17,6 +17,7 @@
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
+import { checkTableSync } from "../helpers/table.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { resolveSyncWindow, FULL_HISTORY_FROM } from "../../src/core/sync-v2/index.js";
 
@@ -207,21 +208,20 @@ describe("syncMsgId", () => {
         return String(msg?.clientId ?? "");
     };
 
-    it("prefers the global id when there is one", () => {
-        assert.equal(syncMsgId({ globalId: "8289917911178", clientId: 1790013246350 }), "8289917911178");
-    });
-
-    it('treats the string "0" as absent, not as an id', () => {
-        assert.equal(syncMsgId({ globalId: "0", clientId: 1788835582539 }), "1788835582539");
-    });
-
-    it("treats numeric 0 as absent too", () => {
-        assert.equal(syncMsgId({ globalId: 0, clientId: 1788835582539 }), "1788835582539");
-    });
-
-    it("falls back for an empty or missing global id", () => {
-        assert.equal(syncMsgId({ globalId: "", clientId: 7 }), "7");
-        assert.equal(syncMsgId({ clientId: 7 }), "7");
+    it("prefers the global id, and falls back to the client id when it is 0, empty or missing", () => {
+        // [case, message, id]
+        const ROWS = [
+            ["a global id is preferred", { globalId: "8289917911178", clientId: 1790013246350 }, "8289917911178"],
+            ['the string "0" is absent, not an id', { globalId: "0", clientId: 1788835582539 }, "1788835582539"],
+            ["numeric 0 is absent too", { globalId: 0, clientId: 1788835582539 }, "1788835582539"],
+            ["an empty global id falls back", { globalId: "", clientId: 7 }, "7"],
+            ["a missing global id falls back", { clientId: 7 }, "7"],
+        ];
+        checkTableSync(
+            ROWS,
+            ([what]) => what,
+            ([, msg, id]) => assert.equal(syncMsgId(msg), id),
+        );
     });
 
     it("does not invent an id when neither is present", () => {

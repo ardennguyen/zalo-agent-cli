@@ -9,20 +9,21 @@
  *
  * Runs entirely offline against a throwaway HOME, so no Zalo session is
  * needed and the real ~/.zalo-agent-cli/ is never read.
+ *
+ * One test per group, nested path and rule, each checking every line of its
+ * manifest and naming every missing command or flag at once.
  */
 
 import { SANDBOX_HOME } from "../helpers/sandbox.js";
-import { describe, it, before } from "node:test";
+import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { runCli, runCliEach } from "../helpers/cli.js";
+import { runCli } from "../helpers/cli.js";
+import { checkCli, runCliFast } from "../helpers/cli-fast.js";
 
-// This suite runs ~60 `node src/index.js … --help` subprocesses, one per core
-// at a time (runCliEach: all at once thrashed a 4 GB VM), and each one pays
-// full CLI startup. On a machine already busy
-// (a parallel lint/format pass, CI running other jobs) the slowest of that
-// batch can exceed a tight budget and fail for reasons that say nothing about
-// the command surface. 90s is generous on purpose — a genuine regression here
-// shows up as a missing command, not as a slow one.
+// The `--help` runs go through the in-process CLI worker (tests/helpers/cli-fast.js): one module load for the
+// whole suite instead of ~60 child processes. A result that fails a check is confirmed in a real child before the
+// test fails, and `--version` is always a real child. The timeout is generous for that real-child path on a busy
+// machine: a genuine regression here shows up as a missing command, not as a slow one.
 const opts = { home: SANDBOX_HOME, timeout: 90_000 };
 
 /** group → subcommands it must register. */
@@ -471,187 +472,165 @@ const FLAG_CONTRACT = {
     "profile update": ["--name", "--dob", "--gender"],
 };
 
+/** Whether `help` lists `name` as a command: anchored to a line start, so `list` doesn't match `alias-list`. */
+const lists = (help, name) => new RegExp(`^\\s+${name.replace(/[-]/g, "\\-")}\\b`, "m").test(help);
+
+/**
+ * Whether `help` registers `flag` in the option COLUMN.
+ *
+ * This used to be `helps[cmd].includes(flag)` — an unanchored substring
+ * search over the entire help text, descriptions included. Commander
+ * prose mentions other flags constantly: `sync-mobile`'s description
+ * names --socket, `--from`'s description says "Overrides
+ * --days". So deleting the real `-t, --transfer` registration left this
+ * contract green, which is the exact regression it exists to catch. A
+ * listed `--prune` was also satisfied by `--prune-orphans`.
+ */
+const registered = (help, flag) => new RegExp(`^\\s+(?:-\\w, )?${flag.replace(/-/g, "\\-")}\\b`, "m").test(help);
+
+/**
+ * `<path> --help` must exit 0 and list every name in `names` (as `has` reads it). Every name is checked and the
+ * failure lists all that are missing at once. The help runs in the in-process CLI worker; a failing result is
+ * confirmed in a real child process before it fails the test (tests/helpers/cli-fast.js).
+ */
+async function assertHelpLists(path, names, has, what) {
+    await checkCli([...path, "--help"], opts, (r) => {
+        assert.equal(r.code, 0, `${path.join(" ")} --help exited ${r.code}\n${r.all}`);
+        const missing = names.filter((n) => !has(r.stdout, n));
+        assert.deepEqual(missing, [], `${path.join(" ") || "the program"} is missing ${what}: ${missing.join(", ")}`);
+    });
+}
+
 describe("program surface", () => {
-    let root;
-    before(async () => {
-        root = (await runCli(["--help"], opts)).stdout;
-    });
-
-    it("prints usage without a Zalo session", () => {
-        assert.match(root, /Usage: zalo-agent/);
-    });
-
-    it("exposes --json, --version, --account, --env-file, and storage path flags globally", () => {
-        assert.match(root, /--json/);
-        assert.match(root, /-V, --version/);
-        assert.match(root, /--account <id>/);
-        assert.match(root, /--env-file <path>/);
-        assert.match(root, /--config-dir <dir>/);
-        assert.match(root, /--credentials-dir <dir>/);
-        assert.match(root, /--data-dir <dir>/);
-        assert.match(root, /--media-dir <dir>/);
-        assert.match(root, /--oa-dir <dir>/);
-    });
-
-    for (const cmd of TOP_LEVEL) {
-        it(`registers top-level command: ${cmd}`, () => {
-            assert.match(root, new RegExp(`^\\s+${cmd.replace(/[-]/g, "\\-")}\\b`, "m"));
+    it("prints usage and every global flag without a Zalo session", async () => {
+        const GLOBAL = ["--json", "--version", "--account", "--env-file", "--config-dir", "--credentials-dir"];
+        GLOBAL.push("--data-dir", "--media-dir", "--oa-dir");
+        await checkCli(["--help"], opts, (r) => {
+            assert.equal(r.code, 0);
+            assert.match(r.stdout, /Usage: zalo-agent/);
+            assert.match(r.stdout, /-V, --version/);
+            assert.match(r.stdout, /--account <id>/);
+            assert.match(r.stdout, /--env-file <path>/);
+            const missing = GLOBAL.filter((f) => !registered(r.stdout, f));
+            assert.deepEqual(missing, [], `global flags missing: ${missing.join(", ")}`);
         });
-    }
-
-    it("--version prints a semver string", async () => {
-        const { stdout } = await runCli(["--version"], opts);
-        assert.match(stdout.trim(), /^\d+\.\d+\.\d+/);
     });
 
-    it("exits non-zero on an unknown command", async () => {
-        const r = await runCli(["definitely-not-a-command"], opts);
-        assert.notEqual(r.code, 0);
+    it(`registers all ${TOP_LEVEL.length} top-level commands`, async () => {
+        await assertHelpLists([], TOP_LEVEL, lists, "top-level command(s)");
     });
 
-    it("exits non-zero on an unknown option", async () => {
-        const r = await runCli(["status", "--not-a-real-flag"], opts);
-        assert.notEqual(r.code, 0);
+    it("--version prints a semver string, a pre-release suffix allowed (a real process)", async () => {
+        // The one real spawn of this suite: the binary itself starts and answers.
+        const { code, stdout } = await runCli(["--version"], opts);
+        assert.equal(code, 0);
+        assert.match(stdout.trim(), /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/);
+    });
+
+    it("exits non-zero on an unknown command and on an unknown option", async () => {
+        for (const argv of [["definitely-not-a-command"], ["status", "--not-a-real-flag"]]) {
+            await checkCli(argv, opts, (r) => assert.notEqual(r.code, 0, `${argv.join(" ")} exited 0`));
+        }
     });
 });
 
 describe("command groups", () => {
-    const helps = {};
-
-    before(async () => {
-        const groups = Object.keys(COMMAND_SURFACE);
-        const results = await runCliEach(
-            groups.map((g) => [g, "--help"]),
-            opts,
-        );
-        groups.forEach((g, i) => (helps[g] = results[i].stdout));
-    });
-
     for (const [group, subs] of Object.entries(COMMAND_SURFACE)) {
-        describe(`${group} subcommands`, () => {
-            for (const sub of subs) {
-                it(`registers ${group} ${sub}`, () => {
-                    // Anchor to line start so `list` doesn't match `alias-list`.
-                    assert.match(helps[group], new RegExp(`^\\s+${sub.replace(/[-]/g, "\\-")}\\b`, "m"));
-                });
-            }
-
-            it(`${group} --help exits 0`, () => {
-                assert.ok(helps[group].length > 0);
-            });
+        it(`${group} --help exits 0 and registers all ${subs.length} subcommands`, async () => {
+            await assertHelpLists([group], subs, lists, "subcommand(s)");
         });
     }
 });
 
 describe("nested subgroups", () => {
-    const helps = {};
     const NESTED = { ...OA_SUBGROUPS, ...MCP_SUBGROUPS, ...ACCOUNT_SUBGROUPS, ...CLOUD_SUBGROUPS };
-
-    before(async () => {
-        const keys = Object.keys(NESTED);
-        const results = await runCliEach(
-            keys.map((k) => [...k.split(" "), "--help"]),
-            opts,
-        );
-        keys.forEach((k, i) => (helps[k] = results[i].stdout));
-    });
-
     for (const [path, subs] of Object.entries(NESTED)) {
-        for (const sub of subs) {
-            it(`registers ${path} ${sub}`, () => {
-                assert.match(helps[path], new RegExp(`^\\s+${sub.replace(/[-]/g, "\\-")}\\b`, "m"));
-            });
-        }
+        it(`${path} --help exits 0 and registers all ${subs.length} subcommands`, async () => {
+            await assertHelpLists(path.split(" "), subs, lists, "subcommand(s)");
+        });
     }
 });
 
 describe("flag contract", () => {
-    const helps = {};
-
-    before(async () => {
-        const keys = Object.keys(FLAG_CONTRACT);
-        const results = await runCliEach(
-            keys.map((k) => [...k.split(" "), "--help"]),
-            opts,
+    it(`all ${Object.keys(FLAG_CONTRACT).length} commands register every documented flag`, async () => {
+        const failures = [];
+        for (const [cmd, flags] of Object.entries(FLAG_CONTRACT)) {
+            try {
+                await assertHelpLists(cmd.split(" "), flags, registered, "flag(s)");
+            } catch (e) {
+                failures.push(e.message.split("\n")[0]);
+            }
+        }
+        assert.deepEqual(
+            failures,
+            [],
+            `${failures.length} command(s) break the flag contract:\n${failures.join("\n")}`,
         );
-        keys.forEach((k, i) => (helps[k] = results[i].stdout));
     });
-
-    // Anchor to the option COLUMN, the way the subcommand check above
-    // already does.
-    //
-    // This used to be `helps[cmd].includes(flag)` — an unanchored substring
-    // search over the entire help text, descriptions included. Commander
-    // prose mentions other flags constantly: `sync-mobile`'s description
-    // names --socket, `--from`'s description says "Overrides
-    // --days". So deleting the real `-t, --transfer` registration left this
-    // contract green, which is the exact regression it exists to catch. A
-    // listed `--prune` was also satisfied by `--prune-orphans`.
-    const registered = (help, flag) => new RegExp(`^\\s+(?:-\\w, )?${flag.replace(/-/g, "\\-")}\\b`, "m").test(help);
-
-    for (const [cmd, flags] of Object.entries(FLAG_CONTRACT)) {
-        it(`${cmd} registers ${flags.length} documented flag(s)`, () => {
-            const missing = flags.filter((f) => !registered(helps[cmd], f));
-            assert.deepEqual(missing, [], `${cmd} is missing: ${missing.join(", ")}`);
-        });
-    }
 
     // Guard the guard: prove the matcher can actually fail. A contract that
     // cannot distinguish a registered flag from a mentioned one is worth
     // nothing, and that is precisely the state this suite was in.
-    it("the matcher rejects a flag that is only MENTIONED in prose", () => {
-        const help = helps["sync-mobile"] ?? "";
+    it("the matchers reject a flag only MENTIONED in prose and a command only contained in another", async () => {
+        const help = (await runCliFast(["sync-mobile", "--help"], opts)).stdout;
         assert.ok(registered(help, "--transfer"), "--transfer is really registered on sync-mobile");
         assert.ok(!registered(help, "--definitely-not-a-flag"), "an absent flag must not match");
         // --days appears inside --from's description text; make sure the
         // matcher is keying on the option column, not that mention.
         assert.ok(/Overrides --days|--days/.test(help), "precondition: sync-mobile help mentions --days in prose");
+        // The subcommand matcher keys on the line start: `list` is not satisfied by `alias-list`.
+        assert.ok(!lists("  alias-list   List aliases", "list"));
+        assert.ok(lists("  list   List friends", "list"));
     });
 });
 
 describe("disclaimer behavior", () => {
     it("warns about the unofficial API on a personal-account command", async () => {
-        const { all } = await runCli(["status"], opts);
-        assert.match(all, /unofficial Zalo APIs/);
+        await checkCli(["status"], opts, ({ all }) => assert.match(all, /unofficial Zalo APIs/));
     });
 
     it("suppresses the disclaimer for oa commands (official API)", async () => {
-        const { all } = await runCli(["oa", "--help"], opts);
-        assert.doesNotMatch(all, /unofficial Zalo APIs/);
+        await checkCli(["oa", "--help"], opts, ({ all, code }) => {
+            assert.equal(code, 0);
+            assert.doesNotMatch(all, /unofficial Zalo APIs/);
+        });
     });
 
     it("social, an official API: no disclaimer and no personal-account login (it runs with no session)", async () => {
         // Red if `social` is treated as a personal command: the disclaimer prints and the auto-login fails first.
-        const { all } = await runCli(["social", "status", "--profile", "surface-test"], opts);
-        assert.doesNotMatch(all, /unofficial Zalo APIs/);
-        assert.match(all, /No user login for profile "surface-test"/);
+        await checkCli(["social", "status", "--profile", "surface-test"], opts, ({ all }) => {
+            assert.doesNotMatch(all, /unofficial Zalo APIs/);
+            assert.match(all, /No user login for profile "surface-test"/);
+        });
     });
 
     it("suppresses the disclaimer in --json mode so stdout stays parseable", async () => {
-        const { stdout } = await runCli(["--json", "status"], opts);
-        assert.doesNotMatch(stdout, /unofficial Zalo APIs/);
-        assert.doesNotThrow(() => JSON.parse(stdout.trim()));
+        await checkCli(["--json", "status"], opts, ({ stdout }) => {
+            assert.doesNotMatch(stdout, /unofficial Zalo APIs/);
+            assert.equal(typeof JSON.parse(stdout.trim()), "object");
+        });
     });
 });
 
 describe("clean-state behavior (no credentials present)", () => {
     it("account list reports no accounts", async () => {
-        const { all } = await runCli(["account", "list"], opts);
-        assert.match(all, /No accounts/i);
+        await checkCli(["account", "list"], opts, ({ all }) => assert.match(all, /No accounts/i));
     });
 
     it("status reports loggedIn:false with a null active account", async () => {
-        const { stdout } = await runCli(["--json", "status"], opts);
-        const data = JSON.parse(stdout.trim());
-        assert.equal(data.loggedIn, false);
-        assert.equal(data.activeAccount, null);
+        await checkCli(["--json", "status"], opts, ({ stdout }) => {
+            const data = JSON.parse(stdout.trim());
+            assert.equal(data.loggedIn, false);
+            assert.equal(data.activeAccount, null);
+        });
     });
 
     it("a command needing a session fails with a pointer to `login`", async () => {
-        const { all, code } = await runCli(["whoami"], opts);
-        assert.match(all, /Not logged in\. Run: zalo-agent login/);
-        // It used to print the ✗ and exit 0, so a script checking the exit code
-        // read "no profile" as success (seen live 2026-09-30 after a logout).
-        assert.equal(code, 1, "no profile is a failure");
+        await checkCli(["whoami"], opts, ({ all, code }) => {
+            assert.match(all, /Not logged in\. Run: zalo-agent login/);
+            // It used to print the ✗ and exit 0, so a script checking the exit code
+            // read "no profile" as success (seen live 2026-09-30 after a logout).
+            assert.equal(code, 1, "no profile is a failure");
+        });
     });
 });

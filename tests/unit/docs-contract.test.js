@@ -14,6 +14,7 @@
 import "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
+import { checkTable } from "../helpers/table.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -121,13 +122,16 @@ describe("the counts the docs quote are the code's", () => {
         assert.ok(measured.writes >= 20);
     });
 
-    for (const [file, re, what] of QUOTES) {
-        it(`${file}: ${re.source.slice(0, 48)} is the number of ${what}`, () => {
-            const text = read(file);
-            const found = [...text.matchAll(re)].map((m) => Number(m[1]));
-            assert.ok(found.length > 0, `${file} no longer states this count (the pattern ${re} found nothing)`);
-            const want = what === "personalLeaves" ? measured.leaves - measured.oaLeaves : measured[what];
-            for (const n of found) assert.equal(n, want, `${file} says ${n}; the code has ${want} (${what})`);
-        });
-    }
+    it("every quoted count is the measured one (all mismatches listed)", () =>
+        checkTable(
+            QUOTES,
+            ([file, re, what]) => `${file}: ${re.source.slice(0, 48)} (${what})`,
+            ([file, re, what]) => {
+                const text = read(file);
+                const found = [...text.matchAll(re)].map((m) => Number(m[1]));
+                assert.ok(found.length > 0, `${file} no longer states this count (the pattern ${re} found nothing)`);
+                const want = what === "personalLeaves" ? measured.leaves - measured.oaLeaves : measured[what];
+                for (const n of found) assert.equal(n, want, `${file} says ${n}; the code has ${want} (${what})`);
+            },
+        ));
 });

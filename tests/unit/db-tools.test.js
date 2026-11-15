@@ -14,6 +14,7 @@ import { CONFIG_DIR, getAccountDbPath, getAccountDir } from "../../src/core/cred
 import { closeDb, ensureSearchIndex, initDb, insertMessage, setSyncState, upsertReaction } from "../../src/core/db.js";
 import { QueryRefused, checkQuery, copyDatabase, runReadOnlyQuery } from "../../src/core/db-tools.js";
 import { Database, dbFileState, openDatabase } from "../../src/core/sqlite.js";
+import { checkTableSync } from "../helpers/table.js";
 
 let n = 0;
 const freshId = () => String(1000000000000000880n + BigInt(n++));
@@ -41,7 +42,7 @@ function cache(rows = 3, { keepOpen = false } = {}) {
 describe("db query: what it runs", () => {
     before(() => assertSandboxed(CONFIG_DIR));
 
-    for (const sql of [
+    const RUNS = [
         "SELECT count(*) FROM messages",
         "  select msgId from messages where text like '%attach%' -- a word in a string is data",
         "SELECT replace(text, 'a', 'b') AS t FROM messages",
@@ -54,15 +55,22 @@ describe("db query: what it runs", () => {
         "PRAGMA user_version",
         "SELECT 1; ",
         "/* comment */ SELECT 1",
-    ]) {
-        it(`runs: ${sql.trim()}`, () => assert.doesNotThrow(() => checkQuery(sql)));
-    }
+    ];
+
+    it("lets every read through, and names each one it refused", () => {
+        // checkQuery throws QueryRefused for what it will not run; red for each read above it refuses.
+        checkTableSync(
+            RUNS,
+            (sql) => sql.trim(),
+            (sql) => checkQuery(sql),
+        );
+    });
 });
 
 describe("db query: what it refuses before anything is prepared", () => {
     before(() => assertSandboxed(CONFIG_DIR));
 
-    for (const [sql, why] of [
+    const REFUSALS = [
         ["INSERT INTO messages (msgId) VALUES ('x')", /reads/],
         ["UPDATE messages SET text = ''", /reads/],
         ["DELETE FROM messages", /reads/],
@@ -81,14 +89,19 @@ describe("db query: what it refuses before anything is prepared", () => {
         ["SELECT * FROM pragma_table_info('messages') WHERE 1 AND (SELECT 1 FROM (PRAGMA key))", /PRAGMA/],
         ["VACUUM", /reads/],
         ["", /one SQL statement/],
-    ]) {
-        it(`refuses: ${sql || "(empty)"}`, () => {
-            assert.throws(
-                () => checkQuery(sql),
-                (e) => e instanceof QueryRefused && e.code === "QUERY_REFUSED" && why.test(e.message),
-            );
-        });
-    }
+    ];
+
+    it("refuses every write, second statement and unsafe pragma or function, each with its reason", () => {
+        checkTableSync(
+            REFUSALS,
+            ([sql]) => sql || "(empty)",
+            ([sql, why]) =>
+                assert.throws(
+                    () => checkQuery(sql),
+                    (e) => e instanceof QueryRefused && e.code === "QUERY_REFUSED" && why.test(e.message),
+                ),
+        );
+    });
 });
 
 describe("db query against the encrypted database", () => {

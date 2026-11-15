@@ -17,6 +17,7 @@
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { checkTable } from "../helpers/table.js";
 import { CONFIG_DIR, saveCredentials } from "../../src/core/credentials.js";
 import { addAccount } from "../../src/core/accounts.js";
 import { autoLogin, clearSession, isLoggedIn } from "../../src/core/zalo-client.js";
@@ -74,23 +75,23 @@ describe("protocol version (zpw_ver / client_version)", () => {
         else process.env.ZALO_API_VERSION = saved;
     });
 
-    it("announces 695, the current protocol version, by default", async () => {
-        assert.deepEqual(await announced(fake), everywhere("695"));
-    });
-
-    it("announces ZALO_API_VERSION instead when it is set", async () => {
-        process.env.ZALO_API_VERSION = "700";
-        assert.deepEqual(await announced(fake), everywhere("700"));
-    });
-
-    it("can roll back to the previous engine's 685", async () => {
-        process.env.ZALO_API_VERSION = "685";
-        assert.deepEqual(await announced(fake), everywhere("685"));
-    });
-
-    it("treats an empty ZALO_API_VERSION as unset", async () => {
-        process.env.ZALO_API_VERSION = "  ";
-        assert.deepEqual(await announced(fake), everywhere("695"));
+    it("announces 695 by default, ZALO_API_VERSION when it is set, and treats an empty one as unset", async () => {
+        // [case, ZALO_API_VERSION (undefined: unset), the version announced]
+        const ROWS = [
+            ["the current protocol version, by default", undefined, "695"],
+            ["ZALO_API_VERSION instead when it is set", "700", "700"],
+            ["a roll back to the previous engine's 685", "685", "685"],
+            ["an empty ZALO_API_VERSION is unset", "  ", "695"],
+        ];
+        await checkTable(
+            ROWS,
+            ([what]) => what,
+            async ([, env, version]) => {
+                if (env === undefined) delete process.env.ZALO_API_VERSION;
+                else process.env.ZALO_API_VERSION = env;
+                assert.deepEqual(await announced(fake), everywhere(version));
+            },
+        );
     });
 
     it("refuses anything but a positive whole number, naming the variable, before any request", async () => {

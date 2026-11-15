@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { ALL_MENTION_UID, expandMentions, shiftStyles } from "../../src/zalo/format/mentions.js";
 import { STYLE, convertInline, looksLikeMarkdown, markdownToZalo } from "../../src/zalo/format/markdown.js";
+import { checkTableSync } from "../helpers/table.js";
 
 before(() => {
     assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR);
@@ -93,22 +94,10 @@ describe("inline emphasis", () => {
         assert.deepEqual(md("a ** not bold ** b"), { text: "a ** not bold ** b", styles: [] });
     });
 
-    it("backslash escapes make a marker literal", () => {
-        const r = md("\\*literal\\* and **real** and \\_x\\_");
-        assert.equal(r.text, "*literal* and real and _x_");
-        assert.deepEqual(covered(r), [["b", "real"]]);
-    });
-
     it("inline code drops the backticks and does not interpret what is inside", () => {
         const r = md("run `npm test **now**` please, or ``a ` b``");
         assert.equal(r.text, "run npm test **now** please, or a ` b");
         assert.deepEqual(r.styles, []);
-    });
-
-    it("emphasis markers inside a code span do not close an outer emphasis", () => {
-        const r = md("**see `a**b` here**");
-        assert.equal(r.text, "see a**b here");
-        assert.deepEqual(covered(r), [["b", "see a**b here"]]);
     });
 
     it("Zalo's own {red:text} colors work, as in msg send --md", () => {
@@ -118,6 +107,42 @@ describe("inline emphasis", () => {
             { start: 0, len: 4, st: STYLE.red },
             { start: 9, len: 4, st: STYLE.big },
         ]);
+    });
+});
+
+describe("escapes, code spans, link text and list numbers: the text and the ranges it keeps", () => {
+    it("keeps each case's literal text and styles exactly the marked part", () => {
+        // [case, Markdown, text, covered ranges]
+        const CASES = [
+            [
+                "backslash escapes make a marker literal",
+                "\\*literal\\* and **real** and \\_x\\_",
+                "*literal* and real and _x_",
+                [["b", "real"]],
+            ],
+            [
+                "emphasis markers inside a code span do not close an outer emphasis",
+                "**see `a**b` here**",
+                "see a**b here",
+                [["b", "see a**b here"]],
+            ],
+            ["bold link text stays bold", "[**go**](https://x.io)", "go (https://x.io)", [["b", "go"]]],
+            [
+                "an ordered list keeps its numbers as typed, as Zalo's own clients do",
+                "1. first\n2) second **bold**\n10. tenth",
+                "1. first\n2) second bold\n10. tenth",
+                [["b", "bold"]],
+            ],
+        ];
+        checkTableSync(
+            CASES,
+            ([label]) => label,
+            ([, input, text, ranges]) => {
+                const r = md(input);
+                assert.equal(r.text, text);
+                assert.deepEqual(covered(r), ranges);
+            },
+        );
     });
 });
 
@@ -133,12 +158,6 @@ describe("links and images", () => {
         assert.equal(md("[https://x.io](https://x.io)").text, "https://x.io");
         assert.equal(md("<https://x.io/p>").text, "https://x.io/p");
         assert.equal(md("![a chart](https://x.io/c.png)").text, "a chart (https://x.io/c.png)");
-    });
-
-    it("bold link text stays bold", () => {
-        const r = md("[**go**](https://x.io)");
-        assert.equal(r.text, "go (https://x.io)");
-        assert.deepEqual(covered(r), [["b", "go"]]);
     });
 
     it("brackets that are not a link are left alone", () => {
@@ -178,12 +197,6 @@ describe("blocks", () => {
             { start: 10, len: 10, st: "lst_1" },
             { start: 10, len: 10, st: "ind_$", indentSize: 2 },
         ]);
-    });
-
-    it("an ordered list keeps its numbers as typed, as Zalo's own clients do", () => {
-        const r = md("1. first\n2) second **bold**\n10. tenth");
-        assert.equal(r.text, "1. first\n2) second bold\n10. tenth");
-        assert.deepEqual(covered(r), [["b", "bold"]]);
     });
 
     it("a heading is a bold line, and # and ## are big as well", () => {

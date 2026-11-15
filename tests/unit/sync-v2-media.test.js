@@ -41,6 +41,7 @@ import { fileState, readSealedJson } from "../../src/core/keystore/index.js";
 import { DEAD_LINKS_FILE, deadLinkKey, openDeadLinks } from "../../src/core/sync-v2/dead-links.js";
 import { scopeOfDir } from "../../src/core/keystore/keyring.js";
 import { mediaFileState, readMediaFile } from "../../src/core/keystore/media-seal.js";
+import { checkTable, checkTableSync } from "../helpers/table.js";
 
 /** The plaintext of a downloaded file, which is sealed on disk (no byte of it in the clear). */
 function plainOf(file, accountDir, msgId) {
@@ -213,12 +214,14 @@ after(async () => {
 
 let dir;
 let n = 0;
-beforeEach(() => {
+/** A fresh account folder and cache: before every test, and before every row of a table test. */
+function freshAccount() {
     hits = {};
     dir = join(ROOT, `acct${n++}`);
     opened.push(initDb(join(ROOT, `db${n}.sqlite`)));
     upsertThread({ threadId: "t1", type: "group", name: "Team Chat", lastUpdate: 1 });
-});
+}
+beforeEach(freshAccount);
 
 /** Insert a synced message row carrying attachments, as the sync path writes it. */
 function row(over = {}, attachments = []) {
@@ -559,7 +562,10 @@ describe("downloadSyncedMedia — filtering", () => {
         assert.equal(stats.considered, 1);
     });
 
-    it("skips stickers, which have no URL", async () => {
+    it("skips stickers, which have no URL: only the byte-bearing kinds are downloadable", async () => {
+        for (const k of ["photo", "video", "file", "gif"]) assert.ok(DOWNLOADABLE_KINDS.has(k), k);
+        assert.ok(!DOWNLOADABLE_KINDS.has("sticker"));
+        assert.ok(!DOWNLOADABLE_KINDS.has("meta"));
         row({ type: "sticker", has_attachment: false }, [{ kind: "sticker", catId: 1, stickerId: 2 }]);
         const stats = await downloadSyncedMedia({ accountDir: dir });
         assert.equal(stats.considered, 0);
@@ -640,14 +646,6 @@ describe("extractRenewedUrls", () => {
     });
 });
 
-describe("DOWNLOADABLE_KINDS", () => {
-    it("covers the byte-bearing kinds only", () => {
-        for (const k of ["photo", "video", "file", "gif"]) assert.ok(DOWNLOADABLE_KINDS.has(k));
-        assert.ok(!DOWNLOADABLE_KINDS.has("sticker"));
-        assert.ok(!DOWNLOADABLE_KINDS.has("meta"));
-    });
-});
-
 describe("sanitize", () => {
     // Built with fromCharCode so no escape sequence appears in this source:
     // written literally, the formatter rewrites them to raw control bytes.
@@ -655,29 +653,26 @@ describe("sanitize", () => {
     const NUL = String.fromCharCode(0);
     const US = String.fromCharCode(31);
 
-    it("replaces every character illegal in a filename", () => {
-        assert.equal(sanitize("a/b" + BS + 'c:d*e?f"g<h>i|j'), "a_b_c_d_e_f_g_h_i_j");
-    });
-
-    it("strips control characters", () => {
-        assert.equal(sanitize("a" + NUL + "b" + US + "c"), "a_b_c");
-    });
-
-    it("leaves ordinary punctuation and spacing alone", () => {
-        // Over-aggressive sanitizing turns readable thread names into mush.
-        assert.equal(sanitize("Team Chat - Q4 (2026)"), "Team Chat - Q4 (2026)");
-    });
-
-    it("keeps non-ASCII names intact", () => {
-        assert.equal(sanitize("Nhóm Kế Toán"), "Nhóm Kế Toán");
-    });
-
-    it("never returns an empty name", () => {
-        for (const v of ["", "   ", null, undefined]) assert.equal(sanitize(v), "unknown");
-    });
-
-    it("caps the length", () => {
-        assert.equal(sanitize("x".repeat(300)).length, 80);
+    it("replaces what is illegal, keeps what is readable, never returns an empty name, caps the length", () => {
+        // [what, input, expected]
+        const ROWS = [
+            ["replaces every character illegal in a filename", "a/b" + BS + 'c:d*e?f"g<h>i|j', "a_b_c_d_e_f_g_h_i_j"],
+            ["strips control characters", "a" + NUL + "b" + US + "c", "a_b_c"],
+            // Over-aggressive sanitizing turns readable thread names into mush.
+            ["leaves ordinary punctuation and spacing alone", "Team Chat - Q4 (2026)", "Team Chat - Q4 (2026)"],
+            ["keeps non-ASCII names intact", "Nhóm Kế Toán", "Nhóm Kế Toán"],
+            ...["", "   ", null, undefined].map((v) => [
+                `never returns an empty name: ${JSON.stringify(v)}`,
+                v,
+                "unknown",
+            ]),
+        ];
+        checkTableSync(
+            ROWS,
+            ([what]) => what,
+            ([, input, expected]) => assert.equal(sanitize(input), expected),
+        );
+        assert.equal(sanitize("x".repeat(300)).length, 80, "caps the length");
     });
 });
 
@@ -826,6 +821,8 @@ describe("a stalled connection must not block the run forever", () => {
         assert.equal(stats.failed, 1);
         assert.match(stats.failures[0].reason, /timed out/);
         assert.ok(Date.now() - t0 < 8000, "must give up promptly, not hang");
+        // And without timeoutMs, the default deadline is a sane one.
+        assert.ok(DEFAULT_REQUEST_TIMEOUT_MS > 0 && DEFAULT_REQUEST_TIMEOUT_MS <= 120000);
     });
 
     it("keeps draining the queue past a hung request", async () => {
@@ -854,10 +851,6 @@ describe("a stalled connection must not block the run forever", () => {
             backoffBaseMs: 0,
         });
         assert.equal(stats.failed, 3);
-    });
-
-    it("ships a sane default deadline", () => {
-        assert.ok(DEFAULT_REQUEST_TIMEOUT_MS > 0 && DEFAULT_REQUEST_TIMEOUT_MS <= 120000);
     });
 });
 
@@ -1123,51 +1116,35 @@ describe("expiry vs throttling — the difference is not cosmetic", () => {
         return downloadSyncedMedia({ accountDir: dir, backoffBaseMs: 0, ...extra });
     };
 
-    it("404 means gone", async () => {
-        const s = await only("/gone.jpg");
-        assert.equal(s.expired, 1);
-        assert.equal(s.throttled, 0);
-    });
-
-    it("403 is NOT treated as gone — Zalo returns it under load too", async () => {
-        const s = await only("/forbidden.jpg");
-        assert.equal(s.expired, 0, "403 must not be called expiry");
-        assert.equal(s.unknown, 1);
-    });
-
-    it("429 is throttling", async () => {
-        const s = await only("/ratelimit.jpg");
-        assert.equal(s.expired, 0);
-        assert.equal(s.throttled, 1);
-    });
-
-    it("5xx is throttling, not expiry", async () => {
-        const s = await only("/servererr.jpg");
-        assert.equal(s.expired, 0);
-        assert.equal(s.throttled, 1);
-    });
-
-    it("a documented lapsed-signature body is expiry", async () => {
-        const s = await only("/expired.jpg");
-        assert.equal(s.expired, 1);
-    });
-
-    it("a bare err_code is too vague to call expiry", async () => {
-        const s = await only("/vagueerr.jpg");
-        assert.equal(s.expired, 0, "err_code alone could be a rate-limit notice");
-        assert.equal(s.unknown, 1, "and it does not say rate limiting either");
-    });
-
-    it("a 200 that explains itself in HTML is still throttling", async () => {
-        const s = await only("/htmlbusy.jpg");
-        assert.equal(s.expired, 0);
-        assert.equal(s.throttled, 1, "a short body saying 'Too Many Requests' is an error page");
-    });
-
-    it("a dropped connection is never expiry", async () => {
-        const s = await only("/truncated.jpg");
-        assert.equal(s.expired, 0);
-        assert.equal(s.unknown, 1, "no response is not evidence of rate limiting");
+    it("tells expiry, throttling and unknown apart, for every status and body", async () => {
+        // [answer, route, the counts it must produce]
+        const ROWS = [
+            ["404 means gone", "/gone.jpg", { expired: 1, throttled: 0 }],
+            // 403 must not be called expiry.
+            [
+                "403 is NOT treated as gone — Zalo returns it under load too",
+                "/forbidden.jpg",
+                { expired: 0, unknown: 1 },
+            ],
+            ["429 is throttling", "/ratelimit.jpg", { expired: 0, throttled: 1 }],
+            ["5xx is throttling, not expiry", "/servererr.jpg", { expired: 0, throttled: 1 }],
+            ["a documented lapsed-signature body is expiry", "/expired.jpg", { expired: 1 }],
+            // err_code alone could be a rate-limit notice, and it does not say rate limiting either.
+            ["a bare err_code is too vague to call expiry", "/vagueerr.jpg", { expired: 0, unknown: 1 }],
+            // A short body saying 'Too Many Requests' is an error page.
+            ["a 200 that explains itself in HTML is still throttling", "/htmlbusy.jpg", { expired: 0, throttled: 1 }],
+            // No response is not evidence of rate limiting.
+            ["a dropped connection is never expiry", "/truncated.jpg", { expired: 0, unknown: 1 }],
+        ];
+        await checkTable(
+            ROWS,
+            ([answer]) => answer,
+            async ([, route, want]) => {
+                freshAccount();
+                const s = await only(route);
+                assert.deepEqual(Object.fromEntries(Object.keys(want).map((k) => [k, s[k]])), want);
+            },
+        );
     });
 
     it("gives up once throttling is sustained, instead of burning the queue", async () => {

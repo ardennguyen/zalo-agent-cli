@@ -18,6 +18,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { checkTableSync } from "../helpers/table.js";
 import {
     expandMentions,
     parseMentionSpecs,
@@ -142,16 +143,18 @@ describe("expandMentions — total mention length stays sendable", () => {
 describe("shiftStyles", () => {
     const edits = [{ start: 10, oldLen: 5, newLen: 12 }]; // +7
 
-    it("moves a style that starts after the expansion", () => {
-        assert.deepEqual(shiftStyles([{ start: 20, len: 4, st: "b" }], edits), [{ start: 27, len: 4, st: "b" }]);
-    });
-
-    it("leaves a style that ends before the expansion", () => {
-        assert.deepEqual(shiftStyles([{ start: 0, len: 5, st: "b" }], edits), [{ start: 0, len: 5, st: "b" }]);
-    });
-
-    it("grows a style that spans the expansion", () => {
-        assert.deepEqual(shiftStyles([{ start: 0, len: 20, st: "b" }], edits), [{ start: 0, len: 27, st: "b" }]);
+    it("moves a style after the expansion, leaves one before it, and grows one that spans it", () => {
+        // [case, style, shifted]
+        const ROWS = [
+            ["starts after the expansion: moved", { start: 20, len: 4, st: "b" }, { start: 27, len: 4, st: "b" }],
+            ["ends before the expansion: left", { start: 0, len: 5, st: "b" }, { start: 0, len: 5, st: "b" }],
+            ["spans the expansion: grown", { start: 0, len: 20, st: "b" }, { start: 0, len: 27, st: "b" }],
+        ];
+        checkTableSync(
+            ROWS,
+            ([what]) => what,
+            ([, style, shifted]) => assert.deepEqual(shiftStyles([style], edits), [shifted]),
+        );
     });
 
     it("is a no-op when nothing expanded", () => {

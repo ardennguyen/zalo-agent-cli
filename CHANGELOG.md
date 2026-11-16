@@ -9,7 +9,9 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
-Planned as 3.1.0: generic limits and admin surfaces for a console that manages tenants, users and accounts.
+## [3.1.0] — 2026-11-16
+
+Limits, text-only storage and admin surfaces for a console that manages tenants, users and accounts on one host.
 
 #### Added
 
@@ -959,7 +961,8 @@ npm install -g @ardennguyen/zalo-agent-cli@2.0.0
 
 Commands, flags and defaults: `skill/references/command-reference.md`. Operating it on a server: `docs/deployment.md`.
 
-[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.0.3...v3.0-dev
+[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.1.0...v3.0-dev
+[3.1.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.1.0
 [3.0.3]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.0.3
 [3.0.2]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.0.2
 [3.0.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.0.1

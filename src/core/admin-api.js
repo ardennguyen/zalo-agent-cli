@@ -245,7 +245,7 @@ export function policyErrorReply(e) {
  * @param {{handle: (req: object, res: object, ctx: object) => Promise<void>}|null} [args.exportApi] - the export
  *   routes (src/core/data-export.js createExportApi)
  * @param {((req: object, res: object, ctx: {who: string, ip: string, path: string}) => Promise<boolean>)|null}
- *   [args.routes] - more routes behind the same credential (the fleet controller's `/accounts...` and `/events`);
+ *   [args.routes] - more routes behind the same credential (the fleet controller's `/accounts...`, `/events`, `/routes`, `/host`);
  *   false: not one of them (404)
  * @param {{serve: (p: {action: string}) => Promise<object>}|null} [args.presence] - this server's on-demand presence
  *   (src/core/daemon-presence.js): `/presence` and `/presence/resume`
@@ -393,7 +393,11 @@ export function createAdminApi({
         }
         if (
             routes &&
-            (path === "/events" || path === "/routes" || path === "/accounts" || path.startsWith("/accounts/"))
+            (path === "/events" ||
+                path === "/routes" ||
+                path === "/host" ||
+                path === "/accounts" ||
+                path.startsWith("/accounts/"))
         ) {
             Promise.resolve(routes(req, res, { who, ip, path }))
                 .then((handled) => {

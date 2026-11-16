@@ -407,12 +407,12 @@ describe("retention.mediaTempCap", () => {
 });
 
 /** A real MCP HTTP server for one account with the admin API; its own bearer is AGENT. */
-async function accountServer(ownId, { fetchFn } = {}) {
+async function accountServer(ownId, { fetchFn, accountEnv } = {}) {
     const admin = createAdminApi({
         ownId,
         config: {},
         hashes: resolveAdminCredentials({ env: { ZALO_MCP_ADMIN_TOKEN: ADMIN } }).hashes,
-        accessApi: createAccessApi({ config: {}, fetchFn, log: () => {} }),
+        accessApi: createAccessApi({ config: {}, fetchFn, accountEnv, log: () => {} }),
         log: () => {},
     });
     const deps = { admin, accountDir: getAccountDir(ownId), buffer: { getStats: () => [] } };
@@ -518,6 +518,48 @@ describe("access: OAuth clients and grants", () => {
             (await call(`/zalo/admin/access/${id}/oauth/clients/dyn_cp1`, { method: "DELETE" })).body.code,
             "CLIENT_NOT_FOUND",
         );
+    });
+
+    it("lists the client the account's own environment configures, with its grant, as the daemon serves it", async () => {
+        const id = account();
+        // Configured only in the account's env file (the fleet's env dir), the way `fleet generate` writes it.
+        const accountEnv = (ownId) =>
+            ownId === id
+                ? {
+                      ZALO_MCP_OAUTH_CLIENT_ID: "env-client-cp",
+                      ZALO_MCP_OAUTH_CLIENT_SECRET: "placeholder-client-secret",
+                      ZALO_MCP_OAUTH_REDIRECT_URIS: "https://app.example.com/callback",
+                  }
+                : {};
+        const daemon = createOAuthStore({ file: join(getAccountDir(id), OAUTH_STATE_FILE) });
+        const g = daemon.createFamily({
+            cid: "env-client-cp",
+            scp: "mcp:tools",
+            aud: "a",
+            iss: "i",
+            refreshTtlSec: 3600,
+        });
+        const { call } = await accountServer(id, { accountEnv });
+
+        const summary = await call(`/zalo/admin/access/${id}`);
+        assert.deepEqual(
+            summary.body.oauth.clients.map((c) => [c.clientId, c.kind, c.confidential]),
+            [["env-client-cp", "configured", true]],
+        );
+        assert.deepEqual(
+            summary.body.oauth.grants.map((x) => [x.grantId, x.clientId]),
+            [[g.fam, "env-client-cp"]],
+        );
+        assert.equal(JSON.stringify(summary.body).includes("placeholder-client-secret"), false, "never the secret");
+        const clients = await call(`/zalo/admin/access/${id}/oauth/clients`);
+        assert.deepEqual(clients.body.clients[0].redirectUris, ["https://app.example.com/callback"]);
+        // It is the server's own client: removing it is refused as configured, not as unknown.
+        const rm = await call(`/zalo/admin/access/${id}/oauth/clients/env-client-cp`, { method: "DELETE" });
+        assert.equal(rm.body.code, "CLIENT_CONFIGURED");
+        // Another account's env does not leak into this one's list.
+        const other = account();
+        const { call: callOther } = await accountServer(other, { accountEnv });
+        assert.deepEqual((await callOther(`/zalo/admin/access/${other}/oauth/clients`)).body.clients, []);
     });
 });
 

@@ -20,6 +20,7 @@ import {
 import { CONFIRM_TTL_MS, createFleetController } from "../../src/core/fleet-controller.js";
 import { adminWebhook, buildControllerApp } from "../../src/core/fleet-serve.js";
 import { createSessionNotices } from "../../src/core/session-notice.js";
+import { accountIdentity, addAccount, updateAccountProfile } from "../../src/core/accounts.js";
 
 const A = "1000000000000000971";
 const B = "1000000000000000972";
@@ -202,6 +203,21 @@ describe("controller routes", () => {
             headers: { Authorization: `Bearer ${ADMIN}` },
         });
         assert.equal(r.status, 404);
+    });
+
+    it("lists each account's own Zalo name and phone as the registry keeps them (null when not known)", async () => {
+        addAccount(A, "Alpha");
+        addAccount(B, "Beta");
+        updateAccountProfile(A, { name: "Alpha Renamed", phone: "0123456789" });
+        const { call } = await rig({ extra: { describe: (id) => ({ ...accountIdentity(id), port: 3900 }) } });
+        const list = await call("/accounts");
+        assert.deepEqual(
+            list.body.accounts.map((a) => [a.accountId, a.name, a.phone, a.port]),
+            [
+                [A, "Alpha Renamed", "0123456789", 3900],
+                [B, "Beta", null, 3900],
+            ],
+        );
     });
 
     it("lists accounts with their polled state; start/stop/restart drive the supervisor", async () => {

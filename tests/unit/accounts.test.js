@@ -20,6 +20,7 @@ import {
     setActive,
     addAccount,
     updateAccountName,
+    updateAccountProfile,
     getAccount,
     getProxyFor,
     wipeAccountDir,
@@ -149,6 +150,25 @@ describe("registry CRUD", () => {
         assert.equal(updateAccountName(A, "Alpha Updated"), false);
         assert.equal(updateAccountName(A, "   "), false);
         assert.equal(updateAccountName("unknown", "Name"), false);
+    });
+
+    it("updateAccountProfile keeps the phone with the name, and a reply without one keeps the stored number", () => {
+        addAccount(A, "Alpha", "http://proxy:8080");
+        addAccount(B, "Beta");
+        assert.equal(updateAccountProfile(A, { name: "Alpha", phone: "0123456789" }), true);
+        assert.deepEqual(
+            { name: getAccount(A).name, phone: getAccount(A).phone, proxy: getAccount(A).proxy },
+            { name: "Alpha", phone: "0123456789", proxy: "http://proxy:8080" },
+        );
+        assert.equal(getActive().ownId, B, "the active account does not change");
+        // A profile reply without a phone renames and keeps the number; nothing new writes nothing.
+        assert.equal(updateAccountProfile(A, { name: "Alpha Renamed", phone: null }), true);
+        assert.equal(getAccount(A).phone, "0123456789");
+        assert.equal(getAccount(A).name, "Alpha Renamed");
+        assert.equal(updateAccountProfile(A, { name: "Alpha Renamed", phone: "0123456789" }), false);
+        assert.equal(updateAccountProfile(A, { name: " ", phone: "" }), false);
+        assert.equal(updateAccountProfile("unknown", { phone: "0123456789" }), false);
+        assert.equal(getAccount(B).phone, undefined, "only the named account changes");
     });
 
     it(

@@ -13,7 +13,7 @@ import { getApi, clearSession, renewLoginWithQR } from "../core/zalo-client.js";
 import { liveApi } from "../core/live-api.js";
 import { quotedReply, resolveReplyTo } from "../core/cached-message.js";
 import { parseAccountId, selectDaemonAccount, loginDaemonAccount } from "../core/daemon-account.js";
-import { getAccount, updateAccountName } from "../core/accounts.js";
+import { getAccount, updateAccountName, updateAccountProfile } from "../core/accounts.js";
 import { CONFIG_DIR, getAccountDir, MEDIA_DIR, readSavedDevice, saveCredentials } from "../core/credentials.js";
 import { createStartupGate, resolveStartupSettings } from "../core/startup-gate.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
@@ -108,6 +108,7 @@ import {
     resolveAccountMCPConfig,
     envForAccount,
     parseDuration,
+    resolvePrimaryOAuthClient,
     resolveWebhookDelivery,
     resolveWebhookUrl,
 } from "../mcp/mcp-config.js";
@@ -353,9 +354,6 @@ function flagValue(value) {
 export function resolveOAuthOptions({ opts = {}, config = {}, accountId, publicUrl, env = process.env }) {
     const warnings = [];
     const authToken = opts.auth?.trim() || envForAccount("ZALO_MCP_AUTH_TOKEN", accountId, env) || null;
-    const redirectEnv = envForAccount("ZALO_MCP_OAUTH_REDIRECT_URIS", accountId, env);
-    const list = (v) =>
-        (Array.isArray(v) ? v : String(v ?? "").split(",")).map((s) => String(s).trim()).filter(Boolean);
     const durationSec = (value, name) => {
         if (value === undefined || value === null || value === "") return null;
         const ms = parseDuration(value);
@@ -372,17 +370,7 @@ export function resolveOAuthOptions({ opts = {}, config = {}, accountId, publicU
         return v === true;
     };
     const oauth = {
-        clientId:
-            opts.clientId?.trim() ||
-            envForAccount("ZALO_MCP_OAUTH_CLIENT_ID", accountId, env) ||
-            config?.oauth?.clientId?.trim() ||
-            "zalo-mcp",
-        clientSecret:
-            opts.clientSecret?.trim() ||
-            envForAccount("ZALO_MCP_OAUTH_CLIENT_SECRET", accountId, env) ||
-            config?.oauth?.clientSecret?.trim() ||
-            null,
-        redirectUris: list(redirectEnv ?? config?.oauth?.redirectUris),
+        ...resolvePrimaryOAuthClient({ opts, config, accountId, env }),
         clients: Array.isArray(config?.oauth?.clients) ? config.oauth.clients : [],
         issuerUrl: publicUrl || null,
         allowDynamicRegistration: flag(
@@ -813,7 +801,7 @@ export function registerMCPCommands(program) {
             const daemonAliases = startDaemonAliases({
                 getApi,
                 log: (line) => console.error(`[mcp] ${line}`),
-                onOwnName: (name) => updateAccountName(activeAcc.ownId, name),
+                onOwnProfile: (profile) => updateAccountProfile(activeAcc.ownId, profile),
                 onRetitled: (titles) => {
                     for (const [id, name] of titles) nameCache.set(id, { name, type: "dm" });
                 },

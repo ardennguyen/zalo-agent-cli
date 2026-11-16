@@ -9,6 +9,16 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+## [3.1.1] — 2026-11-16
+
+#### Added
+
+- **Each account's own Zalo name and phone on the fleet controller's `GET /zalo/admin/accounts`** (`name`, `phone`; `null` when not known yet), so a console can tell its accounts apart. `listen` and `mcp start` read the account's own profile once when they start and again after a profile change from another device, and keep the name and the phone in the account registry; `whoami` keeps the phone too. A profile reply without a phone keeps the number already stored.
+
+#### Fixed
+
+- **The access API lists the OAuth client an account's own environment configures.** `/zalo/admin/access/<ownId>` and `.../oauth/clients` used to show only clients from `mcp-config.json`, so a client set with `ZALO_MCP_OAUTH_CLIENT_ID` in the fleet's `<env-dir>/<ownId>.env` was missing while its grants were listed. The daemon and the access API now resolve the primary client the same way.
+
 ## [3.1.0] — 2026-11-16
 
 Limits, text-only storage and admin surfaces for a console that manages tenants, users and accounts on one host.
@@ -962,7 +972,8 @@ npm install -g @ardennguyen/zalo-agent-cli@2.0.0
 
 Commands, flags and defaults: `skill/references/command-reference.md`. Operating it on a server: `docs/deployment.md`.
 
-[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.1.0...v3.0-dev
+[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.1.1...v3.0-dev
+[3.1.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.1.1
 [3.1.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.1.0
 [3.0.3]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.0.3
 [3.0.2]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.0.2

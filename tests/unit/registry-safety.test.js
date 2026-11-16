@@ -426,7 +426,7 @@ describe("a registry that exists but cannot be read", () => {
     it("updateAccountName on a damaged registry is a logged no-op, never a thrown error (a daemon calls it)", () => {
         writeFileSync(FILE, "garbage");
         assert.equal(updateAccountName("1000", "New"), false);
-        assert.ok(err.some((l) => /could not update the cached name of 1000/.test(l)));
+        assert.ok(err.some((l) => /could not update the cached profile of 1000/.test(l)));
         assert.equal(readFileSync(FILE, "utf8"), "garbage");
     });
 });
@@ -493,7 +493,7 @@ describe("the registry lock", () => {
         } finally {
             console.error = real;
         }
-        assert.ok(lines.some((l) => /could not update the cached name of 1000: could not lock/.test(l)));
+        assert.ok(lines.some((l) => /could not update the cached profile of 1000: could not lock/.test(l)));
         assert.equal(JSON.parse(readFileSync(FILE, "utf8"))[0].name, "n0", "nothing was written");
     });
 });

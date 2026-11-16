@@ -8,7 +8,7 @@
  *
  * Routes, under `/zalo/admin` and behind the admin credential (./admin-api.js; an agent's token is refused):
  *
- *     GET    /accounts                              every account: state, presence, user, port, pid
+ *     GET    /accounts                              every account: name, phone, state, presence, user, port, pid
  *     POST   /accounts/<ownId>/start|stop|restart   drive its unit or process
  *     POST   /accounts/<ownId>/presence/wake|park   relayed to the daemon's channel (on-demand presence)
  *     POST   /accounts/<ownId>/presence/resume      relayed: take the account back after a yield (the user closed the
@@ -53,7 +53,7 @@ const ACCOUNT_ID = /^[1-9][0-9]{0,30}$/;
  * @param {(ownId: string) => Promise<{running: boolean, pid?: number|null, health: object|null, kicked?: boolean}>} args.probe
  * @param {(ownId: string, path: string, params: object) => Promise<object|null>} args.relay - the daemon channel
  * @param {(args: string[]) => Promise<{code: number, stdout: string, stderr: string}>} args.runCli
- * @param {(ownId: string) => {port?: number|null, userId?: string|null, presence?: string|null}} [args.describe]
+ * @param {(ownId: string) => {name?: string|null, phone?: string|null, port?: number|null, userId?: string|null, presence?: string|null}} [args.describe]
  * @param {(ownId: string) => Promise<void>|void} [args.forget] - drop a removed account from the port table, its env
  *   file and its user
  * @param {{handle: (req: object, res: object, ctx: object) => boolean|Promise<boolean>}|null} [args.qr] - WP8

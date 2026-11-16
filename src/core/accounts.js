@@ -302,31 +302,37 @@ export function removeAccount(ownId) {
 }
 
 /**
- * Update the cached display name for a registered account in accounts.json
- * without changing which account is active or touching proxy settings.
+ * Update the cached profile (display name, phone number) of a registered account in accounts.json without changing
+ * which account is active or touching proxy settings. A field left out, or empty, keeps its stored value: Zalo can
+ * omit the phone from a profile reply, and that must not erase a number already known.
  *
  * @param {string|null|undefined} ownId
- * @param {string|null|undefined} name
+ * @param {{ name?: string|null, phone?: string|null }} profile
  * @param {{ lockTimeoutMs?: number }} [opts] - how long to wait for the registry's lock before giving up on this
  *   cosmetic refresh (3 s: a daemon calls this from event handlers); a test that is about lost writes, not about
  *   timing, waits longer
- * @returns {boolean} true when an existing account's name was changed
+ * @returns {boolean} true when an existing account's name or phone was changed
  */
-export function updateAccountName(ownId, name, { lockTimeoutMs = 3000 } = {}) {
+export function updateAccountProfile(ownId, { name, phone } = {}, { lockTimeoutMs = 3000 } = {}) {
     const id = ownId ? String(ownId).trim() : "";
-    const trimmed = typeof name === "string" ? name.trim() : "";
-    if (!id || !trimmed) return false;
-    // The common case, a daemon re-reading a name it already has, takes no lock and writes nothing.
+    const next = {};
+    if (typeof name === "string" && name.trim()) next.name = name.trim();
+    if (typeof phone === "string" && phone.trim()) next.phone = phone.trim();
+    if (!id || !Object.keys(next).length) return false;
+    // The common case, a daemon re-reading a profile it already has, takes no lock and writes nothing.
     const unchanged = (accounts) => {
         const existing = accounts.find((a) => a.ownId === id);
-        return !existing || existing.name === trimmed;
+        return !existing || Object.entries(next).every(([k, v]) => existing[k] === v);
     };
     try {
         if (unchanged(load())) return false;
         return mutate(
             (accounts) => {
                 if (unchanged(accounts)) return { changed: false, value: false };
-                accounts.find((a) => a.ownId === id).name = trimmed;
+                Object.assign(
+                    accounts.find((a) => a.ownId === id),
+                    next,
+                );
                 return { changed: true, value: true };
             },
             // Daemons call this from event handlers: a busy registry costs a missed cosmetic refresh,
@@ -334,15 +340,38 @@ export function updateAccountName(ownId, name, { lockTimeoutMs = 3000 } = {}) {
             { timeoutMs: lockTimeoutMs },
         );
     } catch (e) {
-        // A cached display name is not worth a daemon: say so and carry on.
-        console.error(`[accounts] could not update the cached name of ${id}: ${e.message}`);
+        // A cached profile is not worth a daemon: say so and carry on.
+        console.error(`[accounts] could not update the cached profile of ${id}: ${e.message}`);
         return false;
     }
+}
+
+/**
+ * Update the cached display name for a registered account (see {@link updateAccountProfile}).
+ *
+ * @param {string|null|undefined} ownId
+ * @param {string|null|undefined} name
+ * @param {{ lockTimeoutMs?: number }} [opts]
+ * @returns {boolean} true when an existing account's name was changed
+ */
+export function updateAccountName(ownId, name, opts = {}) {
+    return updateAccountProfile(ownId, { name }, opts);
 }
 
 /** Get account by ownId. */
 export function getAccount(ownId) {
     return load().find((a) => a.ownId === ownId) || null;
+}
+
+/**
+ * An account's own Zalo name and phone as its daemon last read them, for the fleet's admin `/accounts` rows.
+ *
+ * @param {string} ownId
+ * @returns {{name: string|null, phone: string|null}}
+ */
+export function accountIdentity(ownId) {
+    const acc = getAccount(ownId);
+    return { name: acc?.name || null, phone: acc?.phone || null };
 }
 
 /** Get proxy URL for a specific account. */

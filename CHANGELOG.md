@@ -11,6 +11,7 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 #### Fixed
 
+- **Old media links no longer stop a download run.** A file past Zalo's keeping window that zCloud does not hold, whose server answers HTTP 5xx or not at all, is counted as gone and remembered like a 404 (`--retry-dead` asks again) instead of being taken for rate limiting, which used to end the run after a few in a row and left the rest of the queue behind it.
 - **`sync-media` uses the stored zCloud key without `--from-zcloud`.** In 3.0.2 a run without the flag fetched nothing from zCloud; `--from-zcloud` did.
 
 ## [3.0.2] — 2026-11-15

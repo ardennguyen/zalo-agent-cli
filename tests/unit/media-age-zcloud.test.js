@@ -101,6 +101,13 @@ before(async () => {
             res.writeHead(200, { "content-type": "image/jpeg" });
             return res.end(Buffer.from("cdn-bytes"));
         }
+        if (path.startsWith("/cdn/bad-gateway")) {
+            res.writeHead(502);
+            return res.end("");
+        }
+        if (path.startsWith("/cdn/drop")) {
+            return req.socket.destroy();
+        }
         if (path.startsWith("/cdn/gone")) {
             res.writeHead(404);
             return res.end("gone");
@@ -254,6 +261,20 @@ describe("a file past the window: no file is written off by the clock", () => {
         const retried = await run({ retryDead: true });
         assert.equal(hits["/cdn/gone.jpg"], 2, "--retry-dead asks again");
         assert.equal(retried.downloaded, 0);
+    });
+
+    it("an old link its server no longer serves (5xx, no response) is gone, not throttling: the run goes on", async () => {
+        for (let i = 0; i < 12; i++) row({ daysAgo: 800, path: i % 2 ? "/cdn/bad-gateway.jpg" : "/cdn/drop.jpg" });
+        const fresh = row({ daysAgo: 1 });
+        const first = await run({ concurrency: 1 });
+        assert.equal(first.abortedEarly, false, "a queue of dead old links must not stop the run");
+        assert.equal(first.oldGone, 12);
+        assert.equal(first.reasons["old-unavailable"], 12);
+        assert.equal(first.throttled, 0);
+        assert.ok(getMessages("t1").find((m) => m.msgId === fresh).localPath, "the file after them was fetched");
+        const before = hits["/cdn/bad-gateway.jpg"];
+        await run({ concurrency: 1, retryDead: false });
+        assert.equal(hits["/cdn/bad-gateway.jpg"], before, "remembered: not asked again");
     });
 
     it("gives a row sorted gone by the old clock rule its one request", async () => {

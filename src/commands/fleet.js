@@ -60,6 +60,7 @@ import {
     startSelf,
 } from "../core/fleet-serve.js";
 import { DEFAULT_MAX_RUNNING, createFleetJobs } from "../core/fleet-jobs.js";
+import { createHostMetrics } from "../core/host-metrics.js";
 import { DEFAULT_QR_FLOWS, createQrFlows } from "../core/fleet-qr.js";
 import { applyPolicy, checkQrAdd, effectivePolicy, ownerOf } from "../core/policy-store.js";
 import { hostUsage } from "../core/storage-quota.js";
@@ -822,6 +823,7 @@ export function registerFleetCommands(program) {
                 relay: (ownId, path, params) => callViaDaemon(getAccountDir(ownId), path, params),
                 runCli: (args) => runSelf(args),
                 jobs,
+                host: createHostMetrics(),
                 describe: (ownId) => ({
                     ...accountIdentity(ownId),
                     port: readPorts()[ownId] ?? null,

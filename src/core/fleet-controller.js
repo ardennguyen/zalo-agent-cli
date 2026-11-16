@@ -16,6 +16,7 @@
  *     POST   /accounts/<ownId>/logout               guarded: 409 {confirmToken} first, then X-Confirm: <token>
  *     DELETE /accounts/<ownId>                      guarded the same way: stop, `account remove` (crypto-shred)
  *     ...    /accounts/<ownId>/jobs[...]            sync, attachment download and purge jobs (./fleet-jobs.js)
+ *     GET    /host                                  the machine's CPU and memory, and each daemon's (./host-metrics.js)
  *     GET    /events                                SSE: `account_state` and `session_expiring` for every account
  *     GET    /routes                                account id -> loopback port and path, for a host agent that
  *                                                   keeps the reverse proxy's routes (this process edits no proxy)
@@ -60,6 +61,7 @@ const ACCOUNT_ID = /^[1-9][0-9]{0,30}$/;
  * @param {{handle: (req: object, res: object, ctx: object) => boolean|Promise<boolean>}|null} [args.qr] - WP8
  * @param {(() => object)|null} [args.routes] - `GET /routes`: the account routes a host agent applies
  * @param {{handle: Function, stopAll: Function}|null} [args.jobs] - the account jobs (./fleet-jobs.js); null: 501
+ * @param {{snapshot: Function}|null} [args.host] - host health (./host-metrics.js); null: 501
  * @param {(ownId: string) => ({expiresAt: string, daysLeft: number, expired: boolean}|null)} [args.session] - when the
  *   account's saved login ends, read from its saved cookie jar (a running daemon's own reading wins)
  * @param {{due: (ownId: string, expiry: object|null) => boolean}|null} [args.sessionNotices] - which thresholds were
@@ -81,6 +83,7 @@ export function createFleetController({
     qr = null,
     routes = null,
     jobs = null,
+    host = null,
     session = () => null,
     sessionNotices = null,
     webhook = () => {},
@@ -235,6 +238,17 @@ export function createFleetController({
             if (req.method !== "GET") return getOnly();
             if (!routes) return (send(res, 501, { error: "no account routes here", code: "NOT_SUPPORTED" }), true);
             send(res, 200, routes());
+            return true;
+        }
+        if (path === "/host") {
+            if (req.method !== "GET") return getOnly();
+            if (!host) return (send(res, 501, { error: "no host metrics here", code: "NOT_SUPPORTED" }), true);
+            // The controller itself, then every account's daemon (its pid from the last poll; null when stopped).
+            const procs = [
+                { name: "controller", pid: process.pid },
+                ...listAccounts().map(({ ownId }) => ({ name: ownId, pid: states.get(ownId)?.pid ?? null })),
+            ];
+            send(res, 200, host.snapshot(procs));
             return true;
         }
         if (path === "/events") {

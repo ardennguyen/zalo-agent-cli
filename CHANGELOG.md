@@ -9,6 +9,10 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+## [3.0.3] — 2026-11-16
+
+Sync asks your phone only when something is missing, as Zalo's own apps do, and media downloads get through queues of old links.
+
 #### Changed
 
 - **`sync` asks the phone only when something is missing**, as Zalo's own apps do. Once a restore has completed, a new `sync` answers "already synced" with no phone prompt unless the listener recorded a gap (it was down or dropped messages), a restore is unfinished or a wider window is asked for; the age of the last restore no longer matters (it used to ask again after an hour). `--force` still asks.
@@ -937,7 +941,8 @@ npm install -g @ardennguyen/zalo-agent-cli@2.0.0
 
 Commands, flags and defaults: `skill/references/command-reference.md`. Operating it on a server: `docs/deployment.md`.
 
-[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.0.2...v3.0-dev
+[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.0.3...v3.0-dev
+[3.0.3]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.0.3
 [3.0.2]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.0.2
 [3.0.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.0.1
 [3.0.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.0.0

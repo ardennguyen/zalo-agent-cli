@@ -9,6 +9,12 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+## [3.2.1] — 2026-11-17
+
+#### Added
+
+- **Host health on the fleet controller: `GET /zalo/admin/host`** answers the machine's CPU use and load, its memory, and for the controller and each account's daemon its CPU (percent of one core since the previous call) and resident memory, so a console can show live figures by calling it every few seconds.
+
 ## [3.2.0] — 2026-11-16
 
 #### Added
@@ -978,7 +984,8 @@ npm install -g @ardennguyen/zalo-agent-cli@2.0.0
 
 Commands, flags and defaults: `skill/references/command-reference.md`. Operating it on a server: `docs/deployment.md`.
 
-[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.2.0...v3.0-dev
+[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.2.1...v3.0-dev
+[3.2.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.2.1
 [3.2.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.2.0
 [3.1.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.1.1
 [3.1.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.1.0

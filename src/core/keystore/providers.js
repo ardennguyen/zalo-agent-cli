@@ -37,7 +37,13 @@ const DPAPI_ENTROPY = "zalo-agent-cli/keyring/v1";
 /** scrypt cost for the passphrase provider (64 MiB, about a tenth of a second). */
 const SCRYPT = { N: 2 ** 16, r: 8, p: 1 };
 
-const WORKER = join(dirname(fileURLToPath(import.meta.url)), "worker.js");
+// The worker is a sibling file of this module. In the published bundle (scripts/build.mjs) this module is inlined
+// into dist/index.js and the worker is emitted next to it as dist/keystore-worker.js; __ZALO_KEYSTORE_WORKER_NAME__
+// (substituted by esbuild) names it there. From source it is undefined and the sibling is plain worker.js.
+const WORKER = join(
+    dirname(fileURLToPath(import.meta.url)),
+    typeof __ZALO_KEYSTORE_WORKER_NAME__ !== "undefined" ? __ZALO_KEYSTORE_WORKER_NAME__ : "worker.js",
+);
 
 /**
  * Whether this process is the offline test sandbox (tests/helpers/sandbox.js): `ZALO_SANDBOX_ACTIVE=1` and a home

@@ -28,6 +28,7 @@ Limits, text-only storage and admin surfaces for a console that manages tenants,
 
 - A running daemon re-reads its OAuth state when another process changed it, so a grant revoked through the admin API stops working at the next request.
 - The fleet controller's and the QR flow's error answers carry a `code`.
+- **The npm package now ships a single precompiled runtime** (`dist/`) instead of the source tree. Installing, the `zalo-agent` command and every flag are unchanged, and the download is smaller; a `node_modules` install still pulls the same runtime dependencies.
 
 ## [3.0.3] — 2026-11-16
 

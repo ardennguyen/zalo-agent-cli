@@ -28,6 +28,10 @@ jobs:
       - run: npm run lint
       - run: npm test
 
+      # The published package ships the compiled runtime under dist/ (package.json `files`), not src/. Build it
+      # here so a failure stops the release; `prepack` also runs it on `npm publish`, so the two agree.
+      - run: npm run build
+
       # No token: this workflow is the package's trusted publisher on npmjs.com
       # (repository ardennguyen/zalo-agent-cli, workflow publish.yml, "Allow npm
       # publish"). npm exchanges the job's OIDC identity (id-token: write above)

@@ -151,7 +151,11 @@ import { describeQueueOverflow, queueOverflowSystemEvent } from "../core/overflo
 import { ThreadNameCache } from "../mcp/thread-name-cache.js";
 import { senderNameFields, startDaemonAliases } from "../core/contact-names.js";
 
-const PKG_VERSION = JSON.parse(readFileSync(join(import.meta.dirname, "..", "..", "package.json"), "utf8")).version;
+// __ZALO_PKG_VERSION__ is substituted by esbuild in the published bundle (scripts/build.mjs); undefined from source.
+const PKG_VERSION =
+    typeof __ZALO_PKG_VERSION__ !== "undefined"
+        ? __ZALO_PKG_VERSION__
+        : JSON.parse(readFileSync(join(import.meta.dirname, "..", "..", "package.json"), "utf8")).version;
 
 /** Sync2.Message.MessageStatus values carried by live receipts. */
 const STATUS_RECEIVED = 4;

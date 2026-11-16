@@ -91,7 +91,11 @@ import { DEBUG_MARK, LOG_LEVELS } from "../core/log-sink.js";
 import { deviceSinceOf } from "../core/device-since.js";
 import { describeQueueOverflow } from "../core/overflow-repair.js";
 
-const PKG_VERSION = JSON.parse(readFileSync(join(import.meta.dirname, "..", "..", "package.json"), "utf8")).version;
+// __ZALO_PKG_VERSION__ is substituted by esbuild in the published bundle (scripts/build.mjs); undefined from source.
+const PKG_VERSION =
+    typeof __ZALO_PKG_VERSION__ !== "undefined"
+        ? __ZALO_PKG_VERSION__
+        : JSON.parse(readFileSync(join(import.meta.dirname, "..", "..", "package.json"), "utf8")).version;
 
 /** Thread types matching the engine's THREAD_TYPE (src/zalo/enums.js) */
 const THREAD_USER = 0;

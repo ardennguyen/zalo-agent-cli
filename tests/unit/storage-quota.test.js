@@ -346,6 +346,45 @@ describe("storage quota: over the limit", () => {
         assert.ok(describeStorage(a.id).quota.tenants.some((t) => t.id === "t-share"));
         closeDb();
     });
+
+    it("a user's limit (quota.user.limit): the sum over its accounts, and this account gives up its share", () => {
+        const other = freshId();
+        mkdirSync(getAccountDir(other), { recursive: true });
+        writeFileSync(
+            join(getAccountDir(other), "quota-state.json"),
+            JSON.stringify({ usage: { total: 1_000_000 }, account: {}, tenants: {} }),
+        );
+        writeFileSync(join(getAccountDir(other), "daemon.lock"), String(process.pid));
+        const a = account({ rows: 10, files: 10, fileBytes: 50_000 });
+        const own = runStoragePass({ ownId: a.id, now: NOW, dryRun: true, policy: noPolicy() }).usageBefore.total;
+        applyPolicy({
+            target: { kind: "user", id: "u-share" },
+            op: "put",
+            policy: { quota: { user: { limit: own + 1_000_000 - 200_000 } } },
+            tenant: "t-users",
+            accounts: [a.id, other],
+            actor: "test",
+        });
+        applyPolicy({
+            target: { kind: "account", id: a.id },
+            op: "put",
+            policy: { quota: { graceDays: 0 } },
+            actor: "test",
+        });
+        const events = [];
+        const r = runStoragePass({ ownId: a.id, now: NOW, emit: (e) => events.push(e) });
+        const over = events.find((e) => e.scope === "user" && e.level === "over");
+        assert.ok(over, "the user's sum is over its limit");
+        assert.equal(over.userId, "u-share");
+        assert.equal(over.limitBytes, own + 1_000_000 - 200_000);
+        const share = Math.ceil((200_000 * own) / (own + 1_000_000));
+        assert.ok(r.quota.media.bytes >= share, `freed ${r.quota.media.bytes} >= its share ${share}`);
+        assert.ok(r.quota.media.files < 10, "only its share, not everything");
+        assert.equal(readQuotaState(a.dir).users["u-share"].level !== undefined, true);
+        assert.equal(describeStorage(a.id).quota.user.id, "u-share");
+        assert.match(quotaSystemEvent(over).text, /user u-share is over its limit/);
+        closeDb();
+    });
 });
 
 describe("storage quota: `db purge` beside a running daemon", () => {

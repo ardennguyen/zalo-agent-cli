@@ -1793,6 +1793,13 @@ export function registerTools(
                         mediaRoot: process.env.ZALO_MEDIA_DIR || mediaConfig.downloadDir || undefined,
                     });
                     localPath = getMessageById(msgId)?.localPath || null;
+                    // The account keeps no media of this kind (`media.store`): nothing was fetched, on purpose.
+                    if (!localPath && stats.notStored) {
+                        return err(
+                            `[MEDIA_NOT_STORED] This account does not keep this kind of media (its media.store ` +
+                                "policy): the message text is stored, the file is not downloaded.",
+                        );
+                    }
                     // Gone from Zalo's servers but kept in zCloud: it opens only with the account's cloud key, which
                     // this tool never takes, so the answer names the command that stores it.
                     if (!localPath && stats.oldInCloud) {

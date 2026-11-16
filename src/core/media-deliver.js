@@ -16,7 +16,7 @@ import { basename, extname, join } from "node:path";
 import { CONFIG_DIR } from "./credentials.js";
 import { decryptMediaToFile, mediaFileState, readMediaFile, readMediaHeader } from "./keystore/media-seal.js";
 import { onRekey } from "./keystore/index.js";
-import { isLoopbackUrl, MEDIA_DEFAULTS, validatePublicUrl } from "./deploy-policy.js";
+import { isLoopbackUrl, MEDIA_DEFAULTS, resolveMediaTempCap, validatePublicUrl } from "./deploy-policy.js";
 
 // ── Modes ───────────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -212,15 +212,34 @@ function removeDir(dir) {
     }
 }
 
+/** The bytes under one copy's folder. */
+function dirBytes(dir) {
+    let total = 0;
+    try {
+        for (const e of readdirSync(dir, { withFileTypes: true })) {
+            try {
+                total += e.isDirectory() ? dirBytes(join(dir, e.name)) : statSync(join(dir, e.name)).size;
+            } catch {
+                /* gone meanwhile */
+            }
+        }
+    } catch {
+        /* gone */
+    }
+    return total;
+}
+
 /**
  * Delete decrypted copies older than the TTL (left by a crash or another process, or still held open when their timer
- * fired).
+ * fired), then, with a cap (`retention.mediaTempCap`), the oldest copies until the folder holds at most `capBytes`.
+ * The tempfile folder is the host's, so the cap counts every copy in it.
  *
  * @param {number} [ttlMs]
  * @param {number} [now]
+ * @param {{capBytes?: number|null, keep?: string|null}} [opts] - `keep`: a copy just made, never removed by the cap
  * @returns {number} folders removed
  */
-export function sweepMediaTemp(ttlMs = TEMPFILE_TTL_MS, now = Date.now()) {
+export function sweepMediaTemp(ttlMs = TEMPFILE_TTL_MS, now = Date.now(), { capBytes = null, keep = null } = {}) {
     let removed = 0;
     let names = [];
     try {
@@ -228,30 +247,50 @@ export function sweepMediaTemp(ttlMs = TEMPFILE_TTL_MS, now = Date.now()) {
     } catch {
         return 0;
     }
+    const left = [];
     for (const n of names) {
         const dir = join(mediaTempRoot(), n);
+        let mtimeMs;
         try {
-            if (now - statSync(dir).mtimeMs < ttlMs) continue;
+            mtimeMs = statSync(dir).mtimeMs;
         } catch {
+            continue;
+        }
+        if (now - mtimeMs < ttlMs) {
+            left.push({ dir, mtimeMs });
             continue;
         }
         removeDir(dir);
         removed++;
+    }
+    if (Number.isSafeInteger(capBytes) && capBytes > 0) {
+        for (const c of left) c.bytes = dirBytes(c.dir);
+        let total = left.reduce((sum, c) => sum + c.bytes, 0);
+        left.sort((a, b) => a.mtimeMs - b.mtimeMs);
+        for (const c of left) {
+            if (total <= capBytes) break;
+            if (keep && c.dir === keep) continue;
+            removeDir(c.dir);
+            total -= c.bytes;
+            removed++;
+        }
     }
     return removed;
 }
 
 /**
  * Sweep the tempfile folder now and then every `intervalMs` (a daemon: copies a CLI process left behind expire on
- * time). The timer never keeps the process alive.
+ * time). The timer never keeps the process alive. With `accountId`, its `retention.mediaTempCap` is read at each sweep.
  *
- * @param {{ttlMs?: number, intervalMs?: number}} [opts]
+ * @param {{ttlMs?: number, intervalMs?: number, accountId?: string|null}} [opts]
  * @returns {() => void} stop
  */
-export function startTempfileSweeper({ ttlMs = TEMPFILE_TTL_MS, intervalMs = 60_000 } = {}) {
-    sweepMediaTemp(ttlMs);
+export function startTempfileSweeper({ ttlMs = TEMPFILE_TTL_MS, intervalMs = 60_000, accountId = null } = {}) {
+    const sweep = () =>
+        sweepMediaTemp(ttlMs, Date.now(), { capBytes: accountId ? resolveMediaTempCap(accountId) : null });
+    sweep();
     if (sweeper) clearInterval(sweeper);
-    sweeper = setInterval(() => sweepMediaTemp(ttlMs), intervalMs);
+    sweeper = setInterval(sweep, intervalMs);
     sweeper.unref?.();
     return () => {
         clearInterval(sweeper);
@@ -294,6 +333,9 @@ export function decryptToTempfile(
         removeDir(dir);
         throw e;
     }
+    // The cap (`retention.mediaTempCap` of the account): the oldest other copies go first, never this one.
+    const capBytes = resolveMediaTempCap(scope?.id);
+    if (capBytes) sweepMediaTemp(ttlMs || TEMPFILE_TTL_MS, Date.now(), { capBytes, keep: dir });
     let expiresAt = null;
     if (ttlMs > 0) {
         expiresAt = Date.now() + ttlMs;

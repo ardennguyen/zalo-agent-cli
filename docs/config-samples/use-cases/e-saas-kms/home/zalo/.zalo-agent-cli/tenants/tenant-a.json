@@ -2,13 +2,16 @@
     "policy": {
         "quota": {
             "tenant": { "limit": "50GB" },
+            "user": { "limit": "10GB" },
             "graceDays": 45,
             "warnAt": 0.8
         },
+        "limits": { "accountsPerUser": 5, "usersPerTenant": 20 },
+        "media": { "store": "all" },
         "presence": {
             "mode": "on-demand",
-            "alwaysOn": { "maxPerUser": 1, "maxPerTenant": null }
+            "alwaysOn": { "maxPerUser": 1, "maxPerTenant": null, "onCap": "demote" }
         },
-        "retention": { "messages": "90d", "media": "30d" }
+        "retention": { "messages": "90d", "media": "30d", "mediaTempCap": "1GB" }
     }
 }

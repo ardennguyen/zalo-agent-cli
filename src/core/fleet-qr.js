@@ -14,6 +14,10 @@
  * - **Per-flow page.** Each flow has its own `QrPage` (its own token, state and image file), served by the controller
  *   at `/zalo/qr/<token>` under `publicUrl`, so a CRM can hand the link to the person who scans.
  * - **At most `ZALO_FLEET_QR_FLOWS` (4) flows at once**: 429 above.
+ * - **Refused before the login starts** (`precheck`, ./policy-store.js checkQrAdd): a user this host does not know
+ *   (404 USER_NOT_FOUND), a user already at `limits.accountsPerUser` (409 ACCOUNTS_PER_USER_LIMIT), or an always-on
+ *   add over a cap that refuses (409 ALWAYS_ON_CAP). `accountId` in the body names an account the user already owns
+ *   (a login again): it does not count as one more.
  * - **Finish**: register (the child did) -> a port (`fleet.json`) -> `<envDir>/<ownId>.env` with a generated token
  *   (when an env dir is set and the file is new) -> the user's `accounts` -> `presence` if given (the always-on cap
  *   applies) -> start if asked. An account that was already running is kicked by the new login (exit 3), so it is
@@ -39,6 +43,8 @@ const USER_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
  * @param {(o: {ownId: string, userId: string, presence: string|null, start: boolean, wasRunning: boolean}) =>
  *   Promise<object>} args.finish - the finish steps; returns what `done` carries (port, restarted, ...)
  * @param {(ownId: string) => Promise<boolean>|boolean} [args.isRunning]
+ * @param {(o: {userId: string, presence: string|null, accountId: string|null}) =>
+ *   ({status: number, code: string, error: string}|null)} [args.precheck] - refuse a flow before its login starts
  * @param {string} args.dir - where the flows' QR images are kept (0600, removed at the end)
  * @param {string|null} [args.publicUrl]
  * @param {string|null} [args.localBaseUrl]
@@ -52,6 +58,7 @@ export function createQrFlows({
     spawnLogin,
     finish,
     isRunning = () => false,
+    precheck = () => null,
     dir,
     publicUrl = null,
     localBaseUrl = null,
@@ -150,7 +157,7 @@ export function createQrFlows({
                 end(flow, "done", { ownId, ...result });
             } catch (e) {
                 flow.page.noteOutcome("failed", e.message);
-                end(flow, "failed", { reason: "finish", ownId, error: e.message });
+                end(flow, "failed", { reason: "finish", ownId, error: e.message, ...(e.code ? { code: e.code } : {}) });
             }
         } else if (m.event === "login_error") {
             flow.page.noteOutcome("failed", "login failed");
@@ -160,12 +167,19 @@ export function createQrFlows({
 
     function create(body) {
         const userId = typeof body?.userId === "string" ? body.userId.trim() : "";
-        if (!USER_ID.test(userId)) return { code: 400, body: { error: "userId must be an opaque id" } };
+        if (!USER_ID.test(userId))
+            return { code: 400, body: { error: "userId must be an opaque id", code: "INVALID_USER_ID" } };
         const presence = body?.presence ?? null;
         if (presence !== null && presence !== "on-demand" && presence !== "always-on")
-            return { code: 400, body: { error: "presence is on-demand or always-on" } };
+            return { code: 400, body: { error: "presence is on-demand or always-on", code: "INVALID_PRESENCE" } };
+        const accountId = body?.accountId === undefined || body?.accountId === null ? null : String(body.accountId);
+        if (accountId !== null && !/^[1-9][0-9]{0,30}$/.test(accountId))
+            return { code: 400, body: { error: "accountId is not an account id", code: "INVALID_ACCOUNT_ID" } };
+        const refused = precheck({ userId, presence, accountId });
+        if (refused) return { code: refused.status, body: { error: refused.error, code: refused.code } };
         const live = [...flows.values()].filter((f) => !f.ended).length;
-        if (live >= maxFlows) return { code: 429, body: { error: `${live} QR logins run already; try again` } };
+        if (live >= maxFlows)
+            return { code: 429, body: { error: `${live} QR logins run already; try again`, code: "TOO_MANY_FLOWS" } };
         const id = `qf_${randomBytes(12).toString("base64url")}`;
         mkdirSync(dir, { recursive: true, mode: 0o700 });
         const page = new QrPage({ now }).configure({ publicUrl, localBaseUrl, mounted: true });
@@ -232,7 +246,8 @@ export function createQrFlows({
         async handle(req, res, ctx) {
             const path = ctx.path;
             if (path === "/accounts/qr") {
-                if (req.method !== "POST") return (send(res, 405, { error: "POST only" }), true);
+                if (req.method !== "POST")
+                    return (send(res, 405, { error: "POST only", code: "METHOD_NOT_ALLOWED" }), true);
                 const r = create(req.body);
                 send(res, r.code, r.body);
                 return true;
@@ -240,14 +255,15 @@ export function createQrFlows({
             const m = /^\/accounts\/qr\/([A-Za-z0-9_-]{1,64})(\/events|\/image)?$/.exec(path);
             if (!m) return false;
             const flow = flows.get(m[1]);
-            if (!flow) return (send(res, 404, { error: "no such QR flow" }), true);
+            if (!flow) return (send(res, 404, { error: "no such QR flow", code: "FLOW_NOT_FOUND" }), true);
             if (!m[2]) {
-                if (req.method !== "DELETE") return (send(res, 405, { error: "DELETE only" }), true);
+                if (req.method !== "DELETE")
+                    return (send(res, 405, { error: "DELETE only", code: "METHOD_NOT_ALLOWED" }), true);
                 send(res, cancel(flow.id) ? 200 : 409, { flowId: flow.id, cancelled: true });
                 return true;
             }
             if (m[2] === "/image") {
-                if (!flow.image) return (send(res, 404, { error: "no QR yet" }), true);
+                if (!flow.image) return (send(res, 404, { error: "no QR yet", code: "QR_NOT_READY" }), true);
                 res.status(200).set({ "Content-Type": "image/png", "Cache-Control": "no-store" }).send(flow.image);
                 return true;
             }

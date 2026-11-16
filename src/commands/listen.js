@@ -3,6 +3,7 @@
  * Production-ready with auto-reconnect and re-login.
  */
 
+import { createWebhookSecretSource } from "../core/webhook-secret.js";
 import { appendFileSync, mkdirSync, existsSync, readFileSync } from "fs";
 import { resolve, join } from "path";
 import { getApi, clearSession } from "../core/zalo-client.js";
@@ -367,7 +368,7 @@ export function registerListenCommand(program) {
                 // Media a 2.x install downloaded is sealed in the background, a batch at a time (media-store.js).
                 startMediaMigration(activeAcc.ownId, { log: (l) => console.error(`[listen] ${l}`) });
                 // Decrypted copies (msg media) expire on time while this daemon runs (src/core/media-deliver.js).
-                startTempfileSweeper({ ttlMs: listenMediaPolicy.tempfileTtlMs });
+                startTempfileSweeper({ ttlMs: listenMediaPolicy.tempfileTtlMs, accountId: activeAcc.ownId });
                 // Logged in and the cache open: the heavy part of start-up is over.
                 gate.leave();
             } catch (err) {
@@ -605,7 +606,13 @@ export function registerListenCommand(program) {
                     accountDir,
                     accountId: activeAcc.ownId,
                     url,
-                    secret: webhookSecret,
+                    // Asked at every POST: a secret rotated through the admin API (src/core/webhook-secret.js) signs
+                    // the next delivery.
+                    secret: createWebhookSecretSource({
+                        accountDir,
+                        flag: cliWebhookSecret !== undefined ? webhookSecret : null,
+                        fallback: webhookSecret,
+                    }),
                     batchSize: delivery.batchSize,
                     maxAgeMs: delivery.maxAgeMs,
                     log: (line) => console.error(`[listen] ${line}`),
@@ -621,7 +628,7 @@ export function registerListenCommand(program) {
                         ttlMs: listenMediaPolicy.linkTtlMs,
                         rateLimit: listenMediaPolicy.linkRateLimit,
                     });
-                    startTempfileSweeper({ ttlMs: listenMediaPolicy.tempfileTtlMs });
+                    startTempfileSweeper({ ttlMs: listenMediaPolicy.tempfileTtlMs, accountId: activeAcc.ownId });
                 }
                 if (touches(changed, ["quota", "retention"])) storageJobs.reschedule();
                 if (touches(changed, ["webhook", "webhookBatchSize", "webhookMaxAge"]))

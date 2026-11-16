@@ -41,7 +41,13 @@ import {
     supervisorOf,
     unitName,
 } from "../core/fleet-supervisor.js";
-import { FLEET_DEFAULTS, FLEET_PROVIDERS, KEYED_UNITS, writablePaths } from "../core/fleet-templates.js";
+import {
+    FLEET_DEFAULTS,
+    FLEET_PROVIDERS,
+    KEYED_UNITS,
+    describeAccountRoutes,
+    writablePaths,
+} from "../core/fleet-templates.js";
 import { createFleetController } from "../core/fleet-controller.js";
 import {
     DEFAULT_CONTROLLER_PORT,
@@ -53,7 +59,9 @@ import {
     spawnLoginChild,
 } from "../core/fleet-serve.js";
 import { DEFAULT_QR_FLOWS, createQrFlows } from "../core/fleet-qr.js";
-import { applyPolicy, effectivePolicy, ownerOf } from "../core/policy-store.js";
+import { applyPolicy, checkQrAdd, effectivePolicy, ownerOf } from "../core/policy-store.js";
+import { hostUsage } from "../core/storage-quota.js";
+import { createAccessApi } from "../core/access-api.js";
 import { resolvePublicUrl, resolveTrustedProxies, validatePublicUrl } from "../core/deploy-policy.js";
 import { kickFile, readKickMarker } from "../core/kick-marker.js";
 import { sessionExpiryFor } from "../core/session-expiry.js";
@@ -778,6 +786,8 @@ export function registerFleetCommands(program) {
                 spawnLogin: spawnLoginChild,
                 finish: (o) => finishQrAdd({ ...o, envDir, domain, trustProxy, driver }),
                 isRunning: (id) => getDaemonStatus(getAccountDir(id)).running,
+                // Refused before the login starts: an unknown user, a user at limits.accountsPerUser, a full cap.
+                precheck: (o) => checkQrAdd(o),
                 dir: join(CONFIG_DIR, "qr-flows"),
                 publicUrl: pub.publicUrl,
                 localBaseUrl: `http://${host}:${port}`,
@@ -811,14 +821,31 @@ export function registerFleetCommands(program) {
                 sessionNotices: createSessionNotices(fileNoticeStore(join(CONFIG_DIR, "fleet-session-notices.json"))),
                 forget: (ownId) => forgetAccount(ownId, envDir),
                 qr,
+                // What a host agent applies to its reverse proxy: this process edits no proxy configuration.
+                routes: () =>
+                    describeAccountRoutes({
+                        accounts: listAccounts().map((a) => ({ ownId: a.ownId, port: readPorts()[a.ownId] ?? null })),
+                        domain,
+                    }),
                 webhook,
                 log,
             });
+            // An account's own environment (its env file): the legacy token and the webhook fallbacks it runs with.
+            const accountEnv = (id) => {
+                const file = envDir ? join(envDir, `${id}.env`) : null;
+                try {
+                    return file && existsSync(file) ? parseEnv(readFileSync(file, "utf8")) : {};
+                } catch {
+                    return {};
+                }
+            };
             const { app } = buildControllerApp({
                 controller,
                 config,
                 agentHashes: agentTokenHashes(envDir),
                 qrPages: qr,
+                usage: () => hostUsage(listAccounts().map((a) => a.ownId)),
+                accessApi: createAccessApi({ config, accountEnv, log }),
                 log,
             });
             const server = app.listen(port, host, () => {

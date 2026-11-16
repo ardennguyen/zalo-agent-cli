@@ -300,6 +300,39 @@ export function resolveApproval({ config, env = process.env, accountId, policy }
 export const MEDIA_DELIVER_MODES = Object.freeze(["inline", "link", "tempfile"]);
 /** The media kinds a message carries, as the cache types them. */
 export const MEDIA_KINDS = Object.freeze(["photo", "gif", "doodle", "sticker", "voice", "audio", "video", "file"]);
+/**
+ * The media kinds an account keeps on disk (`media.store` in the runtime policy): every kind by default, none for
+ * text-only storage, or the listed ones. The one downloader (src/core/sync-v2/media.js) skips any other kind, so the
+ * listener, `sync-media` and a restore all keep to it.
+ *
+ * @param {string|null|undefined} accountId
+ * @param {{policy?: object|null}} [opts] - `policy`: pin the live policy (tests)
+ * @returns {{mode: "all"|"none"|"list", kinds: Set<string>}}
+ */
+export function resolveMediaStore(accountId, { policy } = {}) {
+    const v = livePolicy(policy, accountId)?.media?.store;
+    if (v === "none") return { mode: "none", kinds: new Set() };
+    if (Array.isArray(v)) return { mode: "list", kinds: new Set(v.map(String).filter((k) => MEDIA_KINDS.includes(k))) };
+    return { mode: "all", kinds: new Set(MEDIA_KINDS) };
+}
+
+/**
+ * The cap on the decrypted tempfile copies (`retention.mediaTempCap`), in bytes, or null for none.
+ *
+ * @param {string|null|undefined} accountId
+ * @param {{policy?: object|null}} [opts]
+ * @returns {number|null}
+ */
+export function resolveMediaTempCap(accountId, { policy } = {}) {
+    const v = livePolicy(policy, accountId)?.retention?.mediaTempCap;
+    if (typeof v === "number") return Number.isSafeInteger(v) && v > 0 ? v : null;
+    const m = /^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb|tb)?$/i.exec(String(v ?? "").trim());
+    if (!m) return null;
+    const units = { b: 1, kb: 1024, mb: 1024 ** 2, gb: 1024 ** 3, tb: 1024 ** 4 };
+    const n = Math.floor(Number(m[1]) * units[(m[2] || "b").toLowerCase()]);
+    return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
 /** The default mode per kind: pictures and voice inline (up to inlineMaxBytes), video and files as a link. */
 export const DEFAULT_MEDIA_DELIVER = Object.freeze({
     photo: "inline",

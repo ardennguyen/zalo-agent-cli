@@ -3,6 +3,7 @@
  * Uses stateless mode — each POST /mcp request creates a fresh server+transport.
  */
 
+import { createApiKeyChecker } from "../core/api-keys.js";
 import express from "express";
 import { renderPrometheus } from "../core/daemon-health.js";
 import { batchParams, waitResult } from "./wait-result.js";
@@ -55,6 +56,9 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
     const oauthCheck = oauthStartCheck({ oauth, authToken, host, publicUrl: oauth?.issuerUrl || null });
     if (oauthCheck.problem) throw new Error(oauthCheck.problem);
     const authEnabled = Boolean(authToken) || oauthCheck.enabled;
+    // Named API keys (src/core/api-keys.js), read live: the first key made turns the bearer check on.
+    const apiKeys = deps.apiKeys || createApiKeyChecker(deps.accountDir || null);
+    const authOn = () => authEnabled || apiKeys.any();
     /** @type {ReturnType<typeof mountOAuth>|null} mounted below, after the body parsers */
     let oauthServer = null;
 
@@ -67,8 +71,9 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
      * @returns {boolean}
      */
     const isAgentToken = (token, req = null) => {
-        if (!authEnabled || !token) return false;
+        if (!authOn() || !token) return false;
         if (authToken && safeEqual(token, authToken)) return true;
+        if (apiKeys.verify(token)) return true;
         return Boolean(oauthServer?.verifyBearer(token, req));
     };
     const isAuthorized = (req) => {
@@ -144,7 +149,7 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
             req.url = `${MEDIA_PATH_PREFIX}${req.url.replace(/^\//, "")}`;
             handleMediaRequest(req, res, {
                 links: deps.mediaLinks,
-                authorize: authEnabled ? isAuthorized : null,
+                authorize: authOn() ? isAuthorized : null,
             })
                 .then((handled) => {
                     if (!handled) next();
@@ -215,29 +220,26 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
         for (const p of ["/authorize", "/token", "/register", "/revoke"]) app.all(p, notFound);
     }
 
-    // ── Bearer auth (static token or OAuth access token): everything below except /health and /ready ──
-    if (authEnabled) {
-        app.use((req, res, next) => {
-            if (req.path === "/health" || req.path === "/ready") return next();
-            const authHeader = String(req.headers.authorization || "");
-            const token = /^bearer\s+/i.test(authHeader) ? authHeader.replace(/^bearer\s+/i, "").trim() : "";
-            if (isAgentToken(token, req)) return next();
-            // RFC 6750 §3 (and RFC 9728 §5.1: where the protected resource metadata is, when OAuth is on).
-            const meta = oauthServer.enabled ? `, resource_metadata="${oauthServer.resourceMetadataUrl(req)}"` : "";
-            const description = token
-                ? "The access token is invalid, expired or revoked"
-                : "A bearer token is required";
-            res.setHeader(
-                "WWW-Authenticate",
-                token
-                    ? `Bearer realm="zalo-mcp", error="invalid_token", error_description="${description}"${meta}`
-                    : `Bearer realm="zalo-mcp"${meta}`,
-            );
-            return res
-                .status(401)
-                .json({ error: token ? "invalid_token" : "unauthorized", error_description: description });
-        });
-    }
+    // ── Bearer auth (static token, a named API key or an OAuth access token): all below but /health, /ready ──
+    app.use((req, res, next) => {
+        if (!authOn()) return next();
+        if (req.path === "/health" || req.path === "/ready") return next();
+        const authHeader = String(req.headers.authorization || "");
+        const token = /^bearer\s+/i.test(authHeader) ? authHeader.replace(/^bearer\s+/i, "").trim() : "";
+        if (isAgentToken(token, req)) return next();
+        // RFC 6750 §3 (and RFC 9728 §5.1: where the protected resource metadata is, when OAuth is on).
+        const meta = oauthServer.enabled ? `, resource_metadata="${oauthServer.resourceMetadataUrl(req)}"` : "";
+        const description = token ? "The access token is invalid, expired or revoked" : "A bearer token is required";
+        res.setHeader(
+            "WWW-Authenticate",
+            token
+                ? `Bearer realm="zalo-mcp", error="invalid_token", error_description="${description}"${meta}`
+                : `Bearer realm="zalo-mcp"${meta}`,
+        );
+        return res
+            .status(401)
+            .json({ error: token ? "invalid_token" : "unauthorized", error_description: description });
+    });
 
     // MCP endpoint — stateless, fresh server+transport per request (POST, GET, DELETE per Streamable HTTP spec)
     app.all("/mcp", async (req, res) => {

@@ -111,6 +111,8 @@ the media files, the webhook outbox) every `retention.purgeEvery` and applies th
 | `retention.media` | `keep` | `keep`, or `<N>d`: media files of messages N days old or older are deleted (the messages stay) |
 | `retention.outboxDead` | `30d` | dead webhook deliveries are deleted after this |
 | `retention.purgeEvery` | `6h` | how often the daemon checks (at least `1m`); `fleet purge` (a timer) asks a daemon that has not checked within twice this, and purges an account with no daemon itself |
+| `quota.user.limit` | none | in a tenant's policy (the default per user) or a user's: the user's share, summed over the accounts it owns on this host; over it, each of its accounts gives up its share of the excess like a tenant's (events carry `scope: "user"`, `userId`) |
+| `retention.mediaTempCap` | none | bytes, or `"1GB"`: the most the decrypted tempfile copies (`deliver: "tempfile"`) may hold; above it the oldest copies are removed first. The tempfile folder is the host's, so the cap counts every account's copies |
 
 **Over a limit, caching goes on.** The daemon sends `storage_quota` events to the webhook (`listen` prints them, and
 `mcp start` also hands them to its MCP clients as system events in `zalo_get_messages` / `zalo_wait_for_message`):
@@ -197,6 +199,7 @@ The `presence` keys (in `mcp-config.json` `presence`, `accounts.<ownId>.presence
 | `presence.onKick` | `yield` | on-demand only: when another session **of the same login** (a second copy of these credentials, a second tab of one browser) takes the socket, let it go and refuse every request until the user confirms `presence resume` (`yield`), or end the daemon with exit 3 (`exit`) |
 | `presence.alwaysOn.maxPerUser` | `1` | tenant or user policy: always-on accounts per user |
 | `presence.alwaysOn.maxPerTenant` | none | tenant policy: always-on accounts per tenant |
+| `presence.alwaysOn.onCap` | `demote` | tenant or user policy: what a write that would go over a cap does. `demote`: the oldest always-on account goes to on-demand (below); `refuse`: the write is refused with `409 ALWAYS_ON_CAP` and nothing changes. A lowered cap still demotes in both modes |
 
 `ZALO_PRESENCE_MODE[_<ownId>]` and `ZALO_PRESENCE_IDLE_TIMEOUT[_<ownId>]` sit between the files and the policy.
 
@@ -209,6 +212,48 @@ Admin API (its own credential): `GET|PUT|PATCH /zalo/admin/policy/users/<userId>
 `{tenant?, accounts?, policy?}`, and `GET /zalo/admin/presence/always-on` (always-on accounts per user and capped
 tenant, against the caps). CLI: `zalo-agent policy get|set|unset ... --user <userId>`; the membership is set with
 `policy set tenant <tenantId> --user <id>` and `policy set accounts <ownId,ownId> --user <id>`.
+
+### Limits, access and secrets for a console
+
+Generic limits a console (a control plane, a CRM) sets per tenant or user; the engine knows no plans or prices.
+
+| Key | Where | Meaning |
+|---|---|---|
+| `limits.accountsPerUser` | tenant (default per user) or user | the most accounts a user may own: a write that adds one more is refused (`409 ACCOUNTS_PER_USER_LIMIT`), and so is a QR add before its login starts. A lowered limit removes nothing |
+| `limits.usersPerTenant` | tenant | the most users a tenant may have: a new user or one moved in over it is refused (`409 USERS_PER_TENANT_LIMIT`) |
+| `media.store` | any | `all` (default), `none` (text-only storage) or a list of kinds (`["photo", "voice"]`): the one media downloader fetches no other kind, whether for the listener, `sync-media`, a restore or `zalo_view_media` (which answers `MEDIA_NOT_STORED`); the message rows are stored as always |
+
+Admin API routes (the same admin credential; every refusal carries a stable `code` beside `error`):
+
+- `GET /zalo/admin/policy/users`, `GET /zalo/admin/policy/tenants`: every user (`userId`, `tenant`, `accounts`, `rev`)
+  and every tenant (`tenantId`, `users`, `accounts`, `rev`, `file`). `DELETE /zalo/admin/policy/users/<userId>` and
+  `DELETE /zalo/admin/policy/tenants/<tenantId>` delete the file, refused with `409 USER_HAS_ACCOUNTS` or
+  `409 TENANT_HAS_MEMBERS` while it has members (`404 USER_NOT_FOUND` / `TENANT_NOT_FOUND`).
+- `/zalo/admin/access/<ownId>`: the account's access and secrets, on the fleet controller and on the account's own
+  server alike. A running daemon takes each change at its next request.
+  - `GET` (all of the below at once, never a secret or a hash); `GET .../oauth/clients`, `GET .../oauth/grants`,
+    `DELETE .../oauth/grants/<grantId>`, `POST .../oauth/revoke-all` `{clientId?}`, `DELETE .../oauth/clients/<clientId>`
+    (a registered client and its grants; a configured one is `409 CLIENT_CONFIGURED`).
+  - `GET|POST .../api-keys` (`{label, expiresAt?}` -> `201 {keyId, label, createdAt, expiresAt, key}`: the key, shaped
+    `zak_<keyId>_<secret>`, is shown once; only its SHA-256 is kept, sealed in `api-keys.json`), `DELETE
+    .../api-keys/<keyId>`. A key is a bearer for the account's MCP server beside `ZALO_MCP_AUTH_TOKEN` (the legacy key,
+    which keeps working); the first key turns the bearer check on for a server that had none.
+  - `GET|PUT .../webhook` (`{url}` or `{url: null}`: the account's `webhook` policy key), `POST|DELETE
+    .../webhook/secret` (rotate: the new secret is shown once and signs the next delivery, ahead of
+    `ZALO_WEBHOOK_SECRET` and `webhookSecret`; clear: back to those), `POST .../webhook/test` (one signed
+    `webhook_test` event: `{delivered, status, signed, ms}`; `409 WEBHOOK_NOT_SET`).
+  - `GET|PUT|DELETE .../approver` (`{password}`, at least 8 characters, kept as a scrypt hash), `GET|DELETE
+    .../cloud-key` (whether a zCloud key is stored; delete it).
+  - Every change is an audit line with the account, an action code (`apiKey.create`, `oauth.grant.revoke`,
+    `webhook.secret.rotate`, ...) and the id it touched, never a value.
+
+The fleet controller adds `GET /zalo/admin/usage` (every account's storage, summed per user and per tenant against
+their limits, and the disk) and `GET /zalo/admin/routes` (account id -> loopback port and `/a/<id>` path, the OAuth
+discovery rewrites, the paths to block, and with `--domain` the Caddyfile `fleet generate --domain` writes) for a host
+agent that keeps the reverse proxy; the controller itself changes no proxy configuration. A QR add
+(`POST /zalo/admin/accounts/qr`) is refused before its login starts for an unknown user (`404 USER_NOT_FOUND`), a user
+at `limits.accountsPerUser` (`409 ACCOUNTS_PER_USER_LIMIT`) or an always-on add over a cap that refuses
+(`409 ALWAYS_ON_CAP`); `accountId` in its body names an account the user already owns (a login again), which passes.
 
 **Who runs on-demand.** `mcp start --http` and `listen --daemon` follow `presence.mode` (on-demand by default);
 stdio MCP and a foreground `listen` printing to stdout are always-on whatever it says. A parked socket wakes for an MCP

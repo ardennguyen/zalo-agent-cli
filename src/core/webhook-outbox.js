@@ -351,7 +351,7 @@ export function describeWebhookUrl(url) {
  * @param {object} options
  * @param {ReturnType<typeof openOutbox>} options.outbox
  * @param {string} options.url
- * @param {string|null} [options.secret]
+ * @param {string|null|(() => string|null)} [options.secret] - or a function asked at every POST
  * @param {string} [options.accountId]
  * @param {number} [options.batchSize=1] - Events per POST. 1 sends each event exactly as before; more sends `{event:"batch", events:[...]}`
  * @param {number} [options.maxAgeMs] - A queued event older than this is dead-lettered
@@ -394,6 +394,8 @@ export function createWebhookDispatcher({
     let failures = 0;
     let lastFailureLogAt = 0;
     let sentSinceRecovery = 0;
+    // A function is asked at every POST: a secret rotated through the admin API signs the next delivery.
+    const secretNow = () => (typeof secret === "function" ? secret() : secret);
 
     function schedule(delay) {
         if (stopped) return;
@@ -420,7 +422,7 @@ export function createWebhookDispatcher({
                 ? rows[0].body
                 : JSON.stringify({ event: "batch", accountId, count: rows.length, events });
         const headers = {
-            ...webhookHeaders(body, secret),
+            ...webhookHeaders(body, secretNow()),
             "X-Zalo-Delivery": `${rows[0].seq}-${rows[rows.length - 1].seq}`,
             "X-Zalo-Attempt": String(Math.max(...rows.map((r) => r.attempts)) + 1),
         };
@@ -592,7 +594,7 @@ export function createWebhookDispatcher({
             const s = outbox.stats();
             return {
                 url: describeWebhookUrl(url),
-                signed: Boolean(secret),
+                signed: Boolean(secretNow()),
                 batchSize: size,
                 ...s,
                 consecutiveFailures: failures,

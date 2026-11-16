@@ -16,6 +16,10 @@
  *     POST   /accounts/<ownId>/logout               guarded: 409 {confirmToken} first, then X-Confirm: <token>
  *     DELETE /accounts/<ownId>                      guarded the same way: stop, `account remove` (crypto-shred)
  *     GET    /events                                SSE: `account_state` and `session_expiring` for every account
+ *     GET    /routes                                account id -> loopback port and path, for a host agent that
+ *                                                   keeps the reverse proxy's routes (this process edits no proxy)
+ *     GET    /usage                                 storage of every account, summed per user and tenant (./admin-api.js
+ *                                                   with ./storage-quota.js hostUsage)
  *     ...    /accounts/qr[...]                      the QR add flow (./fleet-qr.js)
  *     ...    /policy/..., /presence/always-on       the host-level policy (users, tenants, accounts)
  *
@@ -53,6 +57,7 @@ const ACCOUNT_ID = /^[1-9][0-9]{0,30}$/;
  * @param {(ownId: string) => Promise<void>|void} [args.forget] - drop a removed account from the port table, its env
  *   file and its user
  * @param {{handle: (req: object, res: object, ctx: object) => boolean|Promise<boolean>}|null} [args.qr] - WP8
+ * @param {(() => object)|null} [args.routes] - `GET /routes`: the account routes a host agent applies
  * @param {(ownId: string) => ({expiresAt: string, daysLeft: number, expired: boolean}|null)} [args.session] - when the
  *   account's saved login ends, read from its saved cookie jar (a running daemon's own reading wins)
  * @param {{due: (ownId: string, expiry: object|null) => boolean}|null} [args.sessionNotices] - which thresholds were
@@ -72,6 +77,7 @@ export function createFleetController({
     describe = () => ({}),
     forget = () => {},
     qr = null,
+    routes = null,
     session = () => null,
     sessionNotices = null,
     webhook = () => {},
@@ -164,6 +170,7 @@ export function createFleetController({
             const expiresAt = now() + CONFIRM_TTL_MS;
             confirms.set(token, { action, ownId, expiresAt });
             send(res, 409, {
+                code: "CONFIRMATION_REQUIRED",
                 confirmationRequired: true,
                 action,
                 accountId: ownId,
@@ -180,7 +187,10 @@ export function createFleetController({
             if (a.length === b.length && timingSafeEqual(a, b)) match = [t, c];
         }
         if (!match || match[1].action !== action || match[1].ownId !== ownId || match[1].expiresAt <= now()) {
-            send(res, 409, { error: "the confirm token is not valid for this action (expired, used or another one)" });
+            send(res, 409, {
+                error: "the confirm token is not valid for this action (expired, used or another one)",
+                code: "CONFIRM_TOKEN_INVALID",
+            });
             return false;
         }
         confirms.delete(match[0]);
@@ -217,8 +227,15 @@ export function createFleetController({
     async function handle(req, res, ctx) {
         const path = ctx.path;
         if (qr && (path === "/accounts/qr" || path.startsWith("/accounts/qr/"))) return qr.handle(req, res, ctx);
+        const getOnly = () => (send(res, 405, { error: "GET only", code: "METHOD_NOT_ALLOWED" }), true);
+        if (path === "/routes") {
+            if (req.method !== "GET") return getOnly();
+            if (!routes) return (send(res, 501, { error: "no account routes here", code: "NOT_SUPPORTED" }), true);
+            send(res, 200, routes());
+            return true;
+        }
         if (path === "/events") {
-            if (req.method !== "GET") return (send(res, 405, { error: "GET only" }), true);
+            if (req.method !== "GET") return getOnly();
             res.writeHead(200, {
                 "Content-Type": "text/event-stream",
                 "Cache-Control": "no-store",
@@ -231,7 +248,7 @@ export function createFleetController({
             return true;
         }
         if (path === "/accounts") {
-            if (req.method !== "GET") return (send(res, 405, { error: "GET only" }), true);
+            if (req.method !== "GET") return getOnly();
             send(res, 200, { supervisor: driver.kind, accounts: await accountsView() });
             return true;
         }
@@ -241,17 +258,30 @@ export function createFleetController({
             );
         if (!m) return false;
         const ownId = decodeURIComponent(m[1]);
-        if (!ACCOUNT_ID.test(ownId)) return (send(res, 400, { error: "not an account id" }), true);
-        if (!known(ownId)) return (send(res, 404, { error: `account ${ownId} is not registered on this host` }), true);
+        if (!ACCOUNT_ID.test(ownId))
+            return (send(res, 400, { error: "not an account id", code: "INVALID_ACCOUNT_ID" }), true);
+        if (!known(ownId))
+            return (
+                send(res, 404, {
+                    error: `account ${ownId} is not registered on this host`,
+                    code: "ACCOUNT_NOT_FOUND",
+                }),
+                true
+            );
         const action = m[2] ?? null;
         if (!action) {
-            if (req.method !== "DELETE") return (send(res, 405, { error: "DELETE only" }), true);
+            if (req.method !== "DELETE")
+                return (send(res, 405, { error: "DELETE only", code: "METHOD_NOT_ALLOWED" }), true);
             if (!guard(req, res, "remove", ownId)) return true;
             log(`[fleet] remove ${ownId} (${ctx.who} ${ctx.ip})`);
             await driver.stop(ownId);
             const r = await runCli(["--json", "account", "remove", ownId]);
             if (r.code !== 0) {
-                send(res, 500, { error: "account remove failed", detail: r.stderr.trim().slice(0, 500) });
+                send(res, 500, {
+                    error: "account remove failed",
+                    code: "REMOVE_FAILED",
+                    detail: r.stderr.trim().slice(0, 500),
+                });
                 return true;
             }
             await forget(ownId);
@@ -268,7 +298,7 @@ export function createFleetController({
             send(res, 200, { removed: true, accountId: ownId });
             return true;
         }
-        if (req.method !== "POST") return (send(res, 405, { error: "POST only" }), true);
+        if (req.method !== "POST") return (send(res, 405, { error: "POST only", code: "METHOD_NOT_ALLOWED" }), true);
         if (action === "start" || action === "stop" || action === "restart") {
             const before = states.get(ownId)?.state ?? null;
             const r = await driver[action](ownId);
@@ -288,8 +318,9 @@ export function createFleetController({
         if (action === "presence/wake" || action === "presence/park" || action === "presence/resume") {
             if (action === "presence/resume") log(`[fleet] presence resume ${ownId} (${ctx.who} ${ctx.ip})`);
             const r = await relay(ownId, "/presence", { action: action.slice(9) });
-            if (!r) return (send(res, 409, { error: "no daemon runs for this account" }), true);
-            if (!r.ok) return (send(res, 409, { error: r.error, ...(r.code ? { code: r.code } : {}) }), true);
+            if (!r)
+                return (send(res, 409, { error: "no daemon runs for this account", code: "DAEMON_NOT_RUNNING" }), true);
+            if (!r.ok) return (send(res, 409, { error: r.error, code: r.code ?? "PRESENCE_REFUSED" }), true);
             send(res, 200, r);
             return true;
         }
@@ -299,7 +330,11 @@ export function createFleetController({
             await driver.stop(ownId);
             const r = await runCli(["--json", "--account", ownId, "logout"]);
             if (r.code !== 0) {
-                send(res, 500, { error: "logout failed", detail: r.stderr.trim().slice(0, 500) });
+                send(res, 500, {
+                    error: "logout failed",
+                    code: "LOGOUT_FAILED",
+                    detail: r.stderr.trim().slice(0, 500),
+                });
                 return true;
             }
             noteState(ownId, "login_needed", { reason: "logout" });

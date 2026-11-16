@@ -5,7 +5,8 @@
  * - **Usage** of an account: its message database (the pages in use), its media and its webhook outbox. Measured by
  *   the daemon on its timer and after a purge; `db usage`, `account status`, `zalo_profile` and the admin API's
  *   `/zalo/admin/usage` show it.
- * - **Limits**: `quota.account.limit`, and a tenant's `quota.tenant.limit` shared by the accounts its
+ * - **Limits**: `quota.account.limit`, a user's `quota.user.limit` (its share, summed over the accounts it owns; a
+ *   tenant's file sets the default per user), and a tenant's `quota.tenant.limit` shared by the accounts its
  *   `quota.tenant.accounts` lists. On one host the engine sums only the accounts it runs: for a tenant spread over
  *   several hosts the console is the source of truth (it reads `/zalo/admin/usage` and the `storage_quota` events,
  *   and pushes per-account caps).
@@ -39,7 +40,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getAccountDir, resolveMediaRoot } from "./credentials.js";
+import { CONFIG_DIR, getAccountDir, resolveMediaRoot } from "./credentials.js";
 import { readStorageFile } from "./keystore/config.js";
 import { policyFor } from "./policy-layer.js";
 import { parseBytes, parseDays } from "./policy-schema.js";
@@ -208,7 +209,8 @@ const limitOf = (value) => {
  * @param {string} ownId
  * @param {{policy?: object|null}} [opts] - `policy`: pin the live policy (tests); null for none
  * @returns {{accountLimit: number|null, source: string, graceDays: number, warnAt: number, purgeOrder: string,
- *   tenants: Array<{id: string, limit: number|null, accounts: string[]}>}}
+ *   tenants: Array<{id: string, limit: number|null, accounts: string[]}>,
+ *   user: {id: string, limit: number, accounts: string[]}|null}}
  */
 export function resolveQuota(ownId, { policy } = {}) {
     const live = policy === undefined ? policyFor(ownId) : policy;
@@ -226,6 +228,7 @@ export function resolveQuota(ownId, { policy } = {}) {
         warnAt,
         purgeOrder: "media-first",
         tenants: tenantQuotas(ownId),
+        user: userQuota(ownId),
     };
 }
 
@@ -326,6 +329,21 @@ let tenantLookup = () => [];
 export function setTenantLookup(fn) {
     tenantLookup = typeof fn === "function" ? fn : () => [];
 }
+/** The owning user's share (from the policy store), or null. */
+let userLookup = () => null;
+/**
+ * Install the lookup of an account's owning user and its `quota.user.limit` (the policy store does, when loaded).
+ *
+ * @param {(ownId: string) => ({id: string, limit: unknown, accounts: string[]}|null)} fn
+ */
+export function setUserLookup(fn) {
+    userLookup = typeof fn === "function" ? fn : () => null;
+}
+function userQuota(ownId) {
+    const u = userLookup(String(ownId));
+    const limit = u ? limitOf(u.limit) : null;
+    return u && limit !== null ? { id: u.id, limit, accounts: (u.accounts ?? []).map(String) } : null;
+}
 function tenantQuotas(ownId) {
     return tenantLookup(String(ownId))
         .map((t) => ({
@@ -387,7 +405,8 @@ export function resolveRetention(ownId, { env = process.env, policy } = {}) {
  * The quota state a daemon left (its last usage and level), or an empty one.
  *
  * @param {string} accountDir
- * @returns {{usage: object|null, account: object, tenants: Record<string, object>, lastPurge: object|null,
+ * @returns {{usage: object|null, account: object, tenants: Record<string, object>, users: Record<string, object>,
+ *   lastPurge: object|null,
  *   lastPass: {at: string}|null}} `lastPass`: the last pass that ran (`fleet purge` asks a daemon whose timer is behind)
  */
 export function readQuotaState(accountDir) {
@@ -397,11 +416,12 @@ export function readQuotaState(accountDir) {
             usage: s.usage ?? null,
             account: s.account ?? {},
             tenants: s.tenants ?? {},
+            users: s.users ?? {},
             lastPurge: s.lastPurge ?? null,
             lastPass: s.lastPass ?? null,
         };
     } catch {
-        return { usage: null, account: {}, tenants: {}, lastPurge: null, lastPass: null };
+        return { usage: null, account: {}, tenants: {}, users: {}, lastPurge: null, lastPass: null };
     }
 }
 
@@ -625,14 +645,29 @@ export function runStoragePass({
         scopes.push({ key: "account", scope: "account", limit: quota.accountLimit, used: () => usage.total });
     // The other members' usage, measured once per pass (memberUsage: the daemon's figure, or a read-only count).
     const peers = new Map();
-    const peerTotal = (id, tenantId) => {
-        if (!peers.has(id)) peers.set(id, memberUsage(id, { log, context: `tenant ${tenantId}`, scratch: accountDir }));
+    const peerTotal = (id, context) => {
+        if (!peers.has(id)) peers.set(id, memberUsage(id, { log, context, scratch: accountDir }));
         return peers.get(id).total;
     };
+    // The owning user's share: the sum over its accounts on this host, given up in proportion like a tenant's.
+    if (quota.user) {
+        const u = quota.user;
+        const members = u.accounts.filter((id) => id === String(ownId) || existsSync(getAccountDir(id)));
+        const others = () =>
+            members.filter((id) => id !== String(ownId)).reduce((sum, id) => sum + peerTotal(id, `user ${u.id}`), 0);
+        scopes.push({
+            key: `user:${u.id}`,
+            scope: "user",
+            userId: u.id,
+            limit: u.limit,
+            used: () => usage.total + others(),
+            others,
+        });
+    }
     for (const t of quota.tenants) {
         const members = t.accounts.filter((id) => id === String(ownId) || existsSync(getAccountDir(id)));
         const others = () =>
-            members.filter((id) => id !== String(ownId)).reduce((sum, id) => sum + peerTotal(id, t.id), 0);
+            members.filter((id) => id !== String(ownId)).reduce((sum, id) => sum + peerTotal(id, `tenant ${t.id}`), 0);
         scopes.push({
             key: `tenant:${t.id}`,
             scope: "tenant",
@@ -646,11 +681,17 @@ export function runStoragePass({
         usage: null,
         account: {},
         tenants: {},
+        users: {},
         lastPurge: state.lastPurge,
         lastPass: dryRun ? state.lastPass : { at: new Date(now).toISOString() },
     };
     let target = Infinity;
-    const prevOf = (s) => (s.scope === "account" ? state.account : state.tenants[s.tenantId]) ?? {};
+    const prevOf = (s) =>
+        (s.scope === "account"
+            ? state.account
+            : s.scope === "user"
+              ? state.users?.[s.userId]
+              : state.tenants[s.tenantId]) ?? {};
     const steps = scopes.map((s) => {
         const step = stepQuota({
             prev: prevOf(s),
@@ -676,12 +717,14 @@ export function runStoragePass({
     for (const [key, prev] of [
         ["account", state.account],
         ...Object.entries(state.tenants).map(([id, v]) => [`tenant:${id}`, v]),
+        ...Object.entries(state.users ?? {}).map(([id, v]) => [`user:${id}`, v]),
     ]) {
         if (prev?.level && prev.level !== "ok" && !scopes.some((s) => s.key === key)) {
             report.events.push({
                 level: "ok",
-                scope: key === "account" ? "account" : "tenant",
-                ...(key !== "account" ? { tenantId: key.slice(7) } : {}),
+                scope: key === "account" ? "account" : key.startsWith("user:") ? "user" : "tenant",
+                ...(key.startsWith("tenant:") ? { tenantId: key.slice(7) } : {}),
+                ...(key.startsWith("user:") ? { userId: key.slice(5) } : {}),
             });
         }
     }
@@ -725,12 +768,14 @@ export function runStoragePass({
             events = [...events, ...again.events.filter((e) => e.level === "ok")];
         }
         if (s.scope === "account") nextState.account = next;
+        else if (s.scope === "user") nextState.users[s.userId] = next;
         else nextState.tenants[s.tenantId] = next;
         for (const e of events) {
             report.events.push({
                 ...e,
                 scope: s.scope,
                 ...(s.tenantId ? { tenantId: s.tenantId } : {}),
+                ...(s.userId ? { userId: s.userId } : {}),
                 usedBytes: s.used(),
                 limitBytes: s.limit,
                 overSince: next.overSince ? new Date(next.overSince).toISOString() : null,
@@ -768,6 +813,89 @@ export function runStoragePass({
 }
 
 /**
+ * The storage of every account on this host (the fleet controller's `GET /zalo/admin/usage`), with the sums per user
+ * and per tenant against their limits, and the disk. Each account's figure is the last one its daemon measured
+ * (`method: "daemon"` while it runs, `"last"` when it stopped) or, when none was ever measured, its file sizes now
+ * (`"files"`). Nothing is opened or written in an account's folder.
+ *
+ * @param {string[]} ownIds
+ * @param {{statfs?: typeof statfsSync, now?: number}} [opts]
+ * @returns {{measuredAt: string, totalBytes: number, disk: {freeBytes: number|null, totalBytes: number|null},
+ *   accounts: Array<object>, users: Array<object>, tenants: Array<object>}}
+ */
+export function hostUsage(ownIds, { statfs = statfsSync, now = Date.now() } = {}) {
+    const accounts = [];
+    const users = new Map();
+    const tenants = new Map();
+    for (const raw of ownIds) {
+        const id = String(raw);
+        const dir = getAccountDir(id);
+        const state = readQuotaState(dir);
+        let usage;
+        let method;
+        if (Number.isFinite(state.usage?.total)) {
+            usage = state.usage;
+            method = checkLock(dir).locked ? "daemon" : "last";
+        } else {
+            usage = measureUsage(id);
+            method = "files";
+        }
+        const quota = resolveQuota(id);
+        const user = userLookup(id);
+        accounts.push({
+            accountId: id,
+            userId: user?.id ?? null,
+            db: usage.db,
+            media: usage.media,
+            outbox: usage.outbox,
+            totalBytes: usage.total,
+            measuredAt: usage.measuredAt ? new Date(usage.measuredAt).toISOString() : null,
+            method,
+            limitBytes: quota.accountLimit,
+            level: state.account?.level ?? null,
+        });
+        if (user) {
+            const u = users.get(user.id) ?? {
+                userId: user.id,
+                totalBytes: 0,
+                limitBytes: limitOf(user.limit),
+                accounts: [],
+            };
+            u.totalBytes += usage.total;
+            u.accounts.push(id);
+            users.set(user.id, u);
+        }
+        for (const t of tenantLookup(id)) {
+            const row = tenants.get(t.id) ?? {
+                tenantId: t.id,
+                totalBytes: 0,
+                limitBytes: limitOf(t.policy?.quota?.tenant?.limit),
+                accounts: [],
+            };
+            row.totalBytes += usage.total;
+            row.accounts.push(id);
+            tenants.set(t.id, row);
+        }
+    }
+    let disk = { freeBytes: null, totalBytes: null };
+    try {
+        const st = statfs(CONFIG_DIR);
+        disk = { freeBytes: Number(st.bavail) * Number(st.bsize), totalBytes: Number(st.blocks) * Number(st.bsize) };
+    } catch {
+        /* no figure on this platform */
+    }
+    const byId = (a, b, k) => (a[k] < b[k] ? -1 : a[k] > b[k] ? 1 : 0);
+    return {
+        measuredAt: new Date(now).toISOString(),
+        totalBytes: accounts.reduce((sum, a) => sum + a.totalBytes, 0),
+        disk,
+        accounts: accounts.sort((a, b) => byId(a, b, "accountId")),
+        users: [...users.values()].sort((a, b) => byId(a, b, "userId")),
+        tenants: [...tenants.values()].sort((a, b) => byId(a, b, "tenantId")),
+    };
+}
+
+/**
  * What `db usage`, `account status` and `zalo_profile` show: the last usage a daemon measured (or the file sizes now),
  * the limits and rules in effect, and the quota level.
  *
@@ -799,6 +927,16 @@ export function describeStorage(ownId, { mediaRoot = null, dbBytes = null } = {}
                     ? new Date(state.tenants[t.id].overSince).toISOString()
                     : null,
             })),
+            user: quota.user
+                ? {
+                      id: quota.user.id,
+                      limit: quota.user.limit,
+                      level: state.users?.[quota.user.id]?.level ?? null,
+                      overSince: state.users?.[quota.user.id]?.overSince
+                          ? new Date(state.users[quota.user.id].overSince).toISOString()
+                          : null,
+                  }
+                : null,
         },
         retention: {
             messages: retention.messagesDays ? `${retention.messagesDays}d` : "keep",
@@ -875,7 +1013,12 @@ export function quotaSystemEvent(e) {
  * @returns {string}
  */
 export function describeQuotaEvent(e) {
-    const who = e.scope === "tenant" ? `tenant ${e.tenantId}` : `account ${e.accountId}`;
+    const who =
+        e.scope === "tenant"
+            ? `tenant ${e.tenantId}`
+            : e.scope === "user"
+              ? `user ${e.userId}`
+              : `account ${e.accountId}`;
     const use = e.limitBytes ? `${mib(e.usedBytes)} of ${mib(e.limitBytes)}` : "";
     switch (e.level) {
         case "warn":

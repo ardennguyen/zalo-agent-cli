@@ -5,6 +5,7 @@
  * IMPORTANT: All diagnostic output uses console.error() — stdout is the MCP transport channel.
  */
 
+import { createWebhookSecretSource } from "../core/webhook-secret.js";
 import { createHmac } from "crypto";
 import { readFileSync } from "fs";
 import { join } from "path";
@@ -905,7 +906,7 @@ export function registerMCPCommands(program) {
                 if (n) console.error(`[mcp] ${n} media link(s) revoked: their chat was hidden`);
             });
             // Decrypted copies a CLI command or a crash left behind expire on time while this daemon runs.
-            startTempfileSweeper({ ttlMs: mediaPolicy.tempfileTtlMs });
+            startTempfileSweeper({ ttlMs: mediaPolicy.tempfileTtlMs, accountId: activeAcc.ownId });
             // Logged in and the friend and group lists are loaded: the heavy part of start-up is over.
             gate.leave();
 
@@ -1230,7 +1231,13 @@ export function registerMCPCommands(program) {
                     accountDir,
                     accountId: activeAcc.ownId,
                     url,
-                    secret: webhookSecret,
+                    // Asked at every POST: a secret rotated through the admin API (src/core/webhook-secret.js) signs
+                    // the next delivery.
+                    secret: createWebhookSecretSource({
+                        accountDir,
+                        flag: opts.webhookSecret !== undefined ? webhookSecret : null,
+                        fallback: webhookSecret,
+                    }),
                     batchSize: delivery.batchSize,
                     maxAgeMs: delivery.maxAgeMs,
                     log: (line) => console.error(`[mcp] ${line}`),
@@ -1339,7 +1346,7 @@ export function registerMCPCommands(program) {
                         ttlMs: mediaPolicy.linkTtlMs,
                         rateLimit: mediaPolicy.linkRateLimit,
                     });
-                    startTempfileSweeper({ ttlMs: mediaPolicy.tempfileTtlMs });
+                    startTempfileSweeper({ ttlMs: mediaPolicy.tempfileTtlMs, accountId: activeAcc.ownId });
                     // Links issued under the old rule must not outlive it.
                     if (touches(changed, ["media.linkAuth", "media.capability"])) {
                         const n = mediaLinks.revokeAll("the link policy changed");

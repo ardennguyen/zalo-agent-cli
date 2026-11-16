@@ -678,6 +678,46 @@ ZALO_MCP_TRUSTED_PROXIES=${trustedProxies}`
 `;
 }
 
+/** The paths of an account's server a reverse proxy must never pass through (inside the network only). */
+export const INTERNAL_PATHS = Object.freeze(["/metrics", "/status", "/zalo/admin", "/zalo/admin/*"]);
+
+/**
+ * The account routes a host agent applies to its reverse proxy (the fleet controller's `GET /zalo/admin/routes`): one
+ * path prefix per account to its loopback port, the OAuth discovery rewrites a path issuer needs, the paths to block,
+ * and, with a domain, the whole Caddyfile `fleet generate --domain` writes. This process changes no proxy itself.
+ *
+ * @param {{accounts: Array<{ownId: string, port: number|null}>, domain?: string|null}} a
+ * @returns {{domain: string|null, prefix: string, internalPaths: string[], routes: Array<object>,
+ *   unrouted: string[], caddyfile: string|null}}
+ */
+export function describeAccountRoutes({ accounts, domain = null }) {
+    const routed = accounts.filter((a) => Number.isInteger(a.port)).sort((a, b) => (a.ownId < b.ownId ? -1 : 1));
+    return {
+        domain,
+        prefix: "/a/",
+        internalPaths: [...INTERNAL_PATHS],
+        routes: routed.map(({ ownId, port }) => ({
+            accountId: ownId,
+            port,
+            upstream: `127.0.0.1:${port}`,
+            path: `/a/${ownId}`,
+            publicUrl: domain ? accountPublicUrl(domain, ownId) : null,
+            rewrites: [
+                {
+                    from: `/.well-known/oauth-authorization-server/a/${ownId}`,
+                    to: `/a/${ownId}/.well-known/oauth-authorization-server/a/${ownId}`,
+                },
+                {
+                    from: `/.well-known/oauth-protected-resource/a/${ownId}/mcp`,
+                    to: `/a/${ownId}/.well-known/oauth-protected-resource/a/${ownId}/mcp`,
+                },
+            ],
+        })),
+        unrouted: accounts.filter((a) => !Number.isInteger(a.port)).map((a) => a.ownId),
+        caddyfile: domain && routed.length ? renderCaddyfile({ domain, accounts: routed }) : null,
+    };
+}
+
 /**
  * A Caddyfile with one path per account: https://<domain>/a/<id>/mcp reaches that account's daemon.
  * @param {{ domain: string, accounts: Array<{ ownId: string, port: number }> }} a

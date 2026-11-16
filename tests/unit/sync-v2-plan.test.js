@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { planSyncRun, STAGES } from "../../src/core/sync-v2/plan.js";
 
 const stale = { skip: false, reason: "stale" };
-const fresh = { skip: true, reason: "fresh" };
+const fresh = { skip: true, reason: "no-gap" };
 const byName = (plan) => Object.fromEntries(plan.stages.map((s) => [s.name, s]));
 
 describe("planSyncRun", () => {
@@ -42,7 +42,7 @@ describe("planSyncRun", () => {
     it("skips the phone prompt when the last sync is fresh, and says so", () => {
         const s = byName(planSyncRun({ freshness: fresh }));
         assert.equal(s.messages.run, false);
-        assert.match(s.messages.why, /synced recently/);
+        assert.match(s.messages.why, /already synced, nothing missing/);
         assert.match(s.messages.why, /--force/);
         assert.equal(s.reactions.run, true, "the backlog is not debounced -- it never prompts the phone");
     });
@@ -122,7 +122,7 @@ describe("planSyncRun — through a running daemon", () => {
         const plan = planSyncRun({ freshness: fresh, lockOk: false, daemonChannel: true });
         const s = byName(plan);
         assert.equal(s.messages.run, false);
-        assert.match(s.messages.why, /synced recently/);
+        assert.match(s.messages.why, /already synced, nothing missing/);
         assert.equal(s.messages.via, "local", "a skipped stage is routed nowhere");
         assert.equal(s.reactions.run, true, "the backlog never prompts the phone, so it still runs");
         assert.equal(plan.viaDaemon, true);

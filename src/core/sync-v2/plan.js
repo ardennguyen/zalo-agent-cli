@@ -87,7 +87,7 @@ export function planSyncRun({
         if (run && s.name === "messages" && freshness.skip) {
             run = false;
             via = "local";
-            why = `synced recently (${freshness.reason}); --force to re-ping the phone`;
+            why = "already synced, nothing missing since (no gap recorded); --force asks the phone anyway";
         }
         // A running messages stage says why it is not skipped (stale, pending
         // gap, never synced, forced); nothing else depends on freshness.

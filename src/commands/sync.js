@@ -81,7 +81,7 @@ export function registerSyncCommands(program) {
         )
         .option(
             "-F, --force",
-            "Restore messages even if a successful sync completed within the last hour (re-pings the phone)",
+            "Restore messages even when already synced and nothing is missing since (asks the phone)",
         )
         .option("-d, --days <n>", "Restore only the last N days of messages", parseIntAtLeast(1))
         .option("--from <date>", "Restore messages from this date onward (YYYY-MM-DD); overrides --days")
@@ -146,7 +146,7 @@ export function registerSyncCommands(program) {
         )
         .option(
             "-F, --force",
-            "Skip the 'already synced recently' shortcut and sync anyway. By default a sync is skipped when a successful one completed within the last hour and no gap is pending — as Zalo does, re-syncing only when something seems to be missing",
+            "Ask the phone even when already synced and nothing is missing. By default, once a restore has completed, the phone is asked again only for a recorded gap (the listener was down or dropped messages), an unfinished restore or a wider window — as Zalo's own apps do",
         )
         .option(
             "-d, --days <n>",
@@ -471,9 +471,10 @@ async function runMediaDownload(activeAcc, opts) {
         warning("No active session — downloading without the account's proxy and identity.");
     }
 
-    // The zCloud source: only on a plan that has zCloud, and only with the cloud key given now. The key lives in this
-    // variable for this run and nowhere else: never written, never logged, never in the JSON result.
-    let cloud = null;
+    // The zCloud source. --from-zcloud insists on it (plan checked, the stored key or one given now); without it the
+    // source is left unset, so the downloader uses the account's stored key on its own (an explicit null would turn
+    // that off). A key given now lives in this variable only: never written, never logged, never in the JSON result.
+    let cloud;
     if (opts.fromZcloud) {
         cloud = await openCloudSource(api, opts, activeAcc.ownId);
         if (!cloud) process.exit(1);
@@ -1327,7 +1328,9 @@ async function runTransferSync(activeAcc, opts) {
     // redundant, so that is allowed through (reason "wider-window").
     const freshness = syncManager.checkSyncFreshness({ force: opts.force, coversFrom: win.from });
     if (freshness.skip) {
-        success(`Already synced ${formatAge(freshness.ageMs)} ago — skipping to avoid re-pinging your phone.`);
+        success(
+            `Already synced (last restore ${formatAge(freshness.ageMs)} ago) and nothing is missing since — the phone is not asked.`,
+        );
         info("Pass --force to sync anyway.");
         process.exit(0);
     }
@@ -2458,7 +2461,7 @@ async function runSocketBackfill(activeAcc, opts) {
 
     const freshness = syncManager.checkSyncFreshness({ force: opts.force });
     if (freshness.skip) {
-        success(`Already synced ${formatAge(freshness.ageMs)} ago — skipping to avoid re-pinging the server.`);
+        success(`Already synced (last run ${formatAge(freshness.ageMs)} ago) and nothing is missing since — skipping.`);
         info(
             "Nothing looks missing since then. Pass --force to sync anyway, or run `zalo-agent listen` to keep the cache live.",
         );

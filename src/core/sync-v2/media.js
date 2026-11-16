@@ -59,9 +59,9 @@ import { loadCloudKey } from "../cloud-key-store.js";
  * @param {string} ownId
  * @returns {{privateKey: import("node:crypto").KeyObject}|null}
  */
-function storedCloudSource(ownId) {
+function storedCloudSource(ownId, load = loadCloudKey) {
     try {
-        const stored = loadCloudKey(ownId);
+        const stored = load(ownId);
         return stored?.privateKeyPkcs8Base64
             ? { privateKey: importCloudPrivateKey(stored.privateKeyPkcs8Base64) }
             : null;
@@ -176,6 +176,9 @@ function guessExt(att, url, contentType, buf) {
  * - `unknown`   the response did not say, or there was no response
  * - `failed`    something on our side went wrong after the fetch
  */
+/** What an old link answers when its server no longer serves it (see "old-unavailable"). */
+const OLD_UNAVAILABLE = new Set(["server-error", "network", "timeout"]);
+
 export const DOWNLOAD_REASONS = {
     "not-found": { verdict: "expired", label: "HTTP 404/410" },
     "lapsed-signature": { verdict: "expired", label: "a lapsed-signature body" },
@@ -192,6 +195,10 @@ export const DOWNLOAD_REASONS = {
     // Sorted by the clock, with no request: past the CDN's window (./media-age.js).
     "old-in-zcloud": { verdict: "old", label: "past the CDN's window, kept in zCloud" },
     "old-gone": { verdict: "old", label: "past the CDN's window, not in zCloud" },
+    "old-unavailable": {
+        verdict: "old",
+        label: "past the CDN's window, not in zCloud, and no longer served (HTTP 5xx or no response)",
+    },
     // The zCloud source (opt-in, with the account's cloud key).
     "cloud-no-key": { verdict: "cloud", label: "in zCloud, but no cloud key was given" },
     "cloud-not-found": { verdict: "cloud", label: "zCloud has no download for it" },
@@ -641,6 +648,9 @@ function writeConversationIndex(mediaRoot, names, scope) {
  *   (no file is written off by the clock alone: past the window the CDN may still have it, and on an account without
  *   zCloud it is the only source); then, when the CDN failed, zCloud. A link that answered 404/410 is remembered and
  *   not asked again (`retryDead`). `fetchBlob(item, {signal})` is the blob fetch (tests); default: the account's own
+ * @param {(ownId: string) => {privateKeyPkcs8Base64: string}|null} [opts.loadStoredKey] - the stored-key reader when
+ *   `cloud` is omitted (tests); default: the account's sealed key
+ * @param {Function} [opts.cloudFetchBlob] - the blob fetch for that stored-key source (tests)
  * @param {string} [opts.ownId] - the account (its chat with itself is My Cloud); default: the account folder's id
  * @param {number} [opts.now] - the clock (tests)
  * @param {boolean} [opts.retryDead=false] - ask again for links remembered as dead (404/410 on an earlier run);
@@ -799,12 +809,13 @@ export async function downloadSyncedMedia(opts = {}) {
     // Always the account's own media folder, never a shared override root: the list is the account's alone.
     const deadLinks = opts.deadLinks ?? openDeadLinks(resolve(accountDir, "media"), scope);
     const ownId = opts.ownId ?? scope.id;
-    const cloudGiven = opts.cloud === undefined ? storedCloudSource(ownId) : cloud;
+    const cloudGiven = opts.cloud === undefined ? storedCloudSource(ownId, opts.loadStoredKey) : cloud;
     const cloudSource = cloudGiven
         ? {
               privateKey: cloudGiven.privateKey ?? null,
               fetchBlob:
                   cloudGiven.fetchBlob ??
+                  opts.cloudFetchBlob ??
                   ((item, o = {}) => fetchCloudBlob(api, item, { fetch: download, signal: o.signal })),
           }
         : null;
@@ -989,6 +1000,30 @@ export async function downloadSyncedMedia(opts = {}) {
                 }
                 // Past the window, gone from the CDN and not openable from zCloud: counted for the summary; a file
                 // that zCloud keeps but this run has no key for says so.
+                // Past the window and not in zCloud: a 5xx or no response is how Zalo's servers answer a link they no
+                // longer serve, not load. Remembered like a 404 (`retryDead` asks again) and never counted as
+                // throttling, so a queue of old links cannot stop the run.
+                if (!got.ok && pastWindow && item && !cloudSource && OLD_UNAVAILABLE.has(got.code)) {
+                    // Kept in zCloud, and this run has no key for it: said so, and left for a run with the key.
+                    stats.oldInCloud++;
+                    stats.skipped++;
+                    tally("old-in-zcloud");
+                    return;
+                }
+                if (!got.ok && pastWindow && !item && OLD_UNAVAILABLE.has(got.code)) {
+                    deadLinks.add(url);
+                    stats.oldGone++;
+                    stats.skipped++;
+                    tally("old-unavailable");
+                    if (primary) {
+                        try {
+                            markMediaGone(row.msgId, now);
+                        } catch {
+                            /* a missing row is not worth failing the run over */
+                        }
+                    }
+                    return;
+                }
                 if (!got.ok && pastWindow && got.code === "not-found") {
                     if (item && !cloudSource) stats.oldInCloud++;
                     else {

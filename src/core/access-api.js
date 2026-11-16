@@ -34,7 +34,7 @@ import { cloudKeyStatus, forgetCloudKey } from "./cloud-key-store.js";
 import { PolicyError, applyPolicy, audit } from "./policy-store.js";
 import { clearWebhookSecret, readWebhookSecret, rotateWebhookSecret, webhookSecretStatus } from "./webhook-secret.js";
 import { describeWebhookUrl, webhookHeaders } from "./webhook-outbox.js";
-import { envForAccount, resolveWebhookUrl } from "../mcp/mcp-config.js";
+import { envForAccount, resolvePrimaryOAuthClient, resolveWebhookUrl } from "../mcp/mcp-config.js";
 import { OAUTH_STATE_FILE, configuredOAuthClients, createOAuthStore } from "../mcp/mcp-oauth.js";
 
 const ACCOUNT_ID = /^[1-9][0-9]{0,30}$/;
@@ -58,11 +58,18 @@ export function createAccessApi({ config = {}, accountEnv = () => ({}), fetchFn 
     const envOf = (ownId) => ({ ...process.env, ...(accountEnv(ownId) ?? {}) });
 
     const oauthOf = (dir) => createOAuthStore({ file: join(dir, OAUTH_STATE_FILE) });
-    const configured = () => [...configuredOAuthClients(config?.oauth ?? null).clients.values()];
+    // The account's configured clients as its daemon serves them: the primary one from its own environment
+    // (`ZALO_MCP_OAUTH_CLIENT_ID_<ownId>`, the env dir's file, then mcp-config.json), plus `oauth.clients[]`.
+    const configured = (ownId) => [
+        ...configuredOAuthClients({
+            ...(config?.oauth ?? {}),
+            ...resolvePrimaryOAuthClient({ config, accountId: ownId, env: envOf(ownId) }),
+        }).clients.values(),
+    ];
 
-    function clientsOf(dir) {
+    function clientsOf(ownId, dir) {
         return [
-            ...configured().map((c) => ({
+            ...configured(ownId).map((c) => ({
                 clientId: c.clientId,
                 name: c.name ?? null,
                 redirectUris: c.redirectUris,
@@ -95,7 +102,7 @@ export function createAccessApi({ config = {}, accountEnv = () => ({}), fetchFn 
             accountId: ownId,
             apiKeys: listApiKeys(dir),
             legacyToken: { set: Boolean(envForAccount("ZALO_MCP_AUTH_TOKEN", ownId, envOf(ownId))) },
-            oauth: { clients: clientsOf(dir), grants: oauthOf(dir).listGrants() },
+            oauth: { clients: clientsOf(ownId, dir), grants: oauthOf(dir).listGrants() },
             webhook: webhookView(ownId, dir),
             approver: approverStatus(dir),
             cloudKey: {
@@ -176,7 +183,7 @@ export function createAccessApi({ config = {}, accountEnv = () => ({}), fetchFn 
             if (rest === "") return only("GET") || send(res, 200, summary(ownId, dir));
 
             // ── OAuth ──
-            if (rest === "/oauth/clients") return only("GET") || send(res, 200, { clients: clientsOf(dir) });
+            if (rest === "/oauth/clients") return only("GET") || send(res, 200, { clients: clientsOf(ownId, dir) });
             let r = /^\/oauth\/clients\/([^/]+)$/.exec(rest);
             if (r) {
                 if (only("DELETE")) return true;
@@ -184,7 +191,7 @@ export function createAccessApi({ config = {}, accountEnv = () => ({}), fetchFn 
                 if (!ID.test(clientId)) return fail(res, 400, "INVALID_CLIENT_ID", "not a client id");
                 const n = oauthOf(dir).removeClient(clientId);
                 if (n < 0) {
-                    if (configured().some((c) => c.clientId === clientId))
+                    if (configured(ownId).some((c) => c.clientId === clientId))
                         return fail(
                             res,
                             409,

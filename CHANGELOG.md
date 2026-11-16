@@ -9,6 +9,14 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+#### Added
+
+- **Each account's own Zalo name and phone on the fleet controller's `GET /zalo/admin/accounts`** (`name`, `phone`; `null` when not known yet), so a console can tell its accounts apart. `listen` and `mcp start` read the account's own profile once when they start and again after a profile change from another device, and keep the name and the phone in the account registry; `whoami` keeps the phone too. A profile reply without a phone keeps the number already stored.
+
+#### Fixed
+
+- **The access API lists the OAuth client an account's own environment configures.** `/zalo/admin/access/<ownId>` and `.../oauth/clients` used to show only clients from `mcp-config.json`, so a client set with `ZALO_MCP_OAUTH_CLIENT_ID` in the fleet's `<env-dir>/<ownId>.env` was missing while its grants were listed. The daemon and the access API now resolve the primary client the same way.
+
 ## [3.1.0] — 2026-11-16
 
 Limits, text-only storage and admin surfaces for a console that manages tenants, users and accounts on one host.

@@ -53,7 +53,7 @@ describe("classifyLine", () => {
             "[listen] Webhook delivery failed (HTTP 503); 3 queued",
             "[mcp] media download failed: timeout",
             "Error: connect ECONNREFUSED 127.0.0.1:1",
-            "[accounts] could not update the cached name of 1000",
+            "[accounts] could not update the cached profile of 1000",
             "[mcp] Refusing to start: --config names a file it cannot read",
             "[listen] Stop failed: x",
         ]) {

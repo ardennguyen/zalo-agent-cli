@@ -13,7 +13,7 @@ import {
 } from "../core/zalo-client.js";
 import { saveCredentials, loadCredentials, getAccountDir, readSavedDevice } from "../core/credentials.js";
 import { describeLoginDevice, loginDeviceChange } from "../core/device-since.js";
-import { addAccount, getActive, removeAccount, updateAccountName } from "../core/accounts.js";
+import { addAccount, getActive, removeAccount, updateAccountProfile } from "../core/accounts.js";
 import { getDaemonStatus } from "../core/daemon-channel.js";
 import { describeSessionExpiry, sessionExpiryFor } from "../core/session-expiry.js";
 import { serverLogout, reportLogout, finishLocalLogout, lockHolder, describeTrustedDevice } from "../core/logout.js";
@@ -555,7 +555,10 @@ export function registerLoginCommands(program) {
                 const api = getApi();
                 const accountInfo = await api.fetchAccountInfo();
                 const p = accountInfo?.profile || {};
-                updateAccountName(p.userId || getOwnId(), p.displayName || p.zaloName);
+                updateAccountProfile(p.userId || getOwnId(), {
+                    name: p.displayName || p.zaloName,
+                    phone: p.phoneNumber,
+                });
                 // Nothing extends the saved login, so when it ends is worth knowing before it does.
                 const sessionExpiry = sessionExpiryFor(p.userId || getOwnId());
                 output({ ...accountInfo, sessionExpiry }, program.opts().json, () => {

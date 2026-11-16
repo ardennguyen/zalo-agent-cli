@@ -280,25 +280,35 @@ describe("what is also named alias first", () => {
         );
     });
 
-    it("rereads the account's own name on a profile control from another device", async () => {
+    it("reads the account's own name and phone at start, and rereads them on a profile control", async () => {
         const data = { controls: [{ content: { act_type: "profile", act: "update", data: "{}" } }] };
         assert.deepEqual(dispatchCtrl("1", 601, data), [{ emit: "profile_change", args: [{ act: "update" }] }]);
         assert.equal(readControls(data)[0].handled, true);
-        const names = [];
-        const listener = {
+        const seen = [];
+        const listener = () => ({
             handlers: {},
             on(n, fn) {
                 this.handlers[n] = fn;
             },
-        };
-        const api = { fetchAccountInfo: async () => ({ profile: { zaloName: "Owner Renamed" } }) };
-        const daemon = startDaemonAliases({ getApi: () => api, intervalMs: 0, onOwnName: (n) => names.push(n) });
+        });
+        let profile = { zaloName: "Owner", phoneNumber: "0123456789" };
+        const api = { fetchAccountInfo: async () => ({ profile }) };
+        const daemon = startDaemonAliases({ getApi: () => api, intervalMs: 0, onOwnProfile: (p) => seen.push(p) });
         try {
-            daemon.attach(listener);
-            listener.handlers.profile_change({ act: "update_status" });
-            listener.handlers.profile_change({ act: "update" });
-            await until(() => names.length === 1);
-            assert.deepEqual(names, ["Owner Renamed"]);
+            const first = listener();
+            daemon.attach(first);
+            await until(() => seen.length === 1);
+            assert.deepEqual(seen[0], { name: "Owner", phone: "0123456789" }, "read once when the daemon starts");
+
+            // A reconnect attaches a new listener: no second start read.
+            const second = listener();
+            daemon.attach(second);
+            profile = { zaloName: "Owner Renamed" };
+            second.handlers.profile_change({ act: "update_status" });
+            second.handlers.profile_change({ act: "update" });
+            await until(() => seen.length === 2);
+            assert.deepEqual(seen[1], { name: "Owner Renamed", phone: null });
+            assert.equal(seen.length, 2, "update_status and the second attach read nothing");
         } finally {
             daemon.stop();
         }

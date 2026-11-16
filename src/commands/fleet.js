@@ -11,7 +11,7 @@ import { readFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { parseEnv } from "node:util";
 import { parseAccountId } from "../core/daemon-account.js";
-import { listAccounts } from "../core/accounts.js";
+import { accountIdentity, listAccounts } from "../core/accounts.js";
 import { CONFIG_DIR, getAccountDir } from "../core/credentials.js";
 import {
     callViaDaemon,
@@ -812,6 +812,7 @@ export function registerFleetCommands(program) {
                 relay: (ownId, path, params) => callViaDaemon(getAccountDir(ownId), path, params),
                 runCli: (args) => runSelf(args),
                 describe: (ownId) => ({
+                    ...accountIdentity(ownId),
                     port: readPorts()[ownId] ?? null,
                     userId: ownerOf(ownId)?.id ?? null,
                     presence: effectivePolicy(ownId)?.presence?.mode ?? null,

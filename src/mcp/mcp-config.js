@@ -202,6 +202,39 @@ export function envForAccount(baseKey, accountId, env = process.env) {
 }
 
 /**
+ * The primary configured OAuth client of one account: its id, secret and redirect URIs, from the flags, then the
+ * environment (`NAME_<ownId>` first), then mcp-config.json. `mcp start` serves this client and the fleet's access
+ * API lists it, so both resolve it here and cannot disagree about which client an account has.
+ *
+ * @param {object} args
+ * @param {{clientId?: string, clientSecret?: string}} [args.opts] - `mcp start`'s flags
+ * @param {object} [args.config] - the resolved MCP config
+ * @param {string|null|undefined} args.accountId
+ * @param {NodeJS.ProcessEnv} [args.env]
+ * @returns {{clientId: string, clientSecret: string|null, redirectUris: string[]}}
+ */
+export function resolvePrimaryOAuthClient({ opts = {}, config = {}, accountId, env = process.env }) {
+    const redirectEnv = envForAccount("ZALO_MCP_OAUTH_REDIRECT_URIS", accountId, env);
+    const raw = redirectEnv ?? config?.oauth?.redirectUris;
+    const redirectUris = (Array.isArray(raw) ? raw : String(raw ?? "").split(","))
+        .map((s) => String(s).trim())
+        .filter(Boolean);
+    return {
+        clientId:
+            opts.clientId?.trim() ||
+            envForAccount("ZALO_MCP_OAUTH_CLIENT_ID", accountId, env) ||
+            config?.oauth?.clientId?.trim() ||
+            "zalo-mcp",
+        clientSecret:
+            opts.clientSecret?.trim() ||
+            envForAccount("ZALO_MCP_OAUTH_CLIENT_SECRET", accountId, env) ||
+            config?.oauth?.clientSecret?.trim() ||
+            null,
+        redirectUris,
+    };
+}
+
+/**
  * Load MCP config from disk, merged with defaults.
  *
  * `configPath` exists because `mcp start --config <path>` has always accepted a

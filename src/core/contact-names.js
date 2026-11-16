@@ -421,17 +421,18 @@ export function startAliasRefresh({
 }
 
 /**
- * The account's own current name (`fetchAccountInfo`): the Zalo name, else the display name.
+ * The account's own current profile (`fetchAccountInfo`): its name (the Zalo name, else the display name) and its
+ * phone number when Zalo gives one.
  *
  * @param {() => object|null} getApi
- * @returns {Promise<string|null>}
+ * @returns {Promise<{name: string|null, phone: string|null}|null>}
  */
-async function readOwnName(getApi) {
+async function readOwnProfile(getApi) {
     const api = getApi?.();
     if (typeof api?.fetchAccountInfo !== "function") return null;
     const info = await api.fetchAccountInfo();
     const p = info?.profile || info || {};
-    return str(p.zaloName) ?? str(p.displayName) ?? null;
+    return { name: str(p.zaloName) ?? str(p.displayName) ?? null, phone: str(p.phoneNumber) ?? null };
 }
 
 /** Forget the in-memory book (tests). */
@@ -461,15 +462,23 @@ function safe(fn) {
  * @param {() => object|null} opts.getApi
  * @param {(line: string) => void} [opts.log]
  * @param {(titles: Map<string, string>) => void} [opts.onRetitled] - e.g. update a thread-name cache
- * @param {(name: string) => void} [opts.onOwnName] - the account's own name, reread after a `profile` control
+ * @param {(profile: {name: string|null, phone: string|null}) => void} [opts.onOwnProfile] - the account's own name
+ *   and phone: read once when the first listener attaches, reread after a `profile` control
  * @param {number} [opts.intervalMs]
  * @param {number} [opts.debounceMs]
  * @returns {{attach: (listener: object) => void, refreshNow: (why?: string) => Promise<boolean>,
  *   trigger: (why?: string) => void, stop: () => void}}
  */
-export function startDaemonAliases({ getApi, log = () => {}, onRetitled, onOwnName, intervalMs, debounceMs } = {}) {
+export function startDaemonAliases({ getApi, log = () => {}, onRetitled, onOwnProfile, intervalMs, debounceMs } = {}) {
     setAliasPersistence(true);
     const refresher = startAliasRefresh({ getApi, log, intervalMs, debounceMs });
+    let profileRead = false;
+    const readProfile = (why) => {
+        if (typeof onOwnProfile !== "function") return;
+        readOwnProfile(getApi)
+            .then((p) => p && (p.name || p.phone) && onOwnProfile(p))
+            .catch(() => log(`profile: own profile not read (${why})`));
+    };
     const off = onAliasChange((ids, _aliases, { first = false } = {}) => {
         log(first ? `aliases: loaded ${ids.length}` : `aliases: ${ids.length} changed`);
         let api = null;
@@ -488,11 +497,14 @@ export function startDaemonAliases({ getApi, log = () => {}, onRetitled, onOwnNa
             // Own name or avatar changed on another device (`profile` control, act `update`): reread it, as Zalo
             // does. Its other acts (`update_status`, `phonebook`, `mode`, `biz`) change no name this client shows.
             listener?.on?.("profile_change", (change) => {
-                if (change?.act !== "update" || typeof onOwnName !== "function") return;
-                readOwnName(getApi)
-                    .then((name) => name && onOwnName(name))
-                    .catch(() => log("profile: own name not reread"));
+                if (change?.act === "update") readProfile("profile control");
             });
+            // Once per daemon, at start, as Zalo's own clients read the signed-in profile: an account that logged in
+            // before the phone was kept has none stored yet, and a rename made while the daemon was down is caught.
+            if (!profileRead) {
+                profileRead = true;
+                readProfile("start");
+            }
         },
         refreshNow: refresher.refreshNow,
         trigger: refresher.trigger,

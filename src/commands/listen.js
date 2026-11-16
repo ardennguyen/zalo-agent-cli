@@ -13,7 +13,7 @@ import { readControls } from "../zalo/queues/control-queue.js";
 import { success, error, info, warning, output } from "../utils/output.js";
 import { resolveWebhookSecret } from "../utils/secrets.js";
 import { parseAccountId, selectDaemonAccount, loginDaemonAccount } from "../core/daemon-account.js";
-import { updateAccountName } from "../core/accounts.js";
+import { updateAccountName, updateAccountProfile } from "../core/accounts.js";
 import { CONFIG_DIR, getAccountDir } from "../core/credentials.js";
 import { createStartupGate, resolveStartupSettings } from "../core/startup-gate.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
@@ -811,7 +811,7 @@ export function registerListenCommand(program) {
             const daemonAliases = startDaemonAliases({
                 getApi,
                 log: daemonLog,
-                onOwnName: (name) => updateAccountName(activeAcc.ownId, name),
+                onOwnProfile: (profile) => updateAccountProfile(activeAcc.ownId, profile),
             });
             // Same health object `mcp start` builds (src/core/daemon-health.js): `listen --status` prints it.
             const health = createDaemonHealth({ kind: "listen", accountId: activeAcc.ownId, version: PKG_VERSION });

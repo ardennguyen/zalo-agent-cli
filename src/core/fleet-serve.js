@@ -71,6 +71,42 @@ export function runSelf(args, { env = process.env } = {}) {
 }
 
 /**
+ * Start this CLI as a child for an account job (./fleet-jobs.js): like {@link runSelf}, and it can be interrupted.
+ * SIGINT is the Ctrl+C the commands stop cleanly on (a re-run resumes).
+ *
+ * @param {string[]} args
+ * @param {{env?: NodeJS.ProcessEnv}} [o]
+ * @returns {{done: Promise<{code: number, stdout: string, stderr: string}>, cancel: () => void}}
+ */
+export function startSelf(args, { env = process.env } = {}) {
+    const child = spawn(process.execPath, [process.argv[1], ...args], {
+        env: { ...env, ZALO_JSON_MODE: "1" },
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+    });
+    const done = new Promise((resolve) => {
+        let stdout = "";
+        let stderr = "";
+        // Keep the end of long outputs: the result is the last JSON line, the error the last lines.
+        const cap = (s) => (s.length > 262_144 ? s.slice(-262_144) : s);
+        child.stdout.on("data", (d) => (stdout = cap(stdout + d)));
+        child.stderr.on("data", (d) => (stderr = cap(stderr + d)));
+        child.on("error", (e) => resolve({ code: 1, stdout, stderr: stderr + e.message }));
+        child.on("exit", (code, signal) => resolve({ code: code ?? (signal ? 130 : 1), stdout, stderr }));
+    });
+    return {
+        done,
+        cancel: () => {
+            try {
+                child.kill("SIGINT");
+            } catch {
+                /* gone */
+            }
+        },
+    };
+}
+
+/**
  * The admin webhook: every `account_state` and QR event, POSTed as JSON, signed like the daemons' webhooks when a
  * secret is set (`Authorization: Bearer <secret>`, `X-Zalo-Signature: sha256=<HMAC>`). Fire and forget.
  *

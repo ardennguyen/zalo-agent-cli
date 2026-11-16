@@ -15,6 +15,7 @@
  *                                                   other session of this login; the admin's explicit confirmation)
  *     POST   /accounts/<ownId>/logout               guarded: 409 {confirmToken} first, then X-Confirm: <token>
  *     DELETE /accounts/<ownId>                      guarded the same way: stop, `account remove` (crypto-shred)
+ *     ...    /accounts/<ownId>/jobs[...]            sync, attachment download and purge jobs (./fleet-jobs.js)
  *     GET    /events                                SSE: `account_state` and `session_expiring` for every account
  *     GET    /routes                                account id -> loopback port and path, for a host agent that
  *                                                   keeps the reverse proxy's routes (this process edits no proxy)
@@ -58,6 +59,7 @@ const ACCOUNT_ID = /^[1-9][0-9]{0,30}$/;
  *   file and its user
  * @param {{handle: (req: object, res: object, ctx: object) => boolean|Promise<boolean>}|null} [args.qr] - WP8
  * @param {(() => object)|null} [args.routes] - `GET /routes`: the account routes a host agent applies
+ * @param {{handle: Function, stopAll: Function}|null} [args.jobs] - the account jobs (./fleet-jobs.js); null: 501
  * @param {(ownId: string) => ({expiresAt: string, daysLeft: number, expired: boolean}|null)} [args.session] - when the
  *   account's saved login ends, read from its saved cookie jar (a running daemon's own reading wins)
  * @param {{due: (ownId: string, expiry: object|null) => boolean}|null} [args.sessionNotices] - which thresholds were
@@ -78,6 +80,7 @@ export function createFleetController({
     forget = () => {},
     qr = null,
     routes = null,
+    jobs = null,
     session = () => null,
     sessionNotices = null,
     webhook = () => {},
@@ -252,6 +255,24 @@ export function createFleetController({
             send(res, 200, { supervisor: driver.kind, accounts: await accountsView() });
             return true;
         }
+        const jm = /^\/accounts\/([^/]+)(\/jobs(?:\/.*)?)$/.exec(path);
+        if (jm) {
+            const id = decodeURIComponent(jm[1]);
+            if (!ACCOUNT_ID.test(id))
+                return (send(res, 400, { error: "not an account id", code: "INVALID_ACCOUNT_ID" }), true);
+            if (!known(id))
+                return (
+                    send(res, 404, {
+                        error: `account ${id} is not registered on this host`,
+                        code: "ACCOUNT_NOT_FOUND",
+                    }),
+                    true
+                );
+            if (!jobs) return (send(res, 501, { error: "no account jobs here", code: "NOT_SUPPORTED" }), true);
+            if (jobs.handle(id, jm[2], req, res, ctx)) return true;
+            send(res, 404, { error: "not found", code: "NOT_FOUND" });
+            return true;
+        }
         const m =
             /^\/accounts\/([^/]+)(?:\/(start|stop|restart|logout|presence\/wake|presence\/park|presence\/resume))?$/.exec(
                 path,
@@ -359,6 +380,7 @@ export function createFleetController({
         stop() {
             if (timer) clearInterval(timer);
             timer = null;
+            jobs?.stopAll();
             for (const c of clients) {
                 try {
                     c.end();

@@ -19,7 +19,7 @@ import { describe, it, before, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import EventEmitter from "node:events";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { SyncManager, SYNC_FRESHNESS_MS } from "../../src/core/sync.js";
+import { SyncManager } from "../../src/core/sync.js";
 import { markSyncRangesPending, recordSyncGap, setSyncRangeStatus } from "../../src/core/db.js";
 
 const THREAD_USER = 0;
@@ -64,24 +64,24 @@ describe("SyncManager sync-freshness debounce", () => {
         assert.equal(r.ageMs, null);
     });
 
-    it("skips a repeat sync inside the freshness window", () => {
+    it("skips a repeat sync when nothing is missing", () => {
         manager.markSyncSuccess("backfill");
         const last = manager.getLastSuccessfulSyncAt();
         assert.ok(last > 0, "markSyncSuccess should stamp lastSyncOkAt");
 
-        const r = manager.checkSyncFreshness({ now: last + 60_000, freshnessMs: SYNC_FRESHNESS_MS });
+        const r = manager.checkSyncFreshness({ now: last + 60_000 });
         assert.equal(r.skip, true);
-        assert.equal(r.reason, "fresh");
+        assert.equal(r.reason, "no-gap");
         assert.equal(r.lastSyncAt, last);
         assert.equal(r.ageMs, 60_000);
     });
 
-    it("does not skip once the last sync is older than the window", () => {
+    it("as Zalo's own apps do, the age of the last restore does not matter: a week later, no gap, still skipped", () => {
         manager.markSyncSuccess("transfer");
         const last = manager.getLastSuccessfulSyncAt();
-        const r = manager.checkSyncFreshness({ now: last + SYNC_FRESHNESS_MS + 1, freshnessMs: SYNC_FRESHNESS_MS });
-        assert.equal(r.skip, false);
-        assert.equal(r.reason, "stale");
+        const r = manager.checkSyncFreshness({ now: last + 7 * 24 * 60 * 60 * 1000 });
+        assert.equal(r.skip, true);
+        assert.equal(r.reason, "no-gap");
     });
 
     it("--force bypasses the debounce even when fresh", () => {
@@ -155,7 +155,7 @@ describe("SyncManager sync-freshness debounce", () => {
         const last = manager.getLastSuccessfulSyncAt();
         const r = manager.checkSyncFreshness({ now: last + 1000, coversFrom: 0 });
         assert.equal(r.skip, true, "unknown coverage must not turn every run into a wider-window run");
-        assert.equal(r.reason, "fresh");
+        assert.equal(r.reason, "no-gap");
     });
 
     it("a later window-less success clears a stale coverage marker", () => {

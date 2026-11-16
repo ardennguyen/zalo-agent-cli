@@ -81,7 +81,7 @@ export function registerSyncCommands(program) {
         )
         .option(
             "-F, --force",
-            "Restore messages even if a successful sync completed within the last hour (re-pings the phone)",
+            "Restore messages even when already synced and nothing is missing since (asks the phone)",
         )
         .option("-d, --days <n>", "Restore only the last N days of messages", parseIntAtLeast(1))
         .option("--from <date>", "Restore messages from this date onward (YYYY-MM-DD); overrides --days")
@@ -146,7 +146,7 @@ export function registerSyncCommands(program) {
         )
         .option(
             "-F, --force",
-            "Skip the 'already synced recently' shortcut and sync anyway. By default a sync is skipped when a successful one completed within the last hour and no gap is pending — as Zalo does, re-syncing only when something seems to be missing",
+            "Ask the phone even when already synced and nothing is missing. By default, once a restore has completed, the phone is asked again only for a recorded gap (the listener was down or dropped messages), an unfinished restore or a wider window — as Zalo's own apps do",
         )
         .option(
             "-d, --days <n>",
@@ -1328,7 +1328,9 @@ async function runTransferSync(activeAcc, opts) {
     // redundant, so that is allowed through (reason "wider-window").
     const freshness = syncManager.checkSyncFreshness({ force: opts.force, coversFrom: win.from });
     if (freshness.skip) {
-        success(`Already synced ${formatAge(freshness.ageMs)} ago — skipping to avoid re-pinging your phone.`);
+        success(
+            `Already synced (last restore ${formatAge(freshness.ageMs)} ago) and nothing is missing since — the phone is not asked.`,
+        );
         info("Pass --force to sync anyway.");
         process.exit(0);
     }
@@ -2459,7 +2461,7 @@ async function runSocketBackfill(activeAcc, opts) {
 
     const freshness = syncManager.checkSyncFreshness({ force: opts.force });
     if (freshness.skip) {
-        success(`Already synced ${formatAge(freshness.ageMs)} ago — skipping to avoid re-pinging the server.`);
+        success(`Already synced (last run ${formatAge(freshness.ageMs)} ago) and nothing is missing since — skipping.`);
         info(
             "Nothing looks missing since then. Pass --force to sync anyway, or run `zalo-agent listen` to keep the cache live.",
         );

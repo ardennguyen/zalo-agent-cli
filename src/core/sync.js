@@ -26,15 +26,6 @@ function resolveAccountDir(accountName) {
  * uninstalled for months) doesn't produce a nonsensical multi-month ask. */
 export const MAX_GAP_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
 
-/**
- * How recently a sync must have completed for a fresh one to be treated as
- * redundant and skipped: a redundant-sync gate, so that asking again while the
- * last run is fresh is a silent no-op that never re-opens the transfer session
- * and so never re-pings the phone. Bypass with `{force: true}`
- * (the `sync-mobile --force` flag).
- */
-export const SYNC_FRESHNESS_MS = 60 * 60 * 1000; // 1 hour
-
 export class SyncManager {
     constructor(api, accountName) {
         this.api = api;
@@ -156,28 +147,22 @@ export class SyncManager {
     }
 
     /**
-     * Decide whether a sync can be skipped because we completed one recently
-     * and know of no coverage gap — a redundant-sync
-     * debounce (see {@link SYNC_FRESHNESS_MS}), so repeated runs
-     * don't spam the socket or, for the phone-waking transfer-sync path, the
-     * owner's phone.
+     * Decide whether a sync can be skipped, the way Zalo's own apps decide "no need to sync": once the account has
+     * completed a restore, the phone is asked again only when something is known to be missing. The listener records
+     * every coverage gap (it was down, or dropped messages), so with none recorded the cache is complete however long
+     * ago the last restore ran; the age of that restore does not matter.
      *
-     * A pending coverage gap always forces a sync, and so does an unfinished conversation range (a restore that
-     * settled only part of its window), and so does `force`.
-     * Otherwise we skip when the last success is younger than `freshnessMs` —
-     * unless the caller is asking for a WIDER window than the last success
-     * covered (`coversFrom` older than the recorded `lastSyncOkFrom`). A
-     * `--days 1` run must not suppress a full-history run an hour later:
-     * that is a request for data we do not have, not a redundant repeat.
-     * `now`/`freshnessMs` are injectable for tests.
+     * The phone is asked when: `force`; a pending coverage gap; an unfinished conversation range (a restore that
+     * settled only part of its window); no restore ever completed; or the caller asks for a WIDER window than the last
+     * success covered (`coversFrom` older than the recorded `lastSyncOkFrom`): a `--days 1` run must not suppress
+     * a full-history run, which asks for data we do not have. `now` is injectable for tests (it only fills `ageMs`).
      *
-     * @param {{force?: boolean, freshnessMs?: number, now?: number, coversFrom?: number}} [opts]
+     * @param {{force?: boolean, now?: number, coversFrom?: number}} [opts]
      * @returns {{skip: boolean, reason: string, lastSyncAt: number|null, ageMs: number|null, coveredFrom: number|null}}
      */
     checkSyncFreshness(opts = {}) {
         this._ensureDb();
         const force = opts.force === true;
-        const freshnessMs = Number.isFinite(opts.freshnessMs) ? opts.freshnessMs : SYNC_FRESHNESS_MS;
         const now = Number.isFinite(opts.now) ? opts.now : Date.now();
         const lastSyncAt = this.getLastSuccessfulSyncAt();
         const ageMs = lastSyncAt === null ? null : Math.max(0, now - lastSyncAt);
@@ -191,11 +176,8 @@ export class SyncManager {
         const ranges = countSyncRanges();
         if (ranges.pending + ranges.failed > 0) return out(false, "unfinished-ranges");
         if (lastSyncAt === null) return out(false, "never-synced");
-        if (ageMs < freshnessMs) {
-            const widening = Number.isFinite(opts.coversFrom) && coveredFrom !== null && coveredFrom > opts.coversFrom;
-            return widening ? out(false, "wider-window") : out(true, "fresh");
-        }
-        return out(false, "stale");
+        const widening = Number.isFinite(opts.coversFrom) && coveredFrom !== null && coveredFrom > opts.coversFrom;
+        return widening ? out(false, "wider-window") : out(true, "no-gap");
     }
 
     /**

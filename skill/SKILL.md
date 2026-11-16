@@ -150,7 +150,7 @@ zalo-agent sync-mobile --days 30             # ...only the last 30 days (default
 zalo-agent sync-mobile --from 2018-01-01     # ...everything from an explicit date onward
 zalo-agent sync-mobile                       # Phone-backed history restore — prompts your phone ONCE
 zalo-agent sync-mobile --socket              # Old server probe instead (usually empty; no phone contact)
-zalo-agent sync-mobile --force               # Skip the "already synced recently" debounce
+zalo-agent sync-mobile --force               # Ask the phone even when nothing is missing since the last restore
 zalo-agent sync-mobile --messages-only       # ...history only, skip the media fetch
 zalo-agent sync-media                        # Re-run/resume the media fetch on its own — no phone needed
 zalo-agent sync-media --kind photo,video --dry-run   # ...plan the fetch without touching the network

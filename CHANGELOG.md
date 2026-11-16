@@ -9,6 +9,10 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+#### Changed
+
+- **`sync` asks the phone only when something is missing**, as Zalo's own apps do. Once a restore has completed, a new `sync` answers "already synced" with no phone prompt unless the listener recorded a gap (it was down or dropped messages), a restore is unfinished or a wider window is asked for; the age of the last restore no longer matters (it used to ask again after an hour). `--force` still asks.
+
 #### Fixed
 
 - **Old media links no longer stop a download run.** A file past Zalo's keeping window that zCloud does not hold, whose server answers HTTP 5xx or not at all, is counted as gone and remembered like a 404 (`--retry-dead` asks again) instead of being taken for rate limiting, which used to end the run after a few in a row and left the rest of the queue behind it.

@@ -9,6 +9,12 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+## [3.2.2] — 2026-11-17
+
+#### Fixed
+
+- **`GET /zalo/admin/host` answered 404** on a running fleet controller: the admin API passed only `/accounts`, `/events` and `/routes` on to the controller. It now reaches it.
+
 ## [3.2.1] — 2026-11-17
 
 #### Added
@@ -984,7 +990,8 @@ npm install -g @ardennguyen/zalo-agent-cli@2.0.0
 
 Commands, flags and defaults: `skill/references/command-reference.md`. Operating it on a server: `docs/deployment.md`.
 
-[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.2.1...v3.0-dev
+[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.2.2...v3.0-dev
+[3.2.2]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.2.2
 [3.2.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.2.1
 [3.2.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.2.0
 [3.1.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.1.1

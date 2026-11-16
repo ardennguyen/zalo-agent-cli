@@ -11,6 +11,7 @@ import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { createFleetController } from "../../src/core/fleet-controller.js";
 import { buildControllerApp } from "../../src/core/fleet-serve.js";
 import { JOB_KINDS, createFleetJobs, parseJobResult } from "../../src/core/fleet-jobs.js";
+import { createHostMetrics } from "../../src/core/host-metrics.js";
 
 const A = "1000000000000000981";
 const B = "1000000000000000982";
@@ -60,6 +61,11 @@ async function rig({ maxRunning = 2 } = {}) {
         relay: async () => null,
         runCli: async () => ({ code: 0, stdout: "{}", stderr: "" }),
         jobs,
+        host: createHostMetrics({
+            read: () => {
+                throw new Error("no /proc here");
+            },
+        }),
         log: () => {},
     });
     const { app } = buildControllerApp({ controller, env: { ZALO_MCP_ADMIN_TOKEN: ADMIN }, log: () => {} });
@@ -191,5 +197,18 @@ describe("account jobs", () => {
         const again = await call(`/accounts/${A}/jobs/${j.body.id}/cancel`, { method: "POST" });
         assert.equal(again.status, 409);
         assert.equal(again.body.code, "JOB_ENDED");
+    });
+});
+
+describe("host health through the admin API", () => {
+    it("is served at /zalo/admin/host behind the admin credential, naming the controller and every account", async () => {
+        const { call } = await rig();
+        const r = await call("/host");
+        assert.equal(r.status, 200);
+        assert.ok(r.body.memory.totalBytes > 0);
+        assert.deepEqual(
+            r.body.processes.map((p) => p.name),
+            ["controller", A, B, C],
+        );
     });
 });

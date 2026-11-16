@@ -24,7 +24,13 @@ import { mountOAuth, oauthStartCheck, safeEqual } from "./mcp-oauth.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const pkg = JSON.parse(readFileSync(join(__dirname, "../../package.json"), "utf8"));
+// __ZALO_PKG_VERSION__ is substituted by esbuild in the published bundle (scripts/build.mjs); undefined from source.
+const pkg = {
+    version:
+        typeof __ZALO_PKG_VERSION__ !== "undefined"
+            ? __ZALO_PKG_VERSION__
+            : JSON.parse(readFileSync(join(__dirname, "../../package.json"), "utf8")).version,
+};
 
 /**
  * Create HTTP or HTTPS MCP server with optional bearer token and OAuth 2.0 auth.

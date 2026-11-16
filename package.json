@@ -4,17 +4,18 @@
     "description": "CLI and MCP server for Zalo automation, on its own Zalo-protocol engine — multi-account, proxy, bank transfers, QR payments, Official Account API v3.0",
     "type": "module",
     "bin": {
-        "zalo-agent": "src/index.js"
+        "zalo-agent": "dist/index.js"
     },
-    "main": "./src/index.js",
+    "main": "./dist/index.js",
     "files": [
-        ".env.example",
-        "DISCLAIMER.md",
+        "dist/",
         "LICENSE",
         "NOTICE",
-        "src/"
+        "README.md"
     ],
     "scripts": {
+        "build": "node scripts/build.mjs",
+        "prepack": "node scripts/build.mjs",
         "test": "node --test tests/unit/*.test.js tests/cli/*.test.js",
         "lint": "eslint --max-warnings 0 src/ tests/",
         "lint:fix": "eslint src/ tests/ --fix",
@@ -72,6 +73,7 @@
     },
     "devDependencies": {
         "acorn": "^8.19.0",
+        "esbuild": "0.25.10",
         "eslint": "^10.0.3",
         "prettier": "^3.8.1"
     },

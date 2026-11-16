@@ -32,3 +32,6 @@ docs/decisions/
 tests/targets.json
 tests/.artifacts.json
 tests/.credential-backup/
+
+# Built runtime bundle (scripts/build.mjs) — produced at pack/publish time, never committed
+dist/

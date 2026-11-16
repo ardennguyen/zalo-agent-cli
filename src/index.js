@@ -12,7 +12,14 @@ import { Command } from "commander";
 import { registerLoginCommands } from "./commands/login.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf8"));
+// __ZALO_PKG_VERSION__ is substituted by esbuild in the published bundle (scripts/build.mjs), where this file
+// no longer sits next to package.json; running from source it is undefined and the manifest is read as before.
+const pkg = {
+    version:
+        typeof __ZALO_PKG_VERSION__ !== "undefined"
+            ? __ZALO_PKG_VERSION__
+            : JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf8")).version,
+};
 import { registerMsgCommands } from "./commands/msg.js";
 import { registerFriendCommands } from "./commands/friend.js";
 import { registerGroupCommands } from "./commands/group.js";

@@ -26,6 +26,12 @@ const NODE_GLOBALS = {
     TextDecoder: "readonly",
     TextEncoder: "readonly",
     WebAssembly: "readonly",
+    // Build-time constants esbuild substitutes in the published bundle only (scripts/build.mjs).
+    // Undefined when running from source (tests, dev); each use is guarded by `typeof … !== "undefined"`
+    // so the source path falls back to its original runtime lookup.
+    __ZALO_PKG_VERSION__: "readonly",
+    __ZALO_KEYSTORE_WORKER_NAME__: "readonly",
+    __ZALO_CLI_ENTRY_SPEC__: "readonly",
 };
 
 export default [

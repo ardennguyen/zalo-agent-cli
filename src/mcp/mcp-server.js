@@ -11,7 +11,13 @@ import { registerTools } from "./mcp-tools.js";
 import { newMcpServer } from "./new-server.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const pkg = JSON.parse(readFileSync(join(__dirname, "../../package.json"), "utf8"));
+// __ZALO_PKG_VERSION__ is substituted by esbuild in the published bundle (scripts/build.mjs); undefined from source.
+const pkg = {
+    version:
+        typeof __ZALO_PKG_VERSION__ !== "undefined"
+            ? __ZALO_PKG_VERSION__
+            : JSON.parse(readFileSync(join(__dirname, "../../package.json"), "utf8")).version,
+};
 
 /**
  * Create and start MCP server with stdio transport.

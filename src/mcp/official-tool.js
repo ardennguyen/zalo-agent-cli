@@ -33,8 +33,14 @@ export const OFFICIAL_CLI_ONLY = Object.freeze({
 /** Options a caller never sets through `options`: the tool's own inputs answer for them. */
 const RESERVED = new Set(["yes", "dry-run", "json", "help"]);
 
-/** The CLI entry point the commands run through. */
-const CLI_ENTRY = fileURLToPath(new URL("../index.js", import.meta.url));
+/**
+ * The CLI entry point the commands run through. In the published bundle (scripts/build.mjs) this module is inlined
+ * into dist/index.js, which is itself the CLI entry, so __ZALO_CLI_ENTRY_SPEC__ (substituted by esbuild) resolves to
+ * "./index.js". From source it is undefined and the entry is ../index.js next to src/mcp/.
+ */
+const CLI_ENTRY = fileURLToPath(
+    new URL(typeof __ZALO_CLI_ENTRY_SPEC__ !== "undefined" ? __ZALO_CLI_ENTRY_SPEC__ : "../index.js", import.meta.url),
+);
 
 /** How long one command may run: `oa article create` and `video-upload` wait for Zalo's processing. */
 const RUN_TIMEOUT_MS = 10 * 60 * 1000;

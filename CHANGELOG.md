@@ -9,6 +9,12 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+## [3.2.0] — 2026-11-16
+
+#### Added
+
+- **Account jobs on the fleet controller**: `POST /zalo/admin/accounts/<ownId>/jobs {kind}` runs a `sync` (every stage; the message restore asks the owner's phone), a `sync-quick` (`sync --no-messages`, no phone prompt), a `sync-media` or a `purge` (`db purge`; `dryRun` counts only) for one account, as this CLI run as a child, so a running daemon serves it as it does for a person. One job per account, at most `ZALO_FLEET_JOBS` (2) on the host; `GET .../jobs` and `.../jobs/<jobId>` report the state, the command's `--json` result and, on failure, the end of its error output; `POST .../jobs/<jobId>/cancel` interrupts it. Each start and end is a `job` event on `/zalo/admin/events` and the admin webhook.
+
 ## [3.1.1] — 2026-11-16
 
 #### Added
@@ -972,7 +978,8 @@ npm install -g @ardennguyen/zalo-agent-cli@2.0.0
 
 Commands, flags and defaults: `skill/references/command-reference.md`. Operating it on a server: `docs/deployment.md`.
 
-[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.1.1...v3.0-dev
+[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.2.0...v3.0-dev
+[3.2.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.2.0
 [3.1.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.1.1
 [3.1.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.1.0
 [3.0.3]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.0.3

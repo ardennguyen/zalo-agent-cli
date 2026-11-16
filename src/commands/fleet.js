@@ -57,7 +57,9 @@ import {
     finishQrAdd,
     runSelf,
     spawnLoginChild,
+    startSelf,
 } from "../core/fleet-serve.js";
+import { DEFAULT_MAX_RUNNING, createFleetJobs } from "../core/fleet-jobs.js";
 import { DEFAULT_QR_FLOWS, createQrFlows } from "../core/fleet-qr.js";
 import { applyPolicy, checkQrAdd, effectivePolicy, ownerOf } from "../core/policy-store.js";
 import { hostUsage } from "../core/storage-quota.js";
@@ -795,6 +797,14 @@ export function registerFleetCommands(program) {
                 webhook,
                 log,
             });
+            // Account jobs (sync, attachments, purge) run as children of this CLI; their events go out with the controller's.
+            let controllerRef = null;
+            const jobs = createFleetJobs({
+                startCli: (args) => startSelf(args),
+                publish: (e) => controllerRef?.publish(e),
+                maxRunning: Number(process.env.ZALO_FLEET_JOBS) || DEFAULT_MAX_RUNNING,
+                log,
+            });
             const controller = createFleetController({
                 driver,
                 listAccounts: () => listAccounts().map((a) => ({ ownId: a.ownId })),
@@ -811,6 +821,7 @@ export function registerFleetCommands(program) {
                 },
                 relay: (ownId, path, params) => callViaDaemon(getAccountDir(ownId), path, params),
                 runCli: (args) => runSelf(args),
+                jobs,
                 describe: (ownId) => ({
                     ...accountIdentity(ownId),
                     port: readPorts()[ownId] ?? null,
@@ -831,6 +842,7 @@ export function registerFleetCommands(program) {
                 webhook,
                 log,
             });
+            controllerRef = controller;
             // An account's own environment (its env file): the legacy token and the webhook fallbacks it runs with.
             const accountEnv = (id) => {
                 const file = envDir ? join(envDir, `${id}.env`) : null;

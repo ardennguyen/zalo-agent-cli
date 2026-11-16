@@ -43,7 +43,7 @@ import { join } from "node:path";
 import { CONFIG_DIR, getAccountDir } from "./credentials.js";
 import { isSealed, openBuffer, scopeOfDir, writeSealedJson } from "./keystore/index.js";
 import { setPolicyProvider } from "./policy-layer.js";
-import { setTenantLookup } from "./storage-quota.js";
+import { setTenantLookup, setUserLookup } from "./storage-quota.js";
 import { changedKeys, flattenPolicy, mergePolicy, policyGet, validatePolicy } from "./policy-schema.js";
 import { onLeaveChangeNote } from "./group-exit.js";
 import { writeFileAtomic } from "../zalo/kernel/atomic-file.js";
@@ -61,8 +61,10 @@ const USER_ID = TENANT_ID;
 export const DEFAULT_ALWAYS_ON_PER_USER = 1;
 
 /**
- * A policy write that could not be done: `code` is INVALID, RESTART_REQUIRED, CONFLICT, NOT_FOUND, BUSY or MEMBERSHIP
- * (an account under two users or two tenants).
+ * A policy write that could not be done: `code` is INVALID, RESTART_REQUIRED, CONFLICT, NOT_FOUND, BUSY, MEMBERSHIP
+ * (an account under two users or two tenants), ACCOUNTS_PER_USER_LIMIT, USERS_PER_TENANT_LIMIT, ALWAYS_ON_CAP (a
+ * write over a cap whose `presence.alwaysOn.onCap` is `refuse`), USER_NOT_FOUND, TENANT_NOT_FOUND, USER_HAS_ACCOUNTS
+ * or TENANT_HAS_MEMBERS (a delete that would orphan something).
  */
 export class PolicyError extends Error {
     /**
@@ -312,6 +314,151 @@ export function listUsers() {
     return [...loadUsers().keys()];
 }
 
+/**
+ * Every user on this host as the admin API lists them (read from disk): its tenant, its accounts and its rev. No
+ * policy values.
+ *
+ * @returns {Array<{userId: string, tenant: string|null, accounts: string[], rev: number, updatedAt: string|null}>}
+ */
+export function describeUsers() {
+    return [...loadUsers({ force: true })].map(([id, u]) => ({
+        userId: id,
+        tenant: u.tenant ?? null,
+        accounts: u.accounts ?? [],
+        rev: u.rev,
+        updatedAt: u.updatedAt ?? null,
+    }));
+}
+
+/**
+ * Every tenant on this host: those with a file, and those only named by a user. `users` and `accounts` are its members.
+ *
+ * @returns {Array<{tenantId: string, users: string[], accounts: string[], rev: number, updatedAt: string|null,
+ *   file: boolean}>}
+ */
+export function describeTenants() {
+    const all = loadTenants({ force: true });
+    const allUsers = loadUsers({ force: true });
+    const ids = new Set(all.keys());
+    for (const u of allUsers.values()) if (u.tenant) ids.add(u.tenant);
+    return [...ids].sort().map((id) => {
+        const doc = all.get(id) ?? null;
+        return {
+            tenantId: id,
+            users: [...allUsers].filter(([, u]) => u.tenant === id).map(([uid]) => uid),
+            accounts: tenantMembers(id, doc, allUsers),
+            rev: doc?.rev ?? 0,
+            updatedAt: doc?.updatedAt ?? null,
+            file: Boolean(doc),
+        };
+    });
+}
+
+/**
+ * Whether a QR add for a user may start (the fleet controller asks before the login runs): the user must exist on
+ * this host, must not be at `limits.accountsPerUser`, and an always-on add must not go over a cap that refuses. A
+ * login again of an account the user already owns (`accountId`) adds nothing and passes the counts.
+ *
+ * @param {{userId: string, presence?: string|null, accountId?: string|null}} o
+ * @returns {{status: number, code: string, error: string}|null} null: it may start
+ */
+export function checkQrAdd({ userId, presence = null, accountId = null }) {
+    const u = loadUsers({ force: true }).get(String(userId));
+    if (!u)
+        return {
+            status: 404,
+            code: "USER_NOT_FOUND",
+            error: `user ${userId} does not exist on this host: create it (PUT /zalo/admin/policy/users/<userId>) first`,
+        };
+    const owned = Boolean(accountId) && (u.accounts ?? []).includes(String(accountId));
+    if (owned) return null;
+    const max = userSetting(u, "limits.accountsPerUser");
+    if (Number.isInteger(max) && (u.accounts ?? []).length >= max)
+        return {
+            status: 409,
+            code: "ACCOUNTS_PER_USER_LIMIT",
+            error: `user ${userId} already owns ${(u.accounts ?? []).length} of at most ${max} account(s) (limits.accountsPerUser)`,
+        };
+    if (presence === "always-on") {
+        for (const g of capGroups(capView())) {
+            const mine = g.scope === "user" ? g.userId === String(userId) : g.tenantId === u.tenant;
+            if (mine && g.onCap === "refuse" && g.on.length >= g.cap)
+                return {
+                    status: 409,
+                    code: "ALWAYS_ON_CAP",
+                    error: `${g.scope} ${g.userId ?? g.tenantId} already has ${g.on.length} of at most ${g.cap} always-on account(s)`,
+                };
+        }
+    }
+    return null;
+}
+
+/**
+ * Delete a user's file. Refused while it owns an account (USER_HAS_ACCOUNTS): move or remove its accounts first.
+ *
+ * @param {string} userId
+ * @param {{actor: string}} o
+ * @returns {{deleted: true, userId: string, rev: number}}
+ * @throws {PolicyError} INVALID, USER_NOT_FOUND, USER_HAS_ACCOUNTS, BUSY
+ */
+export function deleteUser(userId, { actor }) {
+    const t = resolveTarget({ kind: "user", id: userId });
+    return withHostLock(() =>
+        withFileLock(t.file, () => {
+            const doc = readPolicyFile(t, { lastRev: loadUsers().get(t.id)?.rev ?? 0 });
+            if (!doc) throw new PolicyError(`user ${t.id} does not exist on this host`, "USER_NOT_FOUND");
+            if (doc.accounts?.length) {
+                audit({ actor, target: t.label, op: "delete", oldRev: doc.rev, result: "USER_HAS_ACCOUNTS" });
+                throw new PolicyError(
+                    `user ${t.id} still owns ${doc.accounts.length} account(s): remove or move them first`,
+                    "USER_HAS_ACCOUNTS",
+                    { accounts: doc.accounts },
+                );
+            }
+            rmSync(t.file, { force: true });
+            loadUsers().delete(t.id);
+            audit({ actor, target: t.label, op: "delete", oldRev: doc.rev, result: "applied" });
+            return { deleted: true, userId: t.id, rev: doc.rev };
+        }),
+    );
+}
+
+/**
+ * Delete a tenant's file. Refused while a user belongs to it or its legacy `quota.tenant.accounts` lists an account
+ * (TENANT_HAS_MEMBERS).
+ *
+ * @param {string} tenantId
+ * @param {{actor: string}} o
+ * @returns {{deleted: true, tenantId: string, rev: number}}
+ * @throws {PolicyError} INVALID, TENANT_NOT_FOUND, TENANT_HAS_MEMBERS, BUSY
+ */
+export function deleteTenant(tenantId, { actor }) {
+    const t = resolveTarget({ kind: "tenant", id: tenantId });
+    return withHostLock(() =>
+        withFileLock(t.file, () => {
+            const doc = readPolicyFile(t, { lastRev: loadTenants().get(t.id)?.rev ?? 0 });
+            const users = [...loadUsers({ force: true })].filter(([, u]) => u.tenant === t.id).map(([uid]) => uid);
+            if (!doc && !users.length)
+                throw new PolicyError(`tenant ${t.id} does not exist on this host`, "TENANT_NOT_FOUND");
+            const legacy = policyGet(doc?.policy, "quota.tenant.accounts");
+            if (users.length || (Array.isArray(legacy) && legacy.length)) {
+                audit({ actor, target: t.label, op: "delete", oldRev: doc?.rev ?? 0, result: "TENANT_HAS_MEMBERS" });
+                throw new PolicyError(
+                    `tenant ${t.id} still has ${users.length} user(s)` +
+                        (Array.isArray(legacy) && legacy.length ? ` and lists ${legacy.length} account(s)` : "") +
+                        ": delete or move them first",
+                    "TENANT_HAS_MEMBERS",
+                    { users, accounts: Array.isArray(legacy) ? legacy.map(String) : [] },
+                );
+            }
+            rmSync(t.file, { force: true });
+            loadTenants().delete(t.id);
+            audit({ actor, target: t.label, op: "delete", oldRev: doc?.rev ?? 0, result: "applied" });
+            return { deleted: true, tenantId: t.id, rev: doc?.rev ?? 0 };
+        }),
+    );
+}
+
 /** A tenant's accounts: its users' accounts and its legacy `quota.tenant.accounts`. */
 function tenantMembers(tenantId, doc, allUsers = loadUsers()) {
     const ids = new Set();
@@ -381,8 +528,33 @@ export function effectivePolicy(ownId) {
     return merged;
 }
 
-// The quota resolver (./storage-quota.js) reads the tenants an account is in from here.
+// The quota resolver (./storage-quota.js) reads the tenants an account is in, and its owning user's share, from here.
 setTenantLookup((ownId) => tenantsOf(ownId));
+setUserLookup((ownId) => {
+    const owner = ownerOf(ownId);
+    if (!owner) return null;
+    return {
+        id: owner.id,
+        tenant: owner.tenant ?? null,
+        limit: userSetting(owner, "quota.user.limit"),
+        accounts: owner.accounts ?? [],
+    };
+});
+
+/**
+ * A setting a user is held to: its own policy's, else its tenant's (a tenant's file sets the default per user).
+ *
+ * @param {{policy?: object, tenant?: string|null}} user
+ * @param {string} key
+ * @param {Map<string, object>} [allTenants]
+ * @returns {unknown}
+ */
+function userSetting(user, key, allTenants = loadTenants()) {
+    const own = policyGet(user?.policy, key);
+    if (own !== undefined && own !== null) return own;
+    const t = user?.tenant ? allTenants.get(user.tenant) : null;
+    return policyGet(t?.policy, key);
+}
 
 setPolicyProvider((ownId) => {
     const p = effectivePolicy(ownId);
@@ -564,7 +736,7 @@ function checkMembership(t, next) {
 }
 
 /** One write, under the target file's lock. No cap check (the caller runs it). */
-function writeOne({ t, op, v, keys, ifMatch, actor, member }) {
+function writeOne({ t, op, v, keys, ifMatch, actor, member, precheck = null }) {
     return withFileLock(t.file, () => {
         const cache = cacheOf(t.kind);
         const before = readPolicyFile(t, { lastRev: cache.get(t.id)?.rev ?? 0 }) ?? {
@@ -606,6 +778,14 @@ function writeOne({ t, op, v, keys, ifMatch, actor, member }) {
                 policy: before.policy,
                 accounts: [],
             };
+        if (precheck) {
+            try {
+                precheck({ t, before, next, membership });
+            } catch (e) {
+                audit({ actor, target: t.label, op, keys, oldRev: before.rev, result: e.code ?? "refused" });
+                throw e;
+            }
+        }
         const problems = checkMembership(t, { policy: next, ...(membership ?? {}) });
         if (problems.length) {
             audit({ actor, target: t.label, op, keys, oldRev: before.rev, result: "membership" });
@@ -688,10 +868,67 @@ export function applyPolicy({ target, op, policy, ifMatch = null, actor, tenant,
     }
     mkdirSync(t.dir, { recursive: true });
     return withHostLock(() => {
-        const r = writeOne({ t, op, v, keys, ifMatch, actor, member });
+        const r = writeOne({ t, op, v, keys, ifMatch, actor, member, precheck: checkLimits });
         const demoted = r.changed.length ? enforceCaps({ actor }) : [];
         return { ...r, demoted };
     });
+}
+
+/**
+ * The counts a write is held to, checked before it is written (under the host lock): a user's
+ * `limits.accountsPerUser`, a tenant's `limits.usersPerTenant`, and an always-on cap whose `presence.alwaysOn.onCap` is
+ * `refuse`. Only a write that adds to a count is refused: a lowered limit never removes an account or a user.
+ *
+ * @param {{t: object, before: object, next: object, membership: {tenant: string, accounts: string[]}|null}} w
+ * @throws {PolicyError}
+ */
+function checkLimits({ t, before, next, membership }) {
+    if (t.kind === "user" && membership) {
+        const allTenants = loadTenants({ force: true, store: false });
+        const after = { policy: next, tenant: membership.tenant };
+        const count = membership.accounts.length;
+        const was = (before.accounts ?? []).length;
+        const max = userSetting(after, "limits.accountsPerUser", allTenants);
+        if (Number.isInteger(max) && count > max && count > was) {
+            throw new PolicyError(
+                `user ${t.id} may own at most ${max} account(s) (limits.accountsPerUser); this write gives it ${count}`,
+                "ACCOUNTS_PER_USER_LIMIT",
+                { limit: max, count },
+            );
+        }
+        if (membership.tenant !== (before.rev ? before.tenant : null)) {
+            const cap = policyGet(allTenants.get(membership.tenant)?.policy, "limits.usersPerTenant");
+            if (Number.isInteger(cap)) {
+                const others = [...loadUsers({ force: true, store: false })].filter(
+                    ([uid, u]) => uid !== t.id && u.tenant === membership.tenant,
+                ).length;
+                if (others + 1 > cap) {
+                    throw new PolicyError(
+                        `tenant ${membership.tenant} may have at most ${cap} user(s) (limits.usersPerTenant)`,
+                        "USERS_PER_TENANT_LIMIT",
+                        { limit: cap, count: others + 1 },
+                    );
+                }
+            }
+        }
+    }
+    // The always-on caps that refuse: compare each group with this write and without it. Counted only when some user
+    // or tenant (this write included) refuses, so a host on the default (demote) pays nothing more per write.
+    const doc = { ...before, policy: next, ...(membership ?? {}) };
+    const after = capView({ kind: t.kind, id: t.id, doc });
+    const refuses = (p) => policyGet(p, "presence.alwaysOn.onCap") === "refuse";
+    if (![...after.users.values(), ...after.tenants.values()].some((d) => refuses(d?.policy))) return;
+    const beforeGroups = new Map(capGroups(capView()).map((g) => [g.key, g]));
+    for (const g of capGroups(after)) {
+        if (g.onCap !== "refuse" || g.on.length <= g.cap) continue;
+        if (g.on.length <= (beforeGroups.get(g.key)?.on.length ?? 0)) continue;
+        throw new PolicyError(
+            `${g.scope} ${g.userId ?? g.tenantId} may have at most ${g.cap} always-on account(s) ` +
+                `(presence.alwaysOn.${g.scope === "user" ? "maxPerUser" : "maxPerTenant"}, onCap refuse)`,
+            "ALWAYS_ON_CAP",
+            { limit: g.cap, count: g.on.length, scope: g.scope },
+        );
+    }
 }
 
 /** The effective mode the policy gives one account (the policy layers only: what a console controls). */
@@ -716,10 +953,14 @@ function userCap(u, allTenants = loadTenants()) {
  *
  * @returns {{users: Map<string, object>, tenants: Map<string, object>, mode: (ownId: string) => string|null}}
  */
-function capView() {
+function capView(override = null) {
     const allUsers = loadUsers({ force: true, store: false });
     const allTenants = loadTenants({ force: true, store: false });
     const own = new Map();
+    // A write being checked (checkLimits): the caps are counted as if it were done.
+    if (override?.kind === "user") allUsers.set(override.id, override.doc);
+    if (override?.kind === "tenant") allTenants.set(override.id, override.doc);
+    if (override?.kind === "account") own.set(override.id, override.doc);
     const accountDoc = (id) => {
         if (!own.has(id)) {
             let doc;
@@ -756,22 +997,28 @@ function capView() {
  * @param {{actor?: string, now?: number}} [o]
  * @returns {Array<{accountId: string, scope: "user"|"tenant", userId?: string, tenantId?: string, cap: number}>}
  */
-function enforceCaps({ actor = "presence-cap", now = Date.now() } = {}) {
+function capGroups(view) {
     const onHost = (id) => existsSync(getAccountDir(id));
-    const since = readAlwaysOnSince();
-    const live = new Set();
     const groups = [];
-    const view = capView();
     for (const [uid, u] of view.users) {
         const on = (u.accounts ?? []).filter((a) => onHost(a) && view.mode(a) === "always-on");
-        groups.push({ scope: "user", userId: uid, cap: userCap(u, view.tenants), on });
+        const onCap = userSetting(u, "presence.alwaysOn.onCap", view.tenants) ?? "demote";
+        groups.push({ key: `user:${uid}`, scope: "user", userId: uid, cap: userCap(u, view.tenants), on, onCap });
     }
     for (const [tid, doc] of view.tenants) {
         const cap = policyGet(doc.policy, "presence.alwaysOn.maxPerTenant");
         if (!Number.isInteger(cap)) continue;
         const on = tenantMembers(tid, doc, view.users).filter((a) => onHost(a) && view.mode(a) === "always-on");
-        groups.push({ scope: "tenant", tenantId: tid, cap, on });
+        const onCap = policyGet(doc.policy, "presence.alwaysOn.onCap") ?? "demote";
+        groups.push({ key: `tenant:${tid}`, scope: "tenant", tenantId: tid, cap, on, onCap });
     }
+    return groups;
+}
+
+function enforceCaps({ actor = "presence-cap", now = Date.now() } = {}) {
+    const since = readAlwaysOnSince();
+    const live = new Set();
+    const groups = capGroups(capView());
     for (const g of groups) for (const a of g.on) live.add(a);
     for (const a of live) if (!Number.isFinite(since[a])) since[a] = now;
     const demoted = [];

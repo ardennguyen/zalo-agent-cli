@@ -61,6 +61,9 @@ export const SEALED_FILES = Object.freeze([
     // Boot key: both are read without a login (offline hidden-chat filtering, an approval page).
     { kind: "hidden-threads", use: "boot", path: (id) => join(getAccountDir(id), "hidden-threads.json") },
     { kind: "approver-secret", use: "boot", path: (id) => join(getAccountDir(id), "approver-secret.json") },
+    // Boot key too: the fleet controller manages them without a login (src/core/api-keys.js, webhook-secret.js).
+    { kind: "api-keys", use: "boot", path: (id) => join(getAccountDir(id), "api-keys.json") },
+    { kind: "webhook-secret", use: "boot", path: (id) => join(getAccountDir(id), "webhook-secret.json") },
 ]);
 
 /**

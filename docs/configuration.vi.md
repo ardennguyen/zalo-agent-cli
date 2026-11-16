@@ -110,6 +110,8 @@ trước: mặc định, `storage.json` (cấp trên cùng, rồi `accounts.<own
 | `retention.media` | `keep` | `keep`, hoặc `<N>d`: file media của tin nhắn từ N ngày tuổi trở lên bị xóa (tin nhắn vẫn giữ) |
 | `retention.outboxDead` | `30d` | lượt gửi webhook đã chết bị xóa sau thời gian này |
 | `retention.purgeEvery` | `6h` | daemon kiểm tra bao lâu một lần (ít nhất `1m`); `fleet purge` (chạy theo timer) yêu cầu daemon nào chưa kiểm tra trong khoảng gấp đôi thời gian này chạy ngay, và tự xóa cho tài khoản không có daemon |
+| `quota.user.limit` | không có | trong chính sách tenant (mặc định cho mỗi người dùng) hoặc của người dùng: phần của người dùng, cộng trên các tài khoản nó sở hữu ở máy này; vượt mức thì mỗi tài khoản nhả phần của mình trong lượng vượt như với tenant (sự kiện mang `scope: "user"`, `userId`) |
+| `retention.mediaTempCap` | không có | số byte, hoặc `"1GB"`: dung lượng tối đa của các bản giải mã tạm (`deliver: "tempfile"`); vượt mức thì bản cũ nhất bị xóa trước. Thư mục tạm là của cả máy, nên giới hạn tính bản tạm của mọi tài khoản |
 
 **Vượt giới hạn thì vẫn tiếp tục lưu đệm.** Daemon gửi sự kiện `storage_quota` tới webhook (`listen` in ra, và
 `mcp start` còn đưa chúng tới client MCP dưới dạng sự kiện hệ thống trong `zalo_get_messages` / `zalo_wait_for_message`):
@@ -197,6 +199,7 @@ Các khóa `presence` (trong `mcp-config.json` `presence`, `accounts.<ownId>.pre
 | `presence.onKick` | `yield` | chỉ on-demand: khi một phiên khác **của cùng lần đăng nhập** (một bản sao khác của thông tin đăng nhập này, một tab thứ hai của cùng trình duyệt) lấy socket, nhường lại và từ chối mọi yêu cầu cho đến khi người dùng xác nhận `presence resume` (`yield`), hoặc dừng daemon với mã 3 (`exit`) |
 | `presence.alwaysOn.maxPerUser` | `1` | chính sách tenant hoặc người dùng: số tài khoản luôn-kết-nối mỗi người dùng |
 | `presence.alwaysOn.maxPerTenant` | không | chính sách tenant: số tài khoản luôn-kết-nối mỗi tenant |
+| `presence.alwaysOn.onCap` | `demote` | chính sách tenant hoặc người dùng: một lần ghi làm vượt giới hạn thì sao. `demote`: tài khoản luôn-kết-nối cũ nhất chuyển sang on-demand (bên dưới); `refuse`: lần ghi bị từ chối với `409 ALWAYS_ON_CAP` và không gì thay đổi. Hạ giới hạn thì vẫn hạ cấp ở cả hai chế độ |
 
 `ZALO_PRESENCE_MODE[_<ownId>]` và `ZALO_PRESENCE_IDLE_TIMEOUT[_<ownId>]` nằm giữa các tệp và chính sách.
 
@@ -210,6 +213,49 @@ Admin API (thông tin xác thực riêng): `GET|PUT|PATCH /zalo/admin/policy/use
 `{tenant?, accounts?, policy?}`, và `GET /zalo/admin/presence/always-on` (tài khoản luôn-kết-nối theo người dùng và
 tenant có giới hạn, so với giới hạn). CLI: `zalo-agent policy get|set|unset ... --user <userId>`; thành viên được đặt
 bằng `policy set tenant <tenantId> --user <id>` và `policy set accounts <ownId,ownId> --user <id>`.
+
+### Giới hạn, quyền truy cập và bí mật cho một console
+
+Các giới hạn chung mà một console (control plane, CRM) đặt cho từng tenant hoặc người dùng; engine không biết gói hay giá.
+
+| Khóa | Đặt ở | Ý nghĩa |
+|---|---|---|
+| `limits.accountsPerUser` | tenant (mặc định cho mỗi người dùng) hoặc người dùng | số tài khoản tối đa một người dùng được sở hữu: lần ghi thêm một tài khoản nữa bị từ chối (`409 ACCOUNTS_PER_USER_LIMIT`), một lần thêm bằng QR cũng vậy, trước khi đăng nhập bắt đầu. Hạ giới hạn thì không xóa gì |
+| `limits.usersPerTenant` | tenant | số người dùng tối đa của một tenant: người dùng mới hoặc chuyển vào khi đã đủ bị từ chối (`409 USERS_PER_TENANT_LIMIT`) |
+| `media.store` | mọi nơi | `all` (mặc định), `none` (chỉ lưu chữ) hoặc danh sách loại (`["photo", "voice"]`): bộ tải media duy nhất không tải loại nào khác, dù cho listener, `sync-media`, một lần khôi phục hay `zalo_view_media` (trả `MEDIA_NOT_STORED`); các dòng tin nhắn vẫn được lưu như thường |
+
+Các route của admin API (cùng thông tin xác thực admin; mọi lần từ chối có một `code` ổn định bên cạnh `error`):
+
+- `GET /zalo/admin/policy/users`, `GET /zalo/admin/policy/tenants`: mọi người dùng (`userId`, `tenant`, `accounts`,
+  `rev`) và mọi tenant (`tenantId`, `users`, `accounts`, `rev`, `file`). `DELETE /zalo/admin/policy/users/<userId>` và
+  `DELETE /zalo/admin/policy/tenants/<tenantId>` xóa tệp, bị từ chối với `409 USER_HAS_ACCOUNTS` hoặc
+  `409 TENANT_HAS_MEMBERS` khi còn thành viên (`404 USER_NOT_FOUND` / `TENANT_NOT_FOUND`).
+- `/zalo/admin/access/<ownId>`: quyền truy cập và bí mật của tài khoản, trên fleet controller cũng như trên server của
+  chính tài khoản. Daemon đang chạy nhận mỗi thay đổi ở yêu cầu kế tiếp.
+  - `GET` (tất cả bên dưới cùng lúc, không bao giờ có bí mật hay hash); `GET .../oauth/clients`, `GET .../oauth/grants`,
+    `DELETE .../oauth/grants/<grantId>`, `POST .../oauth/revoke-all` `{clientId?}`, `DELETE .../oauth/clients/<clientId>`
+    (client đã đăng ký và các grant của nó; client cấu hình sẵn trả `409 CLIENT_CONFIGURED`).
+  - `GET|POST .../api-keys` (`{label, expiresAt?}` -> `201 {keyId, label, createdAt, expiresAt, key}`: khóa, dạng
+    `zak_<keyId>_<secret>`, chỉ hiện một lần; chỉ giữ SHA-256 của nó, niêm phong trong `api-keys.json`), `DELETE
+    .../api-keys/<keyId>`. Một khóa là bearer cho MCP server của tài khoản bên cạnh `ZALO_MCP_AUTH_TOKEN` (khóa cũ, vẫn
+    dùng được); khóa đầu tiên bật kiểm tra bearer cho server chưa có.
+  - `GET|PUT .../webhook` (`{url}` hoặc `{url: null}`: khóa chính sách `webhook` của tài khoản), `POST|DELETE
+    .../webhook/secret` (xoay: bí mật mới hiện một lần và ký lần gửi kế tiếp, đứng trước `ZALO_WEBHOOK_SECRET` và
+    `webhookSecret`; xóa: quay về chúng), `POST .../webhook/test` (một sự kiện `webhook_test` có ký:
+    `{delivered, status, signed, ms}`; `409 WEBHOOK_NOT_SET`).
+  - `GET|PUT|DELETE .../approver` (`{password}`, ít nhất 8 ký tự, lưu dạng hash scrypt), `GET|DELETE .../cloud-key`
+    (có lưu khóa zCloud hay không; xóa nó).
+  - Mỗi thay đổi là một dòng nhật ký với tài khoản, một mã hành động (`apiKey.create`, `oauth.grant.revoke`,
+    `webhook.secret.rotate`, ...) và id bị tác động, không bao giờ có giá trị.
+
+Fleet controller có thêm `GET /zalo/admin/usage` (dung lượng của mọi tài khoản, cộng theo người dùng và tenant so với
+giới hạn, và đĩa) và `GET /zalo/admin/routes` (id tài khoản -> port loopback và đường dẫn `/a/<id>`, các rewrite cho
+OAuth discovery, các đường dẫn phải chặn, và với `--domain` là Caddyfile mà `fleet generate --domain` viết) cho một host
+agent quản reverse proxy; bản thân controller không sửa cấu hình proxy nào. Một lần thêm bằng QR
+(`POST /zalo/admin/accounts/qr`) bị từ chối trước khi đăng nhập bắt đầu với người dùng không tồn tại
+(`404 USER_NOT_FOUND`), người dùng đã đủ `limits.accountsPerUser` (`409 ACCOUNTS_PER_USER_LIMIT`) hoặc thêm luôn-kết-nối
+vượt một giới hạn kiểu refuse (`409 ALWAYS_ON_CAP`); `accountId` trong thân chỉ một tài khoản người dùng đã sở hữu (đăng
+nhập lại), thì được qua.
 
 **Ai chạy on-demand.** `mcp start --http` và `listen --daemon` theo `presence.mode` (mặc định on-demand); MCP stdio và
 `listen` chạy tiền cảnh in ra stdout luôn là always-on dù khóa nói gì. Socket đang tạm nghỉ thức dậy khi có một lệnh gọi

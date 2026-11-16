@@ -50,6 +50,7 @@ import { scopeOfDir } from "../keystore/keyring.js";
 import { mediaPlainSize, writeSealedMedia } from "../keystore/media-seal.js";
 import { openDeadLinks } from "./dead-links.js";
 import { checkDiskRoom } from "../storage-quota.js";
+import { resolveMediaStore } from "../deploy-policy.js";
 import { loadCloudKey } from "../cloud-key-store.js";
 
 /**
@@ -623,6 +624,7 @@ function writeConversationIndex(mediaRoot, names, scope) {
  * @param {string[]} [opts.msgIds] - restrict to these messages: a caller after one message's media names it
  *   instead of hoping it is among the newest `limit` rows of its thread
  * @param {Set<string>|string[]} [opts.kinds] - restrict to these attachment kinds
+ * @param {Set<string>|string[]} [opts.store] - the kinds the account keeps (tests); default: its `media.store` policy
  * @param {number} [opts.limit=-1] - opt-in bound on the messages considered; -1 (default): every one still missing its file
  * @param {number} [opts.since] / @param {number} [opts.until] - epoch ms bounds
  * @param {number} [opts.concurrency=2] - parallel downloads. Two, not more: the CDN answers a burst with 403 and 429
@@ -704,6 +706,11 @@ export async function downloadSyncedMedia(opts = {}) {
     } = opts;
     const now = Number.isFinite(opts.now) ? opts.now : Date.now();
     const kinds = opts.kinds ? new Set(opts.kinds) : DOWNLOADABLE_KINDS;
+    // `media.store` (text-only storage, or some kinds only): a kind the account does not keep is never fetched, by
+    // any caller of this one downloader (the listener, `sync-media`, a restore, a media view).
+    const storeOwner = opts.ownId ?? (accountDir ? scopeOfDir(resolve(accountDir)).id : null);
+    const stored = opts.store ? new Set(opts.store) : resolveMediaStore(storeOwner).kinds;
+    let notStored = 0;
 
     // One definition of a conversation's folder. A caller holding a fresher map
     // passes it; everyone else gets the cache's, so the listener, `msg history`
@@ -733,6 +740,10 @@ export async function downloadSyncedMedia(opts = {}) {
             // Fetched as Zalo serves it: a JPEG XL picture stays JPEG XL.
             const url = att.url || att.hdUrl || (thumbs || THUMB_IS_THE_PICTURE.has(att.kind) ? att.thumbUrl : null);
             if (!url || !kinds.has(att.kind)) continue;
+            if (!stored.has(att.kind)) {
+                notStored++;
+                continue;
+            }
             if (maxBytes && att.size && att.size > maxBytes) continue;
             jobs.push({ row, att, url, index: index++ });
             if (thumbs && att.thumbUrl && att.url) {
@@ -751,6 +762,8 @@ export async function downloadSyncedMedia(opts = {}) {
         // Finished either way: saved, failed or skipped. What a progress line counts.
         attempted: 0,
         deferred,
+        // Attachments of a kind the account does not keep (`media.store`): skipped, never fetched.
+        notStored,
         downloaded: 0,
         skipped: 0,
         failed: 0,

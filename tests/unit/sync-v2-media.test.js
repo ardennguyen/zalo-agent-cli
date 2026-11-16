@@ -36,12 +36,13 @@ import {
     sniffImageExt,
 } from "../../src/core/sync-v2/media.js";
 import { extractRenewedUrls } from "../../src/zalo/custom/renewlink.js";
-import { CONFIG_DIR } from "../../src/core/credentials.js";
+import { CONFIG_DIR, getAccountDir } from "../../src/core/credentials.js";
 import { fileState, readSealedJson } from "../../src/core/keystore/index.js";
 import { DEAD_LINKS_FILE, deadLinkKey, openDeadLinks } from "../../src/core/sync-v2/dead-links.js";
 import { scopeOfDir } from "../../src/core/keystore/keyring.js";
 import { mediaFileState, readMediaFile } from "../../src/core/keystore/media-seal.js";
 import { checkTable, checkTableSync } from "../helpers/table.js";
+import { applyPolicy } from "../../src/core/policy-store.js";
 
 /** The plaintext of a downloaded file, which is sealed on disk (no byte of it in the clear). */
 function plainOf(file, accountDir, msgId) {
@@ -382,6 +383,63 @@ describe("downloadSyncedMedia — happy path", () => {
         // Red if the default goes back to four (peak 4) or the workers stop sharing the queue (peak 1).
         assert.equal(stats.downloaded, 6);
         assert.equal(peak, 2);
+    });
+});
+
+describe("downloadSyncedMedia — media.store (text-only storage)", () => {
+    it("never fetches a kind the account does not keep, and counts it in notStored", async () => {
+        const voice = { kind: "voice", url: `${base}/ok.jpg` };
+        row({}, [photo("/ok.jpg")]);
+        row({ type: "voice" }, [voice]);
+        let asked = 0;
+        const fetchImpl = async () => {
+            asked++;
+            return new Response(Buffer.from("x"), { status: 200, headers: { "content-type": "image/jpeg" } });
+        };
+        const none = await downloadSyncedMedia({ accountDir: dir, limit: 10, store: [], fetchImpl, cloud: null });
+        assert.equal(asked, 0, "text-only: no request at all");
+        assert.equal(none.notStored, 2);
+        assert.equal(none.downloaded, 0);
+        const some = await downloadSyncedMedia({
+            accountDir: dir,
+            limit: 10,
+            store: ["voice"],
+            fetchImpl,
+            cloud: null,
+        });
+        assert.equal(asked, 1);
+        assert.equal(some.downloaded, 1);
+        assert.equal(some.notStored, 1);
+    });
+
+    it("reads the account's media.store policy when no store is given", async () => {
+        const ownId = "1000000000000000501";
+        mkdirSync(getAccountDir(ownId), { recursive: true });
+        applyPolicy({
+            target: { kind: "account", id: ownId },
+            op: "put",
+            policy: { media: { store: "none" } },
+            actor: "t",
+        });
+        row({}, [photo("/ok.jpg")]);
+        let asked = 0;
+        const stats = await downloadSyncedMedia({
+            accountDir: dir,
+            ownId,
+            limit: 10,
+            cloud: null,
+            fetchImpl: async () => (asked++, new Response(Buffer.from("x"), { status: 200 })),
+        });
+        assert.equal(asked, 0);
+        assert.equal(stats.notStored, 1);
+        applyPolicy({
+            target: { kind: "account", id: ownId },
+            op: "put",
+            policy: { media: { store: "all" } },
+            actor: "t",
+        });
+        const after = await downloadSyncedMedia({ accountDir: dir, ownId, limit: 10, cloud: null });
+        assert.equal(after.downloaded, 1);
     });
 });
 

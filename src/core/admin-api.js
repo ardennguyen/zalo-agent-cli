@@ -6,6 +6,12 @@
  *     GET|PUT|PATCH /zalo/admin/policy/<ownId>          another account on this host
  *     GET|PUT|PATCH /zalo/admin/policy/tenants/<id>     a tenant (a group of accounts)
  *     GET|PUT|PATCH /zalo/admin/policy/users/<userId>   a user: its tenant, the accounts it owns, its policy
+ *     GET           /zalo/admin/policy/users            every user: tenant, accounts, rev
+ *     GET           /zalo/admin/policy/tenants          every tenant: users, accounts, rev
+ *     DELETE        /zalo/admin/policy/users/<userId>   refused (409 USER_HAS_ACCOUNTS) while it owns an account
+ *     DELETE        /zalo/admin/policy/tenants/<id>     refused (409 TENANT_HAS_MEMBERS) while it has a user or account
+ *     ...           /zalo/admin/access/<ownId>[/...]    an account's OAuth clients and grants, API keys, webhook
+ *                                                       secret, approver password, zCloud key (./access-api.js)
  *     GET           /zalo/admin/presence/always-on      always-on accounts per user and capped tenant, against the caps
  *     GET           /zalo/admin/presence                this server's presence: mode, state, holds (counts only)
  *     POST          /zalo/admin/presence/resume         take the account back after a yield (the user closed the other
@@ -24,6 +30,8 @@
  * - `If-Match: <rev>` on a write: another rev is 412 and nothing changes. The reply carries `ETag: "<rev>"`.
  * - A key that needs a restart (the port, TLS, the key provider, a secret) is 422 `restartRequired`.
  * - Every write is in the audit log (keys and revs, never a value or a credential).
+ * - Every refusal carries a stable `code` beside the English `error` (UNAUTHORIZED, NOT_FOUND, METHOD_NOT_ALLOWED,
+ *   INVALID, CONFLICT, MEMBERSHIP, the limits' codes, ...): a console keys its own text on the code.
  */
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
@@ -32,7 +40,20 @@ import { CONFIG_DIR } from "./credentials.js";
 import { readSealedJson, scopeOfDir, writeSealedJson } from "./keystore/index.js";
 import { resolveConfirmMode } from "./confirm-guard.js";
 import { resolveApproval, resolveHiddenChats, resolveMediaDelivery, resolveMediaLinkAuth } from "./deploy-policy.js";
-import { PolicyError, alwaysOnUsage, applyPolicy, audit, getPolicy, ownerOf, tenantsOf } from "./policy-store.js";
+import {
+    PolicyError,
+    alwaysOnUsage,
+    applyPolicy,
+    audit,
+    deleteTenant,
+    deleteUser,
+    describeTenants,
+    describeUsers,
+    getPolicy,
+    ownerOf,
+    tenantsOf,
+} from "./policy-store.js";
+import { createAccessApi } from "./access-api.js";
 import { resolvePresenceSettings } from "./presence-config.js";
 import { envForAccount, resolveWebhookDelivery } from "../mcp/mcp-config.js";
 
@@ -172,7 +193,41 @@ export function describeEffective(ownId, config = {}, { publicUrl = null, extra 
     };
 }
 
-const STATUS = { INVALID: 400, NOT_FOUND: 404, MEMBERSHIP: 409, CONFLICT: 412, RESTART_REQUIRED: 422, BUSY: 503 };
+const STATUS = {
+    INVALID: 400,
+    NOT_FOUND: 404,
+    USER_NOT_FOUND: 404,
+    TENANT_NOT_FOUND: 404,
+    MEMBERSHIP: 409,
+    ACCOUNTS_PER_USER_LIMIT: 409,
+    USERS_PER_TENANT_LIMIT: 409,
+    ALWAYS_ON_CAP: 409,
+    USER_HAS_ACCOUNTS: 409,
+    TENANT_HAS_MEMBERS: 409,
+    CONFLICT: 412,
+    RESTART_REQUIRED: 422,
+    BUSY: 503,
+};
+
+/**
+ * The answer to a refused policy write, as every admin route gives it: the HTTP status for its code, and the body.
+ *
+ * @param {PolicyError} e
+ * @returns {{status: number, body: object}}
+ */
+export function policyErrorReply(e) {
+    return {
+        status: STATUS[e.code] ?? 400,
+        body: {
+            error: e.message,
+            code: e.code,
+            ...(e.errors?.length ? { errors: e.errors } : {}),
+            ...(e.restartRequired?.length ? { restartRequired: e.restartRequired } : {}),
+            ...(e.code === "CONFLICT" ? { rev: e.rev } : {}),
+            ...(Number.isInteger(e.limit) ? { limit: e.limit, count: e.count } : {}),
+        },
+    };
+}
 
 /**
  * The admin API's request handler (mounted at {@link ADMIN_PATH_PREFIX}, before the MCP bearer check, after a JSON
@@ -194,6 +249,8 @@ const STATUS = { INVALID: 400, NOT_FOUND: 404, MEMBERSHIP: 409, CONFLICT: 412, R
  *   false: not one of them (404)
  * @param {{serve: (p: {action: string}) => Promise<object>}|null} [args.presence] - this server's on-demand presence
  *   (src/core/daemon-presence.js): `/presence` and `/presence/resume`
+ * @param {{handle: (req: object, res: object, ctx: object) => Promise<boolean>}|null} [args.accessApi] - the
+ *   `/access/<ownId>` routes (./access-api.js); default: one built on `config`
  * @param {(line: string) => void} [args.log]
  * @returns {{enabled: () => boolean, handle: (req: object, res: object) => void}}
  */
@@ -209,8 +266,10 @@ export function createAdminApi({
     exportApi = null,
     routes = null,
     presence = null,
+    accessApi = null,
     log = (l) => console.error(l),
 }) {
+    const access = accessApi ?? createAccessApi({ config, log });
     const enabled = () => mtls || hashes.length > 0 || Boolean(sealedHash());
 
     /** Who this request is, or null. Never logs or returns the credential. */
@@ -250,7 +309,8 @@ export function createAdminApi({
     });
 
     const handle = (req, res) => {
-        if (!enabled()) return send(res, 404, { error: "the admin API is not enabled on this server" });
+        if (!enabled())
+            return send(res, 404, { error: "the admin API is not enabled on this server", code: "ADMIN_DISABLED" });
         const ip = req.socket?.remoteAddress || "-";
         const header = String(req.headers?.authorization || "");
         const token = /^bearer\s+/i.test(header) ? header.slice(7).trim() : "";
@@ -271,46 +331,88 @@ export function createAdminApi({
                     error: agent
                         ? "this is the MCP server's agent credential; the admin API takes its own (an admin token or a client certificate)"
                         : "an admin credential is required",
+                    code: agent ? "AGENT_CREDENTIAL_REFUSED" : "UNAUTHORIZED",
                 },
                 { "WWW-Authenticate": 'Bearer realm="zalo-admin"' },
             );
         }
         const path = String(req.path || "/").replace(/\/+$/, "") || "/";
+        const getOnly = () => send(res, 405, { error: "GET only", code: "METHOD_NOT_ALLOWED" }, { Allow: "GET" });
         if (path === "/usage") {
-            if (req.method !== "GET") return send(res, 405, { error: "GET only" }, { Allow: "GET" });
-            if (!usage) return send(res, 501, { error: "this server does not measure usage" });
+            if (req.method !== "GET") return getOnly();
+            if (!usage) return send(res, 501, { error: "this server does not measure usage", code: "NOT_SUPPORTED" });
             try {
                 return send(res, 200, usage());
             } catch (e) {
-                return send(res, 500, { error: e.message });
+                return send(res, 500, { error: e.message, code: "INTERNAL" });
+            }
+        }
+        if (path.startsWith("/access/")) {
+            access
+                .handle(req, res, { who, ip, path })
+                .then((handled) => {
+                    if (!handled && !res.headersSent) send(res, 404, { error: "not found", code: "NOT_FOUND" });
+                })
+                .catch((e) => {
+                    log(`[admin] ${req.method} ${path} failed: ${e.message}`);
+                    if (!res.headersSent) send(res, 500, { error: e.message, code: "INTERNAL" });
+                });
+            return;
+        }
+        // The users and tenants on this host, and their deletion (refused while they have members).
+        if (path === "/policy/users" || path === "/policy/tenants") {
+            if (req.method !== "GET") return getOnly();
+            return send(
+                res,
+                200,
+                path === "/policy/users" ? { users: describeUsers() } : { tenants: describeTenants() },
+            );
+        }
+        const del = /^\/policy\/(users|tenants)\/([^/]+)$/.exec(path);
+        if (del && req.method === "DELETE") {
+            try {
+                const id = decodeURIComponent(del[2]);
+                const actor = `admin-api ${who} ${ip}`;
+                const r = del[1] === "users" ? deleteUser(id, { actor }) : deleteTenant(id, { actor });
+                log(`[admin] ${del[1] === "users" ? "user" : "tenant"} ${id} deleted (${who} ${ip})`);
+                return send(res, 200, r);
+            } catch (e) {
+                if (!(e instanceof PolicyError)) return send(res, 500, { error: e.message, code: "INTERNAL" });
+                const out = policyErrorReply(e);
+                return send(res, out.status, out.body);
             }
         }
         if (path === "/export" || path.startsWith("/export/")) {
-            if (!exportApi) return send(res, 501, { error: "this server does not make exports" });
+            if (!exportApi)
+                return send(res, 501, { error: "this server does not make exports", code: "NOT_SUPPORTED" });
             exportApi.handle(req, res, { who, ip, path }).catch((e) => {
                 log(`[admin] ${req.method} ${path} failed: ${e.message}`);
                 if (!res.headersSent) send(res, 500, { error: e.message });
             });
             return;
         }
-        if (routes && (path === "/events" || path === "/accounts" || path.startsWith("/accounts/"))) {
+        if (
+            routes &&
+            (path === "/events" || path === "/routes" || path === "/accounts" || path.startsWith("/accounts/"))
+        ) {
             Promise.resolve(routes(req, res, { who, ip, path }))
                 .then((handled) => {
-                    if (!handled && !res.headersSent) send(res, 404, { error: "not found" });
+                    if (!handled && !res.headersSent) send(res, 404, { error: "not found", code: "NOT_FOUND" });
                 })
                 .catch((e) => {
                     log(`[admin] ${req.method} ${path} failed: ${e.message}`);
-                    if (!res.headersSent) send(res, 500, { error: e.message });
+                    if (!res.headersSent) send(res, 500, { error: e.message, code: "INTERNAL" });
                 });
             return;
         }
         if (path === "/presence/always-on") {
-            if (req.method !== "GET") return send(res, 405, { error: "GET only" }, { Allow: "GET" });
+            if (req.method !== "GET") return getOnly();
             return send(res, 200, alwaysOnUsage());
         }
         // This server's on-demand presence (src/core/daemon-presence.js): its state, and the resume after a yield.
         if (path === "/presence" || path === "/presence/resume") {
-            if (!presence) return send(res, 404, { error: "this server runs no on-demand presence" });
+            if (!presence)
+                return send(res, 404, { error: "this server runs no on-demand presence", code: "NOT_SUPPORTED" });
             const resume = path === "/presence/resume";
             if (req.method !== (resume ? "POST" : "GET"))
                 return send(res, 405, { error: resume ? "POST only" : "GET only" }, { Allow: resume ? "POST" : "GET" });
@@ -323,7 +425,7 @@ export function createAdminApi({
             return;
         }
         const m = /^\/policy(?:\/tenants\/([^/]+)|\/users\/([^/]+)|\/([^/]+))?$/.exec(path);
-        if (!m) return send(res, 404, { error: "not found" });
+        if (!m) return send(res, 404, { error: "not found", code: "NOT_FOUND" });
         const target = m[1]
             ? { kind: "tenant", id: decodeURIComponent(m[1]) }
             : m[2]
@@ -335,9 +437,18 @@ export function createAdminApi({
                 return send(res, 200, docReply(target, doc), { ETag: `"${doc.rev}"` });
             }
             if (req.method !== "PUT" && req.method !== "PATCH")
-                return send(res, 405, { error: "GET, PUT or PATCH" }, { Allow: "GET, PUT, PATCH" });
+                return send(
+                    res,
+                    405,
+                    { error: "GET, PUT or PATCH", code: "METHOD_NOT_ALLOWED" },
+                    { Allow: "GET, PUT, PATCH" },
+                );
             const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : null;
-            if (!body) return send(res, 400, { error: "the body must be a JSON object (the policy, or {policy})" });
+            if (!body)
+                return send(res, 400, {
+                    error: "the body must be a JSON object (the policy, or {policy})",
+                    code: "INVALID_BODY",
+                });
             const keys = Object.keys(body);
             // A user's body is {tenant?, accounts?, policy?}; anyone else's is the policy, or {policy}.
             const wrapped =
@@ -375,15 +486,10 @@ export function createAdminApi({
         } catch (e) {
             if (!(e instanceof PolicyError)) {
                 log(`[admin] ${req.method} ${path} failed: ${e.message}`);
-                return send(res, 500, { error: e.message });
+                return send(res, 500, { error: e.message, code: "INTERNAL" });
             }
-            return send(res, STATUS[e.code] ?? 400, {
-                error: e.message,
-                code: e.code,
-                ...(e.errors?.length ? { errors: e.errors } : {}),
-                ...(e.restartRequired?.length ? { restartRequired: e.restartRequired } : {}),
-                ...(e.code === "CONFLICT" ? { rev: e.rev } : {}),
-            });
+            const out = policyErrorReply(e);
+            return send(res, out.status, out.body);
         }
     };
     // The HTTP transport installs its own check of the agent's credentials here when it mounts the API.

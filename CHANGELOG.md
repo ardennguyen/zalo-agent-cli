@@ -9,6 +9,26 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+## [3.1.0] — 2026-11-16
+
+Limits, text-only storage and admin surfaces for a console that manages tenants, users and accounts on one host.
+
+#### Added
+
+- **Limits in the runtime policy.** `limits.accountsPerUser` (tenant default or per user) and `limits.usersPerTenant` refuse a write that adds one too many (`409 ACCOUNTS_PER_USER_LIMIT` / `USERS_PER_TENANT_LIMIT`); a lowered limit removes nothing. `quota.user.limit` is a user's share, summed over the accounts it owns on the host, purged like a tenant's (`storage_quota` events with `scope: "user"`). `presence.alwaysOn.onCap: "refuse"` refuses a write over an always-on cap (`409 ALWAYS_ON_CAP`) instead of demoting the oldest account (`demote`, the default, is unchanged).
+- **Text-only storage: `media.store`** (`all`, `none` or a list of kinds). The media downloader skips every other kind for the listener, `sync-media`, a restore and `zalo_view_media` (`MEDIA_NOT_STORED`); messages are stored as always.
+- **`retention.mediaTempCap`**: a size cap on the decrypted tempfile copies; the oldest go first.
+- **QR add refused before the login starts** for an unknown user (`404 USER_NOT_FOUND`), a user at `limits.accountsPerUser` or an always-on add over a refusing cap (`409`); `accountId` names an account the user already owns (a login again).
+- **Users and tenants on the admin API:** `GET /zalo/admin/policy/users`, `GET /zalo/admin/policy/tenants`, and `DELETE` of each, refused while it has members (`409 USER_HAS_ACCOUNTS` / `TENANT_HAS_MEMBERS`).
+- **Fleet controller:** `GET /zalo/admin/usage` (every account's storage, summed per user and tenant, and the disk; it used to answer 501) and `GET /zalo/admin/routes` (account id -> loopback port and path, discovery rewrites, blocked paths, and the Caddyfile with `--domain`) for a host agent that keeps the reverse proxy.
+- **Access and secrets per account** under `/zalo/admin/access/<ownId>` (admin credential, on the controller and the account's server): OAuth clients and grants (list, revoke one grant by id, revoke all, remove a registered client), named API keys (hashed at rest, shown once, label, optional expiry, revoke; the `ZALO_MCP_AUTH_TOKEN` token keeps working), the webhook URL, signing secret rotation (shown once, signs the next delivery without a restart) and a signed test, the approver password (set, clear) and the zCloud key (status, delete). Every change is an audit line with ids and action codes only.
+- **A stable `code` on every admin API refusal**, beside the English `error`.
+
+#### Changed
+
+- A running daemon re-reads its OAuth state when another process changed it, so a grant revoked through the admin API stops working at the next request.
+- The fleet controller's and the QR flow's error answers carry a `code`.
+
 ## [3.0.3] — 2026-11-16
 
 Sync asks your phone only when something is missing, as Zalo's own apps do, and media downloads get through queues of old links.
@@ -941,7 +961,8 @@ npm install -g @ardennguyen/zalo-agent-cli@2.0.0
 
 Commands, flags and defaults: `skill/references/command-reference.md`. Operating it on a server: `docs/deployment.md`.
 
-[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.0.3...v3.0-dev
+[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.1.0...v3.0-dev
+[3.1.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.1.0
 [3.0.3]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.0.3
 [3.0.2]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.0.2
 [3.0.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.0.1

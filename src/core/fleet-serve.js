@@ -101,6 +101,8 @@ export function adminWebhook(url, secret, fetchFn = fetch) {
  * @param {NodeJS.ProcessEnv} [args.env]
  * @param {Set<string>} [args.agentHashes] - refused tokens (hex SHA-256)
  * @param {{servePage: (req: object, res: object) => Promise<boolean>}|null} [args.qrPages]
+ * @param {(() => object)|null} [args.usage] - `GET /usage`: the host's storage (./storage-quota.js hostUsage)
+ * @param {object|null} [args.accessApi] - the `/access/<ownId>` routes (./access-api.js); default: one on `config`
  * @param {(line: string) => void} [args.log]
  * @returns {{app: object, admin: object}}
  */
@@ -110,6 +112,8 @@ export function buildControllerApp({
     env = process.env,
     agentHashes = new Set(),
     qrPages = null,
+    usage = null,
+    accessApi = null,
     log = (l) => console.error(l),
 }) {
     const creds = resolveAdminCredentials({ config, env });
@@ -121,6 +125,8 @@ export function buildControllerApp({
         mtls: false,
         isAgentCredential: (token) => agentHashes.has(createHash("sha256").update(token, "utf8").digest("hex")),
         routes: (req, res, ctx) => controller.handle(req, res, ctx),
+        usage,
+        accessApi,
         log,
     });
     const app = express();

@@ -24,7 +24,7 @@
  */
 
 import { createHash, createHmac, hkdfSync, randomBytes, timingSafeEqual } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { writeFileAtomic } from "../zalo/kernel/atomic-file.js";
 import { clientIpOf, isLoopbackIp, normalizeIp } from "../core/media-route.js";
@@ -187,14 +187,25 @@ export function redirectUriMatches(registered, given) {
 /**
  * The persisted OAuth state of one account: dynamically registered clients (secrets as hashes only) and token
  * families (refresh token hashes only). Kept in `file` (0600, replaced atomically on every change); with no file it
- * lives in memory only.
+ * lives in memory only. The file is read again whenever it changed on disk (another process, the admin API's access
+ * routes, revoked a grant or removed a client), before any read or change, so a revoke counts at the next request.
  *
  * @param {{file?: string|null, now?: () => number}} [opts]
  */
 export function createOAuthStore({ file = null, now = () => Date.now() } = {}) {
     const sec = () => Math.floor(now() / 1000);
     let state = { v: 1, clients: {}, families: {} };
-    if (file) {
+    let seen = null;
+    const markOf = () => {
+        try {
+            const st = statSync(file);
+            return `${st.mtimeMs}:${st.size}`;
+        } catch {
+            return null;
+        }
+    };
+    const load = (quiet = false) => {
+        state = { v: 1, clients: {}, families: {} };
         try {
             const parsed = JSON.parse(readFileSync(file, "utf8"));
             if (parsed?.v === 1) {
@@ -205,17 +216,26 @@ export function createOAuthStore({ file = null, now = () => Date.now() } = {}) {
                 };
             }
         } catch (e) {
-            if (e?.code !== "ENOENT") {
+            if (e?.code !== "ENOENT" && !quiet) {
                 console.error(
                     `[mcp-oauth] ${file} could not be read (${e.message}): starting with no clients or tokens`,
                 );
             }
         }
-    }
+        seen = markOf();
+    };
+    if (file) load();
+    /** Pick up a change another writer made. */
+    const fresh = () => {
+        if (file && markOf() !== seen) load(true);
+    };
     const save = () => {
-        if (file) writeFileAtomic(file, JSON.stringify(state), { mode: 0o600 });
+        if (!file) return;
+        writeFileAtomic(file, JSON.stringify(state), { mode: 0o600 });
+        seen = markOf();
     };
     const liveFamily = (fam) => {
+        fresh();
         const f = typeof fam === "string" && Object.hasOwn(state.families, fam) ? state.families[fam] : null;
         return f && f.exp >= sec() ? f : null;
     };
@@ -224,19 +244,23 @@ export function createOAuthStore({ file = null, now = () => Date.now() } = {}) {
         file,
         /** A dynamically registered client, or null. */
         client(id) {
+            fresh();
             return typeof id === "string" && Object.hasOwn(state.clients, id) ? state.clients[id] : null;
         },
         /** How many dynamically registered clients there are. */
         clientCount() {
+            fresh();
             return Object.keys(state.clients).length;
         },
         /** Keep a new dynamically registered client. */
         addClient(record) {
+            fresh();
             state.clients[record.clientId] = record;
             save();
         },
         /** Drop registered clients that never got a token and are older than `olderThanMs`. Returns how many. */
         pruneUnusedClients(olderThanMs = UNUSED_CLIENT_TTL_MS) {
+            fresh();
             let n = 0;
             for (const [id, c] of Object.entries(state.clients)) {
                 if (!c.lastUsedAt && now() - Date.parse(c.createdAt ?? 0) > olderThanMs) {
@@ -263,6 +287,7 @@ export function createOAuthStore({ file = null, now = () => Date.now() } = {}) {
          * @returns {{fam: string, refreshToken: string|null}}
          */
         createFamily({ cid, scp, aud, iss, accessExp, refreshTtlSec = null }) {
+            fresh();
             const fam = randomBytes(12).toString("hex");
             const refreshToken = refreshTtlSec ? `zmcp_rt_${fam}.${randomBytes(32).toString("base64url")}` : null;
             state.families[fam] = {
@@ -312,6 +337,7 @@ export function createOAuthStore({ file = null, now = () => Date.now() } = {}) {
         },
         /** Revoke one family: its refresh token and every access token issued from it stop working. */
         revokeFamily(fam) {
+            fresh();
             if (typeof fam === "string" && Object.hasOwn(state.families, fam)) {
                 delete state.families[fam];
                 save();
@@ -324,6 +350,7 @@ export function createOAuthStore({ file = null, now = () => Date.now() } = {}) {
          * @param {(cid: string) => boolean} clientExists
          */
         prune(clientExists) {
+            fresh();
             let changed = false;
             const t = sec();
             for (const [fam, f] of Object.entries(state.families)) {
@@ -333,6 +360,61 @@ export function createOAuthStore({ file = null, now = () => Date.now() } = {}) {
                 }
             }
             if (changed) save();
+        },
+        /** The dynamically registered clients (no secret hash). */
+        listClients() {
+            fresh();
+            return Object.values(state.clients).map((c) => ({
+                clientId: c.clientId,
+                name: c.name || null,
+                redirectUris: Array.isArray(c.redirectUris) ? c.redirectUris : [],
+                confidential: Boolean(c.secretHash),
+                createdAt: c.createdAt ?? null,
+                lastUsedAt: c.lastUsedAt ?? null,
+            }));
+        },
+        /** The live grants (token families): ids, clients and times only. */
+        listGrants() {
+            fresh();
+            const t = sec();
+            return Object.entries(state.families)
+                .filter(([, f]) => f.exp >= t)
+                .map(([fam, f]) => ({
+                    grantId: fam,
+                    clientId: f.cid,
+                    scope: f.scp ?? null,
+                    issuedAt: f.iat ? new Date(f.iat * 1000).toISOString() : null,
+                    expiresAt: new Date(f.exp * 1000).toISOString(),
+                    refreshable: Boolean(f.rt),
+                }));
+        },
+        /** Remove a dynamically registered client and every grant it holds. Returns the grants revoked, or -1. */
+        removeClient(id) {
+            fresh();
+            if (typeof id !== "string" || !Object.hasOwn(state.clients, id)) return -1;
+            delete state.clients[id];
+            let n = 0;
+            for (const [fam, f] of Object.entries(state.families)) {
+                if (f.cid === id) {
+                    delete state.families[fam];
+                    n++;
+                }
+            }
+            save();
+            return n;
+        },
+        /** Revoke every grant (of one client, with `clientId`). Returns how many. */
+        revokeAll({ clientId = null } = {}) {
+            fresh();
+            let n = 0;
+            for (const [fam, f] of Object.entries(state.families)) {
+                if (clientId === null || f.cid === clientId) {
+                    delete state.families[fam];
+                    n++;
+                }
+            }
+            if (n) save();
+            return n;
         },
     };
 }

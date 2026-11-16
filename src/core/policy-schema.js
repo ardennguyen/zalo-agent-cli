@@ -169,6 +169,21 @@ const accountIds = (value) => {
     return { value: [...new Set(ids)] };
 };
 
+/**
+ * `media.store`: which media kinds are kept on disk. `all` (the default), `none` (text-only storage: messages are
+ * stored, no attachment is downloaded) or a list of kinds (`["photo", "voice"]`, or `"photo,voice"`).
+ */
+const mediaStore = (value) => {
+    if (typeof value === "string" && ["all", "none"].includes(value.trim().toLowerCase()))
+        return { value: value.trim().toLowerCase() };
+    const list = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : null;
+    if (!list) return { error: 'is not "all", "none" or a list of media kinds' };
+    const kinds = list.map((k) => String(k).trim().toLowerCase()).filter(Boolean);
+    const bad = kinds.find((k) => !MEDIA_KINDS.includes(k));
+    if (bad) return { error: `names an unknown media kind "${bad}" (one of ${MEDIA_KINDS.join(", ")})` };
+    return kinds.length ? { value: [...new Set(kinds)].sort() } : { value: "none" };
+};
+
 /** The presence modes (src/core/presence.js). */
 export const PRESENCE_MODES = Object.freeze(["on-demand", "always-on"]);
 
@@ -193,12 +208,16 @@ export const POLICY_KEYS = Object.freeze({
     "media.capability.maxClients": { check: wholeNumber(1) },
     "media.capability.ttl": { check: duration(1000) },
     "media.autoOpen": { check: bool },
+    // Which media kinds are kept at all (text-only storage): the one downloader (src/core/sync-v2/media.js) skips the rest.
+    "media.store": { check: mediaStore },
     webhook: { check: webhookUrl },
     webhookBatchSize: { check: wholeNumber(1, 100) },
     webhookMaxAge: { check: duration(60_000) },
     "quota.account.limit": { check: bytes },
     "quota.tenant.limit": { check: bytes, tenant: true },
     "quota.tenant.accounts": { check: accountIds, tenant: true },
+    // A user's share: the sum over the accounts it owns on this host (a tenant's file sets the default per user).
+    "quota.user.limit": { check: bytes, scopes: ["tenant", "user"] },
     "quota.graceDays": { check: wholeNumber(0, 3650) },
     "quota.warnAt": { check: fraction },
     "quota.purgeOrder": { check: oneOf(["media-first"]) },
@@ -210,6 +229,11 @@ export const POLICY_KEYS = Object.freeze({
             parseDays(v) ? { value: `${parseDays(v)}d` } : { error: 'is not a number of days (e.g. "30d")' },
     },
     "retention.purgeEvery": { check: duration(60_000) },
+    // The decrypted tempfile copies (src/core/media-deliver.js): above this many bytes the oldest go first.
+    "retention.mediaTempCap": { check: bytes },
+    // Counts a write is held to (src/core/policy-store.js): refused above, never enforced by removing anything.
+    "limits.accountsPerUser": { check: wholeNumber(0, 1_000_000), scopes: ["tenant", "user"] },
+    "limits.usersPerTenant": { check: wholeNumber(0, 10_000_000), scopes: ["tenant"] },
     // What a group's local history becomes when the account leaves it, is removed or blocked, or it is disbanded
     // (src/core/group-exit.js): read at each exit, no restart. keep -> purge purges the kept groups on the next pass.
     "groups.onLeave": { check: oneOf(["purge", "keep"]) },
@@ -229,6 +253,8 @@ export const POLICY_KEYS = Object.freeze({
     // The always-on cap (owner decision 1: over it, the oldest always-on account is demoted to on-demand).
     "presence.alwaysOn.maxPerUser": { check: wholeNumber(0, 10_000), scopes: ["tenant", "user"] },
     "presence.alwaysOn.maxPerTenant": { check: wholeNumber(0, 1_000_000), scopes: ["tenant"] },
+    // What a write that would go over an always-on cap does: demote the oldest (the default) or be refused.
+    "presence.alwaysOn.onCap": { check: oneOf(["demote", "refuse"]), scopes: ["tenant", "user"] },
     // Renewing the saved login before it ends (src/core/session-renew.js): read at each hourly look, no restart.
     "session.renew.enabled": { check: bool },
     "session.renew.daysBefore": { check: wholeNumber(1, 14) },

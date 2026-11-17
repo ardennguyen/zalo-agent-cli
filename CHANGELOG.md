@@ -9,6 +9,8 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+## [3.3.0] — 2026-11-17
+
 #### Added
 
 - **Per-account OAuth settings, applied live.** The access API gains `GET|PUT /zalo/admin/access/<ownId>/oauth/settings` (`{mode}`: `off`, `automatic` or `specific`) and `POST .../oauth/clients` (`{name, clientId?, redirectUris}`, the client secret shown once, kept only as a hash). A running daemon follows the saved mode at its next request, with no restart: `off` answers 404 on every OAuth route and refuses the grants already given (they are kept), `automatic` turns dynamic client registration on, `specific` admits only the configured clients and the ones made through the access API. Every connection is still approved with the approver password, so turning OAuth on needs one (`409 APPROVER_REQUIRED`) and a `publicUrl` (`409 PUBLIC_URL_REQUIRED`). With no saved mode the configuration decides as before. `GET .../oauth/clients` marks each client's `source` (`config`, `dynamic`, `account`).

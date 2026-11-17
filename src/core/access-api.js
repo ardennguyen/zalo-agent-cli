@@ -5,8 +5,11 @@
  * change up at its next request (no restart).
  *
  *     GET    /access/<ownId>                              everything below at once (no secret, no hash)
- *     GET    /access/<ownId>/oauth/clients                OAuth clients: registered and configured
- *     DELETE /access/<ownId>/oauth/clients/<clientId>     remove a registered client and every grant it holds
+ *     GET    /access/<ownId>/oauth/settings               {mode, source, approverSet, publicUrl}
+ *     PUT    /access/<ownId>/oauth/settings               {mode: off|automatic|specific}, applied live
+ *     GET    /access/<ownId>/oauth/clients                OAuth clients: configured, registered and made here
+ *     POST   /access/<ownId>/oauth/clients                {name, clientId?, redirectUris} -> 201, the secret once
+ *     DELETE /access/<ownId>/oauth/clients/<clientId>     remove a registered or made client and its grants
  *     GET    /access/<ownId>/oauth/grants                 live grants (token families)
  *     DELETE /access/<ownId>/oauth/grants/<grantId>       revoke one grant: its refresh and access tokens stop
  *     POST   /access/<ownId>/oauth/revoke-all             {clientId?} revoke every grant (of one client)
@@ -25,6 +28,7 @@
  * Every change is one line in the policy audit log (./policy-store.js audit): the account, an action code and the id it
  * touched, never a value. Every refusal carries a stable `code` beside the English `error`.
  */
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { getAccountDir } from "./credentials.js";
@@ -35,21 +39,46 @@ import { PolicyError, applyPolicy, audit } from "./policy-store.js";
 import { clearWebhookSecret, readWebhookSecret, rotateWebhookSecret, webhookSecretStatus } from "./webhook-secret.js";
 import { describeWebhookUrl, webhookHeaders } from "./webhook-outbox.js";
 import { envForAccount, resolvePrimaryOAuthClient, resolveWebhookUrl } from "../mcp/mcp-config.js";
-import { OAUTH_STATE_FILE, configuredOAuthClients, createOAuthStore } from "../mcp/mcp-oauth.js";
+import { resolvePublicUrl } from "./deploy-policy.js";
+import {
+    MAX_ACCOUNT_CLIENTS,
+    OAUTH_STATE_FILE,
+    configuredOAuthClients,
+    createOAuthStore,
+    hashClientSecret,
+    redirectUriProblem,
+} from "../mcp/mcp-oauth.js";
+import {
+    OAUTH_MODES,
+    configDynamicRegistration,
+    defaultOAuthMode,
+    readOAuthSettings,
+    writeOAuthSettings,
+} from "../mcp/oauth-settings.js";
 
 const ACCOUNT_ID = /^[1-9][0-9]{0,30}$/;
 const ID = /^[A-Za-z0-9_.-]{1,128}$/;
+/** A client id the owner chooses for a client made here. */
+const NEW_CLIENT_ID = /^[A-Za-z0-9._-]{3,64}$/;
 
 /**
  * @param {object} [args]
  * @param {object} [args.config] - the MCP config: its configured OAuth clients, its webhook URL and secret fallbacks
  * @param {(ownId: string) => Record<string, string>} [args.accountEnv] - the account's own environment (the fleet's
  *   `<envDir>/<ownId>.env`), read for the legacy token and the webhook's environment fallbacks
+ * @param {(ownId: string) => string|null|undefined} [args.publicUrlOf] - the account's publicUrl as its server knows it
+ *   (a daemon passes its own, which may come from a flag); undefined falls back to the environment and config
  * @param {typeof fetch} [args.fetchFn]
  * @param {(line: string) => void} [args.log]
  * @returns {{handle: (req: object, res: object, ctx: {who: string, ip: string, path: string}) => Promise<boolean>}}
  */
-export function createAccessApi({ config = {}, accountEnv = () => ({}), fetchFn = fetch, log = () => {} } = {}) {
+export function createAccessApi({
+    config = {},
+    accountEnv = () => ({}),
+    publicUrlOf = () => undefined,
+    fetchFn = fetch,
+    log = () => {},
+} = {}) {
     const send = (res, code, body) => {
         res.status(code).set({ "Cache-Control": "no-store" }).json(body);
         return true;
@@ -75,11 +104,77 @@ export function createAccessApi({ config = {}, accountEnv = () => ({}), fetchFn 
                 redirectUris: c.redirectUris,
                 confidential: Boolean(c.secret),
                 kind: "configured",
+                source: "config",
             })),
             ...oauthOf(dir)
                 .listClients()
-                .map((c) => ({ ...c, kind: "registered" })),
+                .map((c) => ({ ...c, kind: c.source === "account" ? "account" : "registered" })),
         ];
+    }
+
+    /** The account's publicUrl: what its server says, else its environment and the config; null when none. */
+    function publicUrlFor(ownId) {
+        const known = publicUrlOf(ownId);
+        if (known !== undefined) return known || null;
+        const r = resolvePublicUrl({ config, env: envOf(ownId), accountId: ownId, note: () => {} });
+        return r.error ? null : r.publicUrl;
+    }
+
+    /** The account's OAuth mode, where it comes from, and what turning it on needs. */
+    function oauthSettingsView(ownId, dir) {
+        const savedMode = readOAuthSettings(dir);
+        const mode =
+            savedMode?.mode ??
+            defaultOAuthMode({
+                dynamic: configDynamicRegistration({ config, accountId: ownId, env: envOf(ownId) }),
+                configuredClients: configured(ownId).length,
+            });
+        return {
+            mode,
+            source: savedMode ? "account" : "config",
+            approverSet: Boolean(approverStatus(dir).set),
+            publicUrl: publicUrlFor(ownId),
+        };
+    }
+
+    /** Make a confidential client for this account: its secret is returned once, only its hash is kept. */
+    function createClient(ownId, dir, body) {
+        const name = typeof body.name === "string" ? body.name.trim() : "";
+        if (name.length < 1 || name.length > 60) return { error: [400, "INVALID_NAME", "name: 1 to 60 characters"] };
+        let clientId = body.clientId;
+        if (clientId !== undefined && clientId !== null && clientId !== "") {
+            if (typeof clientId !== "string" || !NEW_CLIENT_ID.test(clientId))
+                return { error: [400, "INVALID_CLIENT_ID", "clientId: 3 to 64 characters of A-Z a-z 0-9 . _ -"] };
+        } else clientId = null;
+        const uris = body.redirectUris;
+        if (!Array.isArray(uris) || uris.length < 1 || uris.length > 10)
+            return { error: [400, "INVALID_REDIRECT_URIS", "redirectUris: 1 to 10 https URLs"] };
+        for (const u of uris) {
+            const why =
+                typeof u === "string" && !u.startsWith("https://") ? "it must be an https URL" : redirectUriProblem(u);
+            if (why)
+                return { error: [400, "INVALID_REDIRECT_URIS", `redirectUris: ${why}: ${String(u).slice(0, 200)}`] };
+        }
+        const store = oauthOf(dir);
+        const taken = (id) => configured(ownId).some((c) => c.clientId === id) || Boolean(store.client(id));
+        if (clientId && taken(clientId))
+            return { error: [409, "CLIENT_EXISTS", `an OAuth client ${clientId} already exists on this account`] };
+        if (store.accountClientCount() >= MAX_ACCOUNT_CLIENTS)
+            return { error: [409, "CLIENT_LIMIT", `at most ${MAX_ACCOUNT_CLIENTS} clients can be made per account`] };
+        while (!clientId || taken(clientId)) clientId = `app_${randomBytes(12).toString("hex")}`;
+        const clientSecret = `zmcp_cs_${randomBytes(32).toString("base64url")}`;
+        const createdAt = new Date().toISOString();
+        store.addClient({
+            clientId,
+            name,
+            authMethod: "client_secret_post",
+            redirectUris: [...uris],
+            secretHash: hashClientSecret(clientSecret),
+            createdAt,
+            lastUsedAt: null,
+            source: "account",
+        });
+        return { made: { clientId, clientSecret, name, redirectUris: [...uris], createdAt } };
     }
 
     function webhookView(ownId, dir) {
@@ -102,7 +197,11 @@ export function createAccessApi({ config = {}, accountEnv = () => ({}), fetchFn 
             accountId: ownId,
             apiKeys: listApiKeys(dir),
             legacyToken: { set: Boolean(envForAccount("ZALO_MCP_AUTH_TOKEN", ownId, envOf(ownId))) },
-            oauth: { clients: clientsOf(ownId, dir), grants: oauthOf(dir).listGrants() },
+            oauth: {
+                settings: oauthSettingsView(ownId, dir),
+                clients: clientsOf(ownId, dir),
+                grants: oauthOf(dir).listGrants(),
+            },
             webhook: webhookView(ownId, dir),
             approver: approverStatus(dir),
             cloudKey: {
@@ -183,7 +282,41 @@ export function createAccessApi({ config = {}, accountEnv = () => ({}), fetchFn 
             if (rest === "") return only("GET") || send(res, 200, summary(ownId, dir));
 
             // ── OAuth ──
-            if (rest === "/oauth/clients") return only("GET") || send(res, 200, { clients: clientsOf(ownId, dir) });
+            if (rest === "/oauth/settings") {
+                if (only("GET", "PUT")) return true;
+                if (method === "GET") return send(res, 200, oauthSettingsView(ownId, dir));
+                const mode = body.mode;
+                if (!OAUTH_MODES.includes(mode))
+                    return fail(res, 400, "INVALID_OAUTH_MODE", `mode is one of ${OAUTH_MODES.join(", ")}`);
+                if (mode !== "off") {
+                    if (!approverStatus(dir).set)
+                        return fail(
+                            res,
+                            409,
+                            "APPROVER_REQUIRED",
+                            "connecting an app asks the owner for the approver password: set one first (PUT approver)",
+                        );
+                    if (!publicUrlFor(ownId))
+                        return fail(
+                            res,
+                            409,
+                            "PUBLIC_URL_REQUIRED",
+                            "OAuth needs a fixed issuer: set the account's publicUrl first",
+                        );
+                }
+                writeOAuthSettings(dir, mode);
+                note(ctx, ownId, `oauth.mode.${mode}`);
+                return send(res, 200, oauthSettingsView(ownId, dir));
+            }
+            if (rest === "/oauth/clients") {
+                if (only("GET", "POST")) return true;
+                if (method === "GET") return send(res, 200, { clients: clientsOf(ownId, dir) });
+                const out = createClient(ownId, dir, body);
+                if (out.error) return fail(res, ...out.error);
+                note(ctx, ownId, "oauth.client.create", out.made.clientId);
+                log(`[admin] OAuth client ${out.made.clientId} made for ${ownId} (${ctx.who} ${ctx.ip})`);
+                return send(res, 201, out.made);
+            }
             let r = /^\/oauth\/clients\/([^/]+)$/.exec(rest);
             if (r) {
                 if (only("DELETE")) return true;

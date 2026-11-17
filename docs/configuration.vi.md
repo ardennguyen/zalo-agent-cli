@@ -237,6 +237,25 @@ Các route của admin API (cùng thông tin xác thực admin; mọi lần từ
     (client đã đăng ký và các grant của nó; client cấu hình sẵn trả `409 CLIENT_CONFIGURED`). Client cấu hình sẵn là
     những client mà daemon của tài khoản phục vụ: client chính lấy từ môi trường của chính nó
     (`ZALO_MCP_OAUTH_CLIENT_ID[_<ownId>]`, kể cả `<env-dir>/<ownId>.env` của fleet) hoặc `mcp-config.json`, và `oauth.clients[]`.
+    Mỗi client trong danh sách có `source`: `config`, `dynamic` (tự đăng ký) hoặc `account` (tạo tại đây).
+  - `GET|PUT .../oauth/settings` (`{mode}`: `off`, `automatic` hoặc `specific`) -> `{mode, source, approverSet,
+    publicUrl}`, cách các ứng dụng AI đăng nhập vào MCP server của tài khoản, được daemon đang chạy áp dụng ở yêu cầu kế
+    tiếp (không cần khởi động lại). `off`: mọi route OAuth trả 404 như server chỉ dùng bearer; các grant đã cấp được giữ
+    nhưng bị từ chối khi đang tắt, còn khóa API và bearer token vẫn dùng được. `automatic`: bật và công bố đăng ký client
+    động (`/register`). `specific`: chỉ biết các client cấu hình sẵn và client tạo tại đây; `/register` trả 404. Mỗi kết
+    nối vẫn phải được duyệt bằng mật khẩu người duyệt. `source` là `account` khi đã lưu một chế độ (`oauth-settings.json`
+    trong thư mục tài khoản, 0600), ngược lại là `config`: `automatic` khi `oauth.allowDynamicRegistration` /
+    `ZALO_MCP_OAUTH_DYNAMIC_REGISTRATION` bật, nếu không thì `specific` khi có client cấu hình sẵn, nếu không thì `off`.
+    Bật lên bị từ chối `409 APPROVER_REQUIRED` khi chưa có mật khẩu người duyệt và `409 PUBLIC_URL_REQUIRED` khi chưa có
+    `publicUrl` (issuer phải cố định); chế độ khác trả `400 INVALID_OAUTH_MODE`. Các route OAuth có mặt trên mọi server có
+    `publicUrl`, nên việc này chạy được cả trên daemon khởi động với OAuth tắt; server không có token `--auth` và không có
+    client secret ký token bằng khóa riêng của nó (`oauth-signing-key.json`, 0600). Khi đã lưu một chế độ, kiểm tra bearer
+    luôn bật, kể cả `off`.
+  - `POST .../oauth/clients` (`{name, clientId?, redirectUris}`: tên 1-60 ký tự, id tùy chọn 3-64 ký tự
+    `[A-Za-z0-9._-]`, nếu không có sẽ được tạo, và 1-10 URL callback https) -> `201 {clientId, clientSecret, name,
+    redirectUris, createdAt}`: một client bí mật (`client_secret_post` hoặc `client_secret_basic` ở `/token`) mà secret chỉ
+    hiện lần này; chỉ giữ SHA-256 của nó. `409 CLIENT_EXISTS` khi id đã dùng, `409 CLIENT_LIMIT` khi quá 50.
+    `DELETE .../oauth/clients/<clientId>` xóa nó và các grant của nó.
   - `GET|POST .../api-keys` (`{label, expiresAt?}` -> `201 {keyId, label, createdAt, expiresAt, key}`: khóa, dạng
     `zak_<keyId>_<secret>`, chỉ hiện một lần; chỉ giữ SHA-256 của nó, niêm phong trong `api-keys.json`), `DELETE
     .../api-keys/<keyId>`. Một khóa là bearer cho MCP server của tài khoản bên cạnh `ZALO_MCP_AUTH_TOKEN` (khóa cũ, vẫn

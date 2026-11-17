@@ -6,6 +6,10 @@
  *   `oauth.redirectUris`, or `oauth.clients[]`) or dynamic client registration is turned on
  *   (`oauth.allowDynamicRegistration`). A bearer-only server (`--auth` alone) answers 404 on every OAuth route,
  *   including both discovery documents.
+ * - **Per-account mode, live.** On a server with a publicUrl the account's owner can set the mode from the console
+ *   (src/core/access-api.js, ./oauth-settings.js): `off`, `automatic` (dynamic registration) or `specific` (configured
+ *   clients and the clients made through the access API). The saved mode wins over the configuration and is read
+ *   again on change, so no restart is needed; with none saved the configuration decides as above.
  * - **The operator approves every connection.** `/authorize` checks the client, its exact redirect URI and PKCE (S256
  *   only), then sends the browser to the one-time approve page (src/core/secure-page.js), which asks for the approver
  *   password (`zalo-agent mcp approver set`) or, with `approval.secret: "pin"`, the hidden-chat PIN. Only after that is
@@ -29,6 +33,7 @@ import { join } from "node:path";
 import { writeFileAtomic } from "../zalo/kernel/atomic-file.js";
 import { clientIpOf, isLoopbackIp, normalizeIp } from "../core/media-route.js";
 import { SECURE_PATH_PREFIX } from "../core/secure-page.js";
+import { accountSigningSecret, createOAuthSettingsReader, defaultOAuthMode } from "./oauth-settings.js";
 
 /** Default access token lifetime: one hour. */
 export const DEFAULT_ACCESS_TOKEN_TTL_SEC = 3600;
@@ -74,6 +79,20 @@ export function safeEqual(a, b) {
 
 /** SHA-256 of a string, hex. */
 const hashOf = (text) => createHash("sha256").update(String(text), "utf8").digest("hex");
+
+/**
+ * What the store keeps of a client secret: its SHA-256, hex. The secret itself is never stored.
+ * @param {string} secret
+ * @returns {string}
+ */
+export function hashClientSecret(secret) {
+    return hashOf(secret);
+}
+
+/** The most clients made through the access API for one account. */
+export const MAX_ACCOUNT_CLIENTS = 50;
+/** Whether a stored client was made through the access API (else it registered itself, RFC 7591). */
+const isAccountClient = (c) => c?.source === "account";
 
 /**
  * The HMAC key of one token kind for one account: HKDF-SHA256 over the server secret, salted with the account id.
@@ -247,12 +266,17 @@ export function createOAuthStore({ file = null, now = () => Date.now() } = {}) {
             fresh();
             return typeof id === "string" && Object.hasOwn(state.clients, id) ? state.clients[id] : null;
         },
-        /** How many dynamically registered clients there are. */
+        /** How many dynamically registered clients there are (the clients made through the access API apart). */
         clientCount() {
             fresh();
-            return Object.keys(state.clients).length;
+            return Object.values(state.clients).filter((c) => !isAccountClient(c)).length;
         },
-        /** Keep a new dynamically registered client. */
+        /** How many clients were made through the access API. */
+        accountClientCount() {
+            fresh();
+            return Object.values(state.clients).filter(isAccountClient).length;
+        },
+        /** Keep a new client: dynamically registered, or made through the access API (`source: "account"`). */
         addClient(record) {
             fresh();
             state.clients[record.clientId] = record;
@@ -263,7 +287,7 @@ export function createOAuthStore({ file = null, now = () => Date.now() } = {}) {
             fresh();
             let n = 0;
             for (const [id, c] of Object.entries(state.clients)) {
-                if (!c.lastUsedAt && now() - Date.parse(c.createdAt ?? 0) > olderThanMs) {
+                if (!isAccountClient(c) && !c.lastUsedAt && now() - Date.parse(c.createdAt ?? 0) > olderThanMs) {
                     delete state.clients[id];
                     n++;
                 }
@@ -361,7 +385,7 @@ export function createOAuthStore({ file = null, now = () => Date.now() } = {}) {
             }
             if (changed) save();
         },
-        /** The dynamically registered clients (no secret hash). */
+        /** The stored clients, registered and made through the access API (no secret hash). */
         listClients() {
             fresh();
             return Object.values(state.clients).map((c) => ({
@@ -371,6 +395,7 @@ export function createOAuthStore({ file = null, now = () => Date.now() } = {}) {
                 confidential: Boolean(c.secretHash),
                 createdAt: c.createdAt ?? null,
                 lastUsedAt: c.lastUsedAt ?? null,
+                source: isAccountClient(c) ? "account" : "dynamic",
             }));
         },
         /** The live grants (token families): ids, clients and times only. */
@@ -388,7 +413,7 @@ export function createOAuthStore({ file = null, now = () => Date.now() } = {}) {
                     refreshable: Boolean(f.rt),
                 }));
         },
-        /** Remove a dynamically registered client and every grant it holds. Returns the grants revoked, or -1. */
+        /** Remove a stored client (registered or made here) and every grant it holds. Returns the grants revoked, or -1. */
         removeClient(id) {
             fresh();
             if (typeof id !== "string" || !Object.hasOwn(state.clients, id)) return -1;
@@ -591,7 +616,14 @@ function grantScope(requested) {
  * @param {import("../core/secure-page.js").SecurePage|null} [ctx.securePage] - the approve page
  * @param {() => object} [ctx.approver] - approverFor's answer for the approve page (src/core/approval.js)
  * @param {() => number} [ctx.now]
- * @returns {{enabled: boolean, verifyBearer: (token: string, req?: import("express").Request) => boolean,
+ *
+ * The routes are mounted when the configuration turns OAuth on or the server has a publicUrl (a fixed issuer), and
+ * then follow the account's mode (./oauth-settings.js) on every request, so the console switches it live: `off` answers
+ * 404 on every OAuth route and refuses the tokens already issued, `automatic` adds `/register`, `specific` knows only
+ * the configured clients and those made through the access API.
+ *
+ * @returns {{enabled: boolean, isOn: () => boolean, requiresAuth: () => boolean, mode: () => string,
+ *   verifyBearer: (token: string, req?: import("express").Request) => boolean,
  *   resourceMetadataUrl: (req: import("express").Request) => string|null, store: object|null}}
  */
 export function mountOAuth(app, ctx) {
@@ -599,22 +631,42 @@ export function mountOAuth(app, ctx) {
     const now = ctx.now ?? (() => Date.now());
     const nowSec = () => Math.floor(now() / 1000);
     const { clients: configured } = configuredOAuthClients(oauth);
-    const dynamicOn = Boolean(oauth?.allowDynamicRegistration);
-    const enabled = configured.size > 0 || dynamicOn;
+    const configDynamic = Boolean(oauth?.allowDynamicRegistration);
+    const configEnabled = configured.size > 0 || configDynamic;
     const secretsAsBearer = Boolean(oauth?.secretsAsBearer);
     const publicUrl = oauth?.issuerUrl || null;
-    if (!enabled) {
-        return { enabled: false, verifyBearer: () => false, resourceMetadataUrl: () => null, store: null };
+    const accountDir = ctx.accountDir ?? null;
+    if (!configEnabled && !publicUrl) {
+        return {
+            enabled: false,
+            isOn: () => false,
+            requiresAuth: () => false,
+            mode: () => "off",
+            verifyBearer: () => false,
+            resourceMetadataUrl: () => null,
+            store: null,
+        };
     }
-    const secret = signingSecretOf({ authToken, clients: configured });
-    if (!secret) {
+    const staticSecret = signingSecretOf({ authToken, clients: configured });
+    if (configEnabled && !staticSecret) {
         throw new Error(
             "OAuth needs a server secret to sign its tokens with: set --auth / ZALO_MCP_AUTH_TOKEN, or give an " +
                 "OAuth client a secret",
         );
     }
+    // The account's mode: its saved choice (read again when the file changes), else what the configuration implies.
+    const saved = createOAuthSettingsReader(accountDir);
+    const configMode = defaultOAuthMode({ dynamic: configDynamic, configuredClients: configured.size });
+    const modeOf = () => saved()?.mode ?? configMode;
     const accountId = String(oauth?.accountId ?? "");
-    const accessKey = deriveOAuthKey(secret, accountId, "access");
+    // With no --auth token and no configured client secret, the account's own signing secret, made on first use.
+    let accessKeyCache = null;
+    const accessKey = () =>
+        (accessKeyCache ??= deriveOAuthKey(
+            staticSecret ?? (accountDir ? accountSigningSecret(accountDir) : randomBytes(32).toString("base64url")),
+            accountId,
+            "access",
+        ));
     const accessTtl =
         Number(oauth?.accessTokenTtlSec) > 0 ? Number(oauth.accessTokenTtlSec) : DEFAULT_ACCESS_TOKEN_TTL_SEC;
     const refreshTtl =
@@ -622,16 +674,21 @@ export function mountOAuth(app, ctx) {
     const stateFile = oauth?.stateFile ?? (ctx.accountDir ? join(ctx.accountDir, OAUTH_STATE_FILE) : null);
     const store = createOAuthStore({ file: stateFile, now });
 
-    /** A client by id: configured first, then registered. */
-    const clientOf = (id) => {
-        if (typeof id !== "string" || !id) return null;
+    /**
+     * A client by id, as the mode admits it: none while off; configured ones and those made through the access API
+     * otherwise; dynamically registered ones only in `automatic`.
+     */
+    const clientOf = (id, mode = modeOf()) => {
+        if (typeof id !== "string" || !id || mode === "off") return null;
         const c = configured.get(id);
         if (c) return { ...c, kind: "configured", confidential: Boolean(c.secret) };
-        const d = dynamicOn ? store.client(id) : null;
-        if (d) return { ...d, kind: "dynamic", confidential: Boolean(d.secretHash) };
+        const d = store.client(id);
+        if (d && isAccountClient(d)) return { ...d, kind: "account", confidential: Boolean(d.secretHash) };
+        if (d && mode === "automatic") return { ...d, kind: "dynamic", confidential: Boolean(d.secretHash) };
         return null;
     };
-    store.prune((cid) => Boolean(clientOf(cid)));
+    // Grants of a client that no longer exists go; those of a client the mode does not admit now are only refused.
+    store.prune((cid) => configured.has(cid) || Boolean(store.client(cid)));
 
     // Authorization codes: memory only (a restart drops them), single use; a redeemed one remembers its family.
     const codes = new Map();
@@ -652,6 +709,8 @@ export function mountOAuth(app, ctx) {
         res.set("Retry-After", String(wait)).set("Cache-Control", "no-store");
         return res.status(429).json({ error: "invalid_request", error_description: "Too many requests; slow down" });
     };
+    // While the account's mode is off, every OAuth route answers as on a bearer-only server.
+    const whenOn = (req, res, next) => (modeOf() === "off" ? res.status(404).json({ error: "not_found" }) : next());
     const oauthError = (res, status, error, description, extraHeaders = {}) => {
         res.set("Cache-Control", "no-store").set("Pragma", "no-cache");
         for (const [k, v] of Object.entries(extraHeaders)) res.set(k, v);
@@ -662,7 +721,7 @@ export function mountOAuth(app, ctx) {
     // RFC 9728 protected resource metadata, at the root and path-inserted (`/.well-known/oauth-protected-resource/mcp`
     // or `.../<base>/mcp` for an issuer with a base path).
     const issuerPath = (req) => new URL(issuerOf(req)).pathname.replace(/\/+$/, "");
-    app.get(/^\/\.well-known\/oauth-protected-resource(\/.*)?$/, (req, res) => {
+    app.get(/^\/\.well-known\/oauth-protected-resource(\/.*)?$/, whenOn, (req, res) => {
         const suffix = (req.params[0] ?? "").replace(/\/+$/, "");
         const base = issuerPath(req);
         if (suffix && ![`/mcp`, `${base}/mcp`, base].includes(suffix))
@@ -678,7 +737,7 @@ export function mountOAuth(app, ctx) {
     });
     // RFC 8414 authorization server metadata, at the root and path-inserted
     // (`/.well-known/oauth-authorization-server/<base>` for an issuer `https://host/<base>`).
-    app.get(/^\/\.well-known\/oauth-authorization-server(\/.*)?$/, (req, res) => {
+    app.get(/^\/\.well-known\/oauth-authorization-server(\/.*)?$/, whenOn, (req, res) => {
         const suffix = (req.params[0] ?? "").replace(/\/+$/, "");
         if (suffix && suffix !== issuerPath(req)) return res.status(404).json({ error: "not_found" });
         const origin = issuerOf(req);
@@ -686,7 +745,7 @@ export function mountOAuth(app, ctx) {
             issuer: origin,
             authorization_endpoint: `${origin}/authorize`,
             token_endpoint: `${origin}/token`,
-            ...(dynamicOn ? { registration_endpoint: `${origin}/register` } : {}),
+            ...(modeOf() === "automatic" ? { registration_endpoint: `${origin}/register` } : {}),
             revocation_endpoint: `${origin}/revoke`,
             response_types_supported: ["code"],
             response_modes_supported: ["query"],
@@ -700,8 +759,8 @@ export function mountOAuth(app, ctx) {
     });
 
     // ── RFC 7591 dynamic client registration (opt-in) ──
-    app.post("/register", limited("register"), (req, res) => {
-        if (!dynamicOn) return res.status(404).json({ error: "not_found" });
+    app.post("/register", whenOn, limited("register"), (req, res) => {
+        if (modeOf() !== "automatic") return res.status(404).json({ error: "not_found" });
         const body = req.body && typeof req.body === "object" ? req.body : {};
         const uris = body.redirect_uris;
         if (!Array.isArray(uris) || !uris.length || uris.length > 10) {
@@ -865,8 +924,8 @@ export function mountOAuth(app, ctx) {
         // Relative, so it stays under the base path a proxy serves this server at.
         return res.redirect(302, `${SECURE_PATH_PREFIX.slice(1)}${token}`);
     };
-    app.get("/authorize", limited("authorize"), handleAuthorize);
-    app.post("/authorize", limited("authorize"), handleAuthorize);
+    app.get("/authorize", whenOn, limited("authorize"), handleAuthorize);
+    app.post("/authorize", whenOn, limited("authorize"), handleAuthorize);
 
     /** The authenticated client of a /token or /revoke request, or an error answer already sent. */
     const authenticateClient = (req, res) => {
@@ -899,14 +958,14 @@ export function mountOAuth(app, ctx) {
             token: signToken(
                 "zmcp_at_",
                 { typ: "at", iss, aud, cid, fam, scp, iat: nowSec(), exp, jti: randomBytes(12).toString("hex") },
-                accessKey,
+                accessKey(),
             ),
             exp,
         };
     };
 
     // ── Token endpoint ──
-    app.post("/token", limited("token"), (req, res) => {
+    app.post("/token", whenOn, limited("token"), (req, res) => {
         res.set("Cache-Control", "no-store").set("Pragma", "no-cache");
         const grantType = typeof req.body?.grant_type === "string" ? req.body.grant_type.trim() : "";
         if (!["authorization_code", "refresh_token", "client_credentials"].includes(grantType)) {
@@ -961,7 +1020,7 @@ export function mountOAuth(app, ctx) {
                 refreshTtlSec: refreshTtl,
             });
             redeemed.set(h, { fam, exp: code.exp });
-            if (client.kind === "dynamic") store.touchClient(client.clientId);
+            if (client.kind !== "configured") store.touchClient(client.clientId);
             const at = issueAccess({ ...code, fam });
             return res.status(200).json({
                 access_token: at.token,
@@ -1018,7 +1077,7 @@ export function mountOAuth(app, ctx) {
     });
 
     // ── RFC 7009 revocation: a refresh or access token revokes its whole grant ──
-    app.post("/revoke", limited("revoke"), (req, res) => {
+    app.post("/revoke", whenOn, limited("revoke"), (req, res) => {
         res.set("Cache-Control", "no-store");
         const auth = authenticateClient(req, res);
         if (auth.sent) return auth.sent;
@@ -1031,7 +1090,7 @@ export function mountOAuth(app, ctx) {
             fam = named.fam;
             cid = named.family.cid;
         } else {
-            const at = verifyToken(token, "zmcp_at_", accessKey, nowSec());
+            const at = verifyToken(token, "zmcp_at_", accessKey(), nowSec());
             if (at) {
                 fam = at.fam;
                 cid = at.cid;
@@ -1047,7 +1106,7 @@ export function mountOAuth(app, ctx) {
      * audience (when the request is known), a client that still exists, and a family not revoked.
      */
     const verifyAccess = (token, req) => {
-        const at = verifyToken(token, "zmcp_at_", accessKey, nowSec());
+        const at = verifyToken(token, "zmcp_at_", accessKey(), nowSec());
         if (!at || at.typ !== "at") return false;
         if (req) {
             const iss = issuerOf(req);
@@ -1058,7 +1117,8 @@ export function mountOAuth(app, ctx) {
         return Boolean(f && f.cid === at.cid);
     };
     const verifyBearer = (token, req) => {
-        if (!token) return false;
+        // While off, nothing OAuth issued (or a client secret) opens /mcp; the grants are kept for when it is back on.
+        if (!token || modeOf() === "off") return false;
         if (secretsAsBearer) {
             for (const c of configured.values()) if (c.secret && safeEqual(token, c.secret)) return true;
         }
@@ -1066,6 +1126,11 @@ export function mountOAuth(app, ctx) {
     };
     return {
         enabled: true,
+        isOn: () => modeOf() !== "off",
+        // The bearer check stays on once OAuth is configured or the account saved a mode (whatever it is now), so
+        // switching OAuth off from the console never opens the server to anyone.
+        requiresAuth: () => configEnabled || saved() !== null,
+        mode: modeOf,
         verifyBearer,
         resourceMetadataUrl: (req) => `${issuerOf(req)}/.well-known/oauth-protected-resource/mcp`,
         store,

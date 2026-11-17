@@ -235,7 +235,26 @@ Admin API routes (the same admin credential; every refusal carries a stable `cod
     `DELETE .../oauth/grants/<grantId>`, `POST .../oauth/revoke-all` `{clientId?}`, `DELETE .../oauth/clients/<clientId>`
     (a registered client and its grants; a configured one is `409 CLIENT_CONFIGURED`). The configured clients are the
     ones the account's daemon serves: its primary client from its own environment (`ZALO_MCP_OAUTH_CLIENT_ID[_<ownId>]`,
-    the fleet's `<env-dir>/<ownId>.env` included) or `mcp-config.json`, and `oauth.clients[]`.
+    the fleet's `<env-dir>/<ownId>.env` included) or `mcp-config.json`, and `oauth.clients[]`. Each listed client has a
+    `source`: `config`, `dynamic` (registered itself) or `account` (made here).
+  - `GET|PUT .../oauth/settings` (`{mode}`: `off`, `automatic` or `specific`) -> `{mode, source, approverSet,
+    publicUrl}`, how AI apps sign in to the account's MCP server, applied by the running daemon at its next request (no
+    restart). `off`: every OAuth route answers 404 as on a bearer-only server; the grants already given are kept but
+    refused while off, and API keys and the bearer token keep working. `automatic`: dynamic client registration
+    (`/register`) is on and advertised. `specific`: only the configured clients and those made here are known;
+    `/register` answers 404. Every connection is still approved with the approver password. `source` is `account` once a
+    mode is saved (`oauth-settings.json` in the account folder, 0600), else `config`: `automatic` when
+    `oauth.allowDynamicRegistration` / `ZALO_MCP_OAUTH_DYNAMIC_REGISTRATION` is on, else `specific` when a client is
+    configured, else `off`. Turning it on is `409 APPROVER_REQUIRED` with no approver password and `409
+    PUBLIC_URL_REQUIRED` with no `publicUrl` (the issuer must be fixed); `400 INVALID_OAUTH_MODE` otherwise. The OAuth
+    routes exist on any server with a `publicUrl`, so this works on a daemon started with OAuth off; a server with no
+    `--auth` token and no client secret signs its tokens with a key of its own (`oauth-signing-key.json`, 0600). Once a
+    mode is saved the bearer check stays on, even off.
+  - `POST .../oauth/clients` (`{name, clientId?, redirectUris}`: a name of 1-60 characters, an optional id of 3-64
+    characters `[A-Za-z0-9._-]`, else one is made, and 1-10 https callback URLs) -> `201 {clientId, clientSecret, name,
+    redirectUris, createdAt}`: a confidential client (`client_secret_post` or `client_secret_basic` at `/token`) whose
+    secret is shown this once; only its SHA-256 is kept. `409 CLIENT_EXISTS` for a taken id, `409 CLIENT_LIMIT` past 50.
+    `DELETE .../oauth/clients/<clientId>` removes it and its grants.
   - `GET|POST .../api-keys` (`{label, expiresAt?}` -> `201 {keyId, label, createdAt, expiresAt, key}`: the key, shaped
     `zak_<keyId>_<secret>`, is shown once; only its SHA-256 is kept, sealed in `api-keys.json`), `DELETE
     .../api-keys/<keyId>`. A key is a bearer for the account's MCP server beside `ZALO_MCP_AUTH_TOKEN` (the legacy key,

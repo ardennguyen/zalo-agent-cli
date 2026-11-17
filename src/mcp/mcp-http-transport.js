@@ -62,9 +62,10 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
     const oauthCheck = oauthStartCheck({ oauth, authToken, host, publicUrl: oauth?.issuerUrl || null });
     if (oauthCheck.problem) throw new Error(oauthCheck.problem);
     const authEnabled = Boolean(authToken) || oauthCheck.enabled;
-    // Named API keys (src/core/api-keys.js), read live: the first key made turns the bearer check on.
+    // Named API keys (src/core/api-keys.js), read live: the first key made turns the bearer check on. So does an OAuth
+    // mode saved for the account from the console (src/mcp/oauth-settings.js), whatever it is.
     const apiKeys = deps.apiKeys || createApiKeyChecker(deps.accountDir || null);
-    const authOn = () => authEnabled || apiKeys.any();
+    const authOn = () => authEnabled || apiKeys.any() || Boolean(oauthServer?.requiresAuth());
     /** @type {ReturnType<typeof mountOAuth>|null} mounted below, after the body parsers */
     let oauthServer = null;
 
@@ -205,7 +206,8 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
             .json({ error: "invalid_request", error_description: "The request body could not be parsed" });
     });
 
-    // ── OAuth 2.1 (src/mcp/mcp-oauth.js): on only when a client is configured or dynamic registration is on ──
+    // ── OAuth 2.1 (src/mcp/mcp-oauth.js): mounted when a client is configured, dynamic registration is on or the
+    // server has a publicUrl; then the account's mode (off, automatic, specific) decides on each request ──
     oauthServer = mountOAuth(app, {
         oauth,
         authToken,
@@ -234,7 +236,7 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
         const token = /^bearer\s+/i.test(authHeader) ? authHeader.replace(/^bearer\s+/i, "").trim() : "";
         if (isAgentToken(token, req)) return next();
         // RFC 6750 §3 (and RFC 9728 §5.1: where the protected resource metadata is, when OAuth is on).
-        const meta = oauthServer.enabled ? `, resource_metadata="${oauthServer.resourceMetadataUrl(req)}"` : "";
+        const meta = oauthServer.isOn() ? `, resource_metadata="${oauthServer.resourceMetadataUrl(req)}"` : "";
         const description = token ? "The access token is invalid, expired or revoked" : "A bearer token is required";
         res.setHeader(
             "WWW-Authenticate",

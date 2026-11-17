@@ -269,7 +269,14 @@ export function createAdminApi({
     accessApi = null,
     log = (l) => console.error(l),
 }) {
-    const access = accessApi ?? createAccessApi({ config, log });
+    // On a daemon, its own account's publicUrl is the one it serves (it may come from --public-url).
+    const access =
+        accessApi ??
+        createAccessApi({
+            config,
+            log,
+            publicUrlOf: (id) => (id === ownId && publicUrl ? publicUrl : undefined),
+        });
     const enabled = () => mtls || hashes.length > 0 || Boolean(sealedHash());
 
     /** Who this request is, or null. Never logs or returns the credential. */

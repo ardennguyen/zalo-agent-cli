@@ -80,6 +80,9 @@ export function getDefaultConfig() {
         // Whether the hidden-chat tools take the PIN as an input. It puts the PIN in the MCP client's logs: for
         // non-AI clients only. Unset (null) means ZALO_MCP_ALLOW_PIN_ARGUMENT, else false.
         allowPinArgument: null,
+        // Whether the account's own messages in its own My Documents reach the agents (the buffer, the notifier, the
+        // webhook), marked `isSelf: true`. Unset (null) means ZALO_MCP_OWN_MY_DOCUMENTS, else false.
+        ownMyDocuments: null,
         // The one address people and clients reach this server at, behind a reverse proxy or TLS terminator
         // (src/core/deploy-policy.js resolvePublicUrl): the MCP endpoint, the OAuth issuer, the one-time secure page
         // and the QR login page. An https URL with an optional base path (http only for localhost). Unset (null) means

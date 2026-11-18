@@ -196,6 +196,8 @@ export const POLICY_KEYS = Object.freeze({
     confirmMode: { check: oneOf(CONFIRM_MODES) },
     hiddenChats: { check: oneOf(HIDDEN_CHAT_MODES) },
     allowPinArgument: { check: bool },
+    // The account's own messages in its own My Documents reach the agents (src/mcp/self-messages.js).
+    ownMyDocuments: { check: bool },
     "approval.secret": { check: oneOf(APPROVAL_SECRETS) },
     "approval.deliver": { check: oneOf(APPROVAL_DELIVERIES) },
     "media.deliver": { check: deliverMap },

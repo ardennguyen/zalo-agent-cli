@@ -11,6 +11,10 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [3.3.1] — 2026-11-18
 
+#### Added
+
+- **Talk to an assistant in your own My Documents.** `mcp start` keeps every message the account sends itself away from the agents, so an owner who wrote to an AI assistant in their own My Documents was never heard. A new per-account setting, `ownMyDocuments` (`mcp-config.json`, `ZALO_MCP_OWN_MY_DOCUMENTS[_<ownId>]`, and the live runtime policy, so it changes without a restart), passes the account's own messages in its own My Documents to `zalo_get_messages`, `zalo_wait_for_message`, the notifier and the webhook, each marked `isSelf: true`. Every other message the account sends itself still stays out, the agent's own `zalo_send_message` replies there are not handed back to it, and hidden-chat rules apply as before. Off by default.
+
 #### Fixed
 
 - **A photo could be refused inline as "its type (image/jpg) cannot go inline".** Received media is now typed by its own bytes, not by what Zalo's file server called it: `zalo_view_media` and `msg media --deliver inline` send such a photo inline as `image/jpeg`. A download records the type its bytes are in the cached file's header; a file cached by an earlier version is typed from its first bytes once, when it is opened. The bytes also name a file on disk: a voice message that is AAC is saved as `.aac`, not `.mp3`.

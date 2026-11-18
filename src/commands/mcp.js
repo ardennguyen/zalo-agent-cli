@@ -49,6 +49,7 @@ import { attachHiddenChatControls, hiddenChatsFor, hiddenEventView } from "../co
 import {
     resolveApproval,
     resolveHiddenChats,
+    resolveOwnMyDocuments,
     resolveMediaDelivery,
     resolveMediaLinkAuth,
     resolvePublicUrl,
@@ -103,6 +104,7 @@ import { classifyLiveMessage } from "../zalo/transfer-sync/message-types.js";
 import { createDeliveredReceipts } from "../zalo/receipts.js";
 import { MessageBuffer } from "../mcp/message-buffer.js";
 import { ThreadFilter } from "../mcp/thread-filter.js";
+import { createAgentSends, ownMyDocumentsView, selfMessageRoute } from "../mcp/self-messages.js";
 import {
     readMCPConfig,
     resolveAccountMCPConfig,
@@ -793,6 +795,9 @@ export function registerMCPCommands(program) {
             const maxAge = parseDuration(config.limits?.bufferMaxAge ?? "2h");
             const maxSize = config.limits?.bufferMaxSize ?? 500;
             const buffer = MessageBuffer.forSession(maxSize, maxAge);
+            // The agents' own zalo_send_message calls, so their echo in My Documents is never handed back to them
+            // (src/mcp/self-messages.js); every server this daemon builds shares the one buffer, so it lives on it.
+            buffer.agentSends = createAgentSends();
             const filter = new ThreadFilter(config);
 
             // The owner's aliases, which every reply, buffer line and webhook names people by: kept in the account's
@@ -1573,7 +1578,12 @@ export function registerMCPCommands(program) {
                 onRecovered: (items) => {
                     for (const { msg, info } of items) {
                         if (info?.hasAttachment) fetchMedia(String(msg.threadId));
-                        if (msg.isSelf) continue;
+                        const self = routeSelf(msg);
+                        if (self === "drop") continue;
+                        if (self === "agents") {
+                            deliverOwnMyDocuments(msg, info, { catchUp: true });
+                            continue;
+                        }
                         const normalized = { ...normalizeMessage(msg, info), catchUp: true };
                         if (!filter.shouldWatch(normalized.threadId, normalized.threadType)) continue;
                         if (!filter.shouldKeep(normalized)) continue;
@@ -1586,6 +1596,44 @@ export function registerMCPCommands(program) {
                     ? "[mcp] Self-heal: ON — after a drop or restart, missed messages come back from Zalo's offline queue on this socket, no phone tap (opt out with --no-self-heal)."
                     : "[mcp] Self-heal: OFF — a coverage gap stays pending until `zalo-agent sync` closes it.",
             );
+
+            /**
+             * What becomes of a message the account sent itself (src/mcp/self-messages.js). `ownMyDocuments` is read
+             * on every such message, so a policy change counts from the next one.
+             * @param {object} msg - the listener message
+             * @returns {"pass"|"drop"|"agents"}
+             */
+            function routeSelf(msg) {
+                if (!msg?.isSelf) return "pass";
+                const { enabled } = resolveOwnMyDocuments({ config, accountId: activeAcc.ownId });
+                let send2meId = null;
+                try {
+                    send2meId = getApi()?.getContext?.()?.loginInfo?.send2me_id ?? null;
+                } catch {
+                    /* no session context: only the own uid can name the self-chat */
+                }
+                return selfMessageRoute(msg, { enabled, ownId: activeAcc.ownId, send2meId });
+            }
+
+            /**
+             * Hand the owner's own My Documents message to the agents, marked `isSelf: true`, through the same watch,
+             * noise and hidden-chat rules as any other; the echo of an agent's own send is left out.
+             * @param {object} msg
+             * @param {object|null} info
+             * @param {{catchUp?: boolean}} [opts]
+             */
+            function deliverOwnMyDocuments(msg, info, { catchUp = false } = {}) {
+                ownMyDocumentsView(msg, info, { normalize: normalizeMessage, agentSends: buffer.agentSends })
+                    .then((view) => {
+                        if (!view) return;
+                        const normalized = catchUp ? { ...view, catchUp: true } : view;
+                        if (!filter.shouldWatch(normalized.threadId, normalized.threadType)) return;
+                        if (!filter.shouldKeep(normalized)) return;
+                        deliverToAgents(normalized);
+                        console.error(`${DEBUG_MARK}[mcp] Buffered own My Documents msg in ${normalized.threadId}`);
+                    })
+                    .catch((e) => console.error(`[mcp] own My Documents message not delivered: ${e.message}`));
+            }
 
             /**
              * Fetch a message's attachments into the same per-conversation
@@ -1644,8 +1692,14 @@ export function registerMCPCommands(program) {
                     }).catch((e) => console.error(`[mcp] identity refresh failed: ${e.message}`));
                     if (stored.info.hasAttachment) fetchMedia(String(msg.threadId));
 
-                    // Skip self-sent messages for the agent-facing buffer
-                    if (msg.isSelf) return;
+                    // Self-sent messages stay away from the agents, except the owner's own My Documents when the
+                    // account's ownMyDocuments setting is on (src/mcp/self-messages.js).
+                    const self = routeSelf(msg);
+                    if (self === "drop") return;
+                    if (self === "agents") {
+                        deliverOwnMyDocuments(msg, stored.info);
+                        return;
+                    }
 
                     const normalized = normalizeMessage(msg, stored.info);
 

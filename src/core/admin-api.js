@@ -39,7 +39,13 @@ import { join } from "node:path";
 import { CONFIG_DIR } from "./credentials.js";
 import { readSealedJson, scopeOfDir, writeSealedJson } from "./keystore/index.js";
 import { resolveConfirmMode } from "./confirm-guard.js";
-import { resolveApproval, resolveHiddenChats, resolveMediaDelivery, resolveMediaLinkAuth } from "./deploy-policy.js";
+import {
+    resolveApproval,
+    resolveHiddenChats,
+    resolveMediaDelivery,
+    resolveOwnMyDocuments,
+    resolveMediaLinkAuth,
+} from "./deploy-policy.js";
 import {
     PolicyError,
     alwaysOnUsage,
@@ -175,6 +181,7 @@ export function describeEffective(ownId, config = {}, { publicUrl = null, extra 
     return {
         confirmMode: resolveConfirmMode({ config, accountId: ownId }),
         hiddenChats: resolveHiddenChats({ config, accountId: ownId }),
+        ownMyDocuments: resolveOwnMyDocuments({ config, accountId: ownId }),
         approval: resolveApproval({ config, accountId: ownId }),
         media: {
             deliver: media.deliver,

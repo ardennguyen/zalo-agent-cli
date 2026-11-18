@@ -48,6 +48,7 @@ import { CloudKeyError, decryptCloudBlob, importCloudPrivateKey } from "../../za
 import { readSealedJson, writeSealedJson } from "../keystore/index.js";
 import { scopeOfDir } from "../keystore/keyring.js";
 import { mediaPlainSize, writeSealedMedia } from "../keystore/media-seal.js";
+import { sniffMedia, sniffMediaType } from "../media-type.js";
 import { openDeadLinks } from "./dead-links.js";
 import { checkDiskRoom } from "../storage-quota.js";
 import { resolveMediaStore } from "../deploy-policy.js";
@@ -106,8 +107,6 @@ export function sanitize(name) {
     return out.trim().slice(0, 80) || "unknown";
 }
 
-/** Kinds whose file is a picture, named by its bytes. */
-const IMAGE_KINDS = new Set(["photo", "doodle"]);
 const DEFAULT_EXT = { photo: "jpg", video: "mp4", gif: "gif", voice: "mp3", audio: "mp3", doodle: "jpg", file: "bin" };
 const CONTENT_TYPE_EXT = {
     "image/jpeg": "jpg",
@@ -124,36 +123,28 @@ const CONTENT_TYPE_EXT = {
 
 /**
  * The image format the bytes themselves are, by their signature: what Zalo stored is what is kept, so a picture that
- * Zalo keeps as JPEG XL is saved as `.jxl` even when its URL or the message says `.jpg`. Null when not an image this
- * knows.
+ * Zalo keeps as JPEG XL is saved as `.jxl` even when its URL or the message says `.jpg`. Null when not a picture.
  *
  * @param {Buffer|Uint8Array|null|undefined} buf
  * @returns {string|null}
  */
 export function sniffImageExt(buf) {
     if (!buf || buf.length < 12) return null;
-    const b = buf;
-    if (b[0] === 0xff && b[1] === 0x0a) return "jxl"; // JPEG XL codestream
-    if (b[0] === 0 && b[1] === 0 && b[2] === 0 && b[3] === 0x0c && b[4] === 0x4a && b[5] === 0x58 && b[6] === 0x4c)
-        return "jxl"; // JPEG XL container
-    if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "jpg";
-    if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return "png";
-    if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return "gif";
-    if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && b[8] === 0x57 && b[9] === 0x45)
-        return "webp";
-    return null;
+    const type = sniffMediaType(buf);
+    return type?.mime.startsWith("image/") ? type.ext : null;
 }
 
-/** Extension: a picture's own format first (its bytes), then the filename, the URL, the content-type and the kind. */
-function guessExt(att, url, contentType, buf) {
-    if (IMAGE_KINDS.has(att.kind)) {
-        const sniffed = sniffImageExt(buf);
-        if (sniffed) return sniffed;
-    }
+/**
+ * Extension: what the bytes are first (`sniffed`, src/core/media-type.js), for every kind but a file sent as a file,
+ * which keeps the name its sender gave it; then the filename, the URL, the content-type and the kind.
+ */
+function guessExt(att, url, contentType, sniffed) {
+    if (sniffed && (att.kind !== "file" || att.isThumb)) return sniffed.ext;
     if (att.ext) return String(att.ext).replace(/^\./, "").toLowerCase().slice(0, 8);
     if (att.fileName && /\.([A-Za-z0-9]{1,8})$/.test(att.fileName)) return RegExp.$1.toLowerCase();
     const inUrl = /\.([A-Za-z0-9]{2,5})(?:\?|$)/.exec(String(url || "").split("#")[0]);
     if (inUrl) return inUrl[1].toLowerCase();
+    if (sniffed) return sniffed.ext;
     if (contentType) {
         const ct = contentType.split(";")[0].trim().toLowerCase();
         if (CONTENT_TYPE_EXT[ct]) return CONTENT_TYPE_EXT[ct];
@@ -349,6 +340,17 @@ function attachmentsOf(row) {
 }
 
 /**
+ * A message's primary attachment (its URLs), from the cached row, else from the live message.
+ *
+ * @param {object|null} row - the cached message
+ * @param {object|null} [buffered] - the live message (`attachment`)
+ * @returns {object|null}
+ */
+export function messageAttachment(row, buffered = null) {
+    return (row ? attachmentsOf(row)[0] : null) ?? buffered?.attachment ?? null;
+}
+
+/**
  * Default per-request deadline. Without one a stalled connection blocks its
  * worker forever: `fetch()` has no built-in timeout, so four hung requests
  * silently froze an entire download with the process still alive and healthy.
@@ -456,6 +458,48 @@ async function fetchBytes(url, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, fetchImpl
         };
     }
     return { ok: true, buf, contentType: ct };
+}
+
+/**
+ * The JPEG copy Zalo serves of a JPEG XL picture, for a reader that cannot decode JPEG XL: `…/jxl/…/x.jxl?jxlstatus=1`
+ * is also served as `…/jpg/…/x.jpg`. Null for any other URL, and for an end-to-end encrypted session's URL (its
+ * picture has no plain twin).
+ *
+ * @param {unknown} url
+ * @returns {string|null}
+ */
+export function jpegTwinUrl(url) {
+    if (typeof url !== "string" || !/^https?:\/\/[^?#]*\/jxl\/[^?#]*\.jxl(?:[?#]|$)/i.test(url)) return null;
+    let u;
+    try {
+        u = new URL(url);
+    } catch {
+        return null;
+    }
+    if (u.searchParams.has("e2esession")) return null;
+    u.searchParams.delete("jxlstatus");
+    u.pathname = u.pathname.replace(/\/jxl\//i, "/jpg/").replace(/\.jxl$/i, ".jpg");
+    return u.href;
+}
+
+/**
+ * Fetch, without keeping it, the JPEG copy Zalo serves of a message's JPEG XL picture (zalo_view_media sends it inline
+ * where the cached JPEG XL file cannot go). The copy is checked by its bytes: anything but a JPEG is refused.
+ *
+ * @param {object|null} att - the message's attachment (`url`, `hdUrl`)
+ * @param {{api?: object, fetchImpl?: typeof fetch, timeoutMs?: number, maxBytes?: number}} [opts]
+ * @returns {Promise<{bytes: Buffer, url: string} | {error: string}>}
+ */
+export async function fetchJpegTwin(att, { api, fetchImpl, timeoutMs = 15_000, maxBytes = Infinity } = {}) {
+    const url = jpegTwinUrl(att?.url) ?? jpegTwinUrl(att?.hdUrl);
+    if (!url) return { error: "Zalo serves no JPEG copy of this picture" };
+    const got = await fetchBytes(url, timeoutMs, fetchImpl ?? createDownloadFetch(api));
+    if (!got.ok) return { error: `Zalo's JPEG copy could not be fetched (${got.reason})` };
+    if (sniffMediaType(got.buf.subarray(0, 64))?.mime !== "image/jpeg") {
+        return { error: "what Zalo served as the JPEG copy is not a JPEG" };
+    }
+    if (got.buf.length > maxBytes) return { error: `Zalo's JPEG copy is ${got.buf.length} bytes` };
+    return { bytes: got.buf, url };
 }
 
 /**
@@ -1090,7 +1134,10 @@ export async function downloadSyncedMedia(opts = {}) {
                 return;
             }
 
-            const ext = guessExt(att, url, got.contentType, got.buf);
+            // Typed by its own bytes: a file server's Content-Type (e.g. `image/jpg`) is only a claim, and is kept
+            // only when the bytes say nothing.
+            const sniffed = sniffMedia(got.buf);
+            const ext = guessExt(att, url, got.contentType, sniffed);
             const path = destPath(dir, row, att, ext, job.index);
             try {
                 fs.mkdirSync(dirname(path), { recursive: true });
@@ -1103,7 +1150,19 @@ export async function downloadSyncedMedia(opts = {}) {
                         msgId: row.msgId,
                         att: job.index,
                         thumb: Boolean(att.isThumb),
-                        mime: got.contentType ? String(got.contentType).split(";")[0].trim() : null,
+                        mime: sniffed
+                            ? sniffed.mime
+                            : got.contentType
+                              ? String(got.contentType).split(";")[0].trim()
+                              : null,
+                        ...(sniffed
+                            ? {
+                                  mimeFrom: "bytes",
+                                  animated: sniffed.animated,
+                                  videoCodec: sniffed.videoCodec,
+                                  audioCodec: sniffed.audioCodec,
+                              }
+                            : {}),
                         ext,
                     },
                     got.buf,

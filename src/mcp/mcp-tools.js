@@ -37,7 +37,7 @@ import {
 } from "../core/db.js";
 import { searchPage } from "../core/search.js";
 import { parsePeriod } from "../utils/date-range.js";
-import { downloadSyncedMedia, DOWNLOADABLE_KINDS } from "../core/sync-v2/media.js";
+import { downloadSyncedMedia, DOWNLOADABLE_KINDS, fetchJpegTwin, messageAttachment } from "../core/sync-v2/media.js";
 import { mediaPlainSize } from "../core/keystore/media-seal.js";
 import { scopeOfDir } from "../core/keystore/keyring.js";
 import { getAccountDir } from "../core/credentials.js";
@@ -50,6 +50,7 @@ import {
     removeMediaTemp,
 } from "../core/media-deliver.js";
 import { ensureMediaServed } from "../core/media-route.js";
+import { SNIFF_HEAD_BYTES, sniffMediaType } from "../core/media-type.js";
 import { describeZaloError } from "../core/sync-v2/board.js";
 import { boardPage, groupReminderPage } from "../zalo/api/boards.js";
 import { allAliases, allBoardItems, allReminders } from "../core/list-all.js";
@@ -508,7 +509,8 @@ const STICKER_MAX_BYTES = 2 * 1024 * 1024;
  * @param {object|null} row - the cached message
  * @param {object|null} buffered - the live message
  * @param {(url: string, init: object) => Promise<Response>} [fetchImpl]
- * @returns {Promise<{bytes: Buffer, mime: string} | {error: string}>}
+ * @returns {Promise<{bytes: Buffer, mime: string|null, declared: string|null} | {error: string}>} `mime`: what the
+ *   picture's bytes are (null when they say nothing); `declared`: the server's Content-Type
  */
 export async function stickerPicture(api, row, buffered, fetchImpl = (...a) => fetch(...a)) {
     let url = buffered?.attachment?.url || null;
@@ -531,16 +533,16 @@ export async function stickerPicture(api, row, buffered, fetchImpl = (...a) => f
     }
     try {
         const res = await fetchImpl(url, { signal: AbortSignal.timeout(15_000), redirect: "follow" });
-        const mime = String(res.headers.get("content-type") || "")
-            .split(";")[0]
-            .trim()
-            .toLowerCase();
-        if (!res.ok || !mime.startsWith("image/")) {
-            return { error: `The sticker's picture could not be fetched (HTTP ${res.status}).` };
-        }
+        if (!res.ok) return { error: `The sticker's picture could not be fetched (HTTP ${res.status}).` };
+        const declared =
+            String(res.headers.get("content-type") || "")
+                .split(";")[0]
+                .trim()
+                .toLowerCase() || null;
         const bytes = Buffer.from(await res.arrayBuffer());
         if (bytes.length > STICKER_MAX_BYTES) return { error: "The sticker's picture is too large to show." };
-        return { bytes, mime };
+        // Typed by its bytes, not by the server's Content-Type (which may say image/jpg, or nothing useful).
+        return { bytes, mime: sniffMediaType(bytes.subarray(0, SNIFF_HEAD_BYTES))?.mime ?? null, declared };
     } catch (e) {
         return { error: `The sticker's picture could not be fetched: ${e.message}` };
     }
@@ -1829,9 +1831,40 @@ export function registerTools(
 
                 // The cached file stays sealed (keystore/media-seal.js): it is delivered inline, as a link served from
                 // the sealed file, or as a private decrypted copy (src/core/media-deliver.js).
-                const info = mediaInfo(localPath);
-                const pick = choose(info.size, info.mime);
+                // Typed by the file's own bytes (a header written at download, or its head read once).
+                const info = mediaInfo(localPath, { scope: mediaScope(), msgId: row?.msgId ?? msgId });
+                const pick = choose(info.size, info.type);
                 if (pick.error) return err(pick.error);
+                // A JPEG XL picture stays cached as Zalo keeps it; where it would go inline, the JPEG copy Zalo serves
+                // of it goes instead (fetched now, not kept), as Zalo's own readers do.
+                if (
+                    info.type === "image/jxl" &&
+                    pick.mode === "link" &&
+                    choose(info.size, "image/jpeg").mode === "inline"
+                ) {
+                    const twin = await fetchJpegTwin(messageAttachment(row, buffered), {
+                        api,
+                        maxBytes: policy.inlineMaxBytes,
+                    });
+                    if (twin.bytes) {
+                        const reply = {
+                            success: true,
+                            msgId,
+                            mediaType: kind || null,
+                            delivery: "inline",
+                            mimeType: "image/jpeg",
+                            size: twin.bytes.length,
+                            notes: ["a JPEG XL picture: the JPEG copy Zalo serves of it is sent inline"],
+                        };
+                        return {
+                            content: [
+                                { type: "text", text: JSON.stringify(reply) },
+                                inlineContent(twin.bytes, kind, "image/jpeg"),
+                            ],
+                        };
+                    }
+                    pick.notes.push(twin.error);
+                }
                 const out = await deliverCachedMedia({
                     mode: pick.mode,
                     file: localPath,
@@ -1851,6 +1884,9 @@ export function registerTools(
                     delivery: out.mode,
                     mimeType: out.mimeType,
                     size: out.size,
+                    ...(info.videoCodec ? { videoCodec: info.videoCodec } : {}),
+                    ...(info.audioCodec ? { audioCodec: info.audioCodec } : {}),
+                    ...(info.animated ? { animated: true } : {}),
                     ...(out.url ? { url: out.url, auth: out.auth } : {}),
                     ...(out.path ? { path: out.path, opened: pick.open } : {}),
                     ...(out.expiresAt ? { expiresAt: new Date(out.expiresAt).toISOString() } : {}),

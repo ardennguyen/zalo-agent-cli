@@ -720,7 +720,9 @@ describe("MCP tools read the local cache", () => {
     });
 
     /** A sealed photo in the cache, as the downloader leaves it. */
-    const sealedPhoto = (name = "a.jpg", plain = Buffer.from("JPEG-PLAINTEXT-BYTES"), extra = {}) => {
+    /** A JPEG's signature, then filler: the bytes decide the type, so a test photo has to start like one. */
+    const JPEG_BYTES = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from("JPEG-PLAINTEXT-BYTES")]);
+    const sealedPhoto = (name = "a.jpg", plain = JPEG_BYTES, extra = {}) => {
         const accountDir = join(CONFIG_DIR, "accounts", "100000000000000977");
         const sealed = join(accountDir, "media", "t1", name);
         mkdirSync(dirname(sealed), { recursive: true });
@@ -784,7 +786,7 @@ describe("MCP tools read the local cache", () => {
     });
 
     it("stickerPicture fetches a sticker's picture by the id the message names, and keeps nothing", async () => {
-        const png = Buffer.from("PNG-STICKER");
+        const webp = Buffer.concat([Buffer.from("RIFF"), Buffer.alloc(4), Buffer.from("WEBPVP8 "), Buffer.alloc(8)]);
         let asked = null;
         const api = {
             getStickersDetail: async (ids) => ((asked = ids), [{ stickerWebpUrl: "https://cdn.example/s.webp" }]),
@@ -792,14 +794,113 @@ describe("MCP tools read the local cache", () => {
         const fetchImpl = async (url) => ({
             ok: url === "https://cdn.example/s.webp",
             status: 200,
-            headers: new Headers({ "content-type": "image/webp" }),
-            arrayBuffer: async () => png,
+            headers: new Headers({ "content-type": "image/jpg" }),
+            arrayBuffer: async () => webp,
         });
         const row = { raw_data: JSON.stringify({ content: { id: 4321, catId: 7, type: 7 } }) };
         const got = await stickerPicture(api, row, null, fetchImpl);
         assert.deepEqual(asked, [4321]);
-        assert.deepEqual(got, { bytes: png, mime: "image/webp" });
+        assert.deepEqual(got, { bytes: webp, mime: "image/webp", declared: "image/jpg" }, "typed by its bytes");
         assert.match((await stickerPicture(api, { raw_data: "{}" }, null, fetchImpl)).error, /which sticker/);
+    });
+
+    it("zalo_view_media sends a sticker inline by its bytes' type, and says why one that is not a picture cannot", async () => {
+        const gif = Buffer.concat([Buffer.from("GIF89a"), Buffer.alloc(16)]);
+        let body = gif;
+        const api = {
+            ...emptyServerApi(),
+            getStickersDetail: async () => [{ stickerWebpUrl: "https://cdn.example/s.webp" }],
+        };
+        const realFetch = globalThis.fetch;
+        globalThis.fetch = async () =>
+            new Response(body, { status: 200, headers: { "content-type": "application/octet-stream" } });
+        try {
+            cache([
+                {
+                    msgId: "m1",
+                    ts: 100,
+                    type: "sticker",
+                    raw: JSON.stringify({ content: { id: 4321, catId: 7, type: 7 } }),
+                },
+            ]);
+            const { server } = register({ api });
+            const res = await server.call("zalo_view_media", { msgId: "m1", open: false });
+            assert.equal(res.isError, undefined, res.content[0].text);
+            assert.equal(payloadOf(res).mimeType, "image/gif");
+            assert.deepEqual(res.content[1], { type: "image", data: gif.toString("base64"), mimeType: "image/gif" });
+            body = Buffer.from('{"v":"5.7.4","layers":[]}');
+            const lottie = await server.call("zalo_view_media", { msgId: "m1", open: false });
+            assert.equal(lottie.isError, true);
+            assert.match(lottie.content[0].text, /its type could not be told from its bytes/);
+        } finally {
+            globalThis.fetch = realFetch;
+        }
+    });
+
+    it("zalo_view_media sends a photo its server labeled image/jpg inline as image/jpeg", async () => {
+        const { accountDir } = sealedPhoto("b.jpg", JPEG_BYTES, { mime: "image/jpg" });
+        const { server } = register({ api: emptyServerApi(), accountDir });
+        const res = await server.call("zalo_view_media", { msgId: "m1", open: false, deliver: "inline" });
+        const out = payloadOf(res);
+        assert.deepEqual([out.delivery, out.mimeType, out.notes], ["inline", "image/jpeg", undefined]);
+        assert.equal(res.content[1].mimeType, "image/jpeg");
+    });
+
+    it("zalo_view_media sends a HEIC photo as a link with a note that says so", async () => {
+        const heic = Buffer.concat([
+            Buffer.from([0, 0, 0, 24]),
+            Buffer.from("ftypheic\0\0\0\0mif1heic"),
+            Buffer.alloc(32),
+        ]);
+        const { accountDir } = sealedPhoto("c.heic", heic, { mime: "image/jpeg" });
+        const { server } = register({ api: emptyServerApi(), accountDir });
+        const out = payloadOf(await server.call("zalo_view_media", { msgId: "m1", open: false, deliver: "inline" }));
+        assert.equal(out.delivery, "link");
+        assert.equal(out.mimeType, "image/heic");
+        assert.match(out.notes.join(" "), /^a HEIC picture cannot go inline/);
+    });
+
+    it("zalo_view_media sends Zalo's JPEG copy of a JPEG XL photo inline, and a link with both reasons when there is none", async () => {
+        const jxl = Buffer.concat([Buffer.from([0xff, 0x0a, 0x2a, 0x12]), Buffer.alloc(32)]);
+        const accountDir = join(CONFIG_DIR, "accounts", "100000000000000977");
+        const sealed = join(accountDir, "media", "t1", "d.jxl");
+        mkdirSync(dirname(sealed), { recursive: true });
+        writeSealedMedia(sealed, scopeOfDir(accountDir), { msgId: "m1", mime: "image/jxl" }, jxl);
+        const att = { kind: "photo", url: "https://cdn.example/jxl/9/abc.jxl?jxlstatus=1" };
+        const raw = JSON.stringify({ src: "sync-v2", attachments: [att] });
+        cache([{ msgId: "m1", ts: 100, type: "photo", attach: true, localPath: sealed, raw }]);
+        const realFetch = globalThis.fetch;
+        const asked = [];
+        let serve = true;
+        globalThis.fetch = async (url) => {
+            asked.push(String(url));
+            return serve && String(url) === "https://cdn.example/jpg/9/abc.jpg"
+                ? new Response(JPEG_BYTES, { status: 200, headers: { "content-type": "image/jpg" } })
+                : new Response("gone", { status: 404 });
+        };
+        try {
+            const { server } = register({ api: emptyServerApi(), accountDir });
+            const res = await server.call("zalo_view_media", { msgId: "m1", open: false, deliver: "inline" });
+            const out = payloadOf(res);
+            assert.deepEqual([out.delivery, out.mimeType, out.size], ["inline", "image/jpeg", JPEG_BYTES.length]);
+            assert.match(out.notes[0], /JPEG copy Zalo serves/);
+            assert.deepEqual(res.content[1], {
+                type: "image",
+                data: JPEG_BYTES.toString("base64"),
+                mimeType: "image/jpeg",
+            });
+            assert.deepEqual(asked, ["https://cdn.example/jpg/9/abc.jpg"]);
+            serve = false;
+            const none = payloadOf(
+                await server.call("zalo_view_media", { msgId: "m1", open: false, deliver: "inline" }),
+            );
+            assert.equal(none.delivery, "link");
+            assert.equal(none.mimeType, "image/jxl");
+            assert.match(none.notes[0], /^a JPEG XL picture cannot go inline/);
+            assert.match(none.notes[1], /JPEG copy could not be fetched/);
+        } finally {
+            globalThis.fetch = realFetch;
+        }
     });
 
     it("zalo_view_media leaves a hidden chat's media out", async () => {

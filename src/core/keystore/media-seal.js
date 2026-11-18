@@ -282,7 +282,8 @@ function decryptChunk(dek, staticHash, i, final, sealed) {
  * A new header for a file of `size` plaintext bytes: its bytes, its DEK and the hash the chunks are bound to.
  *
  * @param {{id: string, dir: string}} scope
- * @param {object} meta - msgId, att, thumb, mime, ext
+ * @param {object} meta - msgId, att, thumb, mime, ext, and `mimeFrom`/`animated`/`videoCodec`/`audioCodec` when the
+ *   type was read from the bytes
  * @param {number} size
  */
 function newHeader(scope, meta, size) {
@@ -293,6 +294,12 @@ function newHeader(scope, meta, size) {
         thumb: Boolean(meta.thumb),
         mime: meta.mime ? String(meta.mime) : null,
         ext: meta.ext ? String(meta.ext) : null,
+        // `mimeFrom: "bytes"`: `mime` was read from the file's own bytes (src/core/media-type.js), not declared by a
+        // server; then the codecs found and whether it moves are kept too, so a reader needs no key to know the type.
+        ...(meta.mimeFrom === "bytes" ? { mimeFrom: "bytes" } : {}),
+        ...(meta.mimeFrom === "bytes" && meta.animated ? { animated: true } : {}),
+        ...(meta.mimeFrom === "bytes" && meta.videoCodec ? { videoCodec: String(meta.videoCodec) } : {}),
+        ...(meta.mimeFrom === "bytes" && meta.audioCodec ? { audioCodec: String(meta.audioCodec) } : {}),
         size,
         chunk: MEDIA_CHUNK,
         salt: randomBytes(16).toString("base64"),
@@ -313,7 +320,8 @@ function newHeader(scope, meta, size) {
  * Seal a whole buffer (a download) for one account.
  *
  * @param {string|{id: string, dir: string}} scope - an account folder, or a scope
- * @param {{msgId?: string|null, att?: number, thumb?: boolean, mime?: string|null, ext?: string|null}} meta
+ * @param {{msgId?: string|null, att?: number, thumb?: boolean, mime?: string|null, ext?: string|null,
+ *   mimeFrom?: "bytes", animated?: boolean, videoCodec?: string, audioCodec?: string}} meta
  * @param {Buffer} plaintext
  * @returns {Buffer}
  * @throws {KeystoreError} when the media key cannot be had (fail closed: nothing is written in the clear instead)

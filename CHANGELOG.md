@@ -9,6 +9,16 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+#### Fixed
+
+- **A photo could be refused inline as "its type (image/jpg) cannot go inline".** Received media is now typed by its own bytes, not by what Zalo's file server called it: `zalo_view_media` and `msg media --deliver inline` send such a photo inline as `image/jpeg`. A download records the type its bytes are in the cached file's header; a file cached by an earlier version is typed from its first bytes once, when it is opened. The bytes also name a file on disk: a voice message that is AAC is saved as `.aac`, not `.mp3`.
+- **Every reason a picture or voice message does not go inline has its own note**: an unknown size, a type its bytes do not tell, a type a client cannot render (named: JPEG XL, HEIC/HEIF, AVIF, AMR), and a size over `media.inlineMaxBytes`.
+
+#### Changed
+
+- **A JPEG XL photo goes inline as the JPEG copy Zalo serves of it** (fetched when asked for, not kept; the cached `.jxl` file is unchanged), and as a link with both reasons when Zalo has no copy. HEIC/HEIF and AVIF pictures, which Zalo serves only as files, go as a link. Inline sound is MP3, WAV, AAC, MP4, Ogg, WebM or FLAC; AMR goes as a link.
+- `zalo_view_media` replies add `videoCodec` and `audioCodec` (such as `hevc`, `h264`, `aac`) and `animated` when the file's bytes tell them, so a caller can see an HEVC video before it fetches the link.
+
 ## [3.3.0] — 2026-11-17
 
 #### Added

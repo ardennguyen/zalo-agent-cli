@@ -9,6 +9,8 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+## [3.3.1] — 2026-11-18
+
 #### Fixed
 
 - **A photo could be refused inline as "its type (image/jpg) cannot go inline".** Received media is now typed by its own bytes, not by what Zalo's file server called it: `zalo_view_media` and `msg media --deliver inline` send such a photo inline as `image/jpeg`. A download records the type its bytes are in the cached file's header; a file cached by an earlier version is typed from its first bytes once, when it is opened. The bytes also name a file on disk: a voice message that is AAC is saved as `.aac`, not `.mp3`.
@@ -1006,7 +1008,9 @@ npm install -g @ardennguyen/zalo-agent-cli@2.0.0
 
 Commands, flags and defaults: `skill/references/command-reference.md`. Operating it on a server: `docs/deployment.md`.
 
-[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.2.2...v3.0-dev
+[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.3.1...v3.0-dev
+[3.3.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.3.1
+[3.3.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.3.0
 [3.2.2]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.2.2
 [3.2.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.2.1
 [3.2.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.2.0

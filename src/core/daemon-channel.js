@@ -79,6 +79,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import { checkLock, isRecordedProcessAlive, processStartTicks } from "./lock.js";
 import { spawn, spawnSync } from "node:child_process";
 import { createLogSink, createRotatingFile, resolveLogSettings } from "./log-sink.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
@@ -184,7 +185,14 @@ export function getDaemonChannel(accountDir) {
         if (!fs.existsSync(file)) return null;
         const info = JSON.parse(fs.readFileSync(file, "utf8"));
         if (!info?.port || !info?.token || !info?.pid) return null;
-        if (!isProcessAlive(Number(info.pid))) {
+        // The PID alone is not enough: after a container restart or a reboot it can name another process.
+        let writtenAtMs = null;
+        try {
+            writtenAtMs = fs.statSync(file).mtimeMs;
+        } catch {
+            /* judged on the PID */
+        }
+        if (!isRecordedProcessAlive({ pid: Number(info.pid), start: info.start || null }, { writtenAtMs })) {
             try {
                 fs.unlinkSync(file);
             } catch {
@@ -638,9 +646,13 @@ export function startDaemonChannel({
             // existed without sending it anything. See getSyncChannel().
             const stages = Object.keys(runners || {}).filter((k) => typeof runners[k] === "function");
             try {
-                fs.writeFileSync(channelPath(accountDir), JSON.stringify({ pid: process.pid, port, token, stages }), {
-                    mode: 0o600,
-                });
+                fs.writeFileSync(
+                    channelPath(accountDir),
+                    JSON.stringify({ pid: process.pid, start: processStartTicks(process.pid), port, token, stages }),
+                    {
+                        mode: 0o600,
+                    },
+                );
             } catch (e) {
                 server.close();
                 return reject(e);
@@ -943,22 +955,16 @@ export function getDaemonStatus(accountDir) {
         };
     }
 
-    const lockFile = path.join(accountDir, LOCK_FILE);
-    try {
-        if (fs.existsSync(lockFile)) {
-            const pid = parseInt(fs.readFileSync(lockFile, "utf8").trim(), 10);
-            if (!Number.isNaN(pid) && isProcessAlive(pid)) {
-                return {
-                    running: true,
-                    pid,
-                    channelPort: null,
-                    stages: [],
-                    logPath,
-                };
-            }
-        }
-    } catch {
-        /* unreadable lock is treated as not running */
+    // checkLock judges the lock by its process's identity, not just a live PID (a reused PID is stale).
+    const lock = checkLock(accountDir);
+    if (lock.locked && lock.pid) {
+        return {
+            running: true,
+            pid: lock.pid,
+            channelPort: null,
+            stages: [],
+            logPath,
+        };
     }
 
     return {

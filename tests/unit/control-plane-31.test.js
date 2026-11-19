@@ -480,7 +480,8 @@ describe("access: named API keys", () => {
         assert.equal(check.any(), true);
         const later = createApiKeyChecker(dir, { now: () => Date.now() + 120_000 });
         assert.equal(later.verify(k.key), false);
-        assert.equal(check.verify(`${k.key.slice(0, -1)}A`), false);
+        // Change the last character to one it is not (a random key ends in "A" one time in 64).
+        assert.equal(check.verify(`${k.key.slice(0, -1)}${k.key.endsWith("A") ? "B" : "A"}`), false);
     });
 });
 

@@ -41,6 +41,94 @@ export const PHONE_KINDS = Object.freeze(["sync"]);
 
 export const JOB_STATES = Object.freeze(["running", "succeeded", "failed", "cancelled"]);
 
+/**
+ * A job's child writes one line per plan, stage result and phone step to stderr with this mark (ZALO_JOB_PROGRESS=1),
+ * so the job shows each stage as it happens; stdout stays the command's one --json result.
+ */
+export const JOB_PROGRESS_MARK = "@@zalo-job ";
+
+/** A stage's states in a job: queued (planned, not started), running, then the sync's own result word. */
+export const STAGE_STATES = Object.freeze([
+    "queued",
+    "running",
+    "skipped",
+    "ok",
+    "partial",
+    "unconfirmed",
+    "unavailable",
+    "failed",
+]);
+
+/** Phone states: asking (the request goes out), waiting (the prompt shows on the phone), confirmed, not-needed. */
+export const PHONE_STATES = Object.freeze(["asking", "waiting", "confirmed", "not-needed"]);
+
+/** Counts only (numbers, booleans), one level: a stage's stats as a job shows them. */
+function counts(stats) {
+    const out = {};
+    if (!stats || typeof stats !== "object") return out;
+    for (const [k, v] of Object.entries(stats)) {
+        if ((typeof v === "number" && Number.isFinite(v) && Math.abs(v) < 1e9) || typeof v === "boolean") out[k] = v;
+        if (Object.keys(out).length >= 20) break;
+    }
+    return out;
+}
+
+/**
+ * Apply one progress event to a job (in place). Returns true when the job changed.
+ *
+ * @param {object} job
+ * @param {object} e - {type: "plan", stages: [{name, run, why}]} | {type: "stage", stage, status, reason, stats}
+ *   | {type: "phone", state}
+ */
+export function applyProgress(job, e) {
+    if (!e || typeof e !== "object") return false;
+    if (e.type === "plan" && Array.isArray(e.stages)) {
+        job.stages = e.stages
+            .filter((s) => s && typeof s.name === "string")
+            .slice(0, 20)
+            .map((s) => ({
+                name: s.name,
+                state: s.run ? "queued" : "skipped",
+                reason: s.run ? null : (s.why ?? null),
+                counts: {},
+            }));
+        const msg = job.stages.find((s) => s.name === "messages");
+        // A run that will not ask the phone says so from the start (the messages stage is not needed).
+        job.phonePrompt = Boolean(msg && msg.state === "queued");
+        if (!job.phonePrompt) job.phone = "not-needed";
+        markRunning(job);
+        return true;
+    }
+    if (e.type === "stage" && typeof e.stage === "string") {
+        job.stages ??= [];
+        let s = job.stages.find((x) => x.name === e.stage);
+        if (!s) job.stages.push((s = { name: e.stage, state: "queued", reason: null, counts: {} }));
+        s.state = STAGE_STATES.includes(e.status) ? e.status : "failed";
+        s.reason = typeof e.reason === "string" && e.reason ? e.reason.slice(0, 200) : null;
+        s.counts = counts(e.stats);
+        markRunning(job);
+        return true;
+    }
+    if (e.type === "phone" && PHONE_STATES.includes(e.state)) {
+        if (job.phone === e.state) return false;
+        job.phone = e.state;
+        return true;
+    }
+    return false;
+}
+
+/** The first planned stage without a result runs now (the sync runs its stages in plan order). */
+function markRunning(job) {
+    let found = false;
+    for (const s of job.stages ?? []) {
+        if (s.state === "running") s.state = "queued";
+        if (!found && s.state === "queued") {
+            s.state = "running";
+            found = true;
+        }
+    }
+}
+
 /** Jobs kept per account after they end. */
 export const KEEP_PER_ACCOUNT = 20;
 
@@ -126,8 +214,16 @@ export function createFleetJobs({
             exitCode: null,
             result: null,
             error: null,
+            // Each stage of the run as it happens, and the phone prompt's state (sync kinds; empty for the others).
+            stages: [],
+            phone: PHONE_KINDS.includes(kind) ? null : "not-needed",
         };
-        const run = startCli(args);
+        const run = startCli(args, {
+            onProgress: (e) => {
+                if (job.state === "running" && applyProgress(job, e))
+                    publish({ event: "job", accountId: ownId, job: view(job) });
+            },
+        });
         const entry = { job, cancel: run.cancel, cancelled: false };
         live.set(job.id, entry);
         remember(job);
@@ -146,6 +242,15 @@ export function createFleetJobs({
         job.exitCode = r.code;
         job.endedAt = new Date(now()).toISOString();
         job.state = entry.cancelled ? "cancelled" : r.code === 0 ? "succeeded" : "failed";
+        // Stages still waiting or running when the run ended did not run to their end.
+        for (const s of job.stages ?? []) {
+            if (s.state === "running" || s.state === "queued")
+                s.state = job.state === "succeeded" ? "skipped" : job.state === "cancelled" ? "skipped" : "failed";
+        }
+        // The command's own result carries each stage's final word: it wins over the live lines.
+        const final = parseJobResult(r.stdout);
+        if (final && Array.isArray(final.stages))
+            for (const st of final.stages) applyProgress(job, { type: "stage", ...st });
         job.result = parseJobResult(r.stdout);
         if (job.state !== "succeeded") {
             const tail = String(r.stderr ?? "").trim();

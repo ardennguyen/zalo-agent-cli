@@ -27,6 +27,7 @@ import { syncConvState } from "../core/sync-v2/conv-state.js";
 import { planSyncRun } from "../core/sync-v2/plan.js";
 import { pingPayload, startKeepAlive } from "../zalo/listener/keepalive.js";
 import { cancelViaDaemon, getSyncChannel, syncViaDaemon } from "../core/daemon-channel.js";
+import { JOB_PROGRESS_MARK } from "../core/fleet-jobs.js";
 import { attachLiveStore } from "../core/live-store.js";
 import {
     initDb,
@@ -2025,7 +2026,41 @@ function printPlan(plan, win, jsonMode) {
  * @param {object} opts - command options
  * @param {boolean} jsonMode
  */
+/**
+ * For the fleet's account jobs (ZALO_JOB_PROGRESS=1, src/core/fleet-jobs.js): one machine-readable line on stderr per
+ * plan, stage result and phone step, so a console sees each stage as it happens. stdout stays the one --json result.
+ *
+ * @param {object} event
+ */
+function jobProgress(event) {
+    if (process.env.ZALO_JOB_PROGRESS !== "1") return;
+    try {
+        process.stderr.write(`${JOB_PROGRESS_MARK}${JSON.stringify(event)}\n`);
+    } catch {
+        /* stderr gone: the job still ends with the command's result */
+    }
+}
+
+let phoneSeen = null;
+
+/**
+ * The phone prompt's steps from the restore's status phases: the prompt shows (confirm), then the first later phase
+ * means it was confirmed.
+ *
+ * @param {string} phase
+ */
+function phoneProgress(phase) {
+    if (phase === "confirm") {
+        if (phoneSeen !== "waiting") jobProgress({ type: "phone", state: "waiting" });
+        phoneSeen = "waiting";
+    } else if (phoneSeen === "waiting") {
+        jobProgress({ type: "phone", state: "confirmed" });
+        phoneSeen = "confirmed";
+    }
+}
+
 async function runUnifiedSync(activeAcc, opts, jsonMode) {
+    phoneSeen = null;
     const accountDir = getAccountDir(activeAcc.ownId);
     initDb(join(accountDir, "zalo.db"));
 
@@ -2089,7 +2124,14 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
     const runs = (name) => plan.stages.find((s) => s.name === name)?.run;
 
     const results = [];
-    const record = (stage, status, reason = "", stats = undefined) => results.push({ stage, status, reason, stats });
+    const record = (stage, status, reason = "", stats = undefined) => {
+        results.push({ stage, status, reason, stats });
+        jobProgress({ type: "stage", stage, status, reason, stats });
+    };
+    jobProgress({
+        type: "plan",
+        stages: plan.stages.map((s) => ({ name: s.name, run: Boolean(s.run), why: s.why ?? null })),
+    });
     for (const s of plan.stages) if (!s.run) record(s.name, "skipped", s.why);
 
     // ---- socket stages on the running daemon's socket
@@ -2121,6 +2163,7 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
                     waitMs: Math.max(CONFIRM_WAIT_MS / 1000, Number(opts.wait) || 0) * 1000,
                 },
                 onEvent: ({ phase, detail }) => {
+                    phoneProgress(phase);
                     if (phase === "confirm") warning(detail);
                     else if (detail) info(`  ${detail}`);
                 },
@@ -2226,6 +2269,7 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
                                     reconnect: () => reconnectListener(api),
                                     onSelfName: (name) => updateAccountName(activeAcc.ownId, name),
                                     onStatus: ({ phase, detail }) => {
+                                        phoneProgress(phase);
                                         if (phase === "confirm") warning(detail);
                                         else if (detail) info(`  ${detail}`);
                                     },

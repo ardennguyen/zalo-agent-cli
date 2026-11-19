@@ -9,6 +9,10 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+#### Added
+
+- **Account jobs show each stage as it runs.** A console's sync job used to say only "running" until its command ended, so a sync still downloading attachments after its messages, reactions and zCloud stages looked stuck. The fleet controller's job now carries `stages` (each planned stage: queued, running, then its result with its counts) and `phone` (`waiting` while the prompt shows on the phone, `confirmed`, or `not-needed` when the run's message history is complete and the run will not ask the phone), updated live from the job's command and published as `job` events. The command's own result has the last word when it ends; stages a cancelled run did not reach show as not run. A cancel that arrives after the job ended answers 409 `JOB_ENDED` with the job as it ended.
+
 ## [3.3.1] — 2026-11-18
 
 #### Added

@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { parseEnv } from "node:util";
 import { createAdminApi, resolveAdminCredentials } from "./admin-api.js";
 import { assignPorts } from "./fleet.js";
+import { JOB_PROGRESS_MARK } from "./fleet-jobs.js";
 import { LOCAL_PROXY, accountPublicUrl, renderAccountEnv } from "./fleet-templates.js";
 import { applyPolicy, getPolicy } from "./policy-store.js";
 import { writeFileAtomic } from "../zalo/kernel/atomic-file.js";
@@ -78,9 +79,9 @@ export function runSelf(args, { env = process.env } = {}) {
  * @param {{env?: NodeJS.ProcessEnv}} [o]
  * @returns {{done: Promise<{code: number, stdout: string, stderr: string}>, cancel: () => void}}
  */
-export function startSelf(args, { env = process.env } = {}) {
+export function startSelf(args, { env = process.env, onProgress = null } = {}) {
     const child = spawn(process.execPath, [process.argv[1], ...args], {
-        env: { ...env, ZALO_JSON_MODE: "1" },
+        env: { ...env, ZALO_JSON_MODE: "1", ...(onProgress ? { ZALO_JOB_PROGRESS: "1" } : {}) },
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
     });
@@ -90,7 +91,25 @@ export function startSelf(args, { env = process.env } = {}) {
         // Keep the end of long outputs: the result is the last JSON line, the error the last lines.
         const cap = (s) => (s.length > 262_144 ? s.slice(-262_144) : s);
         child.stdout.on("data", (d) => (stdout = cap(stdout + d)));
-        child.stderr.on("data", (d) => (stderr = cap(stderr + d)));
+        // Progress lines (JOB_PROGRESS_MARK + JSON) are handed over as they come and kept out of the error text.
+        let partial = "";
+        child.stderr.on("data", (d) => {
+            if (!onProgress) {
+                stderr = cap(stderr + d);
+                return;
+            }
+            const lines = (partial + d).split("\n");
+            partial = lines.pop() ?? "";
+            for (const line of lines) {
+                if (line.startsWith(JOB_PROGRESS_MARK)) {
+                    try {
+                        onProgress(JSON.parse(line.slice(JOB_PROGRESS_MARK.length)));
+                    } catch {
+                        /* a broken line is dropped */
+                    }
+                } else stderr = cap(`${stderr}${line}\n`);
+            }
+        });
         child.on("error", (e) => resolve({ code: 1, stdout, stderr: stderr + e.message }));
         child.on("exit", (code, signal) => resolve({ code: code ?? (signal ? 130 : 1), stdout, stderr }));
     });

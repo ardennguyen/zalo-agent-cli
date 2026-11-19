@@ -801,7 +801,7 @@ export function registerFleetCommands(program) {
             // Account jobs (sync, attachments, purge) run as children of this CLI; their events go out with the controller's.
             let controllerRef = null;
             const jobs = createFleetJobs({
-                startCli: (args) => startSelf(args),
+                startCli: (args, o) => startSelf(args, o),
                 publish: (e) => controllerRef?.publish(e),
                 maxRunning: Number(process.env.ZALO_FLEET_JOBS) || DEFAULT_MAX_RUNNING,
                 log,

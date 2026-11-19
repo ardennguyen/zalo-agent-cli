@@ -639,7 +639,8 @@ describe("daemon-channel.js stays a transport", () => {
         // utils/secrets.js masks secret flags in the daemon.log header. It is a leaf: pure string
         // handling with no imports of its own (asserted below), so it costs a `msg` invocation nothing.
         // log-sink.js is the daemon.log level filter and rotation: a leaf too, importing only node builtins.
-        const LEAF_UTILS = ["../utils/secrets.js", "./log-sink.js"];
+        // lock.js judges daemon.lock and the descriptor by process identity (a reused PID is stale): a leaf as well.
+        const LEAF_UTILS = ["../utils/secrets.js", "./log-sink.js", "./lock.js"];
         assert.deepEqual(
             imports.filter((p) => !p.startsWith("node:") && !LEAF_UTILS.includes(p)),
             [],

@@ -9,6 +9,20 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+## [3.3.2] — 2026-11-19
+
+#### Added
+
+- **Account jobs show each stage as it runs.** A console's sync job used to say only "running" until its command ended, so a sync still downloading attachments after its messages, reactions and zCloud stages looked stuck. The fleet controller's job now carries `stages` (each planned stage: queued, running, then its result with its counts) and `phone` (`waiting` while the prompt shows on the phone, `confirmed`, or `not-needed` when the run's message history is complete and the run will not ask the phone), updated live from the job's command and published as `job` events. The command's own result has the last word when it ends; stages a cancelled run did not reach show as not run. A cancel that arrives after the job ended answers 409 `JOB_ENDED` with the job as it ended.
+
+#### Fixed
+
+- **`mcp start` and `listen` could refuse to start forever after a container restart or a reboot**, saying another listener was already running: the account's `daemon.lock` named a PID that, after the restart, belonged to a different process (even another `zalo-agent` one). On Linux the lock now also records the process's start time and the boot it ran in, and counts as held only while that same process is alive; a lock written by an earlier version counts as stale when its PID's process started after the lock was written. The same check applies to `daemon-channel.json` and to `mcp start --stop` / `listen --stop`, which no longer signal an unrelated process that reused the PID. On Windows and macOS the PID decides, as before.
+
+#### Changed
+
+- **`zalo-mcp@` systemd units never give up restarting.** A start that failed for a passing reason (no network yet at boot, Zalo unreachable) used to stop the unit for good after five tries. The unit template written by the fleet controller and the sample units now have no start limit, and the pause between restarts grows from 15 seconds to 5 minutes (systemd 254 or later; older systemd keeps 15 seconds). Exit codes 3 and 4 still stop the unit.
+
 ## [3.3.1] — 2026-11-18
 
 #### Added
@@ -1012,7 +1026,8 @@ npm install -g @ardennguyen/zalo-agent-cli@2.0.0
 
 Commands, flags and defaults: `skill/references/command-reference.md`. Operating it on a server: `docs/deployment.md`.
 
-[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.3.1...v3.0-dev
+[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.3.2...v3.0-dev
+[3.3.2]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.3.2
 [3.3.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.3.1
 [3.3.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.3.0
 [3.2.2]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.2.2

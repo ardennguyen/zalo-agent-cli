@@ -80,10 +80,9 @@ Description=Zalo MCP server for account %i
 Documentation=https://github.com/ardennguyen/zalo-agent-cli/blob/main/docs/deployment.md
 After=network-online.target
 Wants=network-online.target
-# A duplicate-session exit (exit code 3) means another web session took the
-# account; cap the restart loop and alert on \`failed\` instead of fighting it.
-StartLimitIntervalSec=600
-StartLimitBurst=5
+# Never give up on a start that fails (no network yet at boot, Zalo unreachable): no start
+# limit, and a pause between restarts that grows (below). Exit 3 and 4 still stop the unit.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -109,6 +108,10 @@ KillSignal=SIGINT
 TimeoutStopSec=30
 Restart=always
 RestartSec=15
+# The pause grows from 15 s to at most 5 minutes over 5 failed starts in a row (systemd 254+;
+# an older systemd warns about these two keys, ignores them and keeps 15 s).
+RestartSteps=5
+RestartMaxDelaySec=300
 # Exit 3 means another session took an always-on account (an on-demand one yields and stays
 # up, refusing requests until \`presence resume\`); exit 4 means Zalo keeps refusing the saved
 # login, and comes only with ZALO_EXIT_ON_SIGNED_OUT=1 (by default the daemon stays up,

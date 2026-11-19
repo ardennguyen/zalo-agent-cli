@@ -30,6 +30,7 @@
     "confirmMode": "agent",
     "hiddenChats": "exclude",
     "allowPinArgument": false,
+    "ownMyDocuments": false,
     "trustedProxies": ["127.0.0.1"],
     "publicUrl": "https://zalo.example.com",
     "approval": {

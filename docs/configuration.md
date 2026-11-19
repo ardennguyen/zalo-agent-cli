@@ -54,7 +54,7 @@ Files and the environment are read once at start; the policy is read again on ev
 | environment | `.env`, `--env-file`, a systemd `EnvironmentFile` (bootstrap only: port, bind address, `publicUrl`, the key provider, the admin credential's *reference*) |
 | **policy** | per tenant `<CONFIG_DIR>/tenants/<tenantId>.json` (for its users' accounts and the accounts it lists in `quota.tenant.accounts`), then per user `<CONFIG_DIR>/users/<userId>.json` (for the accounts it owns), then per account `<accountDir>/policy.json` |
 
-The policy takes `confirmMode`, `hiddenChats`, `allowPinArgument`, `approval.*`, `media.deliver`, `media.inlineMaxBytes`,
+The policy takes `confirmMode`, `hiddenChats`, `allowPinArgument`, `ownMyDocuments`, `approval.*`, `media.deliver`, `media.inlineMaxBytes`,
 `media.allowDeliver`, `media.linkTtl`, `media.tempfileTtl`, `media.linkAuth`, `media.linkRateLimit`,
 `media.capability.*`, `media.autoOpen`, `webhook`, `webhookBatchSize`, `webhookMaxAge`, `quota.*`, `retention.*`,
 `groups.onLeave`, `presence.*` and `session.renew.*` (`presence.alwaysOn.*` only in a tenant's or a user's policy; `quota.tenant.*` only
@@ -377,6 +377,7 @@ restart; a `signed_out` or `yielded` daemon comes back, a parked one keeps it fo
 | `ZALO_WEBHOOK_MAX_AGE` | yes | how long an undelivered event is retried before it is dead-lettered (`6h`, `24h`; at least `1m`). Default `24h` | | `webhookMaxAge` |
 | `ZALO_MCP_CONFIRM_MODE` | yes | who confirms a destructive tool action (recall, delete, leave a group, …): `agent` (default; the caller sends `confirm: true`), `human` (the server asks the user: by MCP form elicitation under stdio, otherwise on a one-time approve page whose link is in the reply, which works over HTTP too) or `off` (no question; `zalo_write` still needs `confirm`) | | `confirmMode` |
 | `ZALO_MCP_HIDDEN_CHATS` | yes | what the MCP server shows of the account's hidden chats: `exclude` (default: left out of every list, search, history and event), `contentless` (left out of lists; an event in one arrives as `{event, hidden: true}` with no thread id or content) or `include` (shown like any other: hands them to the agent) | | `hiddenChats` |
+| `ZALO_MCP_OWN_MY_DOCUMENTS` | yes | `true` passes the account's own messages in its own My Documents (the self-chat, `me`) to the agents: `zalo_get_messages`, `zalo_wait_for_message`, the notifier and the webhook, each marked `isSelf: true`, so the owner can talk to an assistant there. Every other message the account sends itself stays out, and the agent's own `zalo_send_message` replies are not handed back to it. Default `false`: no self-sent message reaches the agents | | `ownMyDocuments` |
 | `ZALO_MCP_ALLOW_PIN_ARGUMENT` | yes | `true` lets the hidden-chat tools take the PIN as a `pin` input. Default `false`: an input is written to the MCP client's logs and the model's context. Only for a non-AI client | | `allowPinArgument` |
 | `ZALO_MCP_APPROVAL_SECRET` | yes | what an approve page (`confirmMode: "human"`) asks besides a click, so an agent that can open the link cannot approve its own action: `pin` (the hidden-chat PIN, with its lockout), `password` (the approver password set with `zalo-agent mcp approver set`, stored only as a salted scrypt hash), `none` (a click approves: weaker) or `auto` (default: the approver password when one is set and the link reaches the agent, else nothing, and the reply says `approverSecret: false`) | | `approval.secret` |
 | `ZALO_MCP_APPROVAL_DELIVER` | yes | where the link of an approve or PIN page goes: `result` (default: in the tool result), `webhook` (only to the MCP webhook, as an `approval_requested` event; the tool result carries no link) or `both` | | `approval.deliver` |
@@ -436,7 +437,7 @@ The official APIs take no `mcp-config.json` key; their only environment variable
 | `limits.bufferMaxSize` | 500 | messages kept **per thread** in the live buffer |
 | `media.downloadDir` | `null` | media root for this server (files there are sealed under the account's media key, like the default root) |
 | `media.autoOpen` | unset (= `true` on stdio, `false` over HTTP) | `zalo_view_media` opens the file with this machine's viewer (through a tempfile). Over HTTP it never opens anything |
-| `media.deliver` | photo, gif, doodle, sticker, voice, audio `inline`; video, file `link` | per kind: `inline`, `link` or `tempfile` (see `ZALO_MCP_MEDIA_DELIVER`). Inline over `inlineMaxBytes`, or of a type a client cannot render (pictures go inline only as JPEG, PNG, GIF or WebP, so a JPEG XL photo goes as a link), goes as a link; a tempfile for a client on another machine goes as a link |
+| `media.deliver` | photo, gif, doodle, sticker, voice, audio `inline`; video, file `link` | per kind: `inline`, `link` or `tempfile` (see `ZALO_MCP_MEDIA_DELIVER`). Inline over `inlineMaxBytes`, or of a type a client cannot render, goes as a link. The type is read from the file's own bytes, never from what Zalo's file server called it: pictures go inline as JPEG, PNG, GIF or WebP (a JPEG XL photo goes inline as the JPEG copy Zalo serves of it, or as a link when there is none; HEIC/HEIF and AVIF go as a link), sound as MP3, WAV, AAC, MP4, Ogg, WebM or FLAC (AMR goes as a link); a file whose bytes say nothing goes as a link; a tempfile for a client on another machine goes as a link |
 | `media.inlineMaxBytes` | `5242880` | largest picture or voice message sent inline (5 MB is about 6.7 MB of base64 in the model's context) |
 | `media.allowDeliver` | `["inline","link","tempfile"]` | the modes a call, or the defaults, may pick. A CRM server can leave out `tempfile` |
 | `media.linkTtl` | `"10m"` | how long a media link works |
@@ -461,6 +462,7 @@ The official APIs take no `mcp-config.json` key; their only environment variable
 | `confirmMode` | unset (= `agent`) | `agent`, `human` or `off`: who confirms a destructive tool action. Set `agent` for an AI agent; `human` makes the server ask the user itself |
 | `groupConfirm` | | deprecated: `false` means `confirmMode: "off"` when no confirm mode is set |
 | `hiddenChats` | unset (= `exclude`) | `exclude`, `contentless` or `include`: what agents see of hidden chats (see the variable above) |
+| `ownMyDocuments` | unset (= `false`) | `true` passes the owner's own My Documents messages to the agents, marked `isSelf: true` (see the variable above) |
 | `allowPinArgument` | unset (= `false`) | `true` lets the hidden-chat tools take the PIN as an input; it then sits in the client's logs |
 | `approval.secret` | unset (= `auto`) | `auto`, `pin`, `password` or `none`: what an approve page asks besides a click (see the variable above) |
 | `approval.deliver` | unset (= `result`) | `result`, `webhook` or `both`: where a one-time page's link goes |

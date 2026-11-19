@@ -54,7 +54,7 @@ máy chủ đang chạy. Tệp và biến môi trường chỉ được đọc m
 | môi trường | `.env`, `--env-file`, `EnvironmentFile` của systemd (chỉ để khởi động: port, địa chỉ bind, `publicUrl`, bộ cung cấp khóa, *tham chiếu* tới thông tin xác thực admin) |
 | **chính sách** | theo tenant `<CONFIG_DIR>/tenants/<tenantId>.json` (cho tài khoản của các người dùng thuộc tenant và các tài khoản liệt kê trong `quota.tenant.accounts`), rồi theo người dùng `<CONFIG_DIR>/users/<userId>.json` (cho các tài khoản người đó sở hữu), rồi theo tài khoản `<accountDir>/policy.json` |
 
-Chính sách nhận `confirmMode`, `hiddenChats`, `allowPinArgument`, `approval.*`, `media.deliver`, `media.inlineMaxBytes`,
+Chính sách nhận `confirmMode`, `hiddenChats`, `allowPinArgument`, `ownMyDocuments`, `approval.*`, `media.deliver`, `media.inlineMaxBytes`,
 `media.allowDeliver`, `media.linkTtl`, `media.tempfileTtl`, `media.linkAuth`, `media.linkRateLimit`,
 `media.capability.*`, `media.autoOpen`, `webhook`, `webhookBatchSize`, `webhookMaxAge`, `quota.*`, `retention.*`,
 `groups.onLeave`, `presence.*` và `session.renew.*` (`presence.alwaysOn.*` chỉ có trong chính sách của tenant hoặc người dùng;
@@ -379,6 +379,7 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 | `ZALO_WEBHOOK_MAX_AGE` | có | thời gian thử lại một sự kiện chưa giao được trước khi chuyển vào dead-letter (`6h`, `24h`; tối thiểu `1m`). Mặc định `24h` | | `webhookMaxAge` |
 | `ZALO_MCP_CONFIRM_MODE` | có | ai xác nhận một thao tác không hoàn tác được của tool (thu hồi, xóa, rời nhóm, …): `agent` (mặc định; bên gọi gửi `confirm: true`), `human` (server tự hỏi người dùng: qua MCP form elicitation khi chạy stdio, còn lại qua một trang duyệt dùng một lần có link trong kết quả, dùng được cả qua HTTP) hoặc `off` (không hỏi; `zalo_write` vẫn cần `confirm`) | | `confirmMode` |
 | `ZALO_MCP_HIDDEN_CHATS` | có | MCP server cho thấy gì về các cuộc trò chuyện ẩn: `exclude` (mặc định: bỏ khỏi mọi danh sách, tìm kiếm, lịch sử và sự kiện), `contentless` (bỏ khỏi danh sách; sự kiện trong đó chỉ đến dưới dạng `{event, hidden: true}`, không có thread id hay nội dung) hoặc `include` (hiện như mọi cuộc khác: giao chúng cho agent) | | `hiddenChats` |
+| `ZALO_MCP_OWN_MY_DOCUMENTS` | có | `true` chuyển tin nhắn chính tài khoản gửi trong My Documents của mình (Cloud của tôi, `me`) tới agent: `zalo_get_messages`, `zalo_wait_for_message`, notifier và webhook, mỗi tin có `isSelf: true`, để chủ tài khoản trò chuyện với trợ lý ở đó. Mọi tin tự gửi khác vẫn bị bỏ, và tin trả lời của chính agent qua `zalo_send_message` không quay lại agent. Mặc định `false`: không tin tự gửi nào tới agent | | `ownMyDocuments` |
 | `ZALO_MCP_ALLOW_PIN_ARGUMENT` | có | `true` cho phép các tool trò chuyện ẩn nhận mã PIN qua input `pin`. Mặc định `false`: input bị ghi vào log của MCP client và ngữ cảnh của mô hình. Chỉ dành cho client không phải AI | | `allowPinArgument` |
 | `ZALO_MCP_APPROVAL_SECRET` | có | trang duyệt (`confirmMode: "human"`) hỏi thêm gì ngoài một cú bấm, để một agent mở được link cũng không tự duyệt được hành động của chính nó: `pin` (mã PIN trò chuyện ẩn, có khóa tạm khi sai), `password` (mật khẩu người duyệt đặt bằng `zalo-agent mcp approver set`, chỉ lưu dạng băm scrypt có salt), `none` (bấm là duyệt: yếu hơn) hoặc `auto` (mặc định: mật khẩu người duyệt khi đã đặt và link đi qua agent, nếu không thì không hỏi gì và kết quả ghi `approverSecret: false`) | | `approval.secret` |
 | `ZALO_MCP_APPROVAL_DELIVER` | có | link của trang duyệt hoặc trang PIN được gửi đi đâu: `result` (mặc định: trong kết quả của tool), `webhook` (chỉ gửi tới webhook MCP, dạng sự kiện `approval_requested`; kết quả của tool không có link) hoặc `both` | | `approval.deliver` |
@@ -438,7 +439,7 @@ Các API chính thức không có khóa `mcp-config.json` nào; biến môi trư
 | `limits.bufferMaxSize` | 500 | số tin giữ trong bộ đệm live **cho mỗi thread** |
 | `media.downloadDir` | `null` | thư mục gốc media của máy chủ này (file trong đó được niêm phong bằng khóa media của tài khoản, như thư mục mặc định) |
 | `media.autoOpen` | không đặt (= `true` khi stdio, `false` khi HTTP) | `zalo_view_media` mở file bằng trình xem của máy này (qua tempfile). Qua HTTP thì không bao giờ mở |
-| `media.deliver` | photo, gif, doodle, sticker, voice, audio `inline`; video, file `link` | theo từng loại: `inline`, `link` hoặc `tempfile` (xem `ZALO_MCP_MEDIA_DELIVER`). Inline lớn hơn `inlineMaxBytes`, hoặc kiểu client không hiển thị được (ảnh chỉ gửi inline khi là JPEG, PNG, GIF hoặc WebP, nên ảnh JPEG XL đi dạng link), chuyển thành link; tempfile cho client ở máy khác chuyển thành link |
+| `media.deliver` | photo, gif, doodle, sticker, voice, audio `inline`; video, file `link` | theo từng loại: `inline`, `link` hoặc `tempfile` (xem `ZALO_MCP_MEDIA_DELIVER`). Inline lớn hơn `inlineMaxBytes`, hoặc kiểu client không hiển thị được, chuyển thành link. Kiểu tệp được đọc từ chính các byte của tệp, không theo kiểu máy chủ tệp của Zalo khai báo: ảnh gửi inline khi là JPEG, PNG, GIF hoặc WebP (ảnh JPEG XL gửi inline bằng bản JPEG mà Zalo phục vụ, hoặc đi dạng link khi không có bản đó; HEIC/HEIF và AVIF đi dạng link), âm thanh khi là MP3, WAV, AAC, MP4, Ogg, WebM hoặc FLAC (AMR đi dạng link); tệp mà byte không cho biết kiểu đi dạng link; tempfile cho client ở máy khác chuyển thành link |
 | `media.inlineMaxBytes` | `5242880` | ảnh hoặc tin nhắn thoại lớn nhất gửi inline (5 MB là khoảng 6,7 MB base64 trong ngữ cảnh của model) |
 | `media.allowDeliver` | `["inline","link","tempfile"]` | các cách một lời gọi, hoặc mặc định, được chọn. Máy chủ CRM có thể bỏ `tempfile` |
 | `media.linkTtl` | `"10m"` | link media dùng được bao lâu |
@@ -462,6 +463,7 @@ Các API chính thức không có khóa `mcp-config.json` nào; biến môi trư
 | `oauth.issuerUrl` | `null` | tên cũ (deprecated) của `publicUrl`, vẫn được đọc khi không nguồn `publicUrl` nào được đặt |
 | `confirmMode` | chưa đặt (= `agent`) | `agent`, `human` hoặc `off`: ai xác nhận một thao tác không hoàn tác được của tool. Đặt `agent` cho AI agent; `human` để server tự hỏi người dùng |
 | `hiddenChats` | chưa đặt (= `exclude`) | `exclude`, `contentless` hoặc `include`: agent thấy gì về trò chuyện ẩn (xem biến ở trên) |
+| `ownMyDocuments` | chưa đặt (= `false`) | `true` chuyển tin của chủ tài khoản trong My Documents của mình tới agent, có `isSelf: true` (xem biến ở trên) |
 | `allowPinArgument` | chưa đặt (= `false`) | `true` cho các tool trò chuyện ẩn nhận PIN qua input; khi đó PIN nằm trong log của client |
 | `approval.secret` | không đặt (= `auto`) | `auto`, `pin`, `password` hoặc `none`: trang duyệt hỏi thêm gì ngoài một cú bấm (xem biến ở trên) |
 | `approval.deliver` | không đặt (= `result`) | `result`, `webhook` hoặc `both`: link của trang dùng một lần được gửi đi đâu |

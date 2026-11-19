@@ -7,7 +7,7 @@
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, statSync, utimesSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { CONFIG_DIR, getAccountDir } from "../../src/core/credentials.js";
 import { scopeOfDir } from "../../src/core/keystore/keyring.js";
@@ -26,9 +26,11 @@ import {
     MediaLinks,
     chooseDelivery,
     decryptToTempfile,
+    deliverCachedMedia,
     getMediaLinks,
     inlineContent,
     maskMediaPath,
+    mediaInfo,
     mediaMime,
     mediaTempRoot,
     safeMediaName,
@@ -421,5 +423,150 @@ describe("MediaLinks", () => {
         } finally {
             setMediaLinks(null);
         }
+    });
+});
+
+describe("the type of a cached file comes from its bytes", () => {
+    const JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10]), Buffer.from("JFIF\0pretend-photo")]);
+    const box = (type, body) => {
+        const head = Buffer.alloc(8);
+        head.writeUInt32BE(8 + body.length);
+        head.write(type, 4, "latin1");
+        return Buffer.concat([head, body]);
+    };
+    const ftyp = (major, ...compatible) =>
+        box("ftyp", Buffer.concat([Buffer.from(major), Buffer.alloc(4), ...compatible.map((b) => Buffer.from(b))]));
+    const HEIC = Buffer.concat([ftyp("heic", "mif1", "heic"), box("meta", Buffer.alloc(32))]);
+    const policy = () => resolveMediaDelivery({ config: {}, env: {} });
+    let n = 0;
+    const sealed = (plain, meta = {}, name = `f${n++}.jpg`) => {
+        const dir = getAccountDir(ID);
+        const file = join(dir, "media", "t1", name);
+        mkdirSync(dirname(file), { recursive: true });
+        writeSealedMedia(file, scopeOfDir(dir), { msgId: "m1", ...meta }, plain);
+        return { file, scope: scopeOfDir(dir) };
+    };
+
+    it("a photo a file server labeled image/jpg goes inline as image/jpeg", async () => {
+        const { file, scope } = sealed(JPEG, { mime: "image/jpg" });
+        const info = mediaInfo(file, { scope, msgId: "m1" });
+        assert.deepEqual([info.type, info.mime, info.size], ["image/jpeg", "image/jpeg", JPEG.length]);
+        const pick = chooseDelivery({
+            kind: "photo",
+            size: info.size,
+            mime: info.type,
+            policy: policy(),
+            stdio: false,
+        });
+        assert.deepEqual([pick.mode, pick.notes], ["inline", []]);
+        const out = await deliverCachedMedia({ mode: "inline", file, scope, msgId: "m1", info });
+        assert.equal(out.mimeType, "image/jpeg");
+        assert.deepEqual(inlineContent(out.bytes, "photo", out.mimeType), {
+            type: "image",
+            data: JPEG.toString("base64"),
+            mimeType: "image/jpeg",
+        });
+    });
+
+    it("a sealed header with a wrong type is corrected by the bytes; without a key only the declared type is known", () => {
+        const { file, scope } = sealed(JPEG, { mime: "image/png", ext: "png" });
+        assert.deepEqual([mediaInfo(file).type, mediaInfo(file).mime], [null, "image/png"], "no key: not read");
+        assert.equal(mediaInfo(file, { scope, msgId: "m1" }).type, "image/jpeg");
+        assert.equal(mediaInfo(file).type, "image/jpeg", "sniffed once, then kept for the process");
+    });
+
+    it("a type recorded from the bytes at download needs no key", () => {
+        const { file } = sealed(HEIC, { mime: "image/heic", mimeFrom: "bytes", ext: "heic" }, "p.heic");
+        const info = mediaInfo(file);
+        assert.deepEqual([info.type, info.mime], ["image/heic", "image/heic"]);
+        const video = sealed(Buffer.from("x"), { mime: "video/mp4", mimeFrom: "bytes", videoCodec: "hevc" }, "v.mp4");
+        assert.equal(mediaInfo(video.file).videoCodec, "hevc");
+    });
+
+    it("a 2.x plaintext file is typed from its bytes without a key", () => {
+        const file = join(getAccountDir(ID), "media", "t1", "old-photo.bin");
+        mkdirSync(dirname(file), { recursive: true });
+        writeFileSync(file, JPEG);
+        assert.equal(mediaInfo(file).type, "image/jpeg");
+    });
+
+    it("bytes that say nothing are an unknown type: a link with that note, never a guessed inline type", () => {
+        const { file, scope } = sealed(Buffer.from("JPEG-PLAINTEXT-BYTES"), { mime: "image/jpg" });
+        const info = mediaInfo(file, { scope, msgId: "m1" });
+        assert.deepEqual([info.type, info.mime], [null, "image/jpg"], "the link still carries the declared type");
+        const pick = chooseDelivery({
+            kind: "photo",
+            size: info.size,
+            mime: info.type,
+            policy: policy(),
+            stdio: false,
+        });
+        assert.equal(pick.mode, "link");
+        assert.deepEqual(pick.notes, ["its type could not be told from its bytes; sent as a link"]);
+    });
+
+    it("each reason a picture or voice cannot go inline has its own note", () => {
+        const note = (args) =>
+            chooseDelivery({ size: 1000, policy: policy(), stdio: false, ...args }).notes.join(" | ");
+        assert.equal(
+            note({ kind: "video", mime: "video/mp4", requested: "inline" }),
+            "a video cannot go inline; sent as a link",
+        );
+        assert.equal(note({ kind: "photo", mime: "image/jpeg", size: null }), "its size is unknown; sent as a link");
+        assert.equal(
+            note({ kind: "photo", mime: "image/jpeg", size: 5_242_881 }),
+            "5242881 bytes is over media.inlineMaxBytes (5242880); sent as a link",
+        );
+        assert.equal(note({ kind: "photo", mime: null }), "its type could not be told from its bytes; sent as a link");
+        assert.equal(
+            note({ kind: "photo", mime: "image/jxl" }),
+            "a JPEG XL picture cannot go inline: MCP clients take JPEG, PNG, GIF and WebP pictures; sent as a link",
+        );
+        for (const [mime, label] of [
+            ["image/heic", "a HEIC picture"],
+            ["image/heic-sequence", "a HEIC image sequence"],
+            ["image/heif", "a HEIF picture"],
+            ["image/heif-sequence", "a HEIF image sequence"],
+            ["image/avif", "an AVIF picture"],
+        ]) {
+            assert.match(note({ kind: "photo", mime }), new RegExp(`^${label} cannot go inline`), mime);
+        }
+        assert.equal(
+            note({ kind: "photo", mime: "video/mp4" }),
+            "its bytes are video/mp4, not a picture; sent as a link",
+        );
+        assert.match(note({ kind: "voice", mime: "audio/amr" }), /^an AMR recording cannot go inline/);
+        assert.equal(note({ kind: "voice", mime: "image/png" }), "its bytes are image/png, not sound; sent as a link");
+        for (const mime of [
+            "audio/aac",
+            "audio/mp4",
+            "audio/mpeg",
+            "audio/ogg",
+            "audio/wav",
+            "audio/webm",
+            "audio/flac",
+        ]) {
+            assert.equal(note({ kind: "voice", mime }), "", mime);
+        }
+    });
+
+    it("a HEIC photo goes as a link that serves it as image/heic", () => {
+        const { file, scope } = sealed(HEIC, { mime: "image/jpeg" }, "h.jpg");
+        const info = mediaInfo(file, { scope, msgId: "m1" });
+        assert.equal(info.type, "image/heic");
+        const pick = chooseDelivery({
+            kind: "photo",
+            size: info.size,
+            mime: info.type,
+            policy: policy(),
+            stdio: false,
+        });
+        assert.equal(pick.mode, "link");
+        assert.match(pick.notes[0], /HEIC/);
+    });
+
+    it("inlineContent follows the bytes' type over the kind", () => {
+        assert.equal(inlineContent(Buffer.from("x"), "sticker", "image/webp").type, "image");
+        assert.equal(inlineContent(Buffer.from("x"), "photo", "audio/aac").type, "audio");
     });
 });

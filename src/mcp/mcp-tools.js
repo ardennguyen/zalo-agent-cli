@@ -37,7 +37,7 @@ import {
 } from "../core/db.js";
 import { searchPage } from "../core/search.js";
 import { parsePeriod } from "../utils/date-range.js";
-import { downloadSyncedMedia, DOWNLOADABLE_KINDS } from "../core/sync-v2/media.js";
+import { downloadSyncedMedia, DOWNLOADABLE_KINDS, fetchJpegTwin, messageAttachment } from "../core/sync-v2/media.js";
 import { mediaPlainSize } from "../core/keystore/media-seal.js";
 import { scopeOfDir } from "../core/keystore/keyring.js";
 import { getAccountDir } from "../core/credentials.js";
@@ -50,6 +50,7 @@ import {
     removeMediaTemp,
 } from "../core/media-deliver.js";
 import { ensureMediaServed } from "../core/media-route.js";
+import { SNIFF_HEAD_BYTES, sniffMediaType } from "../core/media-type.js";
 import { describeZaloError } from "../core/sync-v2/board.js";
 import { boardPage, groupReminderPage } from "../zalo/api/boards.js";
 import { allAliases, allBoardItems, allReminders } from "../core/list-all.js";
@@ -508,7 +509,8 @@ const STICKER_MAX_BYTES = 2 * 1024 * 1024;
  * @param {object|null} row - the cached message
  * @param {object|null} buffered - the live message
  * @param {(url: string, init: object) => Promise<Response>} [fetchImpl]
- * @returns {Promise<{bytes: Buffer, mime: string} | {error: string}>}
+ * @returns {Promise<{bytes: Buffer, mime: string|null, declared: string|null} | {error: string}>} `mime`: what the
+ *   picture's bytes are (null when they say nothing); `declared`: the server's Content-Type
  */
 export async function stickerPicture(api, row, buffered, fetchImpl = (...a) => fetch(...a)) {
     let url = buffered?.attachment?.url || null;
@@ -531,16 +533,16 @@ export async function stickerPicture(api, row, buffered, fetchImpl = (...a) => f
     }
     try {
         const res = await fetchImpl(url, { signal: AbortSignal.timeout(15_000), redirect: "follow" });
-        const mime = String(res.headers.get("content-type") || "")
-            .split(";")[0]
-            .trim()
-            .toLowerCase();
-        if (!res.ok || !mime.startsWith("image/")) {
-            return { error: `The sticker's picture could not be fetched (HTTP ${res.status}).` };
-        }
+        if (!res.ok) return { error: `The sticker's picture could not be fetched (HTTP ${res.status}).` };
+        const declared =
+            String(res.headers.get("content-type") || "")
+                .split(";")[0]
+                .trim()
+                .toLowerCase() || null;
         const bytes = Buffer.from(await res.arrayBuffer());
         if (bytes.length > STICKER_MAX_BYTES) return { error: "The sticker's picture is too large to show." };
-        return { bytes, mime };
+        // Typed by its bytes, not by the server's Content-Type (which may say image/jpg, or nothing useful).
+        return { bytes, mime: sniffMediaType(bytes.subarray(0, SNIFF_HEAD_BYTES))?.mime ?? null, declared };
     } catch (e) {
         return { error: `The sticker's picture could not be fetched: ${e.message}` };
     }
@@ -656,6 +658,12 @@ export function registerTools(
     syncJobs,
     extras = {},
 ) {
+    // A send tool's handler, run through the daemon's record of the agents' own sends (src/mcp/self-messages.js).
+    const trackAgentSend =
+        (handler) =>
+        (...args) =>
+            buffer?.agentSends ? buffer.agentSends.track(() => handler(...args)) : handler(...args);
+
     // On-demand presence: refused while yielded or signed out, a hold per call, warming by the tool's class.
     gateToolsByPresence(server, extras?.presence ?? null);
 
@@ -750,7 +758,7 @@ export function registerTools(
                 "To continue exactly after the last reply, pass its `cursor` as `since`. To wait for the next message instead of polling, use zalo_wait_for_message. " +
                 "Each message has `msgId` (pass it as `msgId` or `quoteMsgId` to other tools), `threadId`, `threadType` (dm or group), `senderId`, `senderName` (the name to show: your alias for the sender when you set one, else the name the message carried), `senderAlias` (your alias, or null), `senderZaloName` (the name the message carried), `senderDisplayName` (the current name: your alias, else the phonebook name, else the Zalo name, else the display name, else the uid; `senderDisplayNameSource` says which: alias, phonebook, zalo, display or uid), `text`, `timestamp` (epoch ms), `type`, `threadName` and `readOnZalo`. " +
                 "`readOnZalo` is true or false when the account owner has or has not read the message on Zalo (on the phone or another Zalo app), and null when that is unknown; zalo_mark_read does not change it. " +
-                'A recall arrives in the same list with `type` "undo": its `msgId` is the recalled message (null when only its `cliMsgId` is known), its `text` is empty, and the earlier message is gone from the cache. ' +
+                'A recall arrives in the same list with `type` "undo": its `msgId` is the recalled message (null when only its `cliMsgId` is known), its `text` is empty, and the earlier message is gone from the cache. An entry with `isSelf: true` is the owner writing in their own My Documents (only when the deployment passes those on); nothing else the account sends itself arrives. ' +
                 SYSTEM_EVENTS_NOTE +
                 "Returns `{ messages, cursor, hasMore }`.",
             inputSchema: z.object({
@@ -988,360 +996,372 @@ export function registerTools(
                     "A sticker, a voice message or a bank card carries no text: send the text as its own message",
                 ),
         },
-        async ({
-            threadId: threadIdIn,
-            text,
-            filePath,
-            files,
-            link,
-            cardUserId,
-            sticker,
-            voiceUrl,
-            video,
-            bankCard,
-            qrTransfer,
-            threadType: threadTypeIn,
-            quoteMsgId,
-            urgency: urgencyIn,
-            format: formatIn,
-        }) => {
-            // `me` (or the own uid) is My Documents, always a 1-1 -- resolved
-            // before anything else reads the thread id, as `msg send me` is.
-            const thread = actionThread(api, threadIdIn, threadTypeIn);
-            if (thread.error) {
-                console.error("[mcp-tools] zalo_send_message refused:", thread.error);
-                return err(thread.error);
-            }
-            const { threadId, threadType } = thread;
-            // A group this account left or lost (src/core/group-exit.js): refused here, not at the server.
-            const goneRefusal = sendRefusal(threadId);
-            if (goneRefusal) return err(goneRefusal);
-            // The reply every non-text send shares: the new message's ids, as a text send reports them.
-            const sentReply = (kind, result, more = {}) => {
-                const msgId = result?.msgId ?? result?.message?.msgId ?? null;
-                const cliMsgId = result?.cliMsgId ?? result?.message?.cliMsgId ?? null;
-                return ok({
-                    success: true,
-                    kind,
-                    ...more,
-                    msgId: msgId === null ? null : String(msgId),
-                    ...(cliMsgId !== null && { cliMsgId: String(cliMsgId) }),
-                    threadType: threadTypeName(threadType),
-                    ...(thread.notice && { threadId, notice: thread.notice }),
-                });
-            };
-            try {
-                // The kinds `msg sticker`, `send-voice`, `send-video`, `send-bank` and `send-qr-transfer` send,
-                // through the same session calls.
-                if (sticker) {
-                    const found = (await api.searchSticker(sticker))?.[0];
-                    if (!found) return err(`No sticker found for "${sticker}".`);
-                    const stickerObj = {
-                        id: found.sticker_id || found.stickerId || found.id,
-                        cateId: found.cate_id || found.cateId,
-                        type: found.type || 7,
-                    };
-                    return sentReply("sticker", await api.sendSticker(stickerObj, threadId, Number(threadType)), {
-                        stickerId: String(stickerObj.id),
+        // Tracked: with ownMyDocuments on, the echo of this send in My Documents is not handed back to the agent.
+        trackAgentSend(
+            async ({
+                threadId: threadIdIn,
+                text,
+                filePath,
+                files,
+                link,
+                cardUserId,
+                sticker,
+                voiceUrl,
+                video,
+                bankCard,
+                qrTransfer,
+                threadType: threadTypeIn,
+                quoteMsgId,
+                urgency: urgencyIn,
+                format: formatIn,
+            }) => {
+                // `me` (or the own uid) is My Documents, always a 1-1 -- resolved
+                // before anything else reads the thread id, as `msg send me` is.
+                const thread = actionThread(api, threadIdIn, threadTypeIn);
+                if (thread.error) {
+                    console.error("[mcp-tools] zalo_send_message refused:", thread.error);
+                    return err(thread.error);
+                }
+                const { threadId, threadType } = thread;
+                // A group this account left or lost (src/core/group-exit.js): refused here, not at the server.
+                const goneRefusal = sendRefusal(threadId);
+                if (goneRefusal) return err(goneRefusal);
+                // The reply every non-text send shares: the new message's ids, as a text send reports them.
+                const sentReply = (kind, result, more = {}) => {
+                    const msgId = result?.msgId ?? result?.message?.msgId ?? null;
+                    const cliMsgId = result?.cliMsgId ?? result?.message?.cliMsgId ?? null;
+                    return ok({
+                        success: true,
+                        kind,
+                        ...more,
+                        msgId: msgId === null ? null : String(msgId),
+                        ...(cliMsgId !== null && { cliMsgId: String(cliMsgId) }),
+                        threadType: threadTypeName(threadType),
+                        ...(thread.notice && { threadId, notice: thread.notice }),
                     });
-                }
-                if (voiceUrl) {
-                    return sentReply("voice", await api.sendVoice({ voiceUrl, ttl: 0 }, threadId, Number(threadType)));
-                }
-                if (video) {
-                    // As `msg send-video`: a URL Zalo fetches, or a local file uploaded on this server's socket; a
-                    // thumbnail likewise.
-                    const isUrl = (v) => /^https?:\/\//i.test(v);
-                    const size = {
-                        duration: video.durationMs,
-                        width: video.width ?? 1280,
-                        height: video.height ?? 720,
-                    };
-                    if (isUrl(video.source) && isUrl(video.thumbnail)) {
-                        const result = await api.sendVideo(
-                            { videoUrl: video.source, thumbnailUrl: video.thumbnail, msg: text ?? "", ...size },
+                };
+                try {
+                    // The kinds `msg sticker`, `send-voice`, `send-video`, `send-bank` and `send-qr-transfer` send,
+                    // through the same session calls.
+                    if (sticker) {
+                        const found = (await api.searchSticker(sticker))?.[0];
+                        if (!found) return err(`No sticker found for "${sticker}".`);
+                        const stickerObj = {
+                            id: found.sticker_id || found.stickerId || found.id,
+                            cateId: found.cate_id || found.cateId,
+                            type: found.type || 7,
+                        };
+                        return sentReply("sticker", await api.sendSticker(stickerObj, threadId, Number(threadType)), {
+                            stickerId: String(stickerObj.id),
+                        });
+                    }
+                    if (voiceUrl) {
+                        return sentReply(
+                            "voice",
+                            await api.sendVoice({ voiceUrl, ttl: 0 }, threadId, Number(threadType)),
+                        );
+                    }
+                    if (video) {
+                        // As `msg send-video`: a URL Zalo fetches, or a local file uploaded on this server's socket; a
+                        // thumbnail likewise.
+                        const isUrl = (v) => /^https?:\/\//i.test(v);
+                        const size = {
+                            duration: video.durationMs,
+                            width: video.width ?? 1280,
+                            height: video.height ?? 720,
+                        };
+                        if (isUrl(video.source) && isUrl(video.thumbnail)) {
+                            const result = await api.sendVideo(
+                                { videoUrl: video.source, thumbnailUrl: video.thumbnail, msg: text ?? "", ...size },
+                                threadId,
+                                Number(threadType),
+                            );
+                            return sentReply("video", result);
+                        }
+                        if (isUrl(video.source)) {
+                            return err(
+                                "A video sent from a URL takes a thumbnail URL too; a local thumbnail goes with a local video.",
+                            );
+                        }
+                        const file = resolve(video.source.trim());
+                        const thumb = isUrl(video.thumbnail) ? null : resolve(video.thumbnail.trim());
+                        const missing = [file, thumb].filter((p) => p && !existsSync(p));
+                        if (missing.length > 0) return err(`File not found: ${missing.join(", ")}`);
+                        const result = await api.sendVideoFile(
+                            {
+                                file,
+                                msg: text ?? "",
+                                ...(thumb ? { thumbnailFile: thumb } : { thumbnailUrl: video.thumbnail }),
+                                ...size,
+                            },
                             threadId,
                             Number(threadType),
                         );
                         return sentReply("video", result);
                     }
-                    if (isUrl(video.source)) {
-                        return err(
-                            "A video sent from a URL takes a thumbnail URL too; a local thumbnail goes with a local video.",
+                    if (bankCard || qrTransfer) {
+                        const spec = bankCard || qrTransfer;
+                        const bin = resolveBankBin(spec.bank);
+                        if (!bin)
+                            return err(
+                                `Unknown bank: '${spec.bank}'. zalo_bank 'banks' lists the banks Zalo supports.`,
+                            );
+                        if (bankCard) {
+                            const payload = { binBank: bin, numAccBank: bankCard.accountNumber };
+                            if (bankCard.holderName) payload.nameAccBank = bankCard.holderName;
+                            const result = await api.sendBankCard(payload, threadId, Number(threadType));
+                            return sentReply("bank_card", result, { bank: BIN_TO_DISPLAY[bin] || String(bin) });
+                        }
+                        const qrPath = await generateQrTransferImage(
+                            bin,
+                            qrTransfer.accountNumber,
+                            qrTransfer.amount,
+                            qrTransfer.content,
+                            qrTransfer.template ?? "compact",
                         );
+                        if (!qrPath) return err("Could not generate the VietQR image; nothing was sent.");
+                        try {
+                            const caption = text || qrTransferCaption(bin, qrTransfer);
+                            const result = await api.sendMessage(
+                                { msg: caption, attachments: [qrPath] },
+                                threadId,
+                                Number(threadType),
+                            );
+                            const att = Array.isArray(result?.attachment) ? result.attachment[0] : result?.attachment;
+                            return sentReply("qr_transfer", result?.message ?? att ?? result, {
+                                bank: BIN_TO_DISPLAY[bin] || String(bin),
+                            });
+                        } finally {
+                            try {
+                                unlinkSync(qrPath);
+                            } catch {
+                                /* a temp file left behind is harmless */
+                            }
+                        }
                     }
-                    const file = resolve(video.source.trim());
-                    const thumb = isUrl(video.thumbnail) ? null : resolve(video.thumbnail.trim());
-                    const missing = [file, thumb].filter((p) => p && !existsSync(p));
-                    if (missing.length > 0) return err(`File not found: ${missing.join(", ")}`);
-                    const result = await api.sendVideoFile(
-                        {
-                            file,
-                            msg: text ?? "",
-                            ...(thumb ? { thumbnailFile: thumb } : { thumbnailUrl: video.thumbnail }),
-                            ...size,
-                        },
-                        threadId,
-                        Number(threadType),
-                    );
-                    return sentReply("video", result);
-                }
-                if (bankCard || qrTransfer) {
-                    const spec = bankCard || qrTransfer;
-                    const bin = resolveBankBin(spec.bank);
-                    if (!bin)
-                        return err(`Unknown bank: '${spec.bank}'. zalo_bank 'banks' lists the banks Zalo supports.`);
-                    if (bankCard) {
-                        const payload = { binBank: bin, numAccBank: bankCard.accountNumber };
-                        if (bankCard.holderName) payload.nameAccBank = bankCard.holderName;
-                        const result = await api.sendBankCard(payload, threadId, Number(threadType));
-                        return sentReply("bank_card", result, { bank: BIN_TO_DISPLAY[bin] || String(bin) });
+
+                    if (cardUserId) {
+                        const result = await api.sendCard({ userId: cardUserId }, threadId, Number(threadType));
+                        const messageId = result?.msgId ?? result?.message?.msgId ?? null;
+                        const cliMsgId = result?.cliMsgId ?? result?.message?.cliMsgId ?? null;
+                        return ok({
+                            success: true,
+                            kind: "card",
+                            cardUserId,
+                            msgId: messageId,
+                            ...(cliMsgId !== null && { cliMsgId: String(cliMsgId) }),
+                            threadType: threadTypeName(threadType),
+                            ...(thread.notice && { threadId, notice: thread.notice }),
+                        });
                     }
-                    const qrPath = await generateQrTransferImage(
-                        bin,
-                        qrTransfer.accountNumber,
-                        qrTransfer.amount,
-                        qrTransfer.content,
-                        qrTransfer.template ?? "compact",
-                    );
-                    if (!qrPath) return err("Could not generate the VietQR image; nothing was sent.");
-                    try {
-                        const caption = text || qrTransferCaption(bin, qrTransfer);
+
+                    if (link) {
+                        const linkOpts = text ? { link, msg: text } : { link };
+                        const result = await api.sendLink(linkOpts, threadId, Number(threadType));
+                        const messageId = result?.msgId ?? result?.message?.msgId ?? null;
+                        const cliMsgId = result?.cliMsgId ?? result?.message?.cliMsgId ?? null;
+                        return ok({
+                            success: true,
+                            kind: "link",
+                            link,
+                            msgId: messageId,
+                            ...(cliMsgId !== null && { cliMsgId: String(cliMsgId) }),
+                            threadType: threadTypeName(threadType),
+                            ...(thread.notice && { threadId, notice: thread.notice }),
+                        });
+                    }
+
+                    const rawFiles = [...(filePath ? [filePath] : []), ...(Array.isArray(files) ? files : [])];
+                    if (rawFiles.length > 0) {
+                        const absPaths = rawFiles.map((p) => resolve(String(p).trim()));
+                        const missing = absPaths.filter((p) => !existsSync(p));
+                        if (missing.length > 0) {
+                            return err(`File not found: ${missing.join(", ")}`);
+                        }
+                        // A caption is text too: Markdown in it is converted the same way.
+                        const caption =
+                            text && resolveSendFormat({ explicit: formatIn, fallback: "markdown" }) === "markdown"
+                                ? markdownToZalo(text)
+                                : { text: text || "", styles: [] };
                         const result = await api.sendMessage(
-                            { msg: caption, attachments: [qrPath] },
+                            {
+                                msg: caption.text,
+                                attachments: absPaths,
+                                ...(caption.styles.length > 0 && { styles: caption.styles }),
+                            },
                             threadId,
                             Number(threadType),
                         );
-                        const att = Array.isArray(result?.attachment) ? result.attachment[0] : result?.attachment;
-                        return sentReply("qr_transfer", result?.message ?? att ?? result, {
-                            bank: BIN_TO_DISPLAY[bin] || String(bin),
+                        const rawAtt = result?.attachment;
+                        const attRows = rawAtt ? (Array.isArray(rawAtt) ? rawAtt : [rawAtt]) : [];
+                        const sent = attRows
+                            .filter((r) => (r?.msgId ?? null) !== null)
+                            .map((r) => ({
+                                msgId: String(r.msgId),
+                                cliMsgId: (r.cliMsgId ?? null) === null ? null : String(r.cliMsgId),
+                            }));
+                        const messageId =
+                            result?.message?.msgId ?? result?.msgId ?? (sent.length > 0 ? sent[0].msgId : null);
+                        const cliMsgId =
+                            result?.message?.cliMsgId ??
+                            result?.cliMsgId ??
+                            (sent.length > 0 ? sent[0].cliMsgId : null);
+                        return ok({
+                            success: true,
+                            kind: "attachment",
+                            files: absPaths,
+                            sent,
+                            msgId: messageId,
+                            ...(cliMsgId !== null && { cliMsgId: String(cliMsgId) }),
+                            threadType: threadTypeName(threadType),
+                            ...(thread.notice && { threadId, notice: thread.notice }),
                         });
-                    } finally {
+                    }
+
+                    if (!text) {
+                        return err(`Provide text, or one of ${SEND_MODES.join(", ")}.`);
+                    }
+
+                    const warnings = [];
+
+                    // `@[uid]` -> `@Display Name`, with the mention offsets measured
+                    // on the string that comes out. The CLI runs this last, after
+                    // markdown, because a display name may itself contain `*` or `_`;
+                    // there is no markdown or style pass here, so there is nothing to
+                    // order against and nothing to move — if styles are ever added to
+                    // this tool, they must be run through `shiftStyles(styles,
+                    // expanded.edits)` the way `msg send` does.
+                    // Markdown first, then mentions: a display name may itself contain `*` or `_`, whereas an
+                    // `@[uid]` token contains no Markdown (the converter passes it through). The style ranges
+                    // are counted before the names go in, so they move across the substitutions (`shiftStyles`).
+                    const format = resolveSendFormat({ explicit: formatIn, fallback: "markdown" });
+                    const converted = format === "markdown" ? markdownToZalo(text) : { text, styles: [] };
+                    const unresolved = [];
+                    const expanded = expandMentions(converted.text, (uid) => {
+                        const name = cachedDisplayName(uid);
+                        if (!name && uid !== ALL_MENTION_UID) unresolved.push(uid);
+                        return name;
+                    });
+                    const mentions = expanded.mentions;
+                    const styles = shiftStyles(converted.styles, expanded.edits);
+
+                    // The session drops mentions outside a group, so a DM send would
+                    // quietly arrive with the names as plain text and nobody tagged.
+                    if (mentions.length > 0 && Number(threadType) !== THREAD_GROUP) {
+                        warnings.push(
+                            "Mentions only apply to group messages. This was sent with threadType " +
+                                `${threadTypeName(threadType)}, so the names went out as plain text and nobody was tagged.`,
+                        );
+                    }
+
+                    let quote;
+                    if (quoteMsgId) {
+                        // buildQuote needs `cliMsgId` and the `property` blob, which
+                        // live only in the cached row's raw_data. A db that is not
+                        // open reads as "not cached", whose message names the fix.
+                        let row = null;
                         try {
-                            unlinkSync(qrPath);
-                        } catch {
-                            /* a temp file left behind is harmless */
+                            row = getMessageForAction(quoteMsgId);
+                        } catch (e) {
+                            if (e?.code === "ROW_MAC") return err(e.message);
+                            console.error("[mcp-tools] cache unavailable for quote:", e.message);
+                        }
+                        const built = buildQuote(row, { msgId: quoteMsgId, threadId });
+                        // Reported through err() rather than letting the session raise a
+                        // raw ZaloApiError: "stickers can't be quoted" and "not
+                        // cached, fetch the thread" are different problems and the
+                        // agent can act on both.
+                        if (built.error) {
+                            console.error("[mcp-tools] zalo_send_message quote error:", built.error);
+                            return err(built.error);
+                        }
+                        if (built.warning) warnings.push(built.warning);
+                        quote = built.quote;
+                        // A sync-restored row's sender is a noised id that Zalo
+                        // rejects with code 114, so resolve it rather than hand the
+                        // caller a send that cannot land.
+                        if (built.opaqueSender) {
+                            const fixed = await resolveQuoteSender(quote, api);
+                            if (fixed.error) {
+                                console.error("[mcp-tools] zalo_send_message quote sender:", fixed.error);
+                                return err(fixed.error);
+                            }
+                            if (fixed.resolved)
+                                warnings.push(`Resolved the quoted message's sender: ${fixed.resolved}`);
                         }
                     }
-                }
 
-                if (cardUserId) {
-                    const result = await api.sendCard({ userId: cardUserId }, threadId, Number(threadType));
-                    const messageId = result?.msgId ?? result?.message?.msgId ?? null;
-                    const cliMsgId = result?.cliMsgId ?? result?.message?.cliMsgId ?? null;
-                    return ok({
-                        success: true,
-                        kind: "card",
-                        cardUserId,
-                        msgId: messageId,
-                        ...(cliMsgId !== null && { cliMsgId: String(cliMsgId) }),
-                        threadType: threadTypeName(threadType),
-                        ...(thread.notice && { threadId, notice: thread.notice }),
-                    });
-                }
+                    // Never changes the text: it only tells the agent, in this reply, what it sent.
+                    if (hasLiteralNewline(text)) warnings.push(LITERAL_NEWLINE_WARNING);
 
-                if (link) {
-                    const linkOpts = text ? { link, msg: text } : { link };
-                    const result = await api.sendLink(linkOpts, threadId, Number(threadType));
-                    const messageId = result?.msgId ?? result?.message?.msgId ?? null;
-                    const cliMsgId = result?.cliMsgId ?? result?.message?.cliMsgId ?? null;
-                    return ok({
-                        success: true,
-                        kind: "link",
-                        link,
-                        msgId: messageId,
-                        ...(cliMsgId !== null && { cliMsgId: String(cliMsgId) }),
-                        threadType: threadTypeName(threadType),
-                        ...(thread.notice && { threadId, notice: thread.notice }),
-                    });
-                }
+                    // 1 (important) or 2 (urgent), mapped exactly as `msg send
+                    // --urgency` maps it; the session turns it into the `metaData:
+                    // {urgency}` Zalo sends. "normal" is no urgency at all.
+                    const urgency = urgencyIn ? urgencyLevel(urgencyIn) : null;
 
-                const rawFiles = [...(filePath ? [filePath] : []), ...(Array.isArray(files) ? files : [])];
-                if (rawFiles.length > 0) {
-                    const absPaths = rawFiles.map((p) => resolve(String(p).trim()));
-                    const missing = absPaths.filter((p) => !existsSync(p));
-                    if (missing.length > 0) {
-                        return err(`File not found: ${missing.join(", ")}`);
-                    }
-                    // A caption is text too: Markdown in it is converted the same way.
-                    const caption =
-                        text && resolveSendFormat({ explicit: formatIn, fallback: "markdown" }) === "markdown"
-                            ? markdownToZalo(text)
-                            : { text: text || "", styles: [] };
-                    const result = await api.sendMessage(
-                        {
-                            msg: caption.text,
-                            attachments: absPaths,
-                            ...(caption.styles.length > 0 && { styles: caption.styles }),
-                        },
-                        threadId,
-                        Number(threadType),
+                    // Zalo refuses one oversized message (114 plain, 112 styled), so a long text goes out as Zalo sends
+                    // it: split at 3000 bytes of text plus styles, in order, 300 ms apart. The quote and the urgency
+                    // belong to the first part only.
+                    const parts = splitMessage({ text: expanded.text, styles, mentions });
+                    const contentOf = (part, index) => {
+                        const first = index === 0;
+                        const extras =
+                            part.mentions.length > 0 || part.styles.length > 0 || (first && (quote || urgency));
+                        return extras
+                            ? {
+                                  msg: part.text,
+                                  ...(part.mentions.length > 0 && { mentions: part.mentions }),
+                                  ...(part.styles.length > 0 && { styles: part.styles }),
+                                  ...(first && quote && { quote }),
+                                  ...(first && urgency && { urgency }),
+                              }
+                            : part.text;
+                    };
+
+                    for (const w of warnings) console.error("[mcp-tools] zalo_send_message warning:", w);
+
+                    const results = await sendParts(parts, (part, index) =>
+                        api.sendMessage(contentOf(part, index), threadId, Number(threadType)),
                     );
-                    const rawAtt = result?.attachment;
-                    const attRows = rawAtt ? (Array.isArray(rawAtt) ? rawAtt : [rawAtt]) : [];
-                    const sent = attRows
-                        .filter((r) => (r?.msgId ?? null) !== null)
-                        .map((r) => ({
-                            msgId: String(r.msgId),
-                            cliMsgId: (r.cliMsgId ?? null) === null ? null : String(r.cliMsgId),
-                        }));
-                    const messageId =
-                        result?.message?.msgId ?? result?.msgId ?? (sent.length > 0 ? sent[0].msgId : null);
-                    const cliMsgId =
-                        result?.message?.cliMsgId ?? result?.cliMsgId ?? (sent.length > 0 ? sent[0].cliMsgId : null);
+                    const result = results[0];
+                    const messageId = result?.message?.msgId ?? result?.msgId ?? null;
+                    // `msg react`, `msg undo` and a later quote all key off cliMsgId,
+                    // and it appears in no other output. Without it an agent cannot
+                    // act on the message it just sent -- not even by shelling out.
+                    const cliMsgId = result?.message?.cliMsgId ?? result?.cliMsgId ?? null;
                     return ok({
                         success: true,
-                        kind: "attachment",
-                        files: absPaths,
-                        sent,
                         msgId: messageId,
                         ...(cliMsgId !== null && { cliMsgId: String(cliMsgId) }),
                         threadType: threadTypeName(threadType),
+                        // Only for `me`: the thread it really went to, which is
+                        // what a later zalo_get_history names.
                         ...(thread.notice && { threadId, notice: thread.notice }),
-                    });
-                }
-
-                if (!text) {
-                    return err(`Provide text, or one of ${SEND_MODES.join(", ")}.`);
-                }
-
-                const warnings = [];
-
-                // `@[uid]` -> `@Display Name`, with the mention offsets measured
-                // on the string that comes out. The CLI runs this last, after
-                // markdown, because a display name may itself contain `*` or `_`;
-                // there is no markdown or style pass here, so there is nothing to
-                // order against and nothing to move — if styles are ever added to
-                // this tool, they must be run through `shiftStyles(styles,
-                // expanded.edits)` the way `msg send` does.
-                // Markdown first, then mentions: a display name may itself contain `*` or `_`, whereas an
-                // `@[uid]` token contains no Markdown (the converter passes it through). The style ranges
-                // are counted before the names go in, so they move across the substitutions (`shiftStyles`).
-                const format = resolveSendFormat({ explicit: formatIn, fallback: "markdown" });
-                const converted = format === "markdown" ? markdownToZalo(text) : { text, styles: [] };
-                const unresolved = [];
-                const expanded = expandMentions(converted.text, (uid) => {
-                    const name = cachedDisplayName(uid);
-                    if (!name && uid !== ALL_MENTION_UID) unresolved.push(uid);
-                    return name;
-                });
-                const mentions = expanded.mentions;
-                const styles = shiftStyles(converted.styles, expanded.edits);
-
-                // The session drops mentions outside a group, so a DM send would
-                // quietly arrive with the names as plain text and nobody tagged.
-                if (mentions.length > 0 && Number(threadType) !== THREAD_GROUP) {
-                    warnings.push(
-                        "Mentions only apply to group messages. This was sent with threadType " +
-                            `${threadTypeName(threadType)}, so the names went out as plain text and nobody was tagged.`,
-                    );
-                }
-
-                let quote;
-                if (quoteMsgId) {
-                    // buildQuote needs `cliMsgId` and the `property` blob, which
-                    // live only in the cached row's raw_data. A db that is not
-                    // open reads as "not cached", whose message names the fix.
-                    let row = null;
-                    try {
-                        row = getMessageForAction(quoteMsgId);
-                    } catch (e) {
-                        if (e?.code === "ROW_MAC") return err(e.message);
-                        console.error("[mcp-tools] cache unavailable for quote:", e.message);
-                    }
-                    const built = buildQuote(row, { msgId: quoteMsgId, threadId });
-                    // Reported through err() rather than letting the session raise a
-                    // raw ZaloApiError: "stickers can't be quoted" and "not
-                    // cached, fetch the thread" are different problems and the
-                    // agent can act on both.
-                    if (built.error) {
-                        console.error("[mcp-tools] zalo_send_message quote error:", built.error);
-                        return err(built.error);
-                    }
-                    if (built.warning) warnings.push(built.warning);
-                    quote = built.quote;
-                    // A sync-restored row's sender is a noised id that Zalo
-                    // rejects with code 114, so resolve it rather than hand the
-                    // caller a send that cannot land.
-                    if (built.opaqueSender) {
-                        const fixed = await resolveQuoteSender(quote, api);
-                        if (fixed.error) {
-                            console.error("[mcp-tools] zalo_send_message quote sender:", fixed.error);
-                            return err(fixed.error);
-                        }
-                        if (fixed.resolved) warnings.push(`Resolved the quoted message's sender: ${fixed.resolved}`);
-                    }
-                }
-
-                // Never changes the text: it only tells the agent, in this reply, what it sent.
-                if (hasLiteralNewline(text)) warnings.push(LITERAL_NEWLINE_WARNING);
-
-                // 1 (important) or 2 (urgent), mapped exactly as `msg send
-                // --urgency` maps it; the session turns it into the `metaData:
-                // {urgency}` Zalo sends. "normal" is no urgency at all.
-                const urgency = urgencyIn ? urgencyLevel(urgencyIn) : null;
-
-                // Zalo refuses one oversized message (114 plain, 112 styled), so a long text goes out as Zalo sends
-                // it: split at 3000 bytes of text plus styles, in order, 300 ms apart. The quote and the urgency
-                // belong to the first part only.
-                const parts = splitMessage({ text: expanded.text, styles, mentions });
-                const contentOf = (part, index) => {
-                    const first = index === 0;
-                    const extras = part.mentions.length > 0 || part.styles.length > 0 || (first && (quote || urgency));
-                    return extras
-                        ? {
-                              msg: part.text,
-                              ...(part.mentions.length > 0 && { mentions: part.mentions }),
-                              ...(part.styles.length > 0 && { styles: part.styles }),
-                              ...(first && quote && { quote }),
-                              ...(first && urgency && { urgency }),
-                          }
-                        : part.text;
-                };
-
-                for (const w of warnings) console.error("[mcp-tools] zalo_send_message warning:", w);
-
-                const results = await sendParts(parts, (part, index) =>
-                    api.sendMessage(contentOf(part, index), threadId, Number(threadType)),
-                );
-                const result = results[0];
-                const messageId = result?.message?.msgId ?? result?.msgId ?? null;
-                // `msg react`, `msg undo` and a later quote all key off cliMsgId,
-                // and it appears in no other output. Without it an agent cannot
-                // act on the message it just sent -- not even by shelling out.
-                const cliMsgId = result?.message?.cliMsgId ?? result?.cliMsgId ?? null;
-                return ok({
-                    success: true,
-                    msgId: messageId,
-                    ...(cliMsgId !== null && { cliMsgId: String(cliMsgId) }),
-                    threadType: threadTypeName(threadType),
-                    // Only for `me`: the thread it really went to, which is
-                    // what a later zalo_get_history names.
-                    ...(thread.notice && { threadId, notice: thread.notice }),
-                    // Only when it differs, so the common send keeps its shape:
-                    // the agent wrote `@[123]` and needs to know what was sent.
-                    ...(expanded.text !== text && { text: expanded.text }),
-                    ...(styles.length > 0 && { formatted: styles.length }),
-                    ...(unresolved.length > 0 && { unresolvedMentions: unresolved }),
-                    // Only when it was split: every part's ids, in order (msgId/cliMsgId above are the first).
-                    ...(parts.length > 1 && {
-                        splitInto: parts.length,
-                        parts: results.map((r) => {
-                            const partId = r?.message?.msgId ?? r?.msgId ?? null;
-                            const partCli = r?.message?.cliMsgId ?? r?.cliMsgId ?? null;
-                            return {
-                                msgId: partId,
-                                ...(partCli !== null && { cliMsgId: String(partCli) }),
-                            };
+                        // Only when it differs, so the common send keeps its shape:
+                        // the agent wrote `@[123]` and needs to know what was sent.
+                        ...(expanded.text !== text && { text: expanded.text }),
+                        ...(styles.length > 0 && { formatted: styles.length }),
+                        ...(unresolved.length > 0 && { unresolvedMentions: unresolved }),
+                        // Only when it was split: every part's ids, in order (msgId/cliMsgId above are the first).
+                        ...(parts.length > 1 && {
+                            splitInto: parts.length,
+                            parts: results.map((r) => {
+                                const partId = r?.message?.msgId ?? r?.msgId ?? null;
+                                const partCli = r?.message?.cliMsgId ?? r?.cliMsgId ?? null;
+                                return {
+                                    msgId: partId,
+                                    ...(partCli !== null && { cliMsgId: String(partCli) }),
+                                };
+                            }),
                         }),
-                    }),
-                    ...(warnings.length > 0 && { warnings }),
-                });
-            } catch (e) {
-                console.error("[mcp-tools] zalo_send_message error:", e.message);
-                return err(withUserIdHint(e, threadId, threadType));
-            }
-        },
+                        ...(warnings.length > 0 && { warnings }),
+                    });
+                } catch (e) {
+                    console.error("[mcp-tools] zalo_send_message error:", e.message);
+                    return err(withUserIdHint(e, threadId, threadType));
+                }
+            },
+        ),
     );
 
     // --- zalo_list_threads ---
@@ -1829,9 +1849,40 @@ export function registerTools(
 
                 // The cached file stays sealed (keystore/media-seal.js): it is delivered inline, as a link served from
                 // the sealed file, or as a private decrypted copy (src/core/media-deliver.js).
-                const info = mediaInfo(localPath);
-                const pick = choose(info.size, info.mime);
+                // Typed by the file's own bytes (a header written at download, or its head read once).
+                const info = mediaInfo(localPath, { scope: mediaScope(), msgId: row?.msgId ?? msgId });
+                const pick = choose(info.size, info.type);
                 if (pick.error) return err(pick.error);
+                // A JPEG XL picture stays cached as Zalo keeps it; where it would go inline, the JPEG copy Zalo serves
+                // of it goes instead (fetched now, not kept), as Zalo's own readers do.
+                if (
+                    info.type === "image/jxl" &&
+                    pick.mode === "link" &&
+                    choose(info.size, "image/jpeg").mode === "inline"
+                ) {
+                    const twin = await fetchJpegTwin(messageAttachment(row, buffered), {
+                        api,
+                        maxBytes: policy.inlineMaxBytes,
+                    });
+                    if (twin.bytes) {
+                        const reply = {
+                            success: true,
+                            msgId,
+                            mediaType: kind || null,
+                            delivery: "inline",
+                            mimeType: "image/jpeg",
+                            size: twin.bytes.length,
+                            notes: ["a JPEG XL picture: the JPEG copy Zalo serves of it is sent inline"],
+                        };
+                        return {
+                            content: [
+                                { type: "text", text: JSON.stringify(reply) },
+                                inlineContent(twin.bytes, kind, "image/jpeg"),
+                            ],
+                        };
+                    }
+                    pick.notes.push(twin.error);
+                }
                 const out = await deliverCachedMedia({
                     mode: pick.mode,
                     file: localPath,
@@ -1851,6 +1902,9 @@ export function registerTools(
                     delivery: out.mode,
                     mimeType: out.mimeType,
                     size: out.size,
+                    ...(info.videoCodec ? { videoCodec: info.videoCodec } : {}),
+                    ...(info.audioCodec ? { audioCodec: info.audioCodec } : {}),
+                    ...(info.animated ? { animated: true } : {}),
                     ...(out.url ? { url: out.url, auth: out.auth } : {}),
                     ...(out.path ? { path: out.path, opened: pick.open } : {}),
                     ...(out.expiresAt ? { expiresAt: new Date(out.expiresAt).toISOString() } : {}),
@@ -3413,6 +3467,7 @@ export function registerTools(
                 'Wait for the next incoming message, without polling. It returns at once when a buffered message newer than `since` is already waiting; otherwise it waits up to `timeoutSec` seconds (default 55, max 300) and then returns `status: "timeout"` with no message. Call it in a loop to listen, and call zalo_mark_read with the `cursor` when a message is handled. ' +
                 "It returns every message already waiting, in order, in `messages` (`message` is the first, `cursor` is the last, so `since: cursor` continues where the batch ended); `limit` caps how many (then `hasMore` says more are already waiting); `settleMs` waits that long after the first message for the rest of a burst. A message's `id` is its msgId. " +
                 SYSTEM_EVENTS_NOTE +
+                "An entry with `isSelf: true` is the owner writing in their own My Documents (only when the deployment passes those on). " +
                 "Mirrors GET /events/wait for remote HTTPS/OAuth2 MCP clients.",
             inputSchema: z.object({
                 threadId: z

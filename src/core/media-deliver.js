@@ -11,10 +11,17 @@
  * {@link chooseDelivery} turns the policy, the call's own choice and where the caller sits into one mode.
  */
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
+import { closeSync, mkdirSync, mkdtempSync, openSync, readdirSync, readSync, rmSync, statSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import { CONFIG_DIR } from "./credentials.js";
-import { decryptMediaToFile, mediaFileState, readMediaFile, readMediaHeader } from "./keystore/media-seal.js";
+import {
+    decryptMediaToFile,
+    mediaFileState,
+    openMedia,
+    readMediaFile,
+    readMediaHeader,
+} from "./keystore/media-seal.js";
+import { sniffMedia } from "./media-type.js";
 import { onRekey } from "./keystore/index.js";
 import { isLoopbackUrl, MEDIA_DEFAULTS, resolveMediaTempCap, validatePublicUrl } from "./deploy-policy.js";
 
@@ -37,9 +44,30 @@ const IMAGE_MIME = {
     gif: "image/gif",
     webp: "image/webp",
     jxl: "image/jxl",
+    heic: "image/heic",
+    heics: "image/heic-sequence",
+    heif: "image/heif",
+    heifs: "image/heif-sequence",
+    avif: "image/avif",
 };
-/** The picture types an MCP client takes inline. Another (JPEG XL, as Zalo keeps many photos) goes as a link. */
+/**
+ * The picture types an MCP client takes inline: the ones the major model APIs read (JPEG, PNG, GIF, WebP). Another
+ * (JPEG XL, as Zalo keeps many photos; HEIC/HEIF and AVIF, as phones take them) goes as a link.
+ */
 const INLINE_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+/**
+ * The sound types sent inline as MCP audio content: the common ones a model or player that takes audio reads. AMR
+ * (an old phone voice codec) is played by almost none, so it goes as a link.
+ */
+const INLINE_AUDIO_MIMES = new Set([
+    "audio/mpeg",
+    "audio/wav",
+    "audio/aac",
+    "audio/mp4",
+    "audio/ogg",
+    "audio/webm",
+    "audio/flac",
+]);
 const AUDIO_MIME = {
     aac: "audio/aac",
     m4a: "audio/mp4",
@@ -49,19 +77,42 @@ const AUDIO_MIME = {
     opus: "audio/ogg",
     oga: "audio/ogg",
     wav: "audio/wav",
-    webm: "audio/webm",
+    weba: "audio/webm",
+    flac: "audio/flac",
     amr: "audio/amr",
+    awb: "audio/amr-wb",
 };
-const VIDEO_MIME = { mp4: "video/mp4", webm: "video/webm", mov: "video/quicktime" };
+const VIDEO_MIME = {
+    mp4: "video/mp4",
+    m4v: "video/mp4",
+    webm: "video/webm",
+    mov: "video/quicktime",
+    "3gp": "video/3gpp",
+    "3g2": "video/3gpp2",
+    mkv: "video/x-matroska",
+};
 
 /** The types a link serves as themselves (shown in the browser); anything else is a download. */
 export const SAFE_MEDIA_MIME = Object.freeze(
     new Set([...Object.values(IMAGE_MIME), ...Object.values(AUDIO_MIME), ...Object.values(VIDEO_MIME)]),
 );
 
+/** A type's name in a note. */
+const TYPE_LABEL = {
+    "image/jxl": "a JPEG XL picture",
+    "image/heic": "a HEIC picture",
+    "image/heic-sequence": "a HEIC image sequence",
+    "image/heif": "a HEIF picture",
+    "image/heif-sequence": "a HEIF image sequence",
+    "image/avif": "an AVIF picture",
+    "audio/amr": "an AMR recording",
+    "audio/amr-wb": "an AMR-WB recording",
+};
+
 /**
  * The media type of a cached file, from its sealed header's `mime` and `ext` (or the file name), lower-cased and
- * without parameters; `application/octet-stream` when nothing says.
+ * without parameters; `application/octet-stream` when nothing says. This is what the file was *declared* to be (a
+ * file server's Content-Type, an extension); {@link mediaInfo} reads what its bytes are.
  *
  * @param {{mime?: string|null, ext?: string|null}|null} meta
  * @param {string} [file]
@@ -80,18 +131,38 @@ export function mediaMime(meta, file = "") {
 }
 
 /**
+ * Why a kind's media of type `mime` (from its bytes) cannot go inline, or null when it can.
+ *
+ * @param {string} kind
+ * @param {string|null} mime - null: the bytes said nothing
+ * @returns {string|null}
+ */
+function inlineTypeProblem(kind, mime) {
+    const as = INLINE_KINDS[kind];
+    if (!mime || mime === "application/octet-stream") return "its type could not be told from its bytes";
+    const accepted = as === "image" ? INLINE_IMAGE_MIMES : INLINE_AUDIO_MIMES;
+    if (accepted.has(mime)) return null;
+    if (!mime.startsWith(`${as}/`)) return `its bytes are ${mime}, not ${as === "image" ? "a picture" : "sound"}`;
+    const label = TYPE_LABEL[mime] ?? `${as === "image" ? "a picture" : "a recording"} of type ${mime}`;
+    return as === "image"
+        ? `${label} cannot go inline: MCP clients take JPEG, PNG, GIF and WebP pictures`
+        : `${label} cannot go inline: MCP clients play MP3, WAV, AAC, MP4, Ogg, WebM and FLAC sound`;
+}
+
+/**
  * Pick how one piece of media is delivered.
  *
  * Order: the call's own `deliver` (refused when `allowDeliver` does not list it), else a tempfile when the viewer is
- * to be opened (stdio only), else the policy's mode for the kind. Then what cannot work is moved, with a note: inline
- * for a kind that is not a picture or voice, or larger than `inlineMaxBytes`, or of an unknown type, goes as a link; a
+ * to be opened (stdio only), else the policy's mode for the kind. Then what cannot work is moved, with a note that
+ * says which: inline for a kind that is not a picture or voice, of an unknown size, over `inlineMaxBytes`, of a type its
+ * bytes do not tell, or of a type an MCP client cannot render (JPEG XL, HEIC/HEIF, AVIF, AMR) goes as a link; a
  * tempfile for a client on another machine goes as a link (the path means nothing there). A mode `allowDeliver`
  * forbids falls back to the first allowed one that can work.
  *
  * @param {object} args
  * @param {string} args.kind - photo, gif, doodle, sticker, voice, audio, video or file
  * @param {number|null} args.size - plaintext bytes
- * @param {string|null} [args.mime]
+ * @param {string|null} [args.mime] - the type its bytes are ({@link mediaInfo} `type`); null when they say nothing
  * @param {string|null} [args.requested] - the call's `deliver`
  * @param {boolean|undefined} [args.open] - the call's `open` (undefined: the policy's autoOpen)
  * @param {ReturnType<import("./deploy-policy.js").resolveMediaDelivery>} args.policy
@@ -103,14 +174,14 @@ export function chooseDelivery({ kind, size, mime = null, requested = null, open
     const allowed = policy.allowDeliver;
     const notes = [];
     const local = stdio || clientLoopback === true;
-    const inlineOk = () =>
-        Boolean(INLINE_KINDS[kind]) &&
-        Number.isFinite(size) &&
-        size <= policy.inlineMaxBytes &&
-        (!mime ||
-            (INLINE_KINDS[kind] === "image"
-                ? INLINE_IMAGE_MIMES.has(mime)
-                : mime.startsWith(`${INLINE_KINDS[kind]}/`)));
+    const inlineProblem = () => {
+        if (!INLINE_KINDS[kind]) return `a ${kind} cannot go inline`;
+        if (!Number.isFinite(size) || size < 0) return "its size is unknown";
+        if (size > policy.inlineMaxBytes)
+            return `${size} bytes is over media.inlineMaxBytes (${policy.inlineMaxBytes})`;
+        return inlineTypeProblem(kind, mime);
+    };
+    const inlineOk = () => inlineProblem() === null;
     let mode = null;
     if (requested) {
         if (!allowed.includes(requested)) {
@@ -132,13 +203,7 @@ export function chooseDelivery({ kind, size, mime = null, requested = null, open
         wantOpen = false;
     }
     if (mode === "inline" && !inlineOk()) {
-        notes.push(
-            !INLINE_KINDS[kind]
-                ? `a ${kind} cannot go inline; sent as a link`
-                : size > policy.inlineMaxBytes
-                  ? `${size} bytes is over media.inlineMaxBytes (${policy.inlineMaxBytes}); sent as a link`
-                  : `its type (${mime}) cannot go inline; sent as a link`,
-        );
+        notes.push(`${inlineProblem()}; sent as a link`);
         mode = "link";
     }
     if (mode === "tempfile" && !local) {
@@ -163,7 +228,8 @@ export function chooseDelivery({ kind, size, mime = null, requested = null, open
 }
 
 /**
- * MCP content for inline media: `{type: "image"|"audio", data, mimeType}`.
+ * MCP content for inline media: `{type: "image"|"audio", data, mimeType}`, typed by the media type (its bytes), else
+ * by the kind.
  *
  * @param {Buffer} bytes
  * @param {string} kind
@@ -171,7 +237,8 @@ export function chooseDelivery({ kind, size, mime = null, requested = null, open
  * @returns {{type: "image"|"audio", data: string, mimeType: string}}
  */
 export function inlineContent(bytes, kind, mime) {
-    return { type: INLINE_KINDS[kind] || "image", data: Buffer.from(bytes).toString("base64"), mimeType: mime };
+    const type = /^audio\//.test(mime) ? "audio" : /^image\//.test(mime) ? "image" : INLINE_KINDS[kind] || "image";
+    return { type, data: Buffer.from(bytes).toString("base64"), mimeType: mime };
 }
 
 /**
@@ -669,22 +736,89 @@ onRekey(() => {
 
 // ── One cached file, delivered ───────────────────────────────────────────────────────────────────────────────────────
 
+/** Types read from the bytes of sealed files that do not record one, by file and seal (each is sniffed once). */
+const sniffedTypes = new Map();
+const SNIFFED_MAX = 4096;
+
+/** A sniff result reduced to what {@link mediaInfo} reports. */
+const typeFields = (t) => ({
+    type: t?.mime ?? null,
+    ...(t?.animated ? { animated: true } : {}),
+    ...(t?.videoCodec ? { videoCodec: t.videoCodec } : {}),
+    ...(t?.audioCodec ? { audioCodec: t.audioCodec } : {}),
+});
+
+/** The type a plaintext (2.x) file's bytes say, read straight from disk a range at a time. */
+function sniffPlainFile(file) {
+    const fd = openSync(file, "r");
+    try {
+        const size = statSync(file).size;
+        return sniffMedia({
+            size,
+            read: (start, end) => {
+                const out = Buffer.alloc(Math.max(0, end - start));
+                const n = out.length ? readSync(fd, out, 0, out.length, start) : 0;
+                return out.subarray(0, n);
+            },
+        });
+    } finally {
+        closeSync(fd);
+    }
+}
+
+/** The type a sealed file's bytes say: its head is decrypted (one 64 KiB chunk), and an MP4's boxes when needed. */
+function sniffSealedFile(file, scope, msgId) {
+    const m = openMedia(file, scope, msgId === null || msgId === undefined ? {} : { msgId });
+    try {
+        return sniffMedia({
+            size: m.size,
+            read: (start, end) => (end > start ? m.read(start, end - 1) : Buffer.alloc(0)),
+        });
+    } finally {
+        m.close();
+    }
+}
+
 /**
- * What a cached media file is, without its key: the plaintext size and type from a sealed file's header (or the file
- * itself for a 2.x plaintext one), and the name it downloads as.
+ * What a cached media file is: the plaintext size, the type its bytes are, the type to label it with, and the name it
+ * downloads as.
+ *
+ * The type comes from the file's own bytes (src/core/media-type.js), never from what a file server declared: a file
+ * downloaded by this version records it in its sealed header (`mimeFrom: "bytes"`), so no key is needed; an older
+ * file's head is decrypted once with `scope` and the answer kept for the process. Without `scope` such a file reports
+ * `type: null` (the bytes were not read) and only its declared type.
  *
  * @param {string} file
- * @returns {{size: number, mime: string, name: string}}
+ * @param {{scope?: {id: string, dir: string}|null, msgId?: string|null}} [opts] - the account the file is sealed for
+ * @returns {{size: number, mime: string, type: string|null, name: string, animated?: boolean, videoCodec?: string,
+ *   audioCodec?: string}} `type`: what the bytes are (null when they say nothing or were not read); `mime`: `type`,
+ *   else the declared type
  * @throws {Error} when the file is not there
  */
-export function mediaInfo(file) {
+export function mediaInfo(file, { scope = null, msgId = null } = {}) {
     const state = mediaFileState(file);
     if (state === "absent") throw new Error("the cached media file is missing");
+    const name = safeMediaName(basename(file));
     if (state === "sealed") {
         const { meta } = readMediaHeader(file);
-        return { size: Number(meta.size), mime: mediaMime(meta, file), name: safeMediaName(basename(file)) };
+        const size = Number(meta.size);
+        let fields;
+        if (meta.mimeFrom === "bytes") {
+            fields = typeFields({ ...meta, mime: meta.mime || null });
+        } else {
+            const key = `${meta.salt}|${file}`;
+            fields = sniffedTypes.get(key);
+            if (!fields && scope) {
+                fields = typeFields(sniffSealedFile(file, scope, msgId));
+                if (sniffedTypes.size >= SNIFFED_MAX) sniffedTypes.delete(sniffedTypes.keys().next().value);
+                sniffedTypes.set(key, fields);
+            }
+            fields ??= { type: null };
+        }
+        return { size, mime: fields.type || mediaMime(meta, file), name, ...fields };
     }
-    return { size: statSync(file).size, mime: mediaMime({}, file), name: safeMediaName(basename(file)) };
+    const fields = typeFields(sniffPlainFile(file));
+    return { size: statSync(file).size, mime: fields.type || mediaMime({}, file), name, ...fields };
 }
 
 /**
@@ -718,7 +852,7 @@ export async function deliverCachedMedia({
     ensureServed = null,
     keepOnExit = false,
 }) {
-    const meta = info ?? mediaInfo(file);
+    const meta = info ?? mediaInfo(file, { scope, msgId });
     const base = { mode, size: meta.size, mimeType: meta.mime, name: meta.name };
     if (mode === "inline") return { ...base, bytes: readMediaFile(file, scope, { msgId }) };
     if (mode === "link") {

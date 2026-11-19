@@ -10,6 +10,9 @@
  *   other conversation, which hands them to the agent: an owner's explicit choice.
  * - `allowPinArgument` (`ZALO_MCP_ALLOW_PIN_ARGUMENT`): the hidden-chat tools accept the PIN as a `pin` input. Off by
  *   default: an input is written to the MCP client's logs and the model's context. For non-AI clients only.
+ * - `ownMyDocuments` (`ZALO_MCP_OWN_MY_DOCUMENTS`): the account's own messages in its own My Documents reach the agents
+ *   (the MCP buffer, the notifier, the webhook), marked `isSelf: true`, so the owner can talk to an assistant there. Off
+ *   by default: every message the account sends itself stays out, as before. See resolveOwnMyDocuments.
  * - `publicUrl` (`--public-url`, `ZALO_MCP_PUBLIC_URL`): the one address people and clients reach this server at, behind
  *   a reverse proxy or TLS terminator: the MCP endpoint, the OAuth issuer, the one-time secure page
  *   (src/core/secure-page.js) and the QR login page (src/utils/qr-http-server.js). See resolvePublicUrl.
@@ -118,6 +121,35 @@ export function resolveAllowPinArgument({ config, env = process.env, accountId, 
         warnOnce(source, value, "true or false");
     }
     return { allowed: false, source: "default" };
+}
+
+/**
+ * Whether the account's own messages in its own My Documents (the self-chat) are passed to the agents
+ * (`ownMyDocuments`), and where that came from. Every other message the account sends itself stays out either way.
+ *
+ * @param {object} [sources]
+ * @param {{ownMyDocuments?: unknown}|null} [sources.config]
+ * @param {NodeJS.ProcessEnv} [sources.env]
+ * @param {string} [sources.accountId]
+ * @returns {{enabled: boolean, source: string}}
+ */
+export function resolveOwnMyDocuments({ config, env = process.env, accountId, policy } = {}) {
+    for (const [value, source] of layers(
+        "ZALO_MCP_OWN_MY_DOCUMENTS",
+        config?.ownMyDocuments,
+        "ownMyDocuments",
+        env,
+        accountId,
+        livePolicy(policy, accountId)?.ownMyDocuments,
+    )) {
+        if (value === undefined || value === null || value === "") continue;
+        if (value === true || value === false) return { enabled: value, source };
+        const v = String(value).trim().toLowerCase();
+        if (TRUE.includes(v)) return { enabled: true, source };
+        if (FALSE.includes(v)) return { enabled: false, source };
+        warnOnce(source, value, "true or false");
+    }
+    return { enabled: false, source: "default" };
 }
 
 /** The deprecated names of `publicUrl`, as they were released in 2.x for the OAuth issuer alone. */

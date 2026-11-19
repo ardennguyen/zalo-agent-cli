@@ -34,13 +34,16 @@ import {
     THROTTLE_GIVE_UP,
     pruneDownloadedMedia,
     sniffImageExt,
+    jpegTwinUrl,
+    fetchJpegTwin,
+    messageAttachment,
 } from "../../src/core/sync-v2/media.js";
 import { extractRenewedUrls } from "../../src/zalo/custom/renewlink.js";
 import { CONFIG_DIR, getAccountDir } from "../../src/core/credentials.js";
 import { fileState, readSealedJson } from "../../src/core/keystore/index.js";
 import { DEAD_LINKS_FILE, deadLinkKey, openDeadLinks } from "../../src/core/sync-v2/dead-links.js";
 import { scopeOfDir } from "../../src/core/keystore/keyring.js";
-import { mediaFileState, readMediaFile } from "../../src/core/keystore/media-seal.js";
+import { mediaFileState, readMediaFile, readMediaHeader } from "../../src/core/keystore/media-seal.js";
 import { checkTable, checkTableSync } from "../helpers/table.js";
 import { applyPolicy } from "../../src/core/policy-store.js";
 
@@ -184,6 +187,20 @@ before(async () => {
             res.writeHead(200, { "content-type": "text/html" });
             return res.end("<html><body>429 Too Many Requests</body></html>");
         }
+        if (path === "/labeled-jpg") {
+            // A file server that calls a JPEG image/jpg.
+            res.writeHead(200, { "content-type": "image/jpg" });
+            return res.end(PHOTO_BYTES);
+        }
+        if (path === "/voice.mp3") {
+            // A voice message whose URL and Content-Type say MP3 while its bytes are AAC in ADTS.
+            res.writeHead(200, { "content-type": "audio/mpeg" });
+            return res.end(Buffer.from([0xff, 0xf1, 0x50, 0x80, 0x02, 0x1f, 0xfc, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
+        }
+        if (path === "/no-signature") {
+            res.writeHead(200, { "content-type": "image/jpg" });
+            return res.end(Buffer.from("no-known-signature-here"));
+        }
         res.writeHead(500);
         res.end("boom");
     });
@@ -272,6 +289,29 @@ describe("downloadSyncedMedia — happy path", () => {
         const id = row({}, [photo("/jxl-behind.jpg")]);
         await downloadSyncedMedia({ accountDir: dir, limit: 10 });
         assert.match(getMessages("t1").find((m) => m.msgId === id).localPath, /\.jxl$/);
+    });
+
+    it("records the type the bytes are in the sealed header, not the server's Content-Type", async () => {
+        const photoId = row({}, [photo("/labeled-jpg")]);
+        const voiceId = row({ type: "voice" }, [{ kind: "voice", url: `${base}/voice.mp3` }]);
+        const oddId = row({}, [photo("/no-signature")]);
+        await downloadSyncedMedia({ accountDir: dir, limit: 10 });
+        const rows = getMessages("t1");
+        const header = (id) => readMediaHeader(rows.find((m) => m.msgId === id).localPath).meta;
+        assert.deepEqual(
+            [header(photoId).mime, header(photoId).mimeFrom, header(photoId).ext],
+            ["image/jpeg", "bytes", "jpg"],
+        );
+        assert.deepEqual(
+            [header(voiceId).mime, header(voiceId).ext, header(voiceId).audioCodec],
+            ["audio/aac", "aac", "aac"],
+        );
+        assert.match(rows.find((m) => m.msgId === voiceId).localPath, /\.aac$/);
+        assert.deepEqual(
+            [header(oddId).mime, header(oddId).mimeFrom],
+            ["image/jpg", undefined],
+            "bytes that say nothing keep the declared type, marked as not read from the bytes",
+        );
     });
 
     it("a photo that has only an HD or only a thumbnail link is still fetched, not skipped forever", async () => {
@@ -1593,20 +1633,58 @@ describe("pruneDownloadedMedia — all mode", () => {
     });
 });
 
+describe("the JPEG copy Zalo serves of a JPEG XL picture", () => {
+    it("jpegTwinUrl swaps the jxl path and extension and drops jxlstatus; nothing for other URLs", () => {
+        assert.equal(jpegTwinUrl("https://cdn.example/jxl/9/abc.jxl?jxlstatus=1"), "https://cdn.example/jpg/9/abc.jpg");
+        assert.equal(jpegTwinUrl("https://cdn.example/jxl/9/abc.jxl"), "https://cdn.example/jpg/9/abc.jpg");
+        assert.equal(jpegTwinUrl("https://cdn.example/jpg/9/abc.jpg"), null);
+        assert.equal(jpegTwinUrl("https://cdn.example/x/abc.heic"), null, "Zalo serves no copy of a HEIC file");
+        assert.equal(
+            jpegTwinUrl("https://cdn.example/jxl/9/abc.jxl?e2esession=1"),
+            null,
+            "an encrypted session's picture",
+        );
+        assert.equal(jpegTwinUrl(null), null);
+    });
+
+    it("fetchJpegTwin takes only a JPEG, under the size limit", async () => {
+        const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(40)]);
+        const reply = (body) => async () =>
+            new Response(body, { status: 200, headers: { "content-type": "image/jpeg" } });
+        const att = { url: "https://cdn.example/jxl/9/abc.jxl?jxlstatus=1" };
+        assert.deepEqual(await fetchJpegTwin(att, { fetchImpl: reply(jpeg) }), {
+            bytes: jpeg,
+            url: "https://cdn.example/jpg/9/abc.jpg",
+        });
+        assert.match((await fetchJpegTwin(att, { fetchImpl: reply(JXL_BYTES) })).error, /not a JPEG/);
+        assert.match((await fetchJpegTwin(att, { fetchImpl: reply(jpeg), maxBytes: 10 })).error, /44 bytes/);
+        assert.match((await fetchJpegTwin({ url: "https://cdn.example/a.jpg" })).error, /no JPEG copy/);
+    });
+
+    it("messageAttachment reads the cached row first, then the live message", () => {
+        const row = { raw_data: JSON.stringify({ attachments: [{ url: "a" }, { url: "b" }] }) };
+        assert.deepEqual(messageAttachment(row, { attachment: { url: "live" } }), { url: "a" });
+        assert.deepEqual(messageAttachment(null, { attachment: { url: "live" } }), { url: "live" });
+        assert.equal(messageAttachment({ raw_data: "x" }), null);
+    });
+});
+
 describe("sniffImageExt: a picture is named by its own bytes", () => {
     const pad = (head) => Buffer.concat([Buffer.from(head), Buffer.alloc(16)]);
-    it("knows JPEG XL (codestream and container), JPEG, PNG, GIF and WebP", () => {
+    it("knows JPEG XL (codestream and container), JPEG, PNG, GIF and WebP by their full signatures", () => {
         assert.equal(sniffImageExt(pad([0xff, 0x0a, 0x2a, 0x12])), "jxl");
-        assert.equal(sniffImageExt(pad([0, 0, 0, 0x0c, 0x4a, 0x58, 0x4c, 0x20])), "jxl");
+        assert.equal(sniffImageExt(pad([0, 0, 0, 0x0c, 0x4a, 0x58, 0x4c, 0x20, 0x0d, 0x0a, 0x87, 0x0a])), "jxl");
         assert.equal(sniffImageExt(pad([0xff, 0xd8, 0xff, 0xe0])), "jpg");
-        assert.equal(sniffImageExt(pad([0x89, 0x50, 0x4e, 0x47])), "png");
-        assert.equal(sniffImageExt(pad([0x47, 0x49, 0x46, 0x38])), "gif");
+        assert.equal(sniffImageExt(pad([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])), "png");
+        assert.equal(sniffImageExt(pad([0x47, 0x49, 0x46, 0x38, 0x39, 0x61])), "gif");
         assert.equal(sniffImageExt(pad([0x52, 0x49, 0x46, 0x46, 1, 2, 3, 4, 0x57, 0x45, 0x42, 0x50])), "webp");
     });
 
     it("says nothing for other bytes or too few of them", () => {
         assert.equal(sniffImageExt(pad([0, 0, 0, 0x1c, 0x66, 0x74, 0x79, 0x70])), null);
         assert.equal(sniffImageExt(Buffer.from([0xff, 0x0a])), null);
+        assert.equal(sniffImageExt(pad([0x89, 0x50, 0x4e, 0x47])), null, "half a PNG signature");
+        assert.equal(sniffImageExt(pad([0xff, 0xfb, 0x90, 0x64])), null, "a sound is not a picture");
         assert.equal(sniffImageExt(null), null);
     });
 });

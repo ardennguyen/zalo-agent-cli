@@ -9,6 +9,22 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+## [3.3.1] — 2026-11-18
+
+#### Added
+
+- **Talk to an assistant in your own My Documents.** `mcp start` keeps every message the account sends itself away from the agents, so an owner who wrote to an AI assistant in their own My Documents was never heard. A new per-account setting, `ownMyDocuments` (`mcp-config.json`, `ZALO_MCP_OWN_MY_DOCUMENTS[_<ownId>]`, and the live runtime policy, so it changes without a restart), passes the account's own messages in its own My Documents to `zalo_get_messages`, `zalo_wait_for_message`, the notifier and the webhook, each marked `isSelf: true`. Every other message the account sends itself still stays out, the agent's own `zalo_send_message` replies there are not handed back to it, and hidden-chat rules apply as before. Off by default.
+
+#### Fixed
+
+- **A photo could be refused inline as "its type (image/jpg) cannot go inline".** Received media is now typed by its own bytes, not by what Zalo's file server called it: `zalo_view_media` and `msg media --deliver inline` send such a photo inline as `image/jpeg`. A download records the type its bytes are in the cached file's header; a file cached by an earlier version is typed from its first bytes once, when it is opened. The bytes also name a file on disk: a voice message that is AAC is saved as `.aac`, not `.mp3`.
+- **Every reason a picture or voice message does not go inline has its own note**: an unknown size, a type its bytes do not tell, a type a client cannot render (named: JPEG XL, HEIC/HEIF, AVIF, AMR), and a size over `media.inlineMaxBytes`.
+
+#### Changed
+
+- **A JPEG XL photo goes inline as the JPEG copy Zalo serves of it** (fetched when asked for, not kept; the cached `.jxl` file is unchanged), and as a link with both reasons when Zalo has no copy. HEIC/HEIF and AVIF pictures, which Zalo serves only as files, go as a link. Inline sound is MP3, WAV, AAC, MP4, Ogg, WebM or FLAC; AMR goes as a link.
+- `zalo_view_media` replies add `videoCodec` and `audioCodec` (such as `hevc`, `h264`, `aac`) and `animated` when the file's bytes tell them, so a caller can see an HEVC video before it fetches the link.
+
 ## [3.3.0] — 2026-11-17
 
 #### Added
@@ -996,7 +1012,9 @@ npm install -g @ardennguyen/zalo-agent-cli@2.0.0
 
 Commands, flags and defaults: `skill/references/command-reference.md`. Operating it on a server: `docs/deployment.md`.
 
-[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.2.2...v3.0-dev
+[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.3.1...v3.0-dev
+[3.3.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.3.1
+[3.3.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.3.0
 [3.2.2]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.2.2
 [3.2.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.2.1
 [3.2.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.2.0

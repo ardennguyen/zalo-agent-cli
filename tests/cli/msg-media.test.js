@@ -20,7 +20,9 @@ const options = { home: SANDBOX_HOME, timeout: 120_000 };
 // (tests/helpers/cli-fast.js `checkCli`), so only a real process can fail a test.
 
 const OWN = "4343";
-const PLAIN = Buffer.from(Array.from({ length: 70_000 }, (_, i) => (i * 13) % 256));
+/** A JPEG's signature (the type is read from the bytes), then a pattern across two 64 KiB chunks. */
+const JPEG_SIGNATURE = [0xff, 0xd8, 0xff, 0xe0];
+const PLAIN = Buffer.from(Array.from({ length: 70_000 }, (_, i) => JPEG_SIGNATURE[i] ?? (i * 13) % 256));
 
 describe("msg media", () => {
     let sealed;

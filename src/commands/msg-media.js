@@ -22,7 +22,8 @@ import { resolveMediaDelivery } from "../core/deploy-policy.js";
 import { hiddenChatsFor } from "../core/hidden-chats.js";
 import { scopeOfDir } from "../core/keystore/keyring.js";
 import { decryptMediaToFile, mediaFileState, openMedia } from "../core/keystore/media-seal.js";
-import { INLINE_KINDS, deliverCachedMedia, mediaInfo } from "../core/media-deliver.js";
+import { chooseDelivery, deliverCachedMedia, mediaInfo } from "../core/media-deliver.js";
+import { fetchJpegTwin, messageAttachment } from "../core/sync-v2/media.js";
 import { openFile } from "../utils/open-file.js";
 import { error, info, output, success } from "../utils/output.js";
 
@@ -127,13 +128,45 @@ export function registerMsgMedia(msg, program) {
                     });
                 }
                 const policy = resolveMediaDelivery({ accountId: account.ownId });
-                const meta = mediaInfo(row.localPath);
+                // Typed by the file's own bytes, as zalo_view_media does.
+                const meta = mediaInfo(row.localPath, { scope, msgId: row.msgId });
                 if (mode === "inline") {
                     if (!jsonMode) fail("--deliver inline prints base64 in the --json reply; for a file use --out.");
-                    if (!INLINE_KINDS[row.type] || meta.size > policy.inlineMaxBytes) {
-                        fail(
-                            `Only pictures and voice up to ${policy.inlineMaxBytes} bytes go inline; use --out or the default tempfile.`,
-                        );
+                    const inlineAs = (mime) =>
+                        chooseDelivery({
+                            kind: row.type,
+                            size: meta.size,
+                            mime,
+                            requested: "inline",
+                            policy: { ...policy, allowDeliver: ["inline", "link", "tempfile"] },
+                            stdio: true,
+                        });
+                    const pick = inlineAs(meta.type);
+                    const why = pick.notes.map((n) => n.replace(/; sent as a link$/, ""));
+                    // A JPEG XL picture goes inline as the JPEG copy Zalo serves of it, as zalo_view_media does.
+                    if (
+                        meta.type === "image/jxl" &&
+                        pick.mode !== "inline" &&
+                        inlineAs("image/jpeg").mode === "inline"
+                    ) {
+                        const twin = await fetchJpegTwin(messageAttachment(row), { maxBytes: policy.inlineMaxBytes });
+                        if (twin.bytes) {
+                            return output(
+                                {
+                                    ...base,
+                                    delivery: "inline",
+                                    mimeType: "image/jpeg",
+                                    size: twin.bytes.length,
+                                    notes: ["a JPEG XL picture: the JPEG copy Zalo serves of it is sent inline"],
+                                    data: twin.bytes.toString("base64"),
+                                },
+                                true,
+                            );
+                        }
+                        why.push(twin.error);
+                    }
+                    if (pick.mode !== "inline") {
+                        fail(`It cannot go inline (${why.join("; ")}); use --out or the default tempfile.`);
                     }
                 }
                 const out = await deliverCachedMedia({

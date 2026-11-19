@@ -32,6 +32,7 @@
     },
     "hiddenChats": "exclude",
     "allowPinArgument": false,
+    "ownMyDocuments": false,
     "publicUrl": null,
     "approval": {
         "secret": "auto",

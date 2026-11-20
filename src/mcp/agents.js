@@ -27,6 +27,19 @@ import {
 } from "../core/routing-policy.js";
 import { durationMs } from "../core/deploy-policy.js";
 import { policyFor } from "../core/policy-layer.js";
+import { checkRouting } from "../core/message-router.js";
+
+/** The routing keys besides agents, marks and presenceWindow (src/core/message-router.js checkRouting). */
+export const ROUTING_KEYS = Object.freeze([
+    "enabled",
+    "claims",
+    "isolation",
+    "owners",
+    "routes",
+    "default",
+    "staff",
+    "settings",
+]);
 
 export const PRESENCE_FILE = "agents-presence.json";
 export const SENT_BY_FILE = "sent-by.json";
@@ -40,7 +53,7 @@ const NOTE_MAX = 200;
  * check is ignored (and said once), so a bad file never binds anyone.
  *
  * @param {{config?: object|null, accountId?: string|null, policy?: object|null, log?: (l: string) => void}} [opts]
- * @returns {{agents: Array<object>, marks: "shown"|"hidden", presenceWindowMs: number, source: string}}
+ * @returns {{agents: Array<object>, marks: "shown"|"hidden", presenceWindowMs: number, source: string, cfg: object}}
  */
 export function resolveRouting({ config = null, accountId = null, policy, log = (l) => console.error(l) } = {}) {
     const live = policy === undefined ? policyFor(accountId) : policy;
@@ -62,11 +75,22 @@ export function resolveRouting({ config = null, accountId = null, policy, log = 
     const marks = ACCOUNT_MARKS.includes(marksRaw) ? marksRaw : "shown";
     const [windowRaw] = pick("presenceWindow");
     const windowMs = windowRaw === undefined ? null : durationMs(windowRaw);
+    const block = {};
+    for (const k of ROUTING_KEYS) {
+        const [v] = pick(k);
+        if (v !== undefined) block[k] = v;
+    }
+    let cfg = checkRouting(block);
+    if (cfg.error) {
+        warnOnce(`routing: ${cfg.error}; routing stays off`, log);
+        cfg = checkRouting({});
+    }
     return {
         agents,
         marks,
         presenceWindowMs: windowMs && windowMs >= 10_000 ? windowMs : DEFAULT_PRESENCE_WINDOW_MS,
         source,
+        cfg: cfg.value,
     };
 }
 
@@ -492,7 +516,7 @@ export function agentsReport({ accountId, accountDir, config = null, credentials
         .map((e) => ({ credential: e.credential, lastSeen: e.lastSeen ? new Date(e.lastSeen).toISOString() : null }));
     return {
         accountId,
-        routing: { enabled: false },
+        routing: { enabled: Boolean(routing.cfg?.enabled) },
         marks: routing.marks,
         presenceWindowSec: Math.round(windowMs / 1000),
         source: routing.source,

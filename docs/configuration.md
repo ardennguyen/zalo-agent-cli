@@ -351,6 +351,45 @@ Message Router; nothing is routed or refused yet, and every caller still sees ev
   restart (`routing.agents` only in an account's own policy). See them with `zalo-agent mcp agents`, the admin API's
   `GET /access/<ownId>/agents`, or, as an agent, `zalo_inbox`.
 
+**Routing (phases 3-6).** With `routing.enabled: true` every incoming message gets one handler, decided once by the
+engine (src/core/message-router.js) and carried on the message as `route: {to, by, ruleId, observers, ownership}`
+(also in the webhook). The order: the owner's **human pause** (his own send from his phone, PC or web pauses the agents
+in that conversation for `humanPause`, 15 min by default), an explicit **trigger** (`@dev` or a route's word from the
+owner, at the start; a `#hashtag` anywhere, from anyone when the route allows it; the trigger is removed from `text`
+and kept in `rawText`), **sticky focus** (after a sticky trigger the owner's next messages stay with that agent until
+`@end` or `stickyTtl`), **reply affinity** (a reply to an agent's message goes back to it, `affinityTtl`), an active
+**claim**, then the **routes** table (first match: `threads`, `threadType`, `myDocuments`, `senders`, Zalo `labels`,
+`kinds`, a time `window`), then the **default**. A live agent away for longer than `fallbackAfter` hands over to its
+route's `fallback` chain (another agent, `human` with a notice in My Documents, or `{autoReply: text}`). Claims, human
+pause, affinity, sticky focus and fallback need `routing.claims: true`.
+
+```json
+"routing": {
+  "enabled": true, "claims": true, "isolation": false, "owners": ["<the owner's other Zalo user id>"],
+  "routes": [
+    {"id": "dev", "target": "dev", "match": {"trigger": {"word": "@dev", "sticky": true}}},
+    {"id": "tickets", "target": "staff:lan", "match": {"trigger": {"word": "#ticket", "who": "anyone"}}},
+    {"id": "dms", "target": "ai", "match": {"threadType": "dm"}, "fallback": ["dev", "human"]}
+  ],
+  "default": {"target": "human"},
+  "staff": [{"id": "lan", "name": "Lan", "channels": ["zalo"], "zaloUserId": "<her Zalo user id>"}],
+  "settings": {"humanPause": "20m"}
+}
+```
+
+- Each agent reads its own messages: `zalo_get_messages` and `zalo_wait_for_message` take `view: "mine"` (default with
+  routing on) or `"all"` (each marked `forMe`). A connection bound to no agent gets nothing new.
+- **Send guard:** an agent's `zalo_send_message` or `zalo_forward_message` into a conversation the owner is answering is
+  refused with `HUMAN_ACTIVE`; into one another agent holds (or quoting a message another agent owns) with `CLAIMED`.
+- **Staff** targets: `staff:<id>` with `channels` `console` (answered in a console) and/or `zalo` (the message is
+  forwarded to the staff member's own Zalo; his reply to it is relayed to the customer from this account with his mark).
+- **`@agents`** typed by the owner in any chat is answered in his My Documents with the agents and their presence.
+- **Per-agent privacy** (`routing.isolation: true`): an agent reads only conversations routed to it or claimed by it
+  (`zalo_get_history`, `zalo_view_media`, `zalo_get_group_members`, `zalo_coverage` refuse with `NOT_ROUTED`; search and
+  lists leave the others out) and cannot send elsewhere.
+- `zalo_inbox` gains `claim`, `release`, `handoff`, `claims` and `route_test`; the admin API answers the same test at
+  `POST /access/<ownId>/route-test` (with unsaved routes, for a console's test box).
+
 ### Renewing the saved login (`session.renew`)
 
 A QR login lasts about 90 days and Zalo never renews it: only a new QR scan by the account's phone does. An

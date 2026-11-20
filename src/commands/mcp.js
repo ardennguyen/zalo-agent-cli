@@ -113,6 +113,7 @@ import {
     resolveCaller,
     resolveRouting,
 } from "../mcp/agents.js";
+import { createRouterRuntime } from "../mcp/router-runtime.js";
 import {
     readMCPConfig,
     resolveAccountMCPConfig,
@@ -1411,12 +1412,37 @@ export function registerMCPCommands(program) {
              * dropped under `exclude`; under `contentless` the buffer keeps it (the tools show it without content)
              * and the notifier, whose preview names the sender, is skipped.
              */
+            // The Message Router (src/mcp/router-runtime.js): off unless routing.enabled; then every message delivered
+            // below carries its `route`, and the tools give each agent its own view, guard and privacy.
+            buffer.router = createRouterRuntime({
+                routingNow: () => resolveRouting({ config, accountId: activeAcc.ownId }),
+                getApi,
+                ids: () => {
+                    let send2meId = null;
+                    try {
+                        send2meId = getApi()?.getContext?.()?.loginInfo?.send2me_id ?? null;
+                    } catch {
+                        /* no session context */
+                    }
+                    return { ownId: activeAcc.ownId, send2meId: send2meId === null ? null : String(send2meId) };
+                },
+                presence: buffer.agentPresence,
+                sentBy: buffer.sentBy,
+                log: (line) => console.error(line),
+            });
             const deliverToAgents = (n, { notify = true } = {}) => {
                 const isHidden = hiddenPolicy.mode !== "include" && hidden.isHidden(n.threadId);
                 if (isHidden && hiddenPolicy.mode === "exclude") return;
-                buffer.push(n.threadId, n);
-                if (notify && !isHidden) notifier.onMessage(n);
-                queueWebhook(n);
+                // Hidden chats are never routed, logged or forwarded (routing runs after the hidden-chat policy).
+                const routed = isHidden || !buffer.router.enabled() ? Promise.resolve(n) : buffer.router.onIncoming(n);
+                routed
+                    .then((m) => {
+                        if (!m) return;
+                        buffer.push(m.threadId, m);
+                        if (notify && !isHidden) notifier.onMessage(m);
+                        queueWebhook(m);
+                    })
+                    .catch((e) => console.error(`[mcp] message not routed: ${e.message}`));
             };
 
             // Delivered receipts: the same shared implementation `listen` uses
@@ -1636,7 +1662,9 @@ export function registerMCPCommands(program) {
                 } catch {
                     /* no session context: only the own uid can name the self-chat */
                 }
-                return selfMessageRoute(msg, { enabled, ownId: activeAcc.ownId, send2meId });
+                // With routing on, the owner's own My Documents reach the router (his channel to the agents).
+                const routing = buffer.router?.enabled() ?? false;
+                return selfMessageRoute(msg, { enabled: enabled || routing, ownId: activeAcc.ownId, send2meId });
             }
 
             /**
@@ -1719,6 +1747,15 @@ export function registerMCPCommands(program) {
                     // Self-sent messages stay away from the agents, except the owner's own My Documents when the
                     // account's ownMyDocuments setting is on (src/mcp/self-messages.js).
                     const self = routeSelf(msg);
+                    if (msg?.isSelf && buffer.router?.enabled()) {
+                        // The owner writing from his phone, PC or web: the human pause, and `@agents` (answered in My Documents).
+                        const own = normalizeMessage(msg, stored.info);
+                        buffer.agentSends
+                            .wasSentByAgent(own)
+                            .then((byAgent) => buffer.router.onOwn(own, { byAgent }))
+                            .catch((e) => console.error(`[mcp] own message not seen by the router: ${e.message}`));
+                        if (/^\s*@agents(\s|$)/i.test(String(own.text ?? ""))) return;
+                    }
                     if (self === "drop") return;
                     if (self === "agents") {
                         deliverOwnMyDocuments(msg, stored.info);

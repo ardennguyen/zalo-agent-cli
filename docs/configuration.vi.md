@@ -352,6 +352,30 @@ hồi); chưa có gì được phân luồng hay bị từ chối, và mọi ng�
   động lại (`routing.agents` chỉ trong policy riêng của tài khoản). Xem chúng bằng `zalo-agent mcp agents`, API admin
   `GET /access/<ownId>/agents`, hoặc, với vai trò agent, `zalo_inbox`.
 
+**Phân luồng (giai đoạn 3-6).** Với `routing.enabled: true` mỗi tin đến có đúng một người xử lý, do engine quyết định
+một lần (src/core/message-router.js) và gắn vào tin dưới dạng `route: {to, by, ruleId, observers, ownership}` (cả trong
+webhook). Thứ tự: **tạm dừng khi chủ trả lời** (chủ tài khoản tự gửi từ điện thoại, PC hoặc web thì các agent dừng ở
+cuộc trò chuyện đó trong `humanPause`, mặc định 15 phút), **lệnh gọi** (`@dev` hoặc từ của một luồng, từ chủ, ở đầu tin;
+`#hashtag` ở bất kỳ đâu, từ bất kỳ ai nếu luồng cho phép; lệnh gọi được bỏ khỏi `text` và giữ trong `rawText`), **tập
+trung** (sau một lệnh gọi sticky, các tin tiếp theo của chủ ở lại với agent đó tới `@end` hoặc `stickyTtl`), **trả lời
+theo tin đã gửi** (trả lời một tin của agent thì quay lại agent đó, `affinityTtl`), **nhận việc** đang mở, rồi bảng
+**luồng** (khớp đầu tiên: `threads`, `threadType`, `myDocuments`, `senders`, nhãn Zalo `labels`, `kinds`, khung giờ
+`window`), rồi **mặc định**. Agent trực tiếp vắng lâu hơn `fallbackAfter` thì chuyển theo chuỗi `fallback` của luồng (agent
+khác, `human` kèm thông báo trong My Documents, hoặc `{autoReply: text}`). Nhận việc, tạm dừng, trả lời theo tin, tập
+trung và dự phòng cần `routing.claims: true`.
+
+- Mỗi agent đọc tin của mình: `zalo_get_messages` và `zalo_wait_for_message` nhận `view: "mine"` (mặc định khi bật phân
+  luồng) hoặc `"all"` (mỗi tin có `forMe`). Kết nối chưa gắn agent không nhận tin mới.
+- **Chặn gửi:** agent gửi vào cuộc trò chuyện chủ đang trả lời bị từ chối với `HUMAN_ACTIVE`; vào cuộc agent khác đang
+  giữ (hoặc trích tin agent khác sở hữu) với `CLAIMED`.
+- **Nhân viên** `staff:<id>` với `channels` `console` (trả lời trong console) và/hoặc `zalo` (tin được chuyển tới Zalo của
+  nhân viên; câu trả lời của họ được gửi lại cho khách từ tài khoản này kèm dấu của họ).
+- **`@agents`** chủ gõ ở bất kỳ cuộc trò chuyện nào được trả lời trong My Documents của chủ.
+- **Riêng tư theo agent** (`routing.isolation: true`): agent chỉ đọc các cuộc được phân cho nó hoặc nó đang giữ
+  (`NOT_ROUTED` cho phần còn lại) và không gửi ra ngoài.
+- `zalo_inbox` có thêm `claim`, `release`, `handoff`, `claims`, `route_test`; API admin trả lời cùng phép thử ở
+  `POST /access/<ownId>/route-test`.
+
 ### Gia hạn phiên đăng nhập đã lưu (`session.renew`)
 
 Một lần đăng nhập QR kéo dài khoảng 90 ngày và Zalo không bao giờ tự gia hạn: chỉ một lần quét QR mới bằng điện thoại

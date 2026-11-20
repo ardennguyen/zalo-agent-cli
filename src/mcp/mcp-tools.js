@@ -511,6 +511,35 @@ function idsOfResult(result) {
 }
 
 /**
+ * A tool reply with each of its message lists (`messages`, `results`, `conversations`, `threads`) passed through `fn`;
+ * `message` (zalo_wait_for_message's first) follows `messages`. Errors and non-JSON replies come back as they were.
+ *
+ * @param {object} result
+ * @param {(list: object[]) => object[]} fn
+ * @returns {object}
+ */
+function mapResultLists(result, fn) {
+    if (!result || result.isError) return result;
+    const content = (result.content ?? []).map((c) => {
+        if (c?.type !== "text" || typeof c.text !== "string" || !c.text.startsWith("{")) return c;
+        let body;
+        try {
+            body = JSON.parse(c.text);
+        } catch {
+            return c;
+        }
+        for (const k of ["messages", "results", "conversations", "threads"])
+            if (Array.isArray(body[k])) body[k] = fn(body[k]);
+        if ("message" in body && Array.isArray(body.messages)) {
+            body.message = body.messages[0] ?? null;
+            if (typeof body.count === "number") body.count = body.messages.length;
+        }
+        return { ...c, text: JSON.stringify(body) };
+    });
+    return { ...result, content };
+}
+
+/**
  * One cached message as zalo_get_history returns it.
  * @param {object} m - a `messages` row
  * @returns {object}
@@ -697,6 +726,8 @@ export function registerTools(
     if (buffer && !buffer.agentPresence) buffer.agentPresence = createAgentPresence();
     if (buffer && !buffer.sentBy) buffer.sentBy = createSentByStore(null);
     const routingNow = () => resolveRouting({ config, accountId: ownIdOf(api) || null });
+    // The daemon's Message Router (src/mcp/router-runtime.js); absent in a bare test server.
+    const router = buffer?.router ?? null;
     const callerOf = (consumer = null) => resolveCaller(server?.caller ?? null, routingNow(), consumer);
     // The mark this caller's text starts with in this conversation ("" for none), by the agent's and account's settings.
     const markOf = (who, threadId) => {
@@ -718,10 +749,18 @@ export function registerTools(
         (...args) => {
             const who = callerOf(args[0]?.consumer ?? null);
             const run = async () => {
+                // The Message Router's send guard (src/core/message-router.js guardSend): the owner's human pause,
+                // another agent's claim, or (Pro) a conversation never routed to this agent refuse the send.
+                const target = args[0]?.threadId;
+                if (router?.enabled() && target && String(target).toLowerCase() !== "me") {
+                    const g = router.guard(who, String(target), args[0]?.quoteMsgId ?? null);
+                    if (!g.ok) return err(`${g.code}: ${g.message}`);
+                }
                 const result = await handler(...args, who);
                 if (buffer?.sentBy && !result?.isError) {
                     const ids = idsOfResult(result);
                     if (ids.ids.length) buffer.sentBy.record(ids.ids, who, ids.threadId ?? args[0]?.threadId ?? null);
+                    if (router && who.agent) router.onAgentSend(who.agent.slug, ids.threadId ?? target);
                 }
                 return result;
             };
@@ -740,6 +779,8 @@ export function registerTools(
             "zalo_get_messages",
             "zalo_wait_for_message",
         ];
+        const ISOLATED_READS = ["zalo_get_history", "zalo_view_media", "zalo_get_group_members", "zalo_coverage"];
+        const ISOLATED_LISTS = ["zalo_search_messages", "zalo_list_conversations", "zalo_list_threads"];
         server.registerTool = (name, meta, handler) => {
             const inner = name === "zalo_forward_message" ? trackAgentSend(handler) : handler;
             return raw(name, meta, async (...args) => {
@@ -747,14 +788,43 @@ export function registerTools(
                     waiting: name === "zalo_wait_for_message",
                 });
                 try {
-                    const result = await inner(...args);
-                    return SENT_BY_READS.includes(name) ? annotateSentBy(result, buffer.sentBy) : result;
+                    const who = callerOf(args[0]?.consumer ?? null);
+                    // Per-agent privacy (Pro): a conversation never routed to this agent cannot be read.
+                    if (
+                        router &&
+                        ISOLATED_READS.includes(name) &&
+                        args[0]?.threadId &&
+                        !router.mayRead(who, args[0].threadId)
+                    )
+                        return err("NOT_ROUTED: this conversation was not routed to you.");
+                    let result = await inner(...args);
+                    if (SENT_BY_READS.includes(name)) result = annotateSentBy(result, buffer.sentBy);
+                    if (router?.enabled()) {
+                        if (name === "zalo_get_messages" || name === "zalo_wait_for_message")
+                            result = mapResultLists(result, (list) =>
+                                router.viewFilter(list, who, args[0]?.view ?? "mine"),
+                            );
+                        else if (ISOLATED_LISTS.includes(name))
+                            result = mapResultLists(result, (list) =>
+                                list.filter((m) => !m?.threadId || router.mayRead(who, m.threadId)),
+                            );
+                    }
+                    return result;
                 } finally {
                     end();
                 }
             });
         };
     }
+
+    // The Message Router's view of the buffer: `mine` (default with routing on) or `all`.
+    const viewSchema = z
+        .enum(["mine", "all"])
+        .optional()
+        .describe(
+            "With the account's Message Router on: `mine` (the default) returns the messages routed to your agent or " +
+                "that it observes; `all` returns every message, each marked `forMe`. Without routing every caller sees all.",
+        );
 
     // Several bots can share one listener, each with its own read cursor
     // (triage M7). A bot that names none reads as "default", as before.
@@ -870,6 +940,7 @@ export function registerTools(
                     .optional()
                     .describe("Most messages to return in one call. Omit it for every unread message buffered."),
                 consumer: consumerSchema,
+                view: viewSchema,
             }),
         },
         async ({ threadId, since, limit, consumer }) => {
@@ -3618,6 +3689,7 @@ export function registerTools(
                     .describe(
                         `After the first message arrives, wait this many ms for the rest of a burst (default 0, max ${MAX_SETTLE_MS})`,
                     ),
+                view: viewSchema,
             }),
         },
         async ({ threadId, since, timeoutSec = 55, limit, settleMs = 0 }) => {
@@ -4467,6 +4539,6 @@ export function registerTools(
     server.registerTool(
         "zalo_inbox",
         INBOX_META,
-        inboxHandler({ callerOf, routingNow, presence: buffer?.agentPresence ?? null }),
+        inboxHandler({ callerOf, routingNow, presence: buffer?.agentPresence ?? null, router }),
     );
 }

@@ -24,6 +24,8 @@
  *     DELETE /access/<ownId>/approver                     clear it
  *     GET    /access/<ownId>/agents                       the account's agents (routing.agents), their presence and
  *                                                  marks, and its credentials with the agent each is bound to
+ *     POST   /access/<ownId>/route-test                   {message, routing?, agents?}: who would get the message and
+ *                                                  why (the routes as saved, or the unsaved ones given); changes nothing
  *     GET    /access/<ownId>/cloud-key                    whether a zCloud key is stored (never the key)
  *     DELETE /access/<ownId>/cloud-key                    delete it
  *
@@ -42,7 +44,9 @@ import { clearWebhookSecret, readWebhookSecret, rotateWebhookSecret, webhookSecr
 import { describeWebhookUrl, webhookHeaders } from "./webhook-outbox.js";
 import { envForAccount, resolvePrimaryOAuthClient, resolveWebhookUrl } from "../mcp/mcp-config.js";
 import { resolvePublicUrl } from "./deploy-policy.js";
-import { agentsReport } from "../mcp/agents.js";
+import { agentsReport, resolveRouting } from "../mcp/agents.js";
+import { checkRouting, decide } from "./message-router.js";
+import { checkAgents } from "./routing-policy.js";
 import {
     MAX_ACCOUNT_CLIENTS,
     OAUTH_STATE_FILE,
@@ -357,6 +361,53 @@ export function createAccessApi({
                     })),
                 ];
                 return send(res, 200, agentsReport({ accountId: ownId, accountDir: dir, config, credentials }));
+            }
+            if (rest === "/route-test") {
+                if (only("POST")) return true;
+                const saved = resolveRouting({ config, accountId: ownId });
+                let cfg = saved.cfg;
+                let agents = saved.agents;
+                if (body.routing && typeof body.routing === "object") {
+                    const c = checkRouting({ ...body.routing, enabled: true });
+                    if (c.error) return fail(res, 400, "INVALID_ROUTING", c.error);
+                    cfg = c.value;
+                }
+                if (Array.isArray(body.agents)) {
+                    const a = checkAgents(body.agents);
+                    if (a.error) return fail(res, 400, "INVALID_AGENTS", a.error);
+                    agents = a.value;
+                }
+                const m = body.message && typeof body.message === "object" ? body.message : {};
+                if (typeof m.threadId !== "string" || !m.threadId)
+                    return fail(res, 400, "INVALID_MESSAGE", "message.threadId is required");
+                const at = typeof body.at === "string" && Date.parse(body.at) ? Date.parse(body.at) : Date.now();
+                const d = decide(
+                    {
+                        threadId: m.threadId,
+                        threadType: m.threadType === "group" ? "group" : "dm",
+                        senderId: typeof m.senderId === "string" ? m.senderId : null,
+                        isSelf: m.fromOwner === true,
+                        text: typeof m.text === "string" ? m.text.slice(0, 4000) : "",
+                        type: typeof m.kind === "string" ? m.kind : "text",
+                        replyTo: null,
+                    },
+                    {
+                        cfg,
+                        agents,
+                        now: at,
+                        myDocuments: m.myDocuments === true,
+                        labelsOf: () => (Array.isArray(m.labels) ? m.labels.map(String) : []),
+                    },
+                );
+                return send(res, 200, {
+                    to: d.to,
+                    by: d.by,
+                    ruleId: d.ruleId,
+                    observers: d.observers,
+                    ownership: d.ownership,
+                    text: d.text ?? null,
+                    trace: d.trace,
+                });
             }
             if (rest === "/oauth/grants") return only("GET") || send(res, 200, { grants: oauthOf(dir).listGrants() });
             r = /^\/oauth\/grants\/([^/]+)$/.exec(rest);

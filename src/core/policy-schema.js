@@ -19,6 +19,7 @@ import {
     durationMs,
 } from "./deploy-policy.js";
 import { ACCOUNT_MARKS, checkAgents } from "./routing-policy.js";
+import { checkRouting } from "./message-router.js";
 
 const CONFIRM_MODES = ["agent", "human", "off"];
 const TRUE = ["1", "true", "on", "yes"];
@@ -185,6 +186,12 @@ const mediaStore = (value) => {
     return kinds.length ? { value: [...new Set(kinds)].sort() } : { value: "none" };
 };
 
+/** One key of a routing block, checked by checkRouting and kept as given (the reader normalizes it). */
+const routingPart = (key) => (value) => {
+    const r = checkRouting({ [key]: value });
+    return r.error ? { error: r.error } : { value };
+};
+
 /** The presence modes (src/core/presence.js). */
 export const PRESENCE_MODES = Object.freeze(["on-demand", "always-on"]);
 
@@ -267,6 +274,15 @@ export const POLICY_KEYS = Object.freeze({
     "routing.agents": { check: checkAgents, scopes: ["account"] },
     "routing.marks": { check: oneOf(ACCOUNT_MARKS) },
     "routing.presenceWindow": { check: duration(10_000) },
+    // Routing itself (src/core/message-router.js): each key checked as part of a routing block.
+    "routing.enabled": { check: bool },
+    "routing.claims": { check: bool },
+    "routing.isolation": { check: bool },
+    "routing.owners": { check: routingPart("owners"), scopes: ["account"] },
+    "routing.routes": { check: routingPart("routes"), scopes: ["account"] },
+    "routing.default": { check: routingPart("default"), scopes: ["account"] },
+    "routing.staff": { check: routingPart("staff"), scopes: ["account"] },
+    "routing.settings": { check: routingPart("settings") },
 });
 
 /**

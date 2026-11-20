@@ -42,6 +42,7 @@ const MCP_FOR = {
     "msg send-video": ["zalo_send_message"],
     "msg sticker-list": ["zalo_sticker", "search"],
     "msg sticker-detail": ["zalo_sticker", "detail"],
+    "mcp agents": ["zalo_inbox", "agents"],
     "msg sticker-category": ["zalo_read", "sticker-category"],
     "msg react": ["zalo_react"],
     "msg delete": ["zalo_delete_message"],

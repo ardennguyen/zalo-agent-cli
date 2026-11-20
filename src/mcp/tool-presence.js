@@ -56,14 +56,17 @@ export const TOOL_PRESENCE = Object.freeze({
     zalo_sticker: "none",
     zalo_link: "none",
     zalo_official: "none",
+    zalo_inbox: "none",
 });
 
 /**
- * The calls that skip presence: the one that ends a yield, and zalo_official, which uses the official APIs' own logins
- * and never the account's socket.
+ * The calls that skip presence: the one that ends a yield, zalo_official, which uses the official APIs' own logins
+ * and never the account's socket, and zalo_inbox, which only reads and sets the caller's own agent state.
  */
 const passesRefusal = (tool, args) =>
-    (tool === "zalo_profile" && args?.action === "presence_resume") || tool === "zalo_official";
+    (tool === "zalo_profile" && args?.action === "presence_resume") ||
+    tool === "zalo_official" ||
+    tool === "zalo_inbox";
 
 /**
  * The class of one call.

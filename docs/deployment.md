@@ -2,7 +2,7 @@
 
 [Tiếng Việt](deployment.vi.md)
 
-**Status:** updated for `zalo-agent-cli` `3.0.0` and `zalo-mcp` `2.1.0`: the engine's own Zalo protocol layer (no zca-js), on-demand presence for daemons (park and wake, CRM leases, yield, signed out; §4.10), the encrypted message store and sealed files, the runtime policy and its admin API, storage quotas, the fleet controller (`fleet serve`) and the five use-case config sets, 37 MCP tools, the confirmation guard on destructive actions (`--yes` on the CLI, `confirm` and `confirmMode` over MCP), the socket supervisor's log lines, restores in waves with three reconnects, the official QR login and its trusted-device file, native HTTPS `--cert`/`--key`, the built-in OAuth 2.0 / 2.1 authorization server, signed webhooks on both `listen` and `mcp start`, `GET /events/wait` + `zalo_wait_for_message` zero-CPU long-polling, and the `-d, --daemon` / `--stop` / `--status` background lifecycle.
+**Status:** updated for `zalo-agent-cli` `3.0.0` and `zalo-mcp` `2.1.0`: the engine's own Zalo protocol layer (no zca-js), on-demand presence for daemons (park and wake, CRM leases, yield, signed out; §4.10), the encrypted message store and sealed files, the runtime policy and its admin API, storage quotas, the fleet controller (`fleet serve`) and the five use-case config sets, 38 MCP tools, the confirmation guard on destructive actions (`--yes` on the CLI, `confirm` and `confirmMode` over MCP), the socket supervisor's log lines, restores in waves with three reconnects, the official QR login and its trusted-device file, native HTTPS `--cert`/`--key`, the built-in OAuth 2.0 / 2.1 authorization server, signed webhooks on both `listen` and `mcp start`, `GET /events/wait` + `zalo_wait_for_message` zero-CPU long-polling, and the `-d, --daemon` / `--stop` / `--status` background lifecycle.
 **Licensing:** from 2.0.1 this software is licensed CC BY-NC-SA 4.0; use in a company's business operations needs a separate commercial license (see [NOTICE](../NOTICE)).
 **Audience:** whoever runs this on a server and gets paged when it stops.
 
@@ -75,7 +75,7 @@ So the very first deployment decision is forced: **you get one socket-holding pr
 >
 > | | `listen` | `mcp start` |
 > |---|---|---|
-> | MCP tool surface (the 37 tools in `src/mcp/mcp-tools.js`) | no | **yes** |
+> | MCP tool surface (the 38 tools in `src/mcp/mcp-tools.js`) | no | **yes** |
 > | HTTP / HTTPS `/health`, `/ready`, `/status`, `/metrics`, `/events/wait`, OAuth 2.1 endpoints (only with an OAuth client configured) | no | **yes** (`--http` only) |
 > | `-w, --webhook <url>` + `--webhook-secret <secret>` outbound fan-out | **yes** | **yes** |
 > | `--save <dir>` JSONL archive | **yes** | no |
@@ -92,7 +92,7 @@ So the very first deployment decision is forced: **you get one socket-holding pr
 > `tests/unit/listener-lifecycle-rules.test.js` holds both to the same gap rules (each builds a `SyncManager` and files a startup gap), and `tests/unit/self-heal-wiring.test.js` runs its wiring checks against both files. Loss detection is therefore no longer a reason to pick one over the other: pick `mcp start` for MCP bots (and webhook push / long-polling), `listen` for a CLI-only webhook or JSONL consumer.
 
 > [!NOTE]
-> **`mcp start`'s tools follow a re-login.** A socket the supervisor cannot keep alive on its session (Zalo refused the session, or no usable socket came up after 8 tries in a row) is handled inside the process by the socket host: `clearSession()`, then a login, which builds a new API object (`loginWithCredentials` in `src/core/zalo-client.js`). The listener handlers, the self-heal, the daemon channel and media downloads follow the new object through `getApi()`, and so do the 37 tools and the notifier: they are handed `liveApi(getApi)` (`src/core/live-api.js`), which reads the current session at every call. Before 2.0.0's fix they were handed the start-up object once, so after a `Re-login successful` line they kept calling the replaced session, and `zalo_get_history`'s socket scan paged a closed listener. While a re-login is in flight, a tool call fails with "The Zalo session is logging in again after a dropped connection; try again in a few seconds."
+> **`mcp start`'s tools follow a re-login.** A socket the supervisor cannot keep alive on its session (Zalo refused the session, or no usable socket came up after 8 tries in a row) is handled inside the process by the socket host: `clearSession()`, then a login, which builds a new API object (`loginWithCredentials` in `src/core/zalo-client.js`). The listener handlers, the self-heal, the daemon channel and media downloads follow the new object through `getApi()`, and so do the 38 tools and the notifier: they are handed `liveApi(getApi)` (`src/core/live-api.js`), which reads the current session at every call. Before 2.0.0's fix they were handed the start-up object once, so after a `Re-login successful` line they kept calling the replaced session, and `zalo_get_history`'s socket scan paged a closed listener. While a re-login is in flight, a tool call fails with "The Zalo session is logging in again after a dropped connection; try again in a few seconds."
 
 ### 1.2 What `daemon-channel.js` actually is
 

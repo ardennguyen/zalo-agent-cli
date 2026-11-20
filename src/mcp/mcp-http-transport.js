@@ -77,11 +77,28 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
      * @param {import("express").Request|null} [req]
      * @returns {boolean}
      */
-    const isAgentToken = (token, req = null) => {
-        if (!authOn() || !token) return false;
-        if (authToken && safeEqual(token, authToken)) return true;
-        if (apiKeys.verify(token)) return true;
-        return Boolean(oauthServer?.verifyBearer(token, req));
+    const isAgentToken = (token, req = null) => identifyToken(token, req) !== null;
+    /**
+     * Which of this server's credentials a bearer token is, or null when it opens nothing: `{credential, label?}`
+     * with `credential` `legacy` (the --auth token), `apikey:<keyId>` or `oauth:<clientId>[/<grantId>]`. The tool
+     * handlers bind it to the account's agent (src/mcp/agents.js); a token is never logged or kept.
+     * @param {string} token
+     * @param {import("express").Request|null} [req]
+     * @returns {{credential: string, label?: string|null}|null}
+     */
+    const identifyToken = (token, req = null) => {
+        if (!authOn() || !token) return null;
+        if (authToken && safeEqual(token, authToken)) return { credential: "legacy" };
+        const key = apiKeys.identify ? apiKeys.identify(token) : apiKeys.verify(token) ? { keyId: "unknown" } : null;
+        if (key) return { credential: `apikey:${key.keyId}`, label: key.label ?? null };
+        const grant = oauthServer?.identifyBearer
+            ? oauthServer.identifyBearer(token, req)
+            : oauthServer?.verifyBearer(token, req)
+              ? { clientId: "unknown" }
+              : null;
+        if (grant)
+            return { credential: `oauth:${grant.clientId}${grant.grantId ? `/${grant.grantId}` : ""}`, label: null };
+        return null;
     };
     const isAuthorized = (req) => {
         const authHeader = String(req.headers.authorization || "");
@@ -234,7 +251,12 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
         if (req.path === "/health" || req.path === "/ready") return next();
         const authHeader = String(req.headers.authorization || "");
         const token = /^bearer\s+/i.test(authHeader) ? authHeader.replace(/^bearer\s+/i, "").trim() : "";
-        if (isAgentToken(token, req)) return next();
+        const who = identifyToken(token, req);
+        if (who) {
+            // The caller's identity for the tool handlers (the MCP SDK's own `req.auth` shape, plus ours).
+            req.auth = { token: "", clientId: who.credential, scopes: [], extra: who };
+            return next();
+        }
         // RFC 6750 §3 (and RFC 9728 §5.1: where the protected resource metadata is, when OAuth is on).
         const meta = oauthServer.isOn() ? `, resource_metadata="${oauthServer.resourceMetadataUrl(req)}"` : "";
         const description = token ? "The access token is invalid, expired or revoked" : "A bearer token is required";
@@ -252,7 +274,11 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
     // MCP endpoint — stateless, fresh server+transport per request (POST, GET, DELETE per Streamable HTTP spec)
     app.all("/mcp", async (req, res) => {
         try {
-            const server = newMcpServer(pkg.version);
+            // The caller: the credential the bearer check found (src/mcp/agents.js binds it to an agent); a server
+            // that asks for no token has one caller, `open`.
+            const caller = req.auth?.extra?.credential ? req.auth.extra : { credential: "open" };
+            const server = newMcpServer(pkg.version, deps.instructionsFor ? deps.instructionsFor(caller) : "");
+            server.caller = caller;
             // This server lives for one request, so it cannot ask the person anything and hear back: the guard
             // reads this and refuses confirmMode "human" at once instead of waiting (src/core/confirm-guard.js).
             server.statelessHttp = true;

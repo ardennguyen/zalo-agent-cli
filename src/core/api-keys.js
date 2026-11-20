@@ -140,7 +140,8 @@ export function revokeAllApiKeys(accountDir) {
  *
  * @param {string|null} accountDir
  * @param {{now?: () => number, log?: (line: string) => void}} [opts]
- * @returns {{verify: (token: string) => boolean, any: () => boolean}}
+ * @returns {{verify: (token: string) => boolean, identify: (token: string) => {keyId: string, label: string}|null,
+ *   any: () => boolean}}
  */
 export function createApiKeyChecker(accountDir, { now = Date.now, log = (l) => console.error(l) } = {}) {
     let seen = null;
@@ -167,17 +168,22 @@ export function createApiKeyChecker(accountDir, { now = Date.now, log = (l) => c
         }
         return keys;
     };
+    /** The live key a token is (its id and label), or null. */
+    const identify = (token) => {
+        const m = KEY_SHAPE.exec(String(token ?? ""));
+        if (!m) return null;
+        const rec = load().find((k) => k.id === m[1]);
+        if (!rec) return null;
+        if (rec.expiresAt && Date.parse(rec.expiresAt) <= now()) return null;
+        const a = Buffer.from(sha256(token), "hex");
+        const b = Buffer.from(String(rec.sha256), "hex");
+        return a.length === b.length && timingSafeEqual(a, b) ? { keyId: rec.id, label: rec.label } : null;
+    };
     return {
         verify(token) {
-            const m = KEY_SHAPE.exec(String(token ?? ""));
-            if (!m) return false;
-            const rec = load().find((k) => k.id === m[1]);
-            if (!rec) return false;
-            if (rec.expiresAt && Date.parse(rec.expiresAt) <= now()) return false;
-            const a = Buffer.from(sha256(token), "hex");
-            const b = Buffer.from(String(rec.sha256), "hex");
-            return a.length === b.length && timingSafeEqual(a, b);
+            return identify(token) !== null;
         },
+        identify,
         any: () => load().some((k) => !k.expiresAt || Date.parse(k.expiresAt) > now()),
     };
 }

@@ -9,6 +9,12 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+#### Added
+
+- **Agents sharing one account (Message Router, first part).** An account's MCP server now knows which agent each call comes from: the credential the bearer check accepted (a named API key, an OAuth client or one grant of it, the deploy token; `stdio[:<name>]` with `ZALO_MCP_AGENT` for a local server) is bound to an agent by the new `routing` block (`mcp-config.json`, or the live policy's `routing.agents`, `routing.marks`, `routing.presenceWindow`, no restart). A bound agent's texts and captions start with its mark (`🤖 <name>:` by default; hidden per account with `routing.marks: "hidden"`, overridden per agent with `markDisplay`), every send is recorded as that agent's (sealed in `sent-by.json`; `zalo_get_history` and `zalo_search_messages` return `sentBy` on the account's own messages), each agent's presence is tracked (`listening`, `away`, `onDemand`, `idle`, `disabled`), and each caller is told on connect who it is and who the other agents are. Nothing is routed or refused yet: every caller still sees every message.
+- **`zalo_inbox`** (MCP tool 38): `whoami`, `status` (`listening`/`away` with a note) and `agents`.
+- **`mcp agents`**: the account's agents, their marks and presence, and its credentials with the agent each is bound to; the admin API serves the same at `GET /access/<ownId>/agents`.
+
 ## [3.3.2] — 2026-11-19
 
 #### Added

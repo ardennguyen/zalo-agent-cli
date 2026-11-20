@@ -285,7 +285,7 @@ Each registered personal account has its own isolated SQLite database (`<DATA_DI
 
 ### MCP tools exposed
 
-This engine source registers **37 MCP tools** in `src/mcp/mcp-tools.js`: 36 for the **personal account**, and `zalo_official` for the official APIs:
+This engine source registers **38 MCP tools** in `src/mcp/mcp-tools.js`: 37 for the **personal account**, and `zalo_official` for the official APIs:
 
 | Tool | Purpose |
 |:---|:---|
@@ -326,6 +326,7 @@ This engine source registers **37 MCP tools** in `src/mcp/mcp-tools.js`: 36 for 
 | `zalo_sticker` | Find stickers by keyword, and their details |
 | `zalo_link` | A link's preview, and whether Zalo considers it safe |
 | `zalo_official` | Runs an Official Account, ZBS or Social API command (`oa …`, `zbs …`, `social …`) by its CLI name, on the owner's official logins; omit `command` to list them |
+| `zalo_inbox` | Who the caller is among the agents sharing the account: `whoami`, `status` (listening/away), `agents` with their presence (Message Router) |
 
 See [Sync usage and details](docs/mcp-sync.md) / [Tiếng Việt](docs/mcp-sync.vi.md).
 
@@ -407,7 +408,7 @@ Official Account credentials are stored separately at `~/.zalo-agent/oa-credenti
 
 ## CLI Command Reference (via `npx zalo-agent <command>`)
 
-Append `--json` to any command for machine-readable output. This is a shortlist — the exhaustive reference for all 326 commands is [skill/references/command-reference.md](skill/references/command-reference.md).
+Append `--json` to any command for machine-readable output. This is a shortlist — the exhaustive reference for all 327 commands is [skill/references/command-reference.md](skill/references/command-reference.md).
 
 ### Session & maintenance
 | Command | Description |

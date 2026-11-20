@@ -22,6 +22,8 @@
  *     POST   /access/<ownId>/webhook/test                 send one signed `webhook_test` event now
  *     PUT    /access/<ownId>/approver                     {password}: set the approver password (hashed)
  *     DELETE /access/<ownId>/approver                     clear it
+ *     GET    /access/<ownId>/agents                       the account's agents (routing.agents), their presence and
+ *                                                  marks, and its credentials with the agent each is bound to
  *     GET    /access/<ownId>/cloud-key                    whether a zCloud key is stored (never the key)
  *     DELETE /access/<ownId>/cloud-key                    delete it
  *
@@ -40,6 +42,7 @@ import { clearWebhookSecret, readWebhookSecret, rotateWebhookSecret, webhookSecr
 import { describeWebhookUrl, webhookHeaders } from "./webhook-outbox.js";
 import { envForAccount, resolvePrimaryOAuthClient, resolveWebhookUrl } from "../mcp/mcp-config.js";
 import { resolvePublicUrl } from "./deploy-policy.js";
+import { agentsReport } from "../mcp/agents.js";
 import {
     MAX_ACCOUNT_CLIENTS,
     OAUTH_STATE_FILE,
@@ -336,6 +339,24 @@ export function createAccessApi({
                 }
                 note(ctx, ownId, "oauth.client.remove", clientId);
                 return send(res, 200, { clientId, removed: true, grantsRevoked: n });
+            }
+            // ── Agents (the Message Router's free part): read-only here, set through the policy ──
+            if (rest === "/agents") {
+                if (only("GET")) return true;
+                const credentials = [
+                    ...listApiKeys(dir).map((k) => ({
+                        credential: `apikey:${k.keyId}`,
+                        label: k.label,
+                        kind: "mcp-key",
+                        expired: k.expired,
+                    })),
+                    ...clientsOf(ownId, dir).map((c) => ({
+                        credential: `oauth:${c.clientId}`,
+                        label: c.name ?? c.clientId,
+                        kind: "mcp-oauth",
+                    })),
+                ];
+                return send(res, 200, agentsReport({ accountId: ownId, accountDir: dir, config, credentials }));
             }
             if (rest === "/oauth/grants") return only("GET") || send(res, 200, { grants: oauthOf(dir).listGrants() });
             r = /^\/oauth\/grants\/([^/]+)$/.exec(rest);

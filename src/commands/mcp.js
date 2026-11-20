@@ -106,6 +106,14 @@ import { MessageBuffer } from "../mcp/message-buffer.js";
 import { ThreadFilter } from "../mcp/thread-filter.js";
 import { createAgentSends, ownMyDocumentsView, selfMessageRoute } from "../mcp/self-messages.js";
 import {
+    PRESENCE_FILE,
+    createAgentPresence,
+    createSentByStore,
+    inboxInstructions,
+    resolveCaller,
+    resolveRouting,
+} from "../mcp/agents.js";
+import {
     readMCPConfig,
     resolveAccountMCPConfig,
     envForAccount,
@@ -139,6 +147,7 @@ import { clearKickMarker, kickFile } from "../core/kick-marker.js";
 import { DEBUG_MARK, LOG_LEVELS } from "../core/log-sink.js";
 import { registerMCPWebhookCommands } from "./mcp-webhook.js";
 import { registerMCPApproverCommand } from "./mcp-approver.js";
+import { registerMCPAgentsCommand } from "./mcp-agents.js";
 import { createMCPServer } from "../mcp/mcp-server.js";
 import { registerTools } from "../mcp/mcp-tools.js";
 import { createHTTPServer } from "../mcp/mcp-http-transport.js";
@@ -798,6 +807,10 @@ export function registerMCPCommands(program) {
             // The agents' own zalo_send_message calls, so their echo in My Documents is never handed back to them
             // (src/mcp/self-messages.js); every server this daemon builds shares the one buffer, so it lives on it.
             buffer.agentSends = createAgentSends();
+            // The agents of the account (src/mcp/agents.js): each one's presence, written for the console, and which
+            // agent sent which message (sealed in the account folder).
+            buffer.agentPresence = createAgentPresence({ file: join(accountDir, PRESENCE_FILE) });
+            buffer.sentBy = createSentByStore(accountDir);
             const filter = new ThreadFilter(config);
 
             // The owner's aliases, which every reply, buffer line and webhook names people by: kept in the account's
@@ -1069,6 +1082,11 @@ export function registerMCPCommands(program) {
                             `[mcp] Admin API: on /zalo/admin${adminCreds.sources.length ? ` (${adminCreds.sources.join(", ")})` : ""}${adminCa ? ", mTLS" : ""}`,
                         );
                     const deps = {
+                        // What each caller is told about itself on connect: its agent, the others (src/mcp/agents.js).
+                        instructionsFor: (caller) => {
+                            const routing = resolveRouting({ config, accountId: activeAcc.ownId });
+                            return inboxInstructions(resolveCaller(caller, routing), routing);
+                        },
                         admin,
                         api: sessionApi,
                         buffer,
@@ -1185,7 +1203,13 @@ export function registerMCPCommands(program) {
                         accountDir,
                         stageLock,
                         syncJobs,
-                        { presence: presenceDoor },
+                        {
+                            presence: presenceDoor,
+                            instructionsFor: (caller) => {
+                                const routing = resolveRouting({ config, accountId: activeAcc.ownId });
+                                return inboxInstructions(resolveCaller(caller, routing), routing);
+                            },
+                        },
                     );
                 }
             } catch (e) {
@@ -2252,4 +2276,5 @@ export function registerMCPCommands(program) {
 
     registerMCPWebhookCommands(mcp, program);
     registerMCPApproverCommand(mcp, program);
+    registerMCPAgentsCommand(mcp, program);
 }

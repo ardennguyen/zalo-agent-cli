@@ -33,8 +33,8 @@ const toolNames = new Set(tools.keys());
 const mentionedTools = (text) => [...text.matchAll(/\bzalo_[a-z_]+\b/g)].map((m) => m[0]);
 
 describe("every tool and parameter is described", () => {
-    it("has 37 tools, each with a description long enough to say what it does and when to use it", () => {
-        assert.equal(tools.size, 37);
+    it("has 38 tools, each with a description long enough to say what it does and when to use it", () => {
+        assert.equal(tools.size, 38);
         for (const [name, { meta }] of tools) {
             assert.ok(meta.description.length >= 80, `${name}: description is ${meta.description.length} characters`);
         }

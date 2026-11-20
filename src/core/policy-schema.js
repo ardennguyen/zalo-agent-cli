@@ -18,6 +18,7 @@ import {
     MEDIA_LINK_AUTHS,
     durationMs,
 } from "./deploy-policy.js";
+import { ACCOUNT_MARKS, checkAgents } from "./routing-policy.js";
 
 const CONFIRM_MODES = ["agent", "human", "off"];
 const TRUE = ["1", "true", "on", "yes"];
@@ -261,6 +262,11 @@ export const POLICY_KEYS = Object.freeze({
     "session.renew.enabled": { check: bool },
     "session.renew.daysBefore": { check: wholeNumber(1, 14) },
     "session.renew.linkTtl": { check: duration(10 * 60_000) },
+    // The Message Router (src/core/routing-policy.js, src/mcp/agents.js): the account's agents bound to its
+    // credentials, whether their marks show, and how recently seen counts as listening. Read on every call.
+    "routing.agents": { check: checkAgents, scopes: ["account"] },
+    "routing.marks": { check: oneOf(ACCOUNT_MARKS) },
+    "routing.presenceWindow": { check: duration(10_000) },
 });
 
 /**

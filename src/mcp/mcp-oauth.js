@@ -624,6 +624,8 @@ function grantScope(requested) {
  *
  * @returns {{enabled: boolean, isOn: () => boolean, requiresAuth: () => boolean, mode: () => string,
  *   verifyBearer: (token: string, req?: import("express").Request) => boolean,
+ *   identifyBearer: (token: string, req?: import("express").Request) => {clientId: string, grantId: string|null,
+ *     scope: string|null}|null,
  *   resourceMetadataUrl: (req: import("express").Request) => string|null, store: object|null}}
  */
 export function mountOAuth(app, ctx) {
@@ -643,6 +645,7 @@ export function mountOAuth(app, ctx) {
             requiresAuth: () => false,
             mode: () => "off",
             verifyBearer: () => false,
+            identifyBearer: () => null,
             resourceMetadataUrl: () => null,
             store: null,
         };
@@ -1105,25 +1108,31 @@ export function mountOAuth(app, ctx) {
      * Whether a bearer token is an access token this server issued and still honors: signature, expiry, issuer and
      * audience (when the request is known), a client that still exists, and a family not revoked.
      */
-    const verifyAccess = (token, req) => {
+    const identifyAccess = (token, req) => {
         const at = verifyToken(token, "zmcp_at_", accessKey(), nowSec());
-        if (!at || at.typ !== "at") return false;
+        if (!at || at.typ !== "at") return null;
         if (req) {
             const iss = issuerOf(req);
-            if (at.iss !== iss || at.aud !== `${iss}/mcp`) return false;
+            if (at.iss !== iss || at.aud !== `${iss}/mcp`) return null;
         }
-        if (!clientOf(at.cid)) return false;
+        if (!clientOf(at.cid)) return null;
         const f = store.family(at.fam);
-        return Boolean(f && f.cid === at.cid);
+        return f && f.cid === at.cid ? { clientId: at.cid, grantId: at.fam, scope: at.scp ?? null } : null;
     };
-    const verifyBearer = (token, req) => {
+    /**
+     * Which OAuth client (and grant) a bearer token belongs to, or null when it opens nothing: the caller's identity
+     * for the tool handlers (src/mcp/agents.js).
+     */
+    const identifyBearer = (token, req) => {
         // While off, nothing OAuth issued (or a client secret) opens /mcp; the grants are kept for when it is back on.
-        if (!token || modeOf() === "off") return false;
+        if (!token || modeOf() === "off") return null;
         if (secretsAsBearer) {
-            for (const c of configured.values()) if (c.secret && safeEqual(token, c.secret)) return true;
+            for (const c of configured.values())
+                if (c.secret && safeEqual(token, c.secret)) return { clientId: c.clientId, grantId: null, scope: null };
         }
-        return verifyAccess(token, req);
+        return identifyAccess(token, req);
     };
+    const verifyBearer = (token, req) => identifyBearer(token, req) !== null;
     return {
         enabled: true,
         isOn: () => modeOf() !== "off",
@@ -1132,6 +1141,7 @@ export function mountOAuth(app, ctx) {
         requiresAuth: () => configEnabled || saved() !== null,
         mode: modeOf,
         verifyBearer,
+        identifyBearer,
         resourceMetadataUrl: (req) => `${issuerOf(req)}/.well-known/oauth-protected-resource/mcp`,
         store,
     };

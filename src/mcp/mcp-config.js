@@ -47,6 +47,10 @@ export function getDefaultConfig() {
             linkRateLimit: null, // 60 requests a minute per client address
             capability: null, // {maxClients: 3, ttl: "15m"}: distinct client addresses a capability link serves
         },
+        // The Message Router (src/core/routing-policy.js): {agents: [{slug, name, credential, mark?, markDisplay?,
+        // delivery?, enabled?}], marks: "shown"|"hidden", presenceWindow: "90s"}. Unset: no agents, marks shown, 90 s.
+        // The account's live policy (`routing.*`) wins over this block, read on every call.
+        routing: null,
         // Reverse proxies whose X-Forwarded-For is believed (e.g. ["127.0.0.1"]). Unset (null) means
         // ZALO_MCP_TRUSTED_PROXIES, else none: the client address is the socket's peer.
         trustedProxies: null,

@@ -116,6 +116,16 @@ import {
 import { gateMcp, removedLabels } from "../core/confirm-guard.js";
 import { getSecurePage } from "../core/secure-page.js";
 import { hiddenChatsFor, hiddenEventView, readThreadIds, withoutHidden } from "../core/hidden-chats.js";
+import { INBOX_META, inboxHandler } from "./inbox-tool.js";
+import {
+    annotateSentBy,
+    createAgentPresence,
+    createSentByStore,
+    prefixMark,
+    resolveCaller,
+    resolveRouting,
+} from "./agents.js";
+import { markFor } from "../core/routing-policy.js";
 
 /** The conversation ids a raw read names (moved to src/core/hidden-chats.js; `read run` uses it too). */
 export { readThreadIds } from "../core/hidden-chats.js";
@@ -477,6 +487,30 @@ function err(message) {
 }
 
 /**
+ * The ids a send tool's reply names (its `msgId`, `cliMsgId`, each part's and each sent file's), and its `threadId`.
+ *
+ * @param {object} result - an MCP tool result
+ * @returns {{ids: string[], threadId: string|null}}
+ */
+function idsOfResult(result) {
+    const ids = [];
+    let threadId = null;
+    for (const c of result?.content ?? []) {
+        if (c?.type !== "text" || typeof c.text !== "string" || !c.text.startsWith("{")) continue;
+        let body;
+        try {
+            body = JSON.parse(c.text);
+        } catch {
+            continue;
+        }
+        if (body?.threadId) threadId = String(body.threadId);
+        for (const m of [body, ...(Array.isArray(body?.parts) ? body.parts : []), ...(body?.sent ?? [])])
+            for (const v of [m?.msgId, m?.cliMsgId]) if (v !== undefined && v !== null && v !== "") ids.push(String(v));
+    }
+    return { ids, threadId };
+}
+
+/**
  * One cached message as zalo_get_history returns it.
  * @param {object} m - a `messages` row
  * @returns {object}
@@ -658,14 +692,69 @@ export function registerTools(
     syncJobs,
     extras = {},
 ) {
-    // A send tool's handler, run through the daemon's record of the agents' own sends (src/mcp/self-messages.js).
+    // The caller (src/mcp/agents.js): the agent its credential is bound to in the account's routing settings, read
+    // live on every call. Presence and the record of who sent what live on the daemon's one buffer, as agentSends does.
+    if (buffer && !buffer.agentPresence) buffer.agentPresence = createAgentPresence();
+    if (buffer && !buffer.sentBy) buffer.sentBy = createSentByStore(null);
+    const routingNow = () => resolveRouting({ config, accountId: ownIdOf(api) || null });
+    const callerOf = (consumer = null) => resolveCaller(server?.caller ?? null, routingNow(), consumer);
+    // The mark this caller's text starts with in this conversation ("" for none), by the agent's and account's settings.
+    const markOf = (who, threadId) => {
+        if (!who.agent || who.agent.enabled === false) return "";
+        let send2meId = null;
+        try {
+            send2meId = api.getContext?.()?.loginInfo?.send2me_id ?? null;
+        } catch {
+            /* no context: not My Documents */
+        }
+        const ownerChat = [ownIdOf(api), send2meId].some((id) => id && String(id) === String(threadId));
+        return markFor(who.agent, { marks: routingNow().marks, ownerChat });
+    };
+
+    // A send tool's handler, run through the daemon's record of the agents' own sends (src/mcp/self-messages.js), and
+    // the record of which agent sent it (sentBy).
     const trackAgentSend =
         (handler) =>
-        (...args) =>
-            buffer?.agentSends ? buffer.agentSends.track(() => handler(...args)) : handler(...args);
+        (...args) => {
+            const who = callerOf(args[0]?.consumer ?? null);
+            const run = async () => {
+                const result = await handler(...args, who);
+                if (buffer?.sentBy && !result?.isError) {
+                    const ids = idsOfResult(result);
+                    if (ids.ids.length) buffer.sentBy.record(ids.ids, who, ids.threadId ?? args[0]?.threadId ?? null);
+                }
+                return result;
+            };
+            return buffer?.agentSends ? buffer.agentSends.track(run) : run();
+        };
 
     // On-demand presence: refused while yielded or signed out, a hold per call, warming by the tool's class.
     gateToolsByPresence(server, extras?.presence ?? null);
+    // Agent presence (src/mcp/agents.js): every call is the caller seen; an open wait is the caller listening.
+    if (buffer?.agentPresence && typeof server?.registerTool === "function") {
+        const raw = server.registerTool.bind(server);
+        // Forwards are sends too (sentBy); the replies that list messages name the agent on the account's own.
+        const SENT_BY_READS = [
+            "zalo_get_history",
+            "zalo_search_messages",
+            "zalo_get_messages",
+            "zalo_wait_for_message",
+        ];
+        server.registerTool = (name, meta, handler) => {
+            const inner = name === "zalo_forward_message" ? trackAgentSend(handler) : handler;
+            return raw(name, meta, async (...args) => {
+                const end = buffer.agentPresence.begin(callerOf(args[0]?.consumer ?? null), {
+                    waiting: name === "zalo_wait_for_message",
+                });
+                try {
+                    const result = await inner(...args);
+                    return SENT_BY_READS.includes(name) ? annotateSentBy(result, buffer.sentBy) : result;
+                } finally {
+                    end();
+                }
+            });
+        };
+    }
 
     // Several bots can share one listener, each with its own read cursor
     // (triage M7). A bot that names none reads as "default", as before.
@@ -998,23 +1087,27 @@ export function registerTools(
         },
         // Tracked: with ownMyDocuments on, the echo of this send in My Documents is not handed back to the agent.
         trackAgentSend(
-            async ({
-                threadId: threadIdIn,
-                text,
-                filePath,
-                files,
-                link,
-                cardUserId,
-                sticker,
-                voiceUrl,
-                video,
-                bankCard,
-                qrTransfer,
-                threadType: threadTypeIn,
-                quoteMsgId,
-                urgency: urgencyIn,
-                format: formatIn,
-            }) => {
+            async (
+                {
+                    threadId: threadIdIn,
+                    text,
+                    filePath,
+                    files,
+                    link,
+                    cardUserId,
+                    sticker,
+                    voiceUrl,
+                    video,
+                    bankCard,
+                    qrTransfer,
+                    threadType: threadTypeIn,
+                    quoteMsgId,
+                    urgency: urgencyIn,
+                    format: formatIn,
+                },
+                _extra,
+                who = null,
+            ) => {
                 // `me` (or the own uid) is My Documents, always a 1-1 -- resolved
                 // before anything else reads the thread id, as `msg send me` is.
                 const thread = actionThread(api, threadIdIn, threadTypeIn);
@@ -1023,6 +1116,9 @@ export function registerTools(
                     return err(thread.error);
                 }
                 const { threadId, threadType } = thread;
+                // The caller's agent mark (src/mcp/agents.js), in front of every text and caption it sends here.
+                const mark = who ? markOf(who, threadId) : "";
+                const marked = (t) => (mark ? prefixMark({ text: t || "" }, mark).text : t);
                 // A group this account left or lost (src/core/group-exit.js): refused here, not at the server.
                 const goneRefusal = sendRefusal(threadId);
                 if (goneRefusal) return err(goneRefusal);
@@ -1072,7 +1168,12 @@ export function registerTools(
                         };
                         if (isUrl(video.source) && isUrl(video.thumbnail)) {
                             const result = await api.sendVideo(
-                                { videoUrl: video.source, thumbnailUrl: video.thumbnail, msg: text ?? "", ...size },
+                                {
+                                    videoUrl: video.source,
+                                    thumbnailUrl: video.thumbnail,
+                                    msg: marked(text ?? ""),
+                                    ...size,
+                                },
                                 threadId,
                                 Number(threadType),
                             );
@@ -1090,7 +1191,7 @@ export function registerTools(
                         const result = await api.sendVideoFile(
                             {
                                 file,
-                                msg: text ?? "",
+                                msg: marked(text ?? ""),
                                 ...(thumb ? { thumbnailFile: thumb } : { thumbnailUrl: video.thumbnail }),
                                 ...size,
                             },
@@ -1121,7 +1222,7 @@ export function registerTools(
                         );
                         if (!qrPath) return err("Could not generate the VietQR image; nothing was sent.");
                         try {
-                            const caption = text || qrTransferCaption(bin, qrTransfer);
+                            const caption = marked(text || qrTransferCaption(bin, qrTransfer));
                             const result = await api.sendMessage(
                                 { msg: caption, attachments: [qrPath] },
                                 threadId,
@@ -1156,7 +1257,7 @@ export function registerTools(
                     }
 
                     if (link) {
-                        const linkOpts = text ? { link, msg: text } : { link };
+                        const linkOpts = text || mark ? { link, msg: marked(text ?? "") } : { link };
                         const result = await api.sendLink(linkOpts, threadId, Number(threadType));
                         const messageId = result?.msgId ?? result?.message?.msgId ?? null;
                         const cliMsgId = result?.cliMsgId ?? result?.message?.cliMsgId ?? null;
@@ -1179,10 +1280,12 @@ export function registerTools(
                             return err(`File not found: ${missing.join(", ")}`);
                         }
                         // A caption is text too: Markdown in it is converted the same way.
-                        const caption =
+                        const caption = prefixMark(
                             text && resolveSendFormat({ explicit: formatIn, fallback: "markdown" }) === "markdown"
                                 ? markdownToZalo(text)
-                                : { text: text || "", styles: [] };
+                                : { text: text || "", styles: [] },
+                            mark,
+                        );
                         const result = await api.sendMessage(
                             {
                                 msg: caption.text,
@@ -1242,8 +1345,16 @@ export function registerTools(
                         if (!name && uid !== ALL_MENTION_UID) unresolved.push(uid);
                         return name;
                     });
-                    const mentions = expanded.mentions;
-                    const styles = shiftStyles(converted.styles, expanded.edits);
+                    const markedText = prefixMark(
+                        {
+                            text: expanded.text,
+                            styles: shiftStyles(converted.styles, expanded.edits),
+                            mentions: expanded.mentions,
+                        },
+                        mark,
+                    );
+                    const mentions = markedText.mentions;
+                    const styles = markedText.styles;
 
                     // The session drops mentions outside a group, so a DM send would
                     // quietly arrive with the names as plain text and nobody tagged.
@@ -1302,7 +1413,7 @@ export function registerTools(
                     // Zalo refuses one oversized message (114 plain, 112 styled), so a long text goes out as Zalo sends
                     // it: split at 3000 bytes of text plus styles, in order, 300 ms apart. The quote and the urgency
                     // belong to the first part only.
-                    const parts = splitMessage({ text: expanded.text, styles, mentions });
+                    const parts = splitMessage({ text: markedText.text, styles, mentions });
                     const contentOf = (part, index) => {
                         const first = index === 0;
                         const extras =
@@ -1339,7 +1450,8 @@ export function registerTools(
                         ...(thread.notice && { threadId, notice: thread.notice }),
                         // Only when it differs, so the common send keeps its shape:
                         // the agent wrote `@[123]` and needs to know what was sent.
-                        ...(expanded.text !== text && { text: expanded.text }),
+                        ...(markedText.text !== text && { text: markedText.text }),
+                        ...(mark && { mark }),
                         ...(styles.length > 0 && { formatted: styles.length }),
                         ...(unresolved.length > 0 && { unresolvedMentions: unresolved }),
                         // Only when it was split: every part's ids, in order (msgId/cliMsgId above are the first).
@@ -4349,5 +4461,12 @@ export function registerTools(
                 return err(e.message);
             }
         },
+    );
+
+    // --- zalo_inbox: who the caller is among the account's agents (src/mcp/inbox-tool.js) ---
+    server.registerTool(
+        "zalo_inbox",
+        INBOX_META,
+        inboxHandler({ callerOf, routingNow, presence: buffer?.agentPresence ?? null }),
     );
 }

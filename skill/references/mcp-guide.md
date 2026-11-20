@@ -1,6 +1,6 @@
 # Hướng dẫn Zalo MCP Server
 
-Model Context Protocol (MCP) cho phép Claude Code, Google Gemini và các MCP client tương tác với Zalo (tài khoản cá nhân) trực tiếp qua **37 tools**.
+Model Context Protocol (MCP) cho phép Claude Code, Google Gemini và các MCP client tương tác với Zalo (tài khoản cá nhân) trực tiếp qua **38 tools**.
 
 Từ 3.0, **mọi lệnh CLI của tài khoản cá nhân đều có một hành động MCP** (bạn bè, nhóm, hội thoại, hồ sơ, auto-reply, quick-msg, catalog, ngân hàng, zCloud, sticker, link, các read/write thô của Zalo, và mọi stage sync qua `zalo_sync` / `zalo_sync_status`). Chỉ còn Official Account (`oa …`, API chính thức riêng), đăng nhập/đăng xuất, quản lý tài khoản trên máy, `listen`, `mcp start`, `fleet`, `policy`, `presence status|wake|park` và các lệnh `db` (trừ `db usage`, có ở `zalo_profile` `usage`) là chỉ có trên CLI; agent gọi chúng bằng CLI với `--json` khi được phép. Xem bảng [Phạm vi tool](#phạm-vi-tool--cái-gì-có-cái-gì-phải-gọi-cli).
 
@@ -114,7 +114,7 @@ curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:3847/events/wait?tim
 
 ### Qua wrapper `zalo-mcp`
 
-Dự án [`zalo-mcp`](https://github.com/ardennguyen/zalo-mcp) (v2.0.0+) là bộ cài đặt và CLI launcher mỏng: cài lệnh global `zalo-mcp` (hoặc chạy `node mcp-server.js`). Khi không kèm lệnh con, nó chạy `zalo-agent mcp start`; khi kèm lệnh con (`zalo-mcp login`, `zalo-mcp status`, `zalo-mcp --account <ID> conv recent --json`, `zalo-mcp sync`, …), nó chuyển tiếp nguyên vẹn sang CLI. **Danh sách 37 MCP tool hoàn toàn giống nhau** — tool surface do `src/mcp/mcp-tools.js` của `zalo-agent-cli` quyết định.
+Dự án [`zalo-mcp`](https://github.com/ardennguyen/zalo-mcp) (v2.0.0+) là bộ cài đặt và CLI launcher mỏng: cài lệnh global `zalo-mcp` (hoặc chạy `node mcp-server.js`). Khi không kèm lệnh con, nó chạy `zalo-agent mcp start`; khi kèm lệnh con (`zalo-mcp login`, `zalo-mcp status`, `zalo-mcp --account <ID> conv recent --json`, `zalo-mcp sync`, …), nó chuyển tiếp nguyên vẹn sang CLI. **Danh sách 38 MCP tool hoàn toàn giống nhau** — tool surface do `src/mcp/mcp-tools.js` của `zalo-agent-cli` quyết định.
 
 - **Forward đầy đủ mọi flag của `mcp start` và global storage flags:** `--account <id>` (`ZALO_ACCOUNT`), `--http [port]`, `--auth <token>`, `--host <addr>`, `--cert <path>`, `--key <path>`, `--client-id <id>`, `--client-secret <secret>`, `--public-url <url>`, `--issuer-url <url>`, `-w`/`--webhook <url>`, `--webhook-secret <secret>`, `--config <path>`, `--no-self-heal`, `--no-delivered-receipts`, `-d`/`--daemon`, `--stop`, `--status`, cùng `--env-file`, `--config-dir`, `--credentials-dir`, `--data-dir`, `--media-dir`, `--oa-dir`.
 - **Phiên bản engine:** Wrapper chạy phiên bản `@ardennguyen/zalo-agent-cli` được cài trong `node_modules/` của nó (cập nhật lên bản mới nhất bằng `zalo-mcp.ps1 update` / `./zalo-mcp.sh update`). Kiểm tra phiên bản engine hiện tại bằng:
@@ -232,7 +232,7 @@ Những thao tác mà chính ứng dụng Zalo hỏi lại trước khi làm đ�
 
 **Với agent:** lần đầu gặp một thao tác được bảo vệ, hãy dừng lại và hỏi người dùng muốn xử lý các thao tác này thế nào (luôn hỏi trước, cho phép agent tự xác nhận với một số loại thao tác, hay không bao giờ làm), rồi ghi nhớ lựa chọn theo cách đã thống nhất với người dùng (bộ nhớ của agent, quy tắc dự án, `CLAUDE.md`/`AGENTS.md` của dự án) để không phải hỏi lại. Chỉ gửi `confirm: true` khi người dùng đã cho phép.
 
-## Tham chiếu Tools (37 tools)
+## Tham chiếu Tools (38 tools)
 
 ### `zalo_get_messages`
 Lấy tin nhắn đã buffer mà consumer này chưa đánh dấu đã đọc (xem `zalo_mark_read`), hỗ trợ cursor để đọc tăng dần (incremental polling).
@@ -850,6 +850,18 @@ Các lệnh `profile` và `account devices`: `avatar` (`filePath`), `bio` (đọ
 `zalo_sticker`: `search` (`keyword` → `stickerIds`, như `msg sticker-list`) và `detail` (`stickerIds`, như `msg sticker-detail`). Danh mục sticker là `zalo_read` `sticker-category`.
 `zalo_link`: `preview` (tiêu đề, mô tả, nguồn, ảnh, như `msg link-preview`) và `scan` (`isSafe`, như `msg scan-url`).
 
+### `zalo_inbox`
+
+Người gọi là ai trong số các agent dùng chung một tài khoản Zalo (Message Router / Phân luồng phản hồi). Agent được gắn theo **thông tin xác thực** mà người gọi dùng để kết nối (một API key `apikey:<keyId>`, một OAuth client `oauth:<clientId>`, token triển khai `legacy`, `stdio[:<tên>]` với `ZALO_MCP_AGENT`), không bao giờ theo tên người gọi tự gõ; `consumer` chỉ là tên phụ (nhãn, không phải ranh giới).
+
+| Action | Làm gì |
+|---|---|
+| `whoami` | Agent của bạn (tên, dấu, cách nhận tin), tên phụ, routing đã bật chưa, các agent khác cùng trạng thái |
+| `status` | Báo cho các agent khác bạn đang `listening` hay `away` (kèm `note` ngắn) |
+| `agents` | Mọi agent của tài khoản cùng trạng thái: `listening`, `away`, `onDemand`, `idle`, `disabled` |
+
+Mỗi văn bản (và chú thích tệp, link, video) một agent gửi bằng `zalo_send_message` được máy chủ thêm **dấu** của agent ở đầu (mặc định `🤖 <Tên>:`); chủ tài khoản ẩn dấu cho cả tài khoản (`routing.marks: "hidden"`) hoặc theo từng agent (`markDisplay`: `inherit`, `everywhere`, `owner` chỉ trong My Documents, `none`). Mọi lần gửi đều được ghi lại là của agent nào; `zalo_get_history` và `zalo_search_messages` trả `sentBy: {agent, name, sub}` cho tin của chính tài khoản. Không tool nào sửa agent hay dấu: chủ tài khoản đặt chúng qua policy (`routing.agents`) hoặc khối `routing` của `mcp-config.json`; `zalo-agent mcp agents` liệt kê chúng.
+
 ### `zalo_official`
 Chạy một lệnh API chính thức của Zalo — Official Account (`oa …`), ZBS Template Message (`zbs …`), Social API (`social …`) — đúng như CLI `zalo-agent --json <lệnh>`, trên các lần đăng nhập OAuth chính thức của chủ tài khoản, không bao giờ dùng tài khoản cá nhân. Bỏ `command` để liệt kê mọi lệnh cùng đối số và tùy chọn. `command` là tên lệnh CLI (`"oa msg text"`), `args` là các đối số theo thứ tự (id là chuỗi), `options` theo tên cờ CLI không có dấu gạch (`{"oa-id": "shop", "all": true}`; một công tắc nhận `true`). Các lệnh có bảo vệ (xóa, `oa purchase confirm-order`, `oa call consent-request`) nhận `confirm` / `dryRun` / `ticket` như mọi hành động có bảo vệ. Chỉ có trên CLI: `oa login`, `oa setup`, `oa init`, `social setup`, `social login` (nhận app secret/token hoặc đăng nhập qua trình duyệt) và `oa listen` (máy chủ webhook chạy lâu dài).
 
@@ -1025,7 +1037,7 @@ Ring Buffer (in-memory, mỗi thread giữ tối đa bufferMaxSize tin, tự d�
      ↓
 Thread Filter (watchThreads) + Thread Name Cache (groups/friends, fuzzy search)
      ↓
-MCP Server (stdio hoặc HTTP/HTTPS + OAuth 2.0) — registerTools() đăng ký cả 37 tools
+MCP Server (stdio hoặc HTTP/HTTPS + OAuth 2.0) — registerTools() đăng ký cả 38 tools
      ↓
 Claude Code / Gemini / MCP Client
 ```

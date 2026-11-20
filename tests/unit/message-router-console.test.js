@@ -1,5 +1,5 @@
 /**
- * The Message Router's console side in the daemon: routing events (ids only), the claims card's actions, and the staff
+ * The Companion Router's console side in the daemon: routing events (ids only), the claims card's actions, and the staff
  * inbox (option A): a staff member sees, reads and answers only the conversations routed to him or held by him.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";

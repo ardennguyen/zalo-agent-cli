@@ -46,7 +46,7 @@ const AUTH_CODE_TTL_SEC = 300;
  * The scopes this server takes. None narrows what a token can do: every one grants this account's MCP tools, so a
  * client may ask for any of them (Gemini asks for ACCESS_VIEW_MANAGE_MCP_CONTENT, others for offline_access).
  */
-/** A per-agent connector address: `/mcp/a/<slug>` (docs: Message Router, one connector per agent). */
+/** A per-agent connector address: `/mcp/a/<slug>` (docs: Companion Router, one connector per agent). */
 export const AGENT_PATH = /^\/mcp\/a\/([a-z][a-z0-9-]{0,23})\/?$/;
 const AGENT_SLUG = /^[a-z][a-z0-9-]{0,23}$/;
 
@@ -662,7 +662,7 @@ export function mountOAuth(app, ctx) {
     const secretsAsBearer = Boolean(oauth?.secretsAsBearer);
     const publicUrl = oauth?.issuerUrl || null;
     const accountDir = ctx.accountDir ?? null;
-    // The account's agents, for the approve page's picker (Message Router); none when the policy names none.
+    // The account's agents, for the approve page's picker (Companion Router); none when the policy names none.
     const agentsForPicker = () => {
         try {
             const r = resolveRouting({ accountId: securePage?.accountId ?? null, log: () => {} });

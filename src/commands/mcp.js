@@ -1434,7 +1434,7 @@ export function registerMCPCommands(program) {
              * dropped under `exclude`; under `contentless` the buffer keeps it (the tools show it without content)
              * and the notifier, whose preview names the sender, is skipped.
              */
-            // The Message Router (src/mcp/router-runtime.js): off unless routing.enabled; then every message delivered
+            // The Companion Router (src/mcp/router-runtime.js): off unless routing.enabled; then every message delivered
             // below carries its `route`, and the tools give each agent its own view, guard and privacy.
             buffer.router = createRouterRuntime({
                 routingNow: () => resolveRouting({ config, accountId: activeAcc.ownId }),

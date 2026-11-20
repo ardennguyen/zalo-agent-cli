@@ -326,7 +326,7 @@ Engine này đăng ký **38 MCP tools** trong `src/mcp/mcp-tools.js`: 37 tool ch
 | `zalo_sticker` | Tìm sticker theo từ khóa và xem chi tiết |
 | `zalo_link` | Xem trước một liên kết và kiểm tra Zalo có coi nó là an toàn không |
 | `zalo_official` | Chạy một lệnh Official Account, ZBS hoặc Social API (`oa …`, `zbs …`, `social …`) theo tên lệnh CLI, trên các lần đăng nhập chính thức của chủ tài khoản; bỏ `command` để liệt kê |
-| `zalo_inbox` | Người gọi là ai trong số các agent dùng chung tài khoản: `whoami`, `status` (listening/away), `agents` cùng trạng thái (Phân luồng phản hồi) |
+| `zalo_inbox` | Người gọi là ai trong số các agent dùng chung tài khoản: `whoami`, `status` (listening/away), `agents` cùng trạng thái (Phân công trợ lý) |
 
 Xem thêm [Chi tiết sử dụng đồng bộ qua MCP](docs/mcp-sync.vi.md) / [English](docs/mcp-sync.md).
 

@@ -269,7 +269,7 @@ export const POLICY_KEYS = Object.freeze({
     "session.renew.enabled": { check: bool },
     "session.renew.daysBefore": { check: wholeNumber(1, 14) },
     "session.renew.linkTtl": { check: duration(10 * 60_000) },
-    // The Message Router (src/core/routing-policy.js, src/mcp/agents.js): the account's agents bound to its
+    // The Companion Router (src/core/routing-policy.js, src/mcp/agents.js): the account's agents bound to its
     // credentials, whether their marks show, and how recently seen counts as listening. Read on every call.
     "routing.agents": { check: checkAgents, scopes: ["account"] },
     "routing.marks": { check: oneOf(ACCOUNT_MARKS) },

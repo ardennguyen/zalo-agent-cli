@@ -317,8 +317,8 @@ tiếp tục. Cả hai có dạng `_<ownId>`. `/status` và `/metrics` có `last
 
 Nhiều agent có thể dùng cùng lúc máy chủ MCP của một tài khoản (trợ lý chạy sẵn, một phiên Claude Code, một connector
 của ứng dụng Claude). Khối `routing` đặt tên cho chúng, để máy chủ biết mỗi lời gọi đến từ agent nào, thêm **dấu** của
-agent vào đầu những gì nó gửi, và ghi lại agent nào đã gửi tin nào. Đây là phần đầu của Message Router (Phân luồng phản
-hồi); chưa có gì được phân luồng hay bị từ chối, và mọi người gọi vẫn thấy mọi tin nhắn.
+agent vào đầu những gì nó gửi, và ghi lại agent nào đã gửi tin nào. Đây là phần đầu của Companion Router (Phân công phản
+hồi); chưa có gì được phân công hay bị từ chối, và mọi người gọi vẫn thấy mọi tin nhắn.
 
 ```json
 "routing": {
@@ -359,7 +359,7 @@ hồi); chưa có gì được phân luồng hay bị từ chối, và mọi ng�
   động lại (`routing.agents` chỉ trong policy riêng của tài khoản). Xem chúng bằng `zalo-agent mcp agents`, API admin
   `GET /access/<ownId>/agents`, hoặc, với vai trò agent, `zalo_inbox`.
 
-**Phân luồng (giai đoạn 3-6).** Với `routing.enabled: true` mỗi tin đến có đúng một người xử lý, do engine quyết định
+**Phân công (giai đoạn 3-6).** Với `routing.enabled: true` mỗi tin đến có đúng một người xử lý, do engine quyết định
 một lần (src/core/message-router.js) và gắn vào tin dưới dạng `route: {to, by, ruleId, observers, ownership}` (cả trong
 webhook). Thứ tự: **tạm dừng khi chủ trả lời** (chủ tài khoản tự gửi từ điện thoại, PC hoặc web thì các agent dừng ở
 cuộc trò chuyện đó trong `humanPause`, mặc định 15 phút), **lệnh gọi** (`@dev` hoặc từ của một luồng, từ chủ, ở đầu tin;
@@ -382,8 +382,8 @@ trung và dự phòng cần `routing.claims: true`.
   (`NOT_ROUTED` cho phần còn lại) và không gửi ra ngoài.
 - `zalo_inbox` có thêm `claim`, `release`, `handoff`, `claims`, `route_test`; API admin trả lời cùng phép thử ở
   `POST /access/<ownId>/route-test`.
-- **Bảng điều khiển xem bộ phân luồng đang chạy** (`POST /access/<ownId>/routing`, `{action, ...}`, do daemon của tài
-  khoản trả lời; 409 `DAEMON_NOT_RUNNING` khi không có daemon): `events` (quyết định phân luồng, giữ cuộc, chuyển giao,
+- **Bảng điều khiển xem bộ phân công đang chạy** (`POST /access/<ownId>/routing`, `{action, ...}`, do daemon của tài
+  khoản trả lời; 409 `DAEMON_NOT_RUNNING` khi không có daemon): `events` (quyết định phân công, giữ cuộc, chuyển giao,
   chủ tạm dừng agent, lần gửi bị chặn; chỉ có id, không bao giờ có nội dung tin; lưu niêm phong trong `routing-events.json` ở thư mục tài khoản
   `routing.logDays` ngày, mặc định 7, ít nhất một, tối đa 5.000 sự kiện mới nhất, giữ qua các lần khởi động lại), `claims`, `release`, `assign` (cho một agent, một nhân viên hoặc `human`), `human` / `endHuman` (bắt đầu hoặc
   kết thúc lúc chủ tự trả lời), và hộp thư của nhân viên trả lời trong bảng điều khiển: `inbox`, `thread` (tin đã lưu của

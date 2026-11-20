@@ -29,7 +29,7 @@
  * `account_state` comes from polling each daemon's channel every `pollMs` (5 s), plus `stopped` for an account with
  * no process; each change goes to the SSE clients and the admin webhook once. The same poll reads when each saved
  * login ends (`session` in the account list) and sends `session_expiring` once per threshold (./session-notice.js).
- * A daemon whose Message Router is on reports where its routing events stand (`health.routing`, `{bootId, seq}`); when
+ * A daemon whose Companion Router is on reports where its routing events stand (`health.routing`, `{bootId, seq}`); when
  * that moves, the new events are read over the channel and published as `routing` events (ids only, never a text).
  */
 import { randomBytes, timingSafeEqual } from "node:crypto";

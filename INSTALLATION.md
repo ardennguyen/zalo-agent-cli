@@ -326,7 +326,7 @@ This engine source registers **38 MCP tools** in `src/mcp/mcp-tools.js`: 37 for 
 | `zalo_sticker` | Find stickers by keyword, and their details |
 | `zalo_link` | A link's preview, and whether Zalo considers it safe |
 | `zalo_official` | Runs an Official Account, ZBS or Social API command (`oa …`, `zbs …`, `social …`) by its CLI name, on the owner's official logins; omit `command` to list them |
-| `zalo_inbox` | Who the caller is among the agents sharing the account: `whoami`, `status` (listening/away), `agents` with their presence (Message Router) |
+| `zalo_inbox` | Who the caller is among the agents sharing the account: `whoami`, `status` (listening/away), `agents` with their presence (Companion Router) |
 
 See [Sync usage and details](docs/mcp-sync.md) / [Tiếng Việt](docs/mcp-sync.vi.md).
 

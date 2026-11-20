@@ -1,6 +1,6 @@
 /**
  * The agents of one account, as its live policy (or mcp-config.json) names them: who each MCP caller is, its name and
- * the mark put on what it sends. The first part of the Message Router; routes, claims and fallback build on it.
+ * the mark put on what it sends. The first part of the Companion Router; routes, claims and fallback build on it.
  *
  *     "routing": {
  *       "marks": "shown",                      // or "hidden": the account's default for every agent's mark

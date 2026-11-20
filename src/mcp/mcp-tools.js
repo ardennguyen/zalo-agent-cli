@@ -726,7 +726,7 @@ export function registerTools(
     if (buffer && !buffer.agentPresence) buffer.agentPresence = createAgentPresence();
     if (buffer && !buffer.sentBy) buffer.sentBy = createSentByStore(null);
     const routingNow = () => resolveRouting({ config, accountId: ownIdOf(api) || null });
-    // The daemon's Message Router (src/mcp/router-runtime.js); absent in a bare test server.
+    // The daemon's Companion Router (src/mcp/router-runtime.js); absent in a bare test server.
     const router = buffer?.router ?? null;
     const callerOf = (consumer = null) => resolveCaller(server?.caller ?? null, routingNow(), consumer);
     // The mark this caller's text starts with in this conversation ("" for none), by the agent's and account's settings.
@@ -749,7 +749,7 @@ export function registerTools(
         (...args) => {
             const who = callerOf(args[0]?.consumer ?? null);
             const run = async () => {
-                // The Message Router's send guard (src/core/message-router.js guardSend): the owner's human pause,
+                // The Companion Router's send guard (src/core/message-router.js guardSend): the owner's human pause,
                 // another agent's claim, or (Pro) a conversation never routed to this agent refuse the send.
                 const target = args[0]?.threadId;
                 if (router?.enabled() && target && String(target).toLowerCase() !== "me") {
@@ -820,12 +820,12 @@ export function registerTools(
         };
     }
 
-    // The Message Router's view of the buffer: `mine` (default with routing on) or `all`.
+    // The Companion Router's view of the buffer: `mine` (default with routing on) or `all`.
     const viewSchema = z
         .enum(["mine", "all"])
         .optional()
         .describe(
-            "With the account's Message Router on: `mine` (the default) returns the messages routed to your agent or " +
+            "With the account's Companion Router on: `mine` (the default) returns the messages routed to your agent or " +
                 "that it observes; `all` returns every message, each marked `forMe`. Without routing every caller sees all.",
         );
 

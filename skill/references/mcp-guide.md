@@ -852,14 +852,14 @@ Các lệnh `profile` và `account devices`: `avatar` (`filePath`), `bio` (đọ
 
 ### `zalo_inbox`
 
-Người gọi là ai trong số các agent dùng chung một tài khoản Zalo (Message Router / Phân luồng phản hồi). Agent được gắn theo **thông tin xác thực** mà người gọi dùng để kết nối (một API key `apikey:<keyId>`, một OAuth client `oauth:<clientId>`, token triển khai `legacy`, `stdio[:<tên>]` với `ZALO_MCP_AGENT`), không bao giờ theo tên người gọi tự gõ; `consumer` chỉ là tên phụ (nhãn, không phải ranh giới).
+Người gọi là ai trong số các agent dùng chung một tài khoản Zalo (Companion Router / Phân công trợ lý). Agent được gắn theo **thông tin xác thực** mà người gọi dùng để kết nối (một API key `apikey:<keyId>`, một OAuth client `oauth:<clientId>`, token triển khai `legacy`, `stdio[:<tên>]` với `ZALO_MCP_AGENT`), không bao giờ theo tên người gọi tự gõ; `consumer` chỉ là tên phụ (nhãn, không phải ranh giới).
 
 | Action | Làm gì |
 |---|---|
 | `whoami` | Agent của bạn (tên, dấu, cách nhận tin), tên phụ, routing đã bật chưa, các agent khác cùng trạng thái |
 | `status` | Báo cho các agent khác bạn đang `listening` hay `away` (kèm `note` ngắn) |
 | `agents` | Mọi agent của tài khoản cùng trạng thái: `listening`, `away`, `onDemand`, `idle`, `disabled` |
-| `claim` / `release` / `handoff` / `claims` | Khi bật phân luồng: nhận, trả, chuyển (cho agent khác, `human` hoặc `staff:<id>`) và liệt kê các cuộc trò chuyện đang giữ |
+| `claim` / `release` / `handoff` / `claims` | Khi bật phân công: nhận, trả, chuyển (cho agent khác, `human` hoặc `staff:<id>`) và liệt kê các cuộc trò chuyện đang giữ |
 | `route_test` | Tin này sẽ tới ai và vì sao; không thay đổi gì |
 
 Mỗi văn bản (và chú thích tệp, link, video) một agent gửi bằng `zalo_send_message` được máy chủ thêm **dấu** của agent ở đầu (mặc định `🤖 <Tên>:`); chủ tài khoản ẩn dấu cho cả tài khoản (`routing.marks: "hidden"`) hoặc theo từng agent (`markDisplay`: `inherit`, `everywhere`, `owner` chỉ trong My Documents, `none`). Mọi lần gửi đều được ghi lại là của agent nào; `zalo_get_history` và `zalo_search_messages` trả `sentBy: {agent, name, sub}` cho tin của chính tài khoản. Không tool nào sửa agent hay dấu: chủ tài khoản đặt chúng qua policy (`routing.agents`) hoặc khối `routing` của `mcp-config.json`; `zalo-agent mcp agents` liệt kê chúng.

@@ -1,7 +1,7 @@
 /**
  * Who is calling, and what the account remembers about them: the caller's agent (resolved from the credential the
  * HTTP edge checked, never from a name the caller types), each agent's presence, and which agent sent which message
- * (`sentBy`). The first phase of the Message Router: nothing here routes or refuses a message.
+ * (`sentBy`). The first phase of the Companion Router: nothing here routes or refuses a message.
  *
  * - **Identity.** The transport sets `server.caller = {credential, label?}` (src/mcp/mcp-http-transport.js; stdio:
  *   `stdio[:<ZALO_MCP_AGENT>]`). {@link resolveCaller} binds it to an agent of the account's `routing.agents`

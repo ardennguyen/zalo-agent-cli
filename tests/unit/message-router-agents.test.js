@@ -1,5 +1,5 @@
 /**
- * The Message Router's first phase: who an MCP caller is (its credential bound to an agent), the agent's mark on
+ * The Companion Router's first phase: who an MCP caller is (its credential bound to an agent), the agent's mark on
  * what it sends, its presence, the record of which agent sent which message, and `zalo_inbox`.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";

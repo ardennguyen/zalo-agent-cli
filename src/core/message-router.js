@@ -1,5 +1,5 @@
 /**
- * The Message Router's decisions (docs/agent-routing.md §2): which handler gets an incoming message, who holds a
+ * The Companion Router's decisions (docs/agent-routing.md §2): which handler gets an incoming message, who holds a
  * conversation (claims, the owner's human pause, sticky focus), and whether a send may go out. Pure where it can be:
  * {@link decide} reads state through the context it is given and returns the effects for the caller to apply, so the
  * console's test box and the daemon run the same function.
@@ -7,8 +7,8 @@
  * Settings (the live policy's `routing.*`, checked by {@link checkRouting}):
  *
  *     enabled            routing on (off: every caller sees every message, as before)
- *     claims             claims, human pause, reply affinity, sticky focus and fallback (the Message Router add-on)
- *     isolation          per-agent privacy: read tools limited to routed conversations (Message Router Pro)
+ *     claims             claims, human pause, reply affinity, sticky focus and fallback (the Companion Router add-on)
+ *     isolation          per-agent privacy: read tools limited to routed conversations (Companion Router Pro)
  *     owners             other Zalo user ids of the owner (his own messages count as the owner's anyway)
  *     routes             the ordered table, first match wins
  *     default            {target, fallback}: when no route matches

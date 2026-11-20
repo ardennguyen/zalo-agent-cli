@@ -69,7 +69,7 @@ import {
 
 const ACCOUNT_ID = /^[1-9][0-9]{0,30}$/;
 const ID = /^[A-Za-z0-9_.-]{1,128}$/;
-/** What the console may ask a daemon's Message Router (src/mcp/router-runtime.js `serve`). */
+/** What the console may ask a daemon's Companion Router (src/mcp/router-runtime.js `serve`). */
 const ROUTING_ACTIONS = Object.freeze([
     "events",
     "claims",
@@ -365,7 +365,7 @@ export function createAccessApi({
                 note(ctx, ownId, "oauth.client.remove", clientId);
                 return send(res, 200, { clientId, removed: true, grantsRevoked: n });
             }
-            // ── Agents (the Message Router's free part): read-only here, set through the policy ──
+            // ── Agents (the Companion Router's free part): read-only here, set through the policy ──
             if (rest === "/agents") {
                 if (only("GET")) return true;
                 const credentials = [

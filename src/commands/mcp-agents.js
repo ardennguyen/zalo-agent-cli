@@ -1,5 +1,5 @@
 /**
- * `zalo-agent mcp agents`: the account's agents (the Message Router's `routing.agents`), each one's effective mark and
+ * `zalo-agent mcp agents`: the account's agents (the Companion Router's `routing.agents`), each one's effective mark and
  * presence as its running daemon last wrote it, and the account's MCP credentials with the agent each is bound to.
  * The operator's view of what `zalo_inbox` `agents` answers an agent; the access API serves the same report
  * (`GET /access/<ownId>/agents`). Read-only: agents are set through the policy (`policy set routing.agents …`) or

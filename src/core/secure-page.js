@@ -434,7 +434,7 @@ export async function handleSecureRequest(req, res, { store, accountId, publicUr
         newPin: fields.newPin,
         newPin2: fields.newPin2,
         secret: fields.secret,
-        // Not secrets: the OAuth approve page's agent choice (Message Router).
+        // Not secrets: the OAuth approve page's agent choice (Companion Router).
         agent: typeof fields.agent === "string" ? fields.agent : undefined,
         agentNew: typeof fields.agentNew === "string" ? fields.agentNew : undefined,
     };

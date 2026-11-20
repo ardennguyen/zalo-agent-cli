@@ -318,7 +318,7 @@ Both take an `_<ownId>` form. `/status` and `/metrics` carry `lastWakeMs` / `las
 Several agents can use one account's MCP server at once (a hosted assistant, a Claude Code session, a Claude app
 connector). The `routing` block names them, so the server knows which agent each call comes from, puts the agent's
 **mark** in front of what it sends, and records which agent sent which message. This is the first part of the
-Message Router; nothing is routed or refused yet, and every caller still sees every message.
+Companion Router; nothing is routed or refused yet, and every caller still sees every message.
 
 ```json
 "routing": {

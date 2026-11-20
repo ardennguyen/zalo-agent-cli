@@ -322,7 +322,7 @@ function readJsonBody(req, reply) {
  * @param {(params: {action: "renew", fresh?: boolean}) => object|Promise<object>} [args.onSession] - the saved
  *   login's renewal (`session renew`; `POST /session`): opens a one-time QR login link on this daemon's HTTP port
  *   (src/core/session-renew.js). Without it the route answers 503.
- * @param {(params: {action: string}) => Promise<object>} [args.onRouting] - the Message Router's console requests
+ * @param {(params: {action: string}) => Promise<object>} [args.onRouting] - the Companion Router's console requests
  *   (`POST /routing`: routing events, claims, human pause, the staff inbox; src/mcp/router-runtime.js `serve`).
  *   Without it the route answers 503.
  * @param {(o: {kind: string, cls: "socket"|"wait"}) => Promise<{release: () => void}>} [args.presenceGate] - the

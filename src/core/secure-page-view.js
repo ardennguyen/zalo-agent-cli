@@ -262,7 +262,7 @@ const passwordInput = () =>
     `type="password" class="wide" autocomplete="off" maxlength="256" required></div>`;
 
 /**
- * The OAuth approve page's agent picker (Message Router): no agent, one of the account's agents, or a new one by name.
+ * The OAuth approve page's agent picker (Companion Router): no agent, one of the account's agents, or a new one by name.
  * The choice is the grant's agent; a new name becomes an agent the console offers to create.
  */
 const agentPicker = (agents) =>
@@ -319,7 +319,7 @@ export function formView(ticket, notice = null, { lang = null } = {}) {
             facts =
                 fact(pair("oauthApp"), app) +
                 fact(pair("oauthAccount"), accountValue(view.accountName, view.accountId)) +
-                // A per-agent connector address: the grant is that agent's (Message Router).
+                // A per-agent connector address: the grant is that agent's (Companion Router).
                 (view.agent ? fact(pair("oauthAgent"), `<span class="host">${esc(view.agent)}</span>`) : "") +
                 fact(pair("oauthReturns"), `<span class="host">${esc(view.returnHost)}</span>`) +
                 fact(pair("oauthCan"), say(pair("oauthCanText")));

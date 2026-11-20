@@ -1,5 +1,5 @@
 /**
- * The Message Router's per-agent connector addresses: an agent bound by `connector:<slug>` takes every OAuth grant made
+ * The Companion Router's per-agent connector addresses: an agent bound by `connector:<slug>` takes every OAuth grant made
  * for `/mcp/a/<slug>` (the OAuth half is in mcp-oauth.test.js).
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";

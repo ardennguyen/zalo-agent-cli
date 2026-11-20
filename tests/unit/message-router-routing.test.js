@@ -1,5 +1,5 @@
 /**
- * The Message Router, phases 3-6: routes and the test box, claims and the owner's human pause, sticky focus and reply
+ * The Companion Router, phases 3-6: routes and the test box, claims and the owner's human pause, sticky focus and reply
  * affinity, fallback, staff on their own Zalo, `@agents`, and per-agent privacy.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";

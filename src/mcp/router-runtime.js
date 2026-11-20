@@ -1,5 +1,5 @@
 /**
- * The Message Router in a running daemon: it decides each incoming message once ({@link decide}), applies the decision's
+ * The Companion Router in a running daemon: it decides each incoming message once ({@link decide}), applies the decision's
  * effects (claims, sticky focus), keeps the owner's human pause from his own sends, answers `@agents`, forwards to staff
  * on their own Zalo and relays their replies back, posts the fallback notices, and gives the tools what they need: the
  * per-caller view of messages, the send guard and the per-agent privacy filter. Off (`routing.enabled` false), it does

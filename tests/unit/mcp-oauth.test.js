@@ -949,7 +949,7 @@ describe("A10: protocol details", () => {
     });
 });
 
-// ── Message Router: one connector address per agent ──────────────────────
+// ── Companion Router: one connector address per agent ──────────────────────
 
 describe("per-agent connector addresses (/mcp/a/<slug>)", () => {
     /** An MCP initialize call on a given path. */

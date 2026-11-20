@@ -72,7 +72,7 @@ export const INBOX_META = {
         "`note`). `agents`: every agent of the account with its presence (listening, away, onDemand, idle, " +
         "disabled). The owner sets agents, routes and marks in the console; no tool changes them. Every text you send " +
         "with zalo_send_message starts with your mark when the account shows marks, so do not add it yourself. " +
-        "With the account's Message Router on: `claim` takes a conversation (`threadId`), `release` gives it back, " +
+        "With the account's Companion Router on: `claim` takes a conversation (`threadId`), `release` gives it back, " +
         "`handoff` moves it to another agent, `human` (the owner) or `staff:<id>` with a `note`, `claims` lists the " +
         "open ones, and `route_test` says who would get a message (`threadId`, `text`, `senderId`) and why, changing " +
         "nothing. A send into a conversation the owner is answering himself is refused (HUMAN_ACTIVE), as is one " +
@@ -145,7 +145,7 @@ export function inboxHandler({ callerOf, routingNow, presence, router = null }) 
         }
         if (["claim", "release", "handoff", "claims", "route_test"].includes(action)) {
             if (!router || !routing.cfg?.enabled)
-                return err("The Message Router is off on this account: nothing is routed or claimed.");
+                return err("The Companion Router is off on this account: nothing is routed or claimed.");
             if (action === "claims") {
                 const all = router.claims.list();
                 return ok({ action, claims: who.agent ? all.filter((c) => c.holder === who.agent.slug) : all });

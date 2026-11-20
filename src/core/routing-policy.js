@@ -32,7 +32,7 @@ export const DEFAULT_PRESENCE_WINDOW_MS = 90_000;
 
 const SLUG = /^[a-z][a-z0-9-]{0,23}$/;
 const CREDENTIAL =
-    /^(apikey:[0-9a-f]{12}|oauth:[A-Za-z0-9._:-]{1,128}(\/[A-Za-z0-9_-]{1,128})?|legacy|open|stdio(:[a-z0-9][a-z0-9-]{0,23})?)$/;
+    /^(apikey:[0-9a-f]{12}|oauth:[A-Za-z0-9._:-]{1,128}(\/[A-Za-z0-9_-]{1,128})?|connector:[a-z][a-z0-9-]{0,23}|legacy|open|stdio(:[a-z0-9][a-z0-9-]{0,23})?)$/;
 const NAME_MAX = 40;
 const MARK_MAX = 40;
 
@@ -42,7 +42,7 @@ const printable = (text) => [...text].every((c) => c.codePointAt(0) >= 32 && c.c
 export function kindOfCredential(credential) {
     const c = String(credential ?? "");
     if (c.startsWith("apikey:")) return "mcp-key";
-    if (c.startsWith("oauth:")) return "mcp-oauth";
+    if (c.startsWith("oauth:") || c.startsWith("connector:")) return "mcp-oauth";
     if (c.startsWith("stdio")) return "stdio";
     if (c === "open") return "open";
     return "legacy";
@@ -76,8 +76,11 @@ export function checkAgents(value) {
         const credential = String(a.credential ?? "").trim();
         if (!CREDENTIAL.test(credential))
             return {
-                error: `${at}.credential is not apikey:<id>, oauth:<clientId>[/<grantId>], legacy, open or stdio[:<name>]`,
+                error: `${at}.credential is not apikey:<id>, oauth:<clientId>[/<grantId>], connector:<slug>, legacy, open or stdio[:<name>]`,
             };
+        // The agent's own connector address (`/mcp/a/<slug>`): every OAuth grant made for that address is this agent's.
+        if (credential.startsWith("connector:") && credential !== `connector:${slug}`)
+            return { error: `${at}.credential connector:<slug> names the agent's own slug (connector:${slug})` };
         if (credentials.has(credential)) return { error: `${at}.credential is bound to two agents` };
         const kind = a.kind === undefined || a.kind === null ? kindOfCredential(credential) : String(a.kind);
         if (!AGENT_KINDS.includes(kind)) return { error: `${at}.kind is not one of ${AGENT_KINDS.join(", ")}` };
@@ -112,14 +115,18 @@ export function defaultMark(agent) {
 }
 
 /**
- * The agent a credential is bound to: an exact grant binding (`oauth:<client>/<grant>`) wins over the client's.
+ * The agent a credential is bound to: a grant made for an agent's connector address (`/mcp/a/<slug>`, carried as
+ * `agentHint`) is that agent's when it is bound by `connector:<slug>`, and nobody's otherwise (it fails closed); else an
+ * exact grant binding (`oauth:<client>/<grant>`) wins over the client's.
  *
  * @param {Array<object>} agents - a checked list
  * @param {string|null} credential
+ * @param {string|null} [agentHint] - the agent the OAuth grant was made for
  * @returns {object|null}
  */
-export function agentForCredential(agents, credential) {
+export function agentForCredential(agents, credential, agentHint = null) {
     if (!credential) return null;
+    if (agentHint) return agents.find((a) => a.credential === `connector:${agentHint}`) ?? null;
     const exact = agents.find((a) => a.credential === credential);
     if (exact) return exact;
     const slash = credential.indexOf("/");

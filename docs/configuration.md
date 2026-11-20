@@ -334,9 +334,16 @@ Message Router; nothing is routed or refused yet, and every caller still sees ev
 
 - **`credential`** binds the agent to a credential the server already checks: `apikey:<keyId>` (a named API key,
   `access` API or `mcp agents` lists the ids), `oauth:<clientId>` or `oauth:<clientId>/<grantId>` (a connector, or one
-  grant of it), `legacy` (the `--auth` deploy token), `open` (a server that asks for no token), `stdio` or
-  `stdio:<name>` (a local stdio server started with `ZALO_MCP_AGENT=<name>`). The agent is never a name the caller types;
-  a tool's `consumer` input is only a sub-name (a label, not a boundary).
+  grant of it), `connector:<slug>` (the agent's own connector address, see below), `legacy` (the `--auth` deploy token),
+  `open` (a server that asks for no token), `stdio` or `stdio:<name>` (a local stdio server started with
+  `ZALO_MCP_AGENT=<name>`). The agent is never a name the caller types; a tool's `consumer` input is only a sub-name (a
+  label, not a boundary).
+- **One connector per agent.** `<publicUrl>/mcp/a/<slug>` is the same MCP server under an agent's own address. Added as
+  a connector (a Claude app project's, say), it runs OAuth for the resource `<publicUrl>/mcp/a/<slug>`: the approve page
+  tells the owner which agent he connects, and the grant's tokens carry that address as their audience. Such a token
+  opens that address and `/mcp`, never another agent's address; it is the agent bound by `connector:<slug>`, or no
+  agent at all when none is (it fails closed). Other credentials (API keys, the deploy token) work on the address as on
+  `/mcp`.
 - **`mark`** (default `🤖 <name>:`) goes in front of every text and caption the agent sends with `zalo_send_message`,
   unless the text already starts with it. **`marks`** (`shown`, the default, or `hidden`) is the account's setting;
   an agent's **`markDisplay`** overrides it: `inherit` (default), `everywhere`, `owner` (My Documents only) or `none`.

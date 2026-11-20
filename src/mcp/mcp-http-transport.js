@@ -20,7 +20,7 @@ import { clientIpOf, handleMediaRequest, isLoopbackIp } from "../core/media-rout
 import { ADMIN_PATH_PREFIX } from "../core/admin-api.js";
 import { PRESENCE_PATH_PREFIX } from "../core/presence-leases.js";
 import { approverFor } from "../core/approval.js";
-import { mountOAuth, oauthStartCheck, safeEqual } from "./mcp-oauth.js";
+import { AGENT_PATH, mountOAuth, oauthStartCheck, safeEqual } from "./mcp-oauth.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -97,7 +97,11 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
               ? { clientId: "unknown" }
               : null;
         if (grant)
-            return { credential: `oauth:${grant.clientId}${grant.grantId ? `/${grant.grantId}` : ""}`, label: null };
+            return {
+                credential: `oauth:${grant.clientId}${grant.grantId ? `/${grant.grantId}` : ""}`,
+                label: null,
+                ...(grant.agent ? { agent: grant.agent } : {}),
+            };
         return null;
     };
     const isAuthorized = (req) => {
@@ -213,7 +217,7 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
         if (!err) return next();
         const status = err.status >= 400 && err.status < 500 ? err.status : 400;
         res.set("Cache-Control", "no-store");
-        if (req.path === "/mcp") {
+        if (req.path === "/mcp" || AGENT_PATH.test(req.path)) {
             return res
                 .status(status)
                 .json({ jsonrpc: "2.0", error: { code: -32700, message: "Parse error" }, id: null });
@@ -272,7 +276,9 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
     });
 
     // MCP endpoint — stateless, fresh server+transport per request (POST, GET, DELETE per Streamable HTTP spec)
-    app.all("/mcp", async (req, res) => {
+    // `/mcp/a/<slug>`: one agent's connector address (a Claude app project's own connector); OAuth grants made for it
+    // are that agent's (src/mcp/mcp-oauth.js), any other credential is the same as on `/mcp`.
+    app.all(["/mcp", AGENT_PATH], async (req, res) => {
         try {
             // The caller: the credential the bearer check found (src/mcp/agents.js binds it to an agent); a server
             // that asks for no token has one caller, `open`.

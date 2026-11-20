@@ -947,3 +947,77 @@ describe("A10: protocol details", () => {
         assert.equal(safeEqual("abc", undefined), false);
     });
 });
+
+// ── Message Router: one connector address per agent ──────────────────────
+
+describe("per-agent connector addresses (/mcp/a/<slug>)", () => {
+    /** An MCP initialize call on a given path. */
+    const initAt = (port, path, token) =>
+        req(port, path, {
+            method: "POST",
+            headers: { accept: "application/json, text/event-stream", authorization: `Bearer ${token}` },
+            json: {
+                jsonrpc: "2.0",
+                id: 1,
+                method: "initialize",
+                params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "1" } },
+            },
+        });
+
+    it("a grant made for an agent's address is that agent's: its audience, its approve page, its path only", async () => {
+        const s = await start();
+        const iss = (await req(s.port, "/.well-known/oauth-authorization-server")).json.issuer;
+        const meta = (await req(s.port, "/.well-known/oauth-protected-resource/mcp/a/dev")).json;
+        assert.equal(meta.resource, `${iss}/mcp/a/dev`);
+
+        const a = await approve(s.port, { extra: { resource: `${iss}/mcp/a/dev` } });
+        assert.match(
+            a.page.text,
+            /It connects as the agent[\s\S]{0,200}>dev</,
+            "the owner sees which agent he connects",
+        );
+        assert.ok(a.code);
+        const res = await tokenRequest(s.port, {
+            grant_type: "authorization_code",
+            code: a.code,
+            redirect_uri: CLAUDE_CB,
+            code_verifier: a.verifier,
+            client_id: CONFIDENTIAL.clientId,
+            client_secret: CONFIDENTIAL.clientSecret,
+            resource: `${iss}/mcp/a/dev`,
+        });
+        assert.equal(res.status, 200, res.text);
+        const token = res.json.access_token;
+        assert.equal(payloadOf(token).aud, `${iss}/mcp/a/dev`);
+        assert.ok(admitted(await initAt(s.port, "/mcp/a/dev", token)));
+        assert.ok(admitted(await initAt(s.port, "/mcp", token)), "the account's own address takes any of its grants");
+        const other = await initAt(s.port, "/mcp/a/ai", token);
+        assert.equal(other.status, 401, "another agent's address refuses it");
+        assert.match(other.headers["www-authenticate"], /oauth-protected-resource\/mcp\/a\/ai"/);
+
+        // A token for the account's address does not open an agent's address.
+        const plain = await codeFlow(s.port);
+        assert.equal((await initAt(s.port, "/mcp/a/dev", plain.access_token)).status, 401);
+    });
+
+    it("refuses a resource that is not this server's address or a valid agent's", async () => {
+        const s = await start();
+        const iss = (await req(s.port, "/.well-known/oauth-authorization-server")).json.issuer;
+        for (const resource of [`${iss}/mcp/a/Bad`, `${iss}/mcp/a/`, `${iss}/mcp/x/dev`]) {
+            const { challenge } = pkce();
+            const r = await req(
+                s.port,
+                authorizePath({
+                    response_type: "code",
+                    client_id: CONFIDENTIAL.clientId,
+                    redirect_uri: CLAUDE_CB,
+                    code_challenge: challenge,
+                    code_challenge_method: "S256",
+                    resource,
+                }),
+            );
+            assert.equal(new URL(r.headers.location).searchParams.get("error"), "invalid_target", resource);
+        }
+        assert.equal((await req(s.port, "/.well-known/oauth-protected-resource/mcp/a/Bad")).status, 404);
+    });
+});

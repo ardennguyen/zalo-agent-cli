@@ -4,7 +4,8 @@
  *
  * A page is built from its ticket: the kind of form ("confirm", "pin", "pin-change"), its English title and
  * description (also what the agent and the webhook see), and an optional `view` that says more for the page alone:
- * - `view.type: "oauth"`: an app asks for access; `clientName`, `clientId`, `accountName`, `accountId`, `returnHost`;
+ * - `view.type: "oauth"`: an app asks for access; `clientName`, `clientId`, `accountName`, `accountId`, `returnHost`,
+ *   `agent` (a per-agent connector address: the agent the grant is for);
  * - `view.heading`, `view.lead`, `view.done`: `{en, vi}` texts that replace the default heading, the sentence under it,
  *   and what a successful answer says.
  * Every dynamic value (an app's name, an account's name, a server-made sentence) is escaped where it is written.
@@ -33,6 +34,7 @@ export const SECURE_TEXT = Object.freeze({
         oauthApp: "App",
         oauthAccount: "Account",
         oauthReturns: "After you answer, you return to",
+        oauthAgent: "It connects as the agent",
         oauthCan: "It will be able to",
         oauthCanText:
             "Use this account's MCP tools: read its messages and conversations, and send messages as this account.",
@@ -104,6 +106,7 @@ export const SECURE_TEXT = Object.freeze({
         oauthApp: "Ứng dụng",
         oauthAccount: "Tài khoản",
         oauthReturns: "Sau khi trả lời, bạn sẽ quay về",
+        oauthAgent: "Kết nối với vai trò agent",
         oauthCan: "Ứng dụng sẽ có thể",
         oauthCanText:
             "Dùng các công cụ MCP của tài khoản này: đọc tin nhắn và cuộc trò chuyện, và gửi tin nhắn dưới tên " +
@@ -294,6 +297,8 @@ export function formView(ticket, notice = null, { lang = null } = {}) {
             facts =
                 fact(pair("oauthApp"), app) +
                 fact(pair("oauthAccount"), accountValue(view.accountName, view.accountId)) +
+                // A per-agent connector address: the grant is that agent's (Message Router).
+                (view.agent ? fact(pair("oauthAgent"), `<span class="host">${esc(view.agent)}</span>`) : "") +
                 fact(pair("oauthReturns"), `<span class="host">${esc(view.returnHost)}</span>`) +
                 fact(pair("oauthCan"), say(pair("oauthCanText")));
         } else {

@@ -112,7 +112,7 @@ function warnOnce(line, log) {
  */
 export function resolveCaller(caller, routing, consumer = null) {
     const credential = caller?.credential || "open";
-    const agent = agentForCredential(routing.agents, credential);
+    const agent = agentForCredential(routing.agents, credential, caller?.agent ?? null);
     const sub = typeof consumer === "string" && consumer ? consumer : null;
     const base = agent ? agent.slug : credential;
     return { credential, label: caller?.label ?? null, agent, sub, key: sub ? `${base}/${sub}` : base };

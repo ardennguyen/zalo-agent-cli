@@ -334,9 +334,16 @@ hồi); chưa có gì được phân luồng hay bị từ chối, và mọi ng�
 
 - **`credential`** gắn agent với một thông tin xác thực máy chủ vốn đã kiểm tra: `apikey:<keyId>` (một API key có tên;
   API `access` hoặc `mcp agents` liệt kê các id), `oauth:<clientId>` hoặc `oauth:<clientId>/<grantId>` (một connector,
-  hoặc một lần cấp quyền của nó), `legacy` (token triển khai `--auth`), `open` (máy chủ không đòi token), `stdio` hoặc
-  `stdio:<tên>` (máy chủ stdio cục bộ chạy với `ZALO_MCP_AGENT=<tên>`). Agent không bao giờ là cái tên người gọi tự gõ;
-  `consumer` của tool chỉ là tên phụ (một nhãn, không phải ranh giới).
+  hoặc một lần cấp quyền của nó), `connector:<slug>` (địa chỉ connector riêng của agent, xem bên dưới), `legacy` (token
+  triển khai `--auth`), `open` (máy chủ không đòi token), `stdio` hoặc `stdio:<tên>` (máy chủ stdio cục bộ chạy với
+  `ZALO_MCP_AGENT=<tên>`). Agent không bao giờ là cái tên người gọi tự gõ; `consumer` của tool chỉ là tên phụ (một nhãn,
+  không phải ranh giới).
+- **Mỗi agent một connector.** `<publicUrl>/mcp/a/<slug>` là chính máy chủ MCP này dưới địa chỉ riêng của một agent.
+  Thêm nó làm connector (ví dụ của một project trong ứng dụng Claude) sẽ chạy OAuth cho resource
+  `<publicUrl>/mcp/a/<slug>`: trang duyệt cho chủ biết đang kết nối agent nào, và token của lần cấp quyền đó có địa chỉ ấy
+  làm audience. Token như vậy mở được địa chỉ đó và `/mcp`, không bao giờ mở địa chỉ của agent khác; nó là agent gắn bằng
+  `connector:<slug>`, hoặc không là agent nào khi chưa có agent như thế (từ chối mặc định). Các thông tin xác thực khác
+  (API key, token triển khai) dùng ở địa chỉ này như ở `/mcp`.
 - **`mark`** (mặc định `🤖 <name>:`) được thêm vào đầu mọi văn bản và chú thích agent gửi bằng `zalo_send_message`, trừ
   khi văn bản đã bắt đầu bằng nó. **`marks`** (`shown`, mặc định, hoặc `hidden`) là thiết lập của tài khoản;
   **`markDisplay`** của agent ghi đè nó: `inherit` (mặc định), `everywhere`, `owner` (chỉ trong My Documents) hoặc

@@ -45,6 +45,10 @@ const AUTH_CODE_TTL_SEC = 300;
  * The scopes this server takes. None narrows what a token can do: every one grants this account's MCP tools, so a
  * client may ask for any of them (Gemini asks for ACCESS_VIEW_MANAGE_MCP_CONTENT, others for offline_access).
  */
+/** A per-agent connector address: `/mcp/a/<slug>` (docs: Message Router, one connector per agent). */
+export const AGENT_PATH = /^\/mcp\/a\/([a-z][a-z0-9-]{0,23})\/?$/;
+const AGENT_SLUG = /^[a-z][a-z0-9-]{0,23}$/;
+
 export const SUPPORTED_SCOPES = Object.freeze(["mcp:tools", "offline_access", "ACCESS_VIEW_MANAGE_MCP_CONTENT"]);
 /** The most dynamically registered clients kept for one account. */
 export const MAX_DYNAMIC_CLIENTS = 100;
@@ -704,6 +708,19 @@ export function mountOAuth(app, ctx) {
 
     const issuerOf = (req) => resolveIssuerOrigin(req, { publicUrl, isTls, trustedProxies });
     const resourceOf = (req) => `${issuerOf(req)}/mcp`;
+    /**
+     * The agent a resource names: `<issuer>/mcp` names none (null), `<issuer>/mcp/a/<slug>` (a per-agent connector
+     * address) names `<slug>`; anything else is not this server's resource (undefined).
+     */
+    const agentOfResource = (resource, iss) => {
+        const r = String(resource ?? "").replace(/\/+$/, "");
+        if (r === `${iss}/mcp`) return null;
+        if (!r.startsWith(`${iss}/mcp/a/`)) return undefined;
+        const slug = r.slice(`${iss}/mcp/a/`.length);
+        return AGENT_SLUG.test(slug) ? slug : undefined;
+    };
+    /** The agent in a request's path (`/mcp/a/<slug>`), or null on `/mcp`. */
+    const agentOfPath = (req) => AGENT_PATH.exec(req?.path ?? "")?.[1] ?? null;
     const ipOf = (req) => clientIpOf(req, trustedProxies);
     const limits = Object.fromEntries(Object.entries(RATE_LIMITS).map(([k, v]) => [k, rateLimiter(v, now)]));
     const limited = (name) => (req, res, next) => {
@@ -727,11 +744,14 @@ export function mountOAuth(app, ctx) {
     app.get(/^\/\.well-known\/oauth-protected-resource(\/.*)?$/, whenOn, (req, res) => {
         const suffix = (req.params[0] ?? "").replace(/\/+$/, "");
         const base = issuerPath(req);
-        if (suffix && ![`/mcp`, `${base}/mcp`, base].includes(suffix))
+        // A per-agent connector address (`/mcp/a/<slug>`) is a resource of its own.
+        const agent =
+            AGENT_PATH.exec(suffix.startsWith(base) && base ? suffix.slice(base.length) : suffix)?.[1] ?? null;
+        if (suffix && !agent && ![`/mcp`, `${base}/mcp`, base].includes(suffix))
             return res.status(404).json({ error: "not_found" });
         const origin = issuerOf(req);
         res.json({
-            resource: `${origin}/mcp`,
+            resource: agent ? `${origin}/mcp/a/${agent}` : `${origin}/mcp`,
             authorization_servers: [origin],
             bearer_methods_supported: ["header"],
             scopes_supported: [...SUPPORTED_SCOPES],
@@ -859,9 +879,12 @@ export function mountOAuth(app, ctx) {
         if (str(params.code_challenge_method) !== "S256") {
             return fail("invalid_request", "code_challenge_method must be S256");
         }
-        const resource = resourceOf(req);
-        if (params.resource !== undefined && str(params.resource).replace(/\/+$/, "") !== resource) {
-            return fail("invalid_target", `resource must be ${resource}`);
+        // The resource asked for: the account's MCP address, or one agent's (`/mcp/a/<slug>`): then the grant is
+        // that agent's, which the owner sees on the approve page before he approves it.
+        const resource = params.resource === undefined ? resourceOf(req) : str(params.resource).replace(/\/+$/, "");
+        const agent = agentOfResource(resource, iss);
+        if (agent === undefined) {
+            return fail("invalid_target", `resource must be ${resourceOf(req)} or ${resourceOf(req)}/a/<agent>`);
         }
         const scope = grantScope(params.scope);
         if (!securePage) {
@@ -894,7 +917,8 @@ export function mountOAuth(app, ctx) {
             title: "Connect an app to this Zalo account",
             description:
                 `The app ${label} asks to use this Zalo account through its MCP tools: read its messages and send as ` +
-                `it. Approving sends you back to ${redirectOrigin}.`,
+                `it.${agent ? ` It connects as the account's agent "${agent}": what it reads and sends is that agent's.` : ""} ` +
+                `Approving sends you back to ${redirectOrigin}.`,
             secretKind: a.kind,
             formActionOrigins: [redirectOrigin],
             declineRedirect: back({ error: "access_denied", error_description: "The owner declined" }),
@@ -906,6 +930,7 @@ export function mountOAuth(app, ctx) {
                 accountName: securePage.accountDisplayName?.() ?? "",
                 accountId: securePage.accountId,
                 returnHost: new URL(redirectUri).host,
+                ...(agent ? { agent } : {}),
             },
             onSubmit: async ({ secret: typed }) => {
                 const r = await a.check(typed);
@@ -1066,9 +1091,9 @@ export function mountOAuth(app, ctx) {
             return oauthError(res, 400, "unauthorized_client", "client_credentials needs a confidential client");
         }
         const iss = issuerOf(req);
-        const aud = `${iss}/mcp`;
-        if (req.body.resource !== undefined && str(req.body.resource).replace(/\/+$/, "") !== aud) {
-            return oauthError(res, 400, "invalid_target", `resource must be ${aud}`);
+        const aud = req.body.resource === undefined ? `${iss}/mcp` : str(req.body.resource).replace(/\/+$/, "");
+        if (agentOfResource(aud, iss) === undefined) {
+            return oauthError(res, 400, "invalid_target", `resource must be ${iss}/mcp or ${iss}/mcp/a/<agent>`);
         }
         const scp = grantScope(req.body.scope);
         const exp = nowSec() + accessTtl;
@@ -1111,13 +1136,21 @@ export function mountOAuth(app, ctx) {
     const identifyAccess = (token, req) => {
         const at = verifyToken(token, "zmcp_at_", accessKey(), nowSec());
         if (!at || at.typ !== "at") return null;
+        let agent = null;
         if (req) {
             const iss = issuerOf(req);
-            if (at.iss !== iss || at.aud !== `${iss}/mcp`) return null;
+            if (at.iss !== iss) return null;
+            agent = agentOfResource(at.aud, iss);
+            if (agent === undefined) return null;
+            // A per-agent address takes only that agent's tokens (RFC 8707 audience); `/mcp` takes any of the account's.
+            const onPath = agentOfPath(req);
+            if (onPath && onPath !== agent) return null;
+        } else {
+            agent = /\/mcp\/a\/([a-z][a-z0-9-]{0,23})$/.exec(String(at.aud ?? ""))?.[1] ?? null;
         }
         if (!clientOf(at.cid)) return null;
         const f = store.family(at.fam);
-        return f && f.cid === at.cid ? { clientId: at.cid, grantId: at.fam, scope: at.scp ?? null } : null;
+        return f && f.cid === at.cid ? { clientId: at.cid, grantId: at.fam, scope: at.scp ?? null, agent } : null;
     };
     /**
      * Which OAuth client (and grant) a bearer token belongs to, or null when it opens nothing: the caller's identity
@@ -1142,7 +1175,8 @@ export function mountOAuth(app, ctx) {
         mode: modeOf,
         verifyBearer,
         identifyBearer,
-        resourceMetadataUrl: (req) => `${issuerOf(req)}/.well-known/oauth-protected-resource/mcp`,
+        resourceMetadataUrl: (req) =>
+            `${issuerOf(req)}/.well-known/oauth-protected-resource/mcp${agentOfPath(req) ? `/a/${agentOfPath(req)}` : ""}`,
         store,
     };
 }

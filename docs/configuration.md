@@ -398,7 +398,8 @@ pause, affinity, sticky focus and fallback need `routing.claims: true`.
   `POST /access/<ownId>/route-test` (with unsaved routes, for a console's test box).
 - **A console's view of the running router** (`POST /access/<ownId>/routing`, `{action, ...}`, answered by the account's
   daemon; 409 `DAEMON_NOT_RUNNING` when none runs): `events` (routing decisions, claims, hand-offs, human pauses and
-  refused sends, ids only, never a message's text; the newest 1,000 since the daemon started), `claims`, `release`,
+  refused sends, ids only, never a message's text; kept sealed in `routing-events.json` in the account folder
+  for `routing.logDays` days, default 7, at least one, the newest 5,000 at most, across restarts), `claims`, `release`,
   `assign` (to an agent, a staff member or `human`), `human` / `endHuman` (start or end the owner's pause), and the staff
   inbox for a staff member who answers in a console: `inbox`, `thread` (the conversation's cached messages), `claim`,
   `unclaim`, `send` (sent from this account with the staff member's mark). A staff member reaches only conversations

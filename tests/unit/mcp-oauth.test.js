@@ -35,6 +35,7 @@ import {
     OAUTH_STATE_FILE,
     SUPPORTED_SCOPES,
     createOAuthStore,
+    slugFromName,
     oauthStartCheck,
     redirectUriMatches,
     redirectUriProblem,
@@ -1019,5 +1020,54 @@ describe("per-agent connector addresses (/mcp/a/<slug>)", () => {
             assert.equal(new URL(r.headers.location).searchParams.get("error"), "invalid_target", resource);
         }
         assert.equal((await req(s.port, "/.well-known/oauth-protected-resource/mcp/a/Bad")).status, 404);
+    });
+});
+
+describe("binding a /mcp grant to an agent on the approve page", () => {
+    it("offers no agent, the account's agents or a new one; the pick is kept with the grant", async () => {
+        const s = await start();
+        const { challenge, verifier } = pkce();
+        const startRes = await req(
+            s.port,
+            authorizePath({
+                response_type: "code",
+                client_id: CONFIDENTIAL.clientId,
+                redirect_uri: CLAUDE_CB,
+                code_challenge: challenge,
+                code_challenge_method: "S256",
+            }),
+        );
+        const pagePath = new URL(startRes.headers.location, `http://127.0.0.1:${s.port}/authorize`).pathname;
+        const page = await req(s.port, pagePath);
+        assert.match(page.text, /<select id="agent" name="agent"/);
+        assert.match(page.text, /value="\+new"/);
+        const answer = await req(s.port, pagePath, {
+            method: "POST",
+            form: { decision: "approve", secret: PASSWORD, agent: "+new", agentNew: "Arden Dev" },
+        });
+        const code = new URL(answer.headers.location).searchParams.get("code");
+        const res = await tokenRequest(s.port, {
+            grant_type: "authorization_code",
+            code,
+            redirect_uri: CLAUDE_CB,
+            code_verifier: verifier,
+            client_id: CONFIDENTIAL.clientId,
+            client_secret: CONFIDENTIAL.clientSecret,
+        });
+        assert.equal(res.status, 200, res.text);
+        const grants = createOAuthStore({ file: join(s.accountDir, OAUTH_STATE_FILE) }).listGrants();
+        assert.deepEqual(
+            grants.map((g) => [g.agent, g.agentName]),
+            [["arden-dev", "Arden Dev"]],
+        );
+        assert.equal(slugFromName("Trợ lý Đơn hàng!"), "tro-ly-don-hang");
+        assert.equal(slugFromName("123"), null);
+    });
+
+    it("an agent's own address shows its agent and no picker", async () => {
+        const s = await start();
+        const iss = (await req(s.port, "/.well-known/oauth-authorization-server")).json.issuer;
+        const a = await approve(s.port, { extra: { resource: `${iss}/mcp/a/dev` } });
+        assert.doesNotMatch(a.page.text, /name="agent"/);
     });
 });

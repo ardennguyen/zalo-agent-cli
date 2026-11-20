@@ -250,3 +250,51 @@ describe("the admin API's routing route", () => {
         assert.deepEqual([refused.status, refused.body.code], [409, "NOT_ROUTED"]);
     });
 });
+
+describe("routing events across a restart", () => {
+    it("are kept sealed in the account folder for routing.logDays, with their stream position", async () => {
+        const { mkdtempSync, existsSync, readFileSync } = await import("node:fs");
+        const { join } = await import("node:path");
+        const dir = mkdtempSync(join(SANDBOX_CONFIG_DIR, "routing-events-"));
+        let t = Date.parse("2026-11-18T10:00:00Z");
+        const make = (logDays) =>
+            createRouterRuntime({
+                routingNow: () =>
+                    resolveRouting({
+                        policy: {
+                            routing: {
+                                ...ROUTING,
+                                logDays,
+                                agents: [{ slug: "ai", name: "AI", credential: "legacy" }],
+                            },
+                        },
+                    }),
+                getApi: () => ({ sendMessage: async () => ({}) }),
+                ids: () => ({ ownId: "1001", send2meId: MYDOCS }),
+                presenceOf: () => ({ state: "listening" }),
+                accountDir: dir,
+                now: () => t,
+            });
+        const first = make(2);
+        await first.onIncoming(msg({ msgId: "m1" }));
+        const head = first.eventsHead();
+        first.flush();
+        assert.ok(existsSync(join(dir, "routing-events.json")));
+        assert.doesNotMatch(readFileSync(join(dir, "routing-events.json"), "utf8"), /routed/, "sealed");
+
+        // Restarted: the same events and position, so the controller publishes nothing twice.
+        const again = make(2);
+        assert.deepEqual(again.eventsHead(), head);
+        assert.equal((await again.serve({ action: "events", bootId: head.bootId, since: 0 })).events.length, 1);
+        await again.onIncoming(msg({ msgId: "m2" }));
+        assert.equal(again.eventsHead().seq, head.seq + 1);
+
+        // Past the plan's retention, events are dropped at the next write.
+        t += 3 * 24 * 60 * 60_000;
+        await again.onIncoming(msg({ msgId: "m3" }));
+        assert.deepEqual(
+            (await again.serve({ action: "events" })).events.map((e) => e.msgId),
+            ["m3"],
+        );
+    });
+});

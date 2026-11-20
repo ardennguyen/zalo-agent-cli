@@ -274,6 +274,9 @@ export const POLICY_KEYS = Object.freeze({
     "routing.agents": { check: checkAgents, scopes: ["account"] },
     "routing.marks": { check: oneOf(ACCOUNT_MARKS) },
     "routing.presenceWindow": { check: duration(10_000) },
+    // How many days the daemon keeps its routing events (the console's Activity; the plan's retention, 0: a day, enough
+    // to hand them to the console).
+    "routing.logDays": { check: wholeNumber(0, 365) },
     // Routing itself (src/core/message-router.js): each key checked as part of a routing block.
     "routing.enabled": { check: bool },
     "routing.claims": { check: bool },

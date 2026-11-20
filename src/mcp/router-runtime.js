@@ -15,14 +15,18 @@ import { readSealedJson, scopeOfDir, writeSealedJson } from "../core/keystore/in
 /** Claims, the human pause and sticky focus, kept across a restart (sealed, in the account folder). */
 export const ROUTING_STATE_FILE = "routing-state.json";
 const STATE_SPEC = Object.freeze({ kind: "routing-state", use: "boot" });
+/** The routing events, kept across restarts for the plan's Activity retention (sealed, in the account folder). */
+export const ROUTING_EVENTS_FILE = "routing-events.json";
+const EVENTS_SPEC = Object.freeze({ kind: "routing-events", use: "boot" });
+const DAY_MS = 24 * 60 * 60_000;
 const STATE_WRITE_DELAY_MS = 2000;
 
 const LABELS_TTL_MS = 5 * 60_000;
 const NOTICE_GAP_MS = 10 * 60_000;
 const STAFF_HANDOFF_MS = 30 * 60_000;
 const STAFF_PREFIX = "📩";
-/** How many routing events a daemon keeps for the console's Activity view and the staff inbox (ids only, no text). */
-export const ROUTING_EVENTS_MAX = 1000;
+/** The most routing events a daemon keeps for the console's Activity view and the staff inbox (ids only, no text). */
+export const ROUTING_EVENTS_MAX = 5000;
 const STAFF_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const THREAD_ID = /^[0-9]{1,30}$/;
 const MAX_STAFF_TEXT = 4000;
@@ -92,13 +96,49 @@ export function createRouterRuntime({
 
     // Routing events (docs/agent-routing.md §4.1): ids and decisions only, never a message's text. The fleet controller
     // reads them after `seq` moves and publishes them to the console (Activity, the staff inbox and its counts).
-    const bootId = randomBytes(4).toString("hex");
-    const events = [];
+    // They are kept sealed in the account folder (owner, 2026-11-20) for `routing.logDays` (at least a day), so a restart
+    // or a deploy loses none; the stream position (bootId, seq) is kept with them, so nothing is published twice.
+    const eventsFile = accountDir ? join(accountDir, ROUTING_EVENTS_FILE) : null;
+    let bootId = randomBytes(4).toString("hex");
+    let events = [];
     let seq = 0;
+    if (eventsFile && existsSync(eventsFile)) {
+        try {
+            const saved = readSealedJson(eventsFile, scopeOfDir(accountDir), EVENTS_SPEC);
+            if (saved?.v === 1 && typeof saved.bootId === "string" && Number.isInteger(saved.seq)) {
+                bootId = saved.bootId;
+                seq = saved.seq;
+                events = Array.isArray(saved.events) ? saved.events : [];
+            }
+        } catch (e) {
+            log(`[router] ${ROUTING_EVENTS_FILE} cannot be read (${e.message}); starting a new event log`);
+        }
+    }
+    const keepDays = () => Math.max(1, routingNow()?.logDays ?? 7);
+    const prune = () => {
+        const floor = now() - keepDays() * DAY_MS;
+        const first = events.findIndex((e) => Date.parse(e.at) >= floor);
+        if (first !== 0) events.splice(0, first < 0 ? events.length : first);
+        if (events.length > ROUTING_EVENTS_MAX) events.splice(0, events.length - ROUTING_EVENTS_MAX);
+    };
+    let eventsTimer = null;
+    const saveEvents = () => {
+        eventsTimer = null;
+        try {
+            prune();
+            writeSealedJson(eventsFile, scopeOfDir(accountDir), EVENTS_SPEC, { v: 1, bootId, seq, events });
+        } catch (e) {
+            log(`[router] ${ROUTING_EVENTS_FILE} not written: ${e.message}`);
+        }
+    };
     function emit(kind, fields = {}) {
         seq += 1;
         events.push({ id: `${bootId}-${seq}`, seq, at: new Date(now()).toISOString(), kind, ...fields });
-        if (events.length > ROUTING_EVENTS_MAX) events.splice(0, events.length - ROUTING_EVENTS_MAX);
+        prune();
+        if (eventsFile && !eventsTimer) {
+            eventsTimer = setTimeout(saveEvents, STATE_WRITE_DELAY_MS);
+            eventsTimer.unref?.();
+        }
     }
 
     const cfgNow = () => routingNow().cfg;
@@ -508,6 +548,7 @@ export function createRouterRuntime({
         /** Write the saved state now (on shutdown). */
         flush: () => {
             if (stateFile) save();
+            if (eventsFile) saveEvents();
         },
         test,
         onIncoming,

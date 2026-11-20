@@ -48,6 +48,9 @@ const SENT_BY_MAX = 5000;
 const SENT_BY_TTL_MS = 30 * 24 * 3600_000;
 const NOTE_MAX = 200;
 
+/** How many days routing events are kept when the policy says nothing (`routing.logDays`). */
+export const DEFAULT_LOG_DAYS = 7;
+
 /**
  * The account's routing settings: the live policy's `routing` block over mcp-config.json's. A list that does not
  * check is ignored (and said once), so a bad file never binds anyone.
@@ -73,6 +76,9 @@ export function resolveRouting({ config = null, accountId = null, policy, log = 
     }
     const [marksRaw] = pick("marks");
     const marks = ACCOUNT_MARKS.includes(marksRaw) ? marksRaw : "shown";
+    const [logDaysRaw] = pick("logDays");
+    const logDays =
+        Number.isInteger(logDaysRaw) && logDaysRaw >= 0 && logDaysRaw <= 365 ? logDaysRaw : DEFAULT_LOG_DAYS;
     const [windowRaw] = pick("presenceWindow");
     const windowMs = windowRaw === undefined ? null : durationMs(windowRaw);
     const block = {};
@@ -89,6 +95,7 @@ export function resolveRouting({ config = null, accountId = null, policy, log = 
         agents,
         marks,
         presenceWindowMs: windowMs && windowMs >= 10_000 ? windowMs : DEFAULT_PRESENCE_WINDOW_MS,
+        logDays,
         source,
         cfg: cfg.value,
     };

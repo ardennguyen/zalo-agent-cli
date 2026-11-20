@@ -35,6 +35,10 @@ export const SECURE_TEXT = Object.freeze({
         oauthAccount: "Account",
         oauthReturns: "After you answer, you return to",
         oauthAgent: "It connects as the agent",
+        oauthAgentPick: "Agent of this connection (optional)",
+        oauthAgentNone: "No agent (it sees the account as before)",
+        oauthAgentNew: "A new agent…",
+        oauthAgentNewName: "New agent's name (when you chose a new agent)",
         oauthCan: "It will be able to",
         oauthCanText:
             "Use this account's MCP tools: read its messages and conversations, and send messages as this account.",
@@ -107,6 +111,10 @@ export const SECURE_TEXT = Object.freeze({
         oauthAccount: "Tài khoản",
         oauthReturns: "Sau khi trả lời, bạn sẽ quay về",
         oauthAgent: "Kết nối với vai trò agent",
+        oauthAgentPick: "Agent của kết nối này (không bắt buộc)",
+        oauthAgentNone: "Không gắn agent (thấy tài khoản như trước)",
+        oauthAgentNew: "Một agent mới…",
+        oauthAgentNewName: "Tên agent mới (khi bạn chọn agent mới)",
         oauthCan: "Ứng dụng sẽ có thể",
         oauthCanText:
             "Dùng các công cụ MCP của tài khoản này: đọc tin nhắn và cuộc trò chuyện, và gửi tin nhắn dưới tên " +
@@ -253,6 +261,18 @@ const passwordInput = () =>
     `<div class="field"><label for="secret">${say(pair("approverPassword"))}</label><input id="secret" name="secret" ` +
     `type="password" class="wide" autocomplete="off" maxlength="256" required></div>`;
 
+/**
+ * The OAuth approve page's agent picker (Message Router): no agent, one of the account's agents, or a new one by name.
+ * The choice is the grant's agent; a new name becomes an agent the console offers to create.
+ */
+const agentPicker = (agents) =>
+    `<div class="field"><label for="agent">${say(pair("oauthAgentPick"))}</label><select id="agent" name="agent" class="wide">` +
+    `<option value="">${say(pair("oauthAgentNone"))}</option>` +
+    agents.map((a) => `<option value="${esc(a.slug)}">${esc(a.name)} (${esc(a.slug)})</option>`).join("") +
+    `<option value="+new">${say(pair("oauthAgentNew"))}</option></select></div>` +
+    `<div class="field"><label for="agentNew">${say(pair("oauthAgentNewName"))}</label><input id="agentNew" name="agentNew" ` +
+    `class="wide" maxlength="40" autocomplete="off"></div>`;
+
 const buttons = (yes, no, noValidate) =>
     `<div class="actions"><button type="submit" name="decision" value="approve">${say(pair(yes))}</button>` +
     `<button type="submit" name="decision" value="decline" class="secondary"${noValidate ? " formnovalidate" : ""}>` +
@@ -288,7 +308,9 @@ export function formView(ticket, notice = null, { lang = null } = {}) {
                 : ticket.secretKind === "password"
                   ? passwordInput()
                   : "";
-        fields = secret + buttons("approve", "decline", Boolean(secret));
+        const picker =
+            view.type === "oauth" && !view.agent && Array.isArray(view.agents) ? agentPicker(view.agents) : "";
+        fields = picker + secret + buttons("approve", "decline", Boolean(secret));
         if (view.type === "oauth") {
             badge = ICONS.link;
             heading = pair("oauthHeading");

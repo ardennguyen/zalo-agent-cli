@@ -27,6 +27,7 @@
  *   in this process's memory, single use: a restart drops them, so a code cannot be replayed across one.
  */
 
+import { resolveRouting } from "./agents.js";
 import { createHash, createHmac, hkdfSync, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -48,6 +49,21 @@ const AUTH_CODE_TTL_SEC = 300;
 /** A per-agent connector address: `/mcp/a/<slug>` (docs: Message Router, one connector per agent). */
 export const AGENT_PATH = /^\/mcp\/a\/([a-z][a-z0-9-]{0,23})\/?$/;
 const AGENT_SLUG = /^[a-z][a-z0-9-]{0,23}$/;
+
+/** An agent slug made from a name, as the console makes it: lowercase letters, digits and dashes; null when none is left. */
+export function slugFromName(name) {
+    const s = String(name ?? "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/đ/gi, "d")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^[^a-z]+/, "")
+        .replace(/-+$/, "")
+        .slice(0, 24)
+        .replace(/-+$/, "");
+    return AGENT_SLUG.test(s) ? s : null;
+}
 
 export const SUPPORTED_SCOPES = Object.freeze(["mcp:tools", "offline_access", "ACCESS_VIEW_MANAGE_MCP_CONTENT"]);
 /** The most dynamically registered clients kept for one account. */
@@ -314,7 +330,7 @@ export function createOAuthStore({ file = null, now = () => Date.now() } = {}) {
          * hash is kept), else it ends with its access token at `accessExp`.
          * @returns {{fam: string, refreshToken: string|null}}
          */
-        createFamily({ cid, scp, aud, iss, accessExp, refreshTtlSec = null }) {
+        createFamily({ cid, scp, aud, iss, accessExp, refreshTtlSec = null, agt = null, agn = null }) {
             fresh();
             const fam = randomBytes(12).toString("hex");
             const refreshToken = refreshTtlSec ? `zmcp_rt_${fam}.${randomBytes(32).toString("base64url")}` : null;
@@ -323,6 +339,7 @@ export function createOAuthStore({ file = null, now = () => Date.now() } = {}) {
                 scp,
                 aud,
                 iss,
+                ...(agt ? { agt, ...(agn ? { agn } : {}) } : {}),
                 rt: refreshToken ? hashOf(refreshToken) : null,
                 old: [],
                 exp: refreshToken ? sec() + refreshTtlSec : accessExp,
@@ -415,6 +432,9 @@ export function createOAuthStore({ file = null, now = () => Date.now() } = {}) {
                     issuedAt: f.iat ? new Date(f.iat * 1000).toISOString() : null,
                     expiresAt: new Date(f.exp * 1000).toISOString(),
                     refreshable: Boolean(f.rt),
+                    // The agent this grant is for: its address (`/mcp/a/<slug>`), or the owner's pick on the approve page.
+                    agent: f.agt ?? /\/mcp\/a\/([a-z][a-z0-9-]{0,23})$/.exec(String(f.aud ?? ""))?.[1] ?? null,
+                    agentName: f.agn ?? null,
                 }));
         },
         /** Remove a stored client (registered or made here) and every grant it holds. Returns the grants revoked, or -1. */
@@ -642,6 +662,15 @@ export function mountOAuth(app, ctx) {
     const secretsAsBearer = Boolean(oauth?.secretsAsBearer);
     const publicUrl = oauth?.issuerUrl || null;
     const accountDir = ctx.accountDir ?? null;
+    // The account's agents, for the approve page's picker (Message Router); none when the policy names none.
+    const agentsForPicker = () => {
+        try {
+            const r = resolveRouting({ accountId: securePage?.accountId ?? null, log: () => {} });
+            return r.agents.filter((x) => x.enabled).map((x) => ({ slug: x.slug, name: x.name }));
+        } catch {
+            return [];
+        }
+    };
     if (!configEnabled && !publicUrl) {
         return {
             enabled: false,
@@ -930,11 +959,17 @@ export function mountOAuth(app, ctx) {
                 accountName: securePage.accountDisplayName?.() ?? "",
                 accountId: securePage.accountId,
                 returnHost: new URL(redirectUri).host,
-                ...(agent ? { agent } : {}),
+                // A per-agent address names its agent; on /mcp the owner may pick one (or name a new one).
+                ...(agent ? { agent } : { agents: agentsForPicker() }),
             },
-            onSubmit: async ({ secret: typed }) => {
+            onSubmit: async ({ secret: typed, agent: picked, agentNew }) => {
                 const r = await a.check(typed);
                 if (r.status !== "approved") return r;
+                // The agent the owner picked for a grant on /mcp: an existing one, or a new one named here (its slug
+                // made from the name, as the console makes it); none keeps the grant as it always was.
+                let chosen = agent;
+                if (!chosen && picked === "+new") chosen = slugFromName(agentNew);
+                else if (!chosen && picked && AGENT_SLUG.test(picked)) chosen = picked;
                 pruneCodes();
                 const code = `zmcp_code_${randomBytes(32).toString("base64url")}`;
                 codes.set(hashOf(code), {
@@ -945,6 +980,15 @@ export function mountOAuth(app, ctx) {
                     aud: resource,
                     iss,
                     exp: nowSec() + AUTH_CODE_TTL_SEC,
+                    ...(chosen && !agent
+                        ? {
+                              agt: chosen,
+                              agn:
+                                  String(agentNew ?? "")
+                                      .trim()
+                                      .slice(0, 40) || null,
+                          }
+                        : {}),
                 });
                 return { status: "approved", message: "Approved. Returning to the app.", redirect: back({ code }) };
             },
@@ -1044,6 +1088,7 @@ export function mountOAuth(app, ctx) {
                 scp: code.scp,
                 aud: code.aud,
                 iss: code.iss,
+                ...(code.agt ? { agt: code.agt, agn: code.agn ?? null } : {}),
                 accessExp: nowSec() + accessTtl,
                 refreshTtlSec: refreshTtl,
             });
@@ -1150,6 +1195,8 @@ export function mountOAuth(app, ctx) {
         }
         if (!clientOf(at.cid)) return null;
         const f = store.family(at.fam);
+        // The agent the owner picked on the approve page for a grant on /mcp (kept with the grant).
+        if (!agent && f?.agt && AGENT_SLUG.test(f.agt)) agent = f.agt;
         return f && f.cid === at.cid ? { clientId: at.cid, grantId: at.fam, scope: at.scp ?? null, agent } : null;
     };
     /**

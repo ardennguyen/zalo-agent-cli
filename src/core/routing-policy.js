@@ -115,8 +115,9 @@ export function defaultMark(agent) {
 }
 
 /**
- * The agent a credential is bound to: a grant made for an agent's connector address (`/mcp/a/<slug>`, carried as
- * `agentHint`) is that agent's when it is bound by `connector:<slug>`, and nobody's otherwise (it fails closed); else an
+ * The agent a credential is bound to: a grant made for an agent's connector address (`/mcp/a/<slug>`) or bound to an
+ * agent on the approve page (carried as `agentHint`) is the agent bound by `connector:<slug>`, else the agent with that
+ * slug, and nobody's when there is none (it fails closed); else an
  * exact grant binding (`oauth:<client>/<grant>`) wins over the client's.
  *
  * @param {Array<object>} agents - a checked list
@@ -126,7 +127,13 @@ export function defaultMark(agent) {
  */
 export function agentForCredential(agents, credential, agentHint = null) {
     if (!credential) return null;
-    if (agentHint) return agents.find((a) => a.credential === `connector:${agentHint}`) ?? null;
+    if (agentHint)
+        return (
+            agents.find((a) => a.credential === `connector:${agentHint}`) ??
+            // The owner picked this agent on the approve page (or approved its address): it is that agent's.
+            agents.find((a) => a.slug === agentHint) ??
+            null
+        );
     const exact = agents.find((a) => a.credential === credential);
     if (exact) return exact;
     const slash = credential.indexOf("/");

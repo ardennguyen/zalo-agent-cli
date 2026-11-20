@@ -378,3 +378,45 @@ describe("the tools with routing on", () => {
         assert.equal((await call("zalo_inbox", { action: "claims" })).claims.length, 0);
     });
 });
+
+describe("routing state survives a restart (owner, 2026-11-20)", () => {
+    it("claims, the human pause and sticky focus are saved sealed and read back; expired ones are dropped", async () => {
+        const { mkdirSync, mkdtempSync, existsSync, readFileSync } = await import("node:fs");
+        const { join } = await import("node:path");
+        mkdirSync(SANDBOX_CONFIG_DIR, { recursive: true });
+        const dir = mkdtempSync(join(SANDBOX_CONFIG_DIR, "routing-"));
+        let t = DAY;
+        const make = () =>
+            createRouterRuntime({
+                routingNow: () => resolveRouting({ policy: { routing: { ...ROUTING, agents: [] } } }),
+                getApi: () => ({}),
+                ids: () => ({ ownId: "1001", send2meId: MYDOCS }),
+                accountDir: dir,
+                now: () => t,
+            });
+        const first = make();
+        first.claims.startHuman(CUSTOMER, 15 * 60_000);
+        first.claims.setSticky(OWNER, "dev", 60_000);
+        first.claims.assign("t9", "dev", { ms: 60 * 60_000, held: true });
+        first.flush();
+        assert.ok(existsSync(join(dir, "routing-state.json")));
+        assert.doesNotMatch(readFileSync(join(dir, "routing-state.json"), "utf8"), /"dev"/, "sealed");
+        t += 5 * 60_000;
+        const again = make();
+        assert.equal(again.guard({ agent: AGENTS[0] }, CUSTOMER, null).code, "HUMAN_ACTIVE");
+        assert.equal(again.claims.holder("t9"), "dev");
+        assert.equal(again.claims.sticky(OWNER), null, "the 1-minute focus expired while down");
+    });
+});
+
+describe("the group-mention condition", () => {
+    it("matches only a group message that mentions the account", () => {
+        const c = cfg({ routes: [{ id: "m", target: "ai", match: { threadType: "group", mentionsAccount: true } }] });
+        const g = msg({ threadType: "group", threadId: "g1" });
+        assert.equal(decide(g, { agents: AGENTS, cfg: c, now: DAY, mentionsMe: true, presenceOf: listening }).to, "ai");
+        assert.equal(
+            decide(g, { agents: AGENTS, cfg: c, now: DAY, mentionsMe: false, presenceOf: listening }).to,
+            "human",
+        );
+    });
+});

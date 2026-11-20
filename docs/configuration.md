@@ -359,7 +359,7 @@ owner, at the start; a `#hashtag` anywhere, from anyone when the route allows it
 and kept in `rawText`), **sticky focus** (after a sticky trigger the owner's next messages stay with that agent until
 `@end` or `stickyTtl`), **reply affinity** (a reply to an agent's message goes back to it, `affinityTtl`), an active
 **claim**, then the **routes** table (first match: `threads`, `threadType`, `myDocuments`, `senders`, Zalo `labels`,
-`kinds`, a time `window`), then the **default**. A live agent away for longer than `fallbackAfter` hands over to its
+`kinds`, a time `window`, `mentionsAccount` for a group message that mentions the account or @All), then the **default**. Claims, the human pause and sticky focus survive a restart (sealed in `routing-state.json`). A live agent away for longer than `fallbackAfter` hands over to its
 route's `fallback` chain (another agent, `human` with a notice in My Documents, or `{autoReply: text}`). Claims, human
 pause, affinity, sticky focus and fallback need `routing.claims: true`.
 

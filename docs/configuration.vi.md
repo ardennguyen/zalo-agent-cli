@@ -360,7 +360,7 @@ cuộc trò chuyện đó trong `humanPause`, mặc định 15 phút), **lệnh 
 trung** (sau một lệnh gọi sticky, các tin tiếp theo của chủ ở lại với agent đó tới `@end` hoặc `stickyTtl`), **trả lời
 theo tin đã gửi** (trả lời một tin của agent thì quay lại agent đó, `affinityTtl`), **nhận việc** đang mở, rồi bảng
 **luồng** (khớp đầu tiên: `threads`, `threadType`, `myDocuments`, `senders`, nhãn Zalo `labels`, `kinds`, khung giờ
-`window`), rồi **mặc định**. Agent trực tiếp vắng lâu hơn `fallbackAfter` thì chuyển theo chuỗi `fallback` của luồng (agent
+`window`, `mentionsAccount` cho tin nhóm nhắc tới tài khoản hoặc @All), rồi **mặc định**. Nhận việc, tạm dừng và tập trung được giữ qua khởi động lại (niêm phong trong `routing-state.json`). Agent trực tiếp vắng lâu hơn `fallbackAfter` thì chuyển theo chuỗi `fallback` của luồng (agent
 khác, `human` kèm thông báo trong My Documents, hoặc `{autoReply: text}`). Nhận việc, tạm dừng, trả lời theo tin, tập
 trung và dự phòng cần `routing.claims: true`.
 

@@ -88,6 +88,7 @@ function checkRoute(r, i) {
         match.senders = s;
     }
     if (m.labels !== undefined) match.labels = words(m.labels).slice(0, 20);
+    if (m.mentionsAccount !== undefined) match.mentionsAccount = m.mentionsAccount === true;
     if (m.kinds !== undefined) {
         const k = words(m.kinds);
         if (k.some((x) => !KINDS.includes(x)))
@@ -252,6 +253,7 @@ export const hashtags = (text) =>
  * @param {object} ctx.cfg - checked routing settings ({@link checkRouting})
  * @param {Array<object>} ctx.agents - checked agents (src/core/routing-policy.js)
  * @param {boolean} [ctx.myDocuments] - the message is in the account's own My Documents
+ * @param {boolean} [ctx.mentionsMe] - the message mentions the account (or @All) in a group
  * @param {number} [ctx.now]
  * @param {(threadId: string) => string[]} [ctx.labelsOf] - the conversation's Zalo labels
  * @param {(msgId: string) => {agent: string|null, at: string}|null} [ctx.sentByOf] - who sent a message (affinity)
@@ -390,6 +392,7 @@ export function decide(msg, ctx) {
             if (!m.labels.some((l) => have.includes(l.toLowerCase()))) return false;
         }
         if (m.kinds && m.kinds.length && !m.kinds.includes(kindOf(msg))) return false;
+        if (m.mentionsAccount !== undefined && m.mentionsAccount !== Boolean(ctx.mentionsMe)) return false;
         if (m.window && !inWindow(m.window, now)) return false;
         return true;
     }
@@ -423,7 +426,7 @@ export function kindOf(msg) {
  *
  * @param {{now?: () => number}} [opts]
  */
-export function createClaims({ now = Date.now } = {}) {
+export function createClaims({ now = Date.now, onChange = () => {} } = {}) {
     const threads = new Map(); // threadId -> {holder, state, until, note}
     const messages = new Map(); // msgId -> {holder, until}
     const human = new Map(); // threadId -> until
@@ -440,13 +443,16 @@ export function createClaims({ now = Date.now } = {}) {
     return {
         humanUntil: (thread) => live(human, String(thread)) ?? 0,
         startHuman(thread, ms) {
+            onChange();
             human.set(String(thread), now() + ms);
         },
         endHuman(thread) {
+            onChange();
             human.delete(String(thread));
         },
         sticky: (thread) => live(sticky, String(thread))?.agent ?? null,
         setSticky(thread, agent, ms) {
+            onChange();
             if (agent === null) sticky.delete(String(thread));
             else sticky.set(String(thread), { agent, until: now() + ms });
         },
@@ -459,6 +465,7 @@ export function createClaims({ now = Date.now } = {}) {
         },
         claimOf: (thread) => live(threads, String(thread)),
         assign(thread, holder, { ms, ownership = "thread", msgId = null, held = false, note = null } = {}) {
+            onChange();
             if (ownership === "message" && msgId) messages.set(String(msgId), { holder, until: now() + ms });
             else threads.set(String(thread), { holder, state: held ? "held" : "assigned", until: now() + ms, note });
         },
@@ -466,9 +473,11 @@ export function createClaims({ now = Date.now } = {}) {
             const c = live(threads, String(thread));
             if (!c || (holder && c.holder !== holder)) return false;
             threads.delete(String(thread));
+            onChange();
             return true;
         },
         noteRouted(agent, thread, ms) {
+            onChange();
             if (!routed.has(agent)) routed.set(agent, new Map());
             routed.get(agent).set(String(thread), now() + ms);
         },
@@ -478,6 +487,36 @@ export function createClaims({ now = Date.now } = {}) {
             for (const [t, until] of routed.get(agent) ?? []) if (until > now()) out.add(t);
             for (const [t, c] of threads) if (c.holder === agent && c.until > now()) out.add(t);
             return out;
+        },
+        /** Everything still running, to save (expired entries are left out). */
+        snapshot() {
+            const t = now();
+            const keep = (m) => [...m.entries()].filter(([, e]) => (e.until ?? e) > t);
+            return {
+                v: 1,
+                threads: keep(threads),
+                messages: keep(messages),
+                human: keep(human),
+                sticky: keep(sticky),
+                routed: [...routed.entries()].map(([a, m]) => [a, keep(m)]),
+            };
+        },
+        /** Put a saved snapshot back, leaving out what expired meanwhile. */
+        restore(snap) {
+            if (!snap || snap.v !== 1) return;
+            const t = now();
+            const put = (m, list) => {
+                for (const [k, e] of Array.isArray(list) ? list : []) if ((e?.until ?? e) > t) m.set(k, e);
+            };
+            put(threads, snap.threads);
+            put(messages, snap.messages);
+            put(human, snap.human);
+            put(sticky, snap.sticky);
+            for (const [a, list] of Array.isArray(snap.routed) ? snap.routed : []) {
+                const m = new Map();
+                put(m, list);
+                if (m.size) routed.set(a, m);
+            }
         },
         list() {
             const t = now();

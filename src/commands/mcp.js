@@ -1428,13 +1428,17 @@ export function registerMCPCommands(program) {
                 },
                 presence: buffer.agentPresence,
                 sentBy: buffer.sentBy,
+                accountDir,
                 log: (line) => console.error(line),
             });
-            const deliverToAgents = (n, { notify = true } = {}) => {
+            const deliverToAgents = (n, { notify = true, mentionsMe = false } = {}) => {
                 const isHidden = hiddenPolicy.mode !== "include" && hidden.isHidden(n.threadId);
                 if (isHidden && hiddenPolicy.mode === "exclude") return;
                 // Hidden chats are never routed, logged or forwarded (routing runs after the hidden-chat policy).
-                const routed = isHidden || !buffer.router.enabled() ? Promise.resolve(n) : buffer.router.onIncoming(n);
+                const routed =
+                    isHidden || !buffer.router.enabled()
+                        ? Promise.resolve(n)
+                        : buffer.router.onIncoming(n, { mentionsMe });
                 routed
                     .then((m) => {
                         if (!m) return;
@@ -1770,7 +1774,11 @@ export function registerMCPCommands(program) {
                     // Apply noise filter (stickers, system msgs, short emoji)
                     if (!filter.shouldKeep(normalized)) return;
 
-                    deliverToAgents(normalized);
+                    // Whether a group message mentions the account (or @All): a route condition, never stored.
+                    const mentionsMe = (Array.isArray(msg.data?.mentions) ? msg.data.mentions : []).some(
+                        (x) => String(x?.uid) === String(activeAcc.ownId) || String(x?.uid) === "-1",
+                    );
+                    deliverToAgents(normalized, { mentionsMe });
                     console.error(
                         `${DEBUG_MARK}[mcp] Buffered ${normalized.threadType} msg from ${normalized.threadId}`,
                     );
@@ -1875,6 +1883,14 @@ export function registerMCPCommands(program) {
                 lifecycle.setStopping();
                 health.noteStopping();
                 daemonPresence?.stop();
+                // What the router and the agent records hold goes to disk now, not a moment later.
+                for (const flush of [buffer.router?.flush, buffer.sentBy?.flush, buffer.agentPresence?.flush]) {
+                    try {
+                        flush?.();
+                    } catch (e) {
+                        console.error(`[mcp] not saved at shutdown: ${e.message}`);
+                    }
+                }
                 clearInterval(mcpHeartbeatTimer);
                 deliveredReceipts.stop();
                 const receipts = deliveredReceipts.stats();

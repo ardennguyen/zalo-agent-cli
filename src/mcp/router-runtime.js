@@ -6,7 +6,15 @@
  * nothing and every caller sees every message, as before.
  */
 import { agentsListText, createClaims, decide, guardSend, settingOf } from "../core/message-router.js";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { presenceState } from "./agents.js";
+import { readSealedJson, scopeOfDir, writeSealedJson } from "../core/keystore/index.js";
+
+/** Claims, the human pause and sticky focus, kept across a restart (sealed, in the account folder). */
+export const ROUTING_STATE_FILE = "routing-state.json";
+const STATE_SPEC = Object.freeze({ kind: "routing-state", use: "boot" });
+const STATE_WRITE_DELAY_MS = 2000;
 
 const LABELS_TTL_MS = 5 * 60_000;
 const NOTICE_GAP_MS = 10 * 60_000;
@@ -24,6 +32,7 @@ const STAFF_PREFIX = "📩";
  * @param {() => number} [deps.now]
  * @param {"vi"|"en"} [deps.lang] - the language of the notices and the `@agents` answer
  * @param {(slug: string) => object} [deps.presenceOf] - stands in for the presence store (tests)
+ * @param {string|null} [deps.accountDir] - where claims, the human pause and sticky focus are saved (null: memory only)
  */
 export function createRouterRuntime({
     routingNow,
@@ -35,8 +44,35 @@ export function createRouterRuntime({
     now = Date.now,
     lang = "vi",
     presenceOf: presenceOverride = null,
+    accountDir = null,
 }) {
-    const claims = createClaims({ now });
+    // Saved a moment after each change, read back at start with what expired meanwhile left out (owner, 2026-11-20).
+    const stateFile = accountDir ? join(accountDir, ROUTING_STATE_FILE) : null;
+    let saveTimer = null;
+    let claims = null;
+    const save = () => {
+        saveTimer = null;
+        try {
+            writeSealedJson(stateFile, scopeOfDir(accountDir), STATE_SPEC, claims.snapshot());
+        } catch (e) {
+            log(`[router] ${ROUTING_STATE_FILE} not written: ${e.message}`);
+        }
+    };
+    claims = createClaims({
+        now,
+        onChange: () => {
+            if (!stateFile || saveTimer) return;
+            saveTimer = setTimeout(save, STATE_WRITE_DELAY_MS);
+            saveTimer.unref?.();
+        },
+    });
+    if (stateFile && existsSync(stateFile)) {
+        try {
+            claims.restore(readSealedJson(stateFile, scopeOfDir(accountDir), STATE_SPEC));
+        } catch (e) {
+            log(`[router] ${ROUTING_STATE_FILE} cannot be read (${e.message}); starting without saved claims`);
+        }
+    }
     const labels = { at: 0, byThread: new Map(), loading: null };
     const lastNotice = new Map();
     const staffForwards = new Map(); // forwarded msgId/cliMsgId -> {threadId, threadType, staffId}
@@ -90,11 +126,15 @@ export function createRouterRuntime({
     };
 
     /** The decision for one message, with no side effect (the console's test box and `route_test`). */
-    function test(msg, { cfg = cfgNow(), agents = routingNow().agents, at = now(), labelsOf = null } = {}) {
+    function test(
+        msg,
+        { cfg = cfgNow(), agents = routingNow().agents, at = now(), labelsOf = null, mentionsMe = false } = {},
+    ) {
         return decide(msg, {
             cfg,
             agents,
             now: at,
+            mentionsMe,
             myDocuments: isMyDocuments(msg.threadId),
             labelsOf: labelsOf ?? ((t) => labels.byThread.get(String(t)) ?? []),
             sentByOf: (id) => sentBy?.lookup({ msgId: id }) ?? null,
@@ -134,7 +174,7 @@ export function createRouterRuntime({
      * @param {object} n - a normalized message
      * @returns {Promise<object|null>}
      */
-    async function onIncoming(n) {
+    async function onIncoming(n, { mentionsMe = false } = {}) {
         const cfg = cfgNow();
         if (!cfg?.enabled) return n;
         // A staff member answering on his own Zalo (option B): relayed to the customer, never shown to the agents.
@@ -164,7 +204,7 @@ export function createRouterRuntime({
             }
         }
         refreshLabels();
-        const d = test(n, { cfg });
+        const d = test(n, { cfg, mentionsMe });
         apply(d, n, cfg);
         const routed = {
             ...n,
@@ -266,6 +306,10 @@ export function createRouterRuntime({
 
     return {
         claims,
+        /** Write the saved state now (on shutdown). */
+        flush: () => {
+            if (stateFile) save();
+        },
         test,
         onIncoming,
         onOwn,

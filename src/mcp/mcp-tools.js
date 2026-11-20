@@ -754,7 +754,10 @@ export function registerTools(
                 const target = args[0]?.threadId;
                 if (router?.enabled() && target && String(target).toLowerCase() !== "me") {
                     const g = router.guard(who, String(target), args[0]?.quoteMsgId ?? null);
-                    if (!g.ok) return err(`${g.code}: ${g.message}`);
+                    if (!g.ok) {
+                        router.noteRefused?.(who, String(target), g.code);
+                        return err(`${g.code}: ${g.message}`);
+                    }
                 }
                 const result = await handler(...args, who);
                 if (buffer?.sentBy && !result?.isError) {

@@ -524,6 +524,30 @@ export function createClaims({ now = Date.now, onChange = () => {} } = {}) {
                 .filter(([, c]) => c.until > t)
                 .map(([threadId, c]) => ({ threadId, ...c, until: new Date(c.until).toISOString() }));
         },
+        /** The conversations the owner answers himself now (the human pause), with when each pause ends. */
+        humanList() {
+            const t = now();
+            return [...human.entries()]
+                .filter(([, until]) => until > t)
+                .map(([threadId, until]) => ({ threadId, until: new Date(until).toISOString() }));
+        },
+        /** The conversations routed to (or claimed by) one handler, with when each was last routed there. */
+        routedTo(agent) {
+            const t = now();
+            const out = new Map();
+            for (const [threadId, until] of routed.get(agent) ?? [])
+                if (until > t) out.set(threadId, { threadId, until });
+            for (const [threadId, c] of threads)
+                if (c.holder === agent && c.until > t && !out.has(threadId))
+                    out.set(threadId, { threadId, until: null });
+            return [...out.values()].map((e) => ({
+                threadId: e.threadId,
+                until: e.until === null ? null : new Date(e.until).toISOString(),
+                claim: live(threads, e.threadId)
+                    ? { ...threads.get(e.threadId), until: new Date(threads.get(e.threadId).until).toISOString() }
+                    : null,
+            }));
+        },
     };
 }
 

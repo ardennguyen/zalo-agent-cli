@@ -389,6 +389,14 @@ pause, affinity, sticky focus and fallback need `routing.claims: true`.
   lists leave the others out) and cannot send elsewhere.
 - `zalo_inbox` gains `claim`, `release`, `handoff`, `claims` and `route_test`; the admin API answers the same test at
   `POST /access/<ownId>/route-test` (with unsaved routes, for a console's test box).
+- **A console's view of the running router** (`POST /access/<ownId>/routing`, `{action, ...}`, answered by the account's
+  daemon; 409 `DAEMON_NOT_RUNNING` when none runs): `events` (routing decisions, claims, hand-offs, human pauses and
+  refused sends, ids only, never a message's text; the newest 1,000 since the daemon started), `claims`, `release`,
+  `assign` (to an agent, a staff member or `human`), `human` / `endHuman` (start or end the owner's pause), and the staff
+  inbox for a staff member who answers in a console: `inbox`, `thread` (the conversation's cached messages), `claim`,
+  `unclaim`, `send` (sent from this account with the staff member's mark). A staff member reaches only conversations
+  routed to him or held by him (`NOT_ROUTED`). The fleet controller publishes each new event on `GET /zalo/admin/events`
+  as a `routing` event (not on the admin webhook).
 
 ### Renewing the saved login (`session.renew`)
 

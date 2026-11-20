@@ -11,7 +11,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { getApi, clearSession, renewLoginWithQR } from "../core/zalo-client.js";
 import { liveApi } from "../core/live-api.js";
-import { quotedReply, resolveReplyTo } from "../core/cached-message.js";
+import { cachedReplyTo, quotedReply, resolveReplyTo } from "../core/cached-message.js";
 import { parseAccountId, selectDaemonAccount, loginDaemonAccount } from "../core/daemon-account.js";
 import { getAccount, updateAccountName, updateAccountProfile } from "../core/accounts.js";
 import { CONFIG_DIR, getAccountDir, MEDIA_DIR, readSavedDevice, saveCredentials } from "../core/credentials.js";
@@ -68,6 +68,7 @@ import {
     dbUsedBytes,
     initDb,
     getMessageById,
+    getMessages,
     getPendingSyncGaps,
     getSyncState,
     getThreadNames,
@@ -337,6 +338,27 @@ export function warnApprovalPolicy({ config, accountId, accountDir, hasWebhook, 
     }
     for (const line of lines) (log ?? ((l) => console.error(`[mcp] WARNING: ${l}`)))(line);
     return lines;
+}
+
+/**
+ * One cached message as the staff inbox shows it: who wrote it, its text and kind, and what it quotes. No media path
+ * and no raw payload leave the daemon.
+ *
+ * @param {object} m - a `messages` row
+ * @param {string|null} [ownId] - the account's own id (its messages are `isSelf`)
+ * @returns {object}
+ */
+export function staffInboxRow(m, ownId = null) {
+    return {
+        msgId: m.msgId,
+        senderId: m.senderId || null,
+        senderName: m.senderName || null,
+        isSelf: Boolean(ownId && String(m.senderId) === String(ownId)),
+        text: m.text ?? "",
+        type: m.type ?? "text",
+        timestamp: m.timestamp,
+        replyTo: cachedReplyTo(m) ?? null,
+    };
 }
 
 /** A yes/no setting: true for 1/true/yes/on, false for 0/false/no/off, else null (unset or not understood). */
@@ -1430,7 +1452,12 @@ export function registerMCPCommands(program) {
                 sentBy: buffer.sentBy,
                 accountDir,
                 log: (line) => console.error(line),
+                // The staff inbox reads a conversation from the cache, as zalo_get_history does.
+                history: (threadId, limit) =>
+                    getMessages(threadId, limit).map((m) => staffInboxRow(m, activeAcc.ownId)),
+                threadNames: () => getThreadNames(),
             });
+            health.setSource("routing", () => buffer.router.eventsHead());
             const deliverToAgents = (n, { notify = true, mentionsMe = false } = {}) => {
                 const isHidden = hiddenPolicy.mode !== "include" && hidden.isHidden(n.threadId);
                 if (isHidden && hiddenPolicy.mode === "exclude") return;
@@ -2045,6 +2072,8 @@ export function registerMCPCommands(program) {
                         onPurge: ({ dryRun }) => ({ report: storageJobs.runNow({ dryRun: dryRun !== false }) }),
                         // `presence status|wake|park|resume`, and the fleet controller's relay.
                         onPresence: (p) => daemonPresence.serve(p),
+                        // The console's routing requests (claims, the staff inbox, routing events).
+                        onRouting: (p) => buffer.router.serve(p),
                         // `session renew`: a renewal link opened by hand (on this port, under publicUrl).
                         onSession: (p) => {
                             if (p?.action !== "renew") throw new Error(`unknown session action "${p?.action}" (renew)`);

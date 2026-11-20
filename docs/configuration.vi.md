@@ -375,6 +375,14 @@ trung và dự phòng cần `routing.claims: true`.
   (`NOT_ROUTED` cho phần còn lại) và không gửi ra ngoài.
 - `zalo_inbox` có thêm `claim`, `release`, `handoff`, `claims`, `route_test`; API admin trả lời cùng phép thử ở
   `POST /access/<ownId>/route-test`.
+- **Bảng điều khiển xem bộ phân luồng đang chạy** (`POST /access/<ownId>/routing`, `{action, ...}`, do daemon của tài
+  khoản trả lời; 409 `DAEMON_NOT_RUNNING` khi không có daemon): `events` (quyết định phân luồng, giữ cuộc, chuyển giao,
+  chủ tạm dừng agent, lần gửi bị chặn; chỉ có id, không bao giờ có nội dung tin; 1.000 sự kiện mới nhất từ khi daemon
+  chạy), `claims`, `release`, `assign` (cho một agent, một nhân viên hoặc `human`), `human` / `endHuman` (bắt đầu hoặc
+  kết thúc lúc chủ tự trả lời), và hộp thư của nhân viên trả lời trong bảng điều khiển: `inbox`, `thread` (tin đã lưu của
+  cuộc trò chuyện), `claim`, `unclaim`, `send` (gửi từ tài khoản này kèm dấu của nhân viên). Nhân viên chỉ thấy các cuộc
+  được phân cho mình hoặc mình đang giữ (`NOT_ROUTED`). Fleet controller phát mỗi sự kiện mới trên
+  `GET /zalo/admin/events` dưới tên `routing` (không gửi qua webhook admin).
 
 ### Gia hạn phiên đăng nhập đã lưu (`session.renew`)
 

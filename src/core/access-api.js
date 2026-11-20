@@ -24,6 +24,9 @@
  *     DELETE /access/<ownId>/approver                     clear it
  *     GET    /access/<ownId>/agents                       the account's agents (routing.agents), their presence and
  *                                                  marks, and its credentials with the agent each is bound to
+ *     POST   /access/<ownId>/routing                      {action, ...}: the running daemon's routing for the console:
+ *                                                  events, claims (release, assign, human, endHuman), the staff
+ *                                                  inbox (inbox, thread, claim, unclaim, send); 409 when no daemon
  *     POST   /access/<ownId>/route-test                   {message, routing?, agents?}: who would get the message and
  *                                                  why (the routes as saved, or the unsaved ones given); changes nothing
  *     GET    /access/<ownId>/cloud-key                    whether a zCloud key is stored (never the key)
@@ -47,6 +50,7 @@ import { resolvePublicUrl } from "./deploy-policy.js";
 import { agentsReport, resolveRouting } from "../mcp/agents.js";
 import { checkRouting, decide } from "./message-router.js";
 import { checkAgents } from "./routing-policy.js";
+import { callViaDaemon } from "./daemon-channel.js";
 import {
     MAX_ACCOUNT_CLIENTS,
     OAUTH_STATE_FILE,
@@ -65,6 +69,20 @@ import {
 
 const ACCOUNT_ID = /^[1-9][0-9]{0,30}$/;
 const ID = /^[A-Za-z0-9_.-]{1,128}$/;
+/** What the console may ask a daemon's Message Router (src/mcp/router-runtime.js `serve`). */
+const ROUTING_ACTIONS = Object.freeze([
+    "events",
+    "claims",
+    "release",
+    "assign",
+    "human",
+    "endHuman",
+    "inbox",
+    "thread",
+    "claim",
+    "unclaim",
+    "send",
+]);
 /** A client id the owner chooses for a client made here. */
 const NEW_CLIENT_ID = /^[A-Za-z0-9._-]{3,64}$/;
 
@@ -76,6 +94,8 @@ const NEW_CLIENT_ID = /^[A-Za-z0-9._-]{3,64}$/;
  * @param {(ownId: string) => string|null|undefined} [args.publicUrlOf] - the account's publicUrl as its server knows it
  *   (a daemon passes its own, which may come from a flag); undefined falls back to the environment and config
  * @param {typeof fetch} [args.fetchFn]
+ * @param {(ownId: string, path: string, params: object) => Promise<object|null>} [args.relay] - the account's running
+ *   daemon (its channel); null answer: no daemon runs
  * @param {(line: string) => void} [args.log]
  * @returns {{handle: (req: object, res: object, ctx: {who: string, ip: string, path: string}) => Promise<boolean>}}
  */
@@ -84,6 +104,7 @@ export function createAccessApi({
     accountEnv = () => ({}),
     publicUrlOf = () => undefined,
     fetchFn = fetch,
+    relay = (ownId, path, params) => callViaDaemon(getAccountDir(ownId), path, params),
     log = () => {},
 } = {}) {
     const send = (res, code, body) => {
@@ -361,6 +382,24 @@ export function createAccessApi({
                     })),
                 ];
                 return send(res, 200, agentsReport({ accountId: ownId, accountDir: dir, config, credentials }));
+            }
+            if (rest === "/routing") {
+                if (only("POST")) return true;
+                const action = typeof body.action === "string" ? body.action : "";
+                if (!ROUTING_ACTIONS.includes(action))
+                    return fail(res, 400, "INVALID_ROUTING_ACTION", `action is one of ${ROUTING_ACTIONS.join(", ")}`);
+                const params = { action };
+                for (const k of ["threadId", "to", "staff", "text", "threadType", "bootId"])
+                    if (typeof body[k] === "string") params[k] = body[k];
+                for (const k of ["since", "limit", "minutes"]) if (Number.isInteger(body[k])) params[k] = body[k];
+                const r = await relay(ownId, "/routing", params);
+                if (!r) return fail(res, 409, "DAEMON_NOT_RUNNING", "the account's daemon is not running");
+                if (!r.ok) return fail(res, 409, "ROUTING_REFUSED", r.error || "the daemon refused the request");
+                const out = { ...r };
+                delete out.ok;
+                if (out.refused) return fail(res, 409, out.code || "ROUTING_REFUSED", out.message || "refused", out);
+                if (!["events", "claims", "inbox", "thread"].includes(action)) note(ctx, ownId, `routing.${action}`);
+                return send(res, 200, out);
             }
             if (rest === "/route-test") {
                 if (only("POST")) return true;

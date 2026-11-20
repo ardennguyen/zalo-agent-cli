@@ -17,7 +17,8 @@
  *     DELETE /accounts/<ownId>                      guarded the same way: stop, `account remove` (crypto-shred)
  *     ...    /accounts/<ownId>/jobs[...]            sync, attachment download and purge jobs (./fleet-jobs.js)
  *     GET    /host                                  the machine's CPU and memory, and each daemon's (./host-metrics.js)
- *     GET    /events                                SSE: `account_state` and `session_expiring` for every account
+ *     GET    /events                                SSE: `account_state`, `session_expiring` and `routing` for every
+ *                                                   account
  *     GET    /routes                                account id -> loopback port and path, for a host agent that
  *                                                   keeps the reverse proxy's routes (this process edits no proxy)
  *     GET    /usage                                 storage of every account, summed per user and tenant (./admin-api.js
@@ -28,6 +29,8 @@
  * `account_state` comes from polling each daemon's channel every `pollMs` (5 s), plus `stopped` for an account with
  * no process; each change goes to the SSE clients and the admin webhook once. The same poll reads when each saved
  * login ends (`session` in the account list) and sends `session_expiring` once per threshold (./session-notice.js).
+ * A daemon whose Message Router is on reports where its routing events stand (`health.routing`, `{bootId, seq}`); when
+ * that moves, the new events are read over the channel and published as `routing` events (ids only, never a text).
  */
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { ACCOUNT_STATES, accountStateOfHealth } from "./account-state.js";
@@ -93,6 +96,7 @@ export function createFleetController({
 }) {
     const states = new Map(); // ownId -> {state, at, pid}
     const sessions = new Map(); // ownId -> {expiresAt, daysLeft, expired}
+    const routingHeads = new Map(); // ownId -> {bootId, seq}: the routing events already published
     const clients = new Set();
     const confirms = new Map(); // token -> {action, ownId, expiresAt}
     let timer = null;
@@ -104,7 +108,7 @@ export function createFleetController({
             .json(body);
     };
 
-    function publish(event) {
+    function publish(event, { toWebhook = true } = {}) {
         const line = `event: ${event.event}\ndata: ${JSON.stringify(event)}\n\n`;
         for (const c of clients) {
             try {
@@ -113,6 +117,7 @@ export function createFleetController({
                 clients.delete(c);
             }
         }
+        if (!toWebhook) return;
         try {
             webhook(event);
         } catch (e) {
@@ -144,6 +149,18 @@ export function createFleetController({
             publish(sessionExpiringEvent(ownId, expiry, now()));
     }
 
+    /** Publish a daemon's new routing events (it said where they stand; nothing is read while that stays put). */
+    async function noteRouting(ownId, head) {
+        if (!head?.bootId || !Number.isInteger(head.seq)) return;
+        const seen = routingHeads.get(ownId);
+        if (seen && seen.bootId === head.bootId && seen.seq >= head.seq) return;
+        const since = seen && seen.bootId === head.bootId ? seen.seq : 0;
+        const r = await relay(ownId, "/routing", { action: "events", bootId: head.bootId, since });
+        if (!r?.ok || !Array.isArray(r.events)) return;
+        for (const e of r.events) publish({ ...e, event: "routing", accountId: ownId }, { toWebhook: false });
+        routingHeads.set(ownId, { bootId: r.bootId, seq: Number.isInteger(r.seq) ? r.seq : head.seq });
+    }
+
     /** Ask every account where it stands; each change is published once. */
     async function poll() {
         if (polling) return polling;
@@ -157,6 +174,7 @@ export function createFleetController({
                         ...(p.health?.presence ? { presence: p.health.presence.mode } : {}),
                     });
                     noteSession(ownId, p.health?.session ?? session(ownId));
+                    await noteRouting(ownId, p.health?.routing ?? null);
                 } catch (e) {
                     log(`[fleet] ${ownId}: ${e.message}`);
                 }

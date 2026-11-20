@@ -6,6 +6,7 @@
  * nothing and every caller sees every message, as before.
  */
 import { agentsListText, createClaims, decide, guardSend, settingOf } from "../core/message-router.js";
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { presenceState } from "./agents.js";
@@ -20,6 +21,11 @@ const LABELS_TTL_MS = 5 * 60_000;
 const NOTICE_GAP_MS = 10 * 60_000;
 const STAFF_HANDOFF_MS = 30 * 60_000;
 const STAFF_PREFIX = "📩";
+/** How many routing events a daemon keeps for the console's Activity view and the staff inbox (ids only, no text). */
+export const ROUTING_EVENTS_MAX = 1000;
+const STAFF_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const THREAD_ID = /^[0-9]{1,30}$/;
+const MAX_STAFF_TEXT = 4000;
 
 /**
  * @param {object} deps
@@ -33,6 +39,10 @@ const STAFF_PREFIX = "📩";
  * @param {"vi"|"en"} [deps.lang] - the language of the notices and the `@agents` answer
  * @param {(slug: string) => object} [deps.presenceOf] - stands in for the presence store (tests)
  * @param {string|null} [deps.accountDir] - where claims, the human pause and sticky focus are saved (null: memory only)
+ * @param {(threadId: string, limit: number) => object[]} [deps.history] - a conversation's cached messages, newest
+ *   first (the staff inbox reads a conversation through it)
+ * @param {() => Map<string, {name: string}>} [deps.threadNames] - the cached conversations' names (the staff inbox
+ *   shows them; nothing else leaves the daemon about a conversation)
  */
 export function createRouterRuntime({
     routingNow,
@@ -45,6 +55,8 @@ export function createRouterRuntime({
     lang = "vi",
     presenceOf: presenceOverride = null,
     accountDir = null,
+    history = null,
+    threadNames = null,
 }) {
     // Saved a moment after each change, read back at start with what expired meanwhile left out (owner, 2026-11-20).
     const stateFile = accountDir ? join(accountDir, ROUTING_STATE_FILE) : null;
@@ -77,6 +89,17 @@ export function createRouterRuntime({
     const lastNotice = new Map();
     const staffForwards = new Map(); // forwarded msgId/cliMsgId -> {threadId, threadType, staffId}
     const staffOpen = new Map(); // staff zaloUserId -> {threadId, threadType, staffId, until}
+
+    // Routing events (docs/agent-routing.md §4.1): ids and decisions only, never a message's text. The fleet controller
+    // reads them after `seq` moves and publishes them to the console (Activity, the staff inbox and its counts).
+    const bootId = randomBytes(4).toString("hex");
+    const events = [];
+    let seq = 0;
+    function emit(kind, fields = {}) {
+        seq += 1;
+        events.push({ id: `${bootId}-${seq}`, seq, at: new Date(now()).toISOString(), kind, ...fields });
+        if (events.length > ROUTING_EVENTS_MAX) events.splice(0, events.length - ROUTING_EVENTS_MAX);
+    }
 
     const cfgNow = () => routingNow().cfg;
     const on = () => Boolean(cfgNow()?.enabled);
@@ -197,6 +220,12 @@ export function createRouterRuntime({
                         to.threadId,
                     );
                     claims.assign(to.threadId, `staff:${staff.id}`, { ms: settingOf(cfg, "claimTtl"), held: true });
+                    emit("staffReply", {
+                        threadId: to.threadId,
+                        threadType: to.threadType,
+                        by: `staff:${staff.id}`,
+                        channel: "zalo",
+                    });
                 } catch (e) {
                     log(`[router] staff reply not relayed: ${e.message}`);
                 }
@@ -211,6 +240,15 @@ export function createRouterRuntime({
             route: { to: d.to, by: d.by, ruleId: d.ruleId, observers: d.observers, ownership: d.ownership },
         };
         if (d.before) routed.route.before = d.before;
+        emit(d.by === "fallback" ? "fallback" : "routed", {
+            threadId: String(n.threadId),
+            threadType: n.threadType === "group" ? "group" : "dm",
+            msgId: n.msgId ? String(n.msgId) : null,
+            to: d.to,
+            by: d.by,
+            ruleId: d.ruleId ?? null,
+            ...(d.before ? { before: d.before } : {}),
+        });
         if (d.text !== undefined && d.text !== n.text) Object.assign(routed, { rawText: n.text, text: d.text });
         if (d.to.startsWith("staff:")) {
             const s = cfg.staff.find((x) => `staff:${x.id}` === d.to);
@@ -271,7 +309,11 @@ export function createRouterRuntime({
             );
             return "answered";
         }
-        if (cfg.claims && !isMyDocuments(n.threadId)) claims.startHuman(n.threadId, settingOf(cfg, "humanPause"));
+        if (cfg.claims && !isMyDocuments(n.threadId)) {
+            const was = claims.humanUntil(n.threadId);
+            claims.startHuman(n.threadId, settingOf(cfg, "humanPause"));
+            if (!was) emit("humanPause", { threadId: String(n.threadId), by: "owner" });
+        }
         return null;
     }
 
@@ -302,6 +344,163 @@ export function createRouterRuntime({
         const cfg = cfgNow();
         if (!cfg?.enabled || !cfg.isolation || !who.agent) return true;
         return claims.allowedThreads(who.agent.slug).has(String(threadId));
+    }
+
+    /** A handler the console may name: an agent slug, a staff member of the routing, or the owner. */
+    function knownTarget(cfg, to) {
+        if (to === "human") return true;
+        if (typeof to !== "string") return false;
+        if (to.startsWith("staff:")) return cfg.staff.some((s) => `staff:${s.id}` === to);
+        return routingNow().agents.some((a) => a.slug === to);
+    }
+
+    function staffOf(cfg, p) {
+        const id = String(p?.staff ?? "");
+        if (!STAFF_ID.test(id)) throw new Error("staff is not a staff id");
+        const s = cfg.staff.find((x) => x.id === id);
+        if (!s) throw new Error(`no staff member ${id} in this account's routing`);
+        if (!s.channels.includes("console")) throw new Error(`staff member ${id} does not answer in the console`);
+        return s;
+    }
+
+    function threadOf(p) {
+        const t = String(p?.threadId ?? "");
+        if (!THREAD_ID.test(t)) throw new Error("threadId is not a conversation id");
+        return t;
+    }
+
+    const iso = (ms) => (ms ? new Date(ms).toISOString() : null);
+
+    /**
+     * The console's requests, through the daemon channel (`/routing`) and the admin API (`/access/<ownId>/routing/...`):
+     * the routing events, the claims card (release, reassign, human pause) and the staff inbox (a staff member's routed
+     * conversations, reading one, answering from the account with his mark, claiming and releasing). A staff member
+     * reaches only what was routed to him or what he holds; the console checks who he is, this checks what he may see.
+     *
+     * @param {object} p - `{action, ...}`
+     * @returns {Promise<object>}
+     */
+    async function serve(p = {}) {
+        const cfg = cfgNow();
+        const action = String(p.action ?? "");
+        if (action === "events") {
+            const since = p.bootId === bootId && Number.isInteger(p.since) ? p.since : 0;
+            return { bootId, seq, events: events.filter((e) => e.seq > since) };
+        }
+        if (!cfg?.enabled) throw new Error("routing is off on this account");
+        if (action === "claims") return { claims: claims.list(), human: claims.humanList() };
+        if (action === "release") {
+            const threadId = threadOf(p);
+            const cur = claims.claimOf(threadId);
+            const released = claims.release(threadId);
+            if (released) emit("released", { threadId, by: "console", holder: cur?.holder ?? null });
+            return { released };
+        }
+        if (action === "assign") {
+            const threadId = threadOf(p);
+            if (!knownTarget(cfg, p.to)) throw new Error("to is not an agent, a staff member or human");
+            claims.release(threadId);
+            if (p.to === "human") claims.startHuman(threadId, settingOf(cfg, "humanPause"));
+            else claims.assign(threadId, p.to, { ms: settingOf(cfg, "claimTtl") });
+            emit("handoff", { threadId, by: "console", to: p.to });
+            return { claim: claims.claimOf(threadId) ?? null, humanUntil: iso(claims.humanUntil(threadId)) };
+        }
+        if (action === "human") {
+            const threadId = threadOf(p);
+            const minutes = Number(p.minutes);
+            const ms =
+                Number.isFinite(minutes) && minutes > 0
+                    ? Math.min(minutes, 7 * 24 * 60) * 60_000
+                    : settingOf(cfg, "humanPause");
+            claims.startHuman(threadId, ms);
+            emit("humanPause", { threadId, by: "console" });
+            return { humanUntil: iso(claims.humanUntil(threadId)) };
+        }
+        if (action === "endHuman") {
+            const threadId = threadOf(p);
+            claims.endHuman(threadId);
+            emit("humanEnd", { threadId, by: "console" });
+            return { ended: true };
+        }
+        // ── The staff inbox (option A) ──
+        const staff = staffOf(cfg, p);
+        const me = `staff:${staff.id}`;
+        const nameOf = () => {
+            try {
+                const names = typeof threadNames === "function" ? threadNames() : null;
+                return (id) => names?.get(String(id))?.name ?? null;
+            } catch {
+                return () => null;
+            }
+        };
+        if (action === "inbox") {
+            const name = nameOf();
+            return { staff: me, threads: claims.routedTo(me).map((t) => ({ ...t, name: name(t.threadId) })) };
+        }
+        const threadId = threadOf(p);
+        if (!claims.allowedThreads(me).has(threadId))
+            return { refused: true, code: "NOT_ROUTED", message: "This conversation was not routed to you." };
+        if (action === "thread") {
+            if (typeof history !== "function") throw new Error("this daemon does not read conversations");
+            const limit = Math.min(Math.max(Number(p.limit) || 50, 1), 200);
+            const rows = history(threadId, limit).map((m) => {
+                const by = sentBy?.lookup({ msgId: m.msgId }) ?? null;
+                return by ? { ...m, sentBy: by } : m;
+            });
+            return {
+                threadId,
+                name: nameOf()(threadId),
+                messages: rows,
+                claim: claims.claimOf(threadId) ?? null,
+                humanUntil: iso(claims.humanUntil(threadId)),
+            };
+        }
+        if (action === "claim") {
+            const cur = claims.claimOf(threadId);
+            if (cur && cur.holder !== me)
+                return {
+                    refused: true,
+                    code: "CLAIMED",
+                    holder: cur.holder,
+                    message: `${cur.holder} handles this conversation.`,
+                };
+            claims.assign(threadId, me, { ms: settingOf(cfg, "claimTtl"), held: true });
+            emit("claimed", { threadId, by: me });
+            return { claim: claims.claimOf(threadId) };
+        }
+        if (action === "unclaim") {
+            const released = claims.release(threadId, me);
+            if (released) emit("released", { threadId, by: me, holder: me });
+            return { released };
+        }
+        if (action === "send") {
+            const text = typeof p.text === "string" ? p.text.trim() : "";
+            if (!text) throw new Error("text is empty");
+            if (text.length > MAX_STAFF_TEXT) throw new Error(`text is longer than ${MAX_STAFF_TEXT} characters`);
+            const g = guardSend({ cfg, claims, agent: { slug: me }, threadId });
+            if (!g.ok) {
+                emit("refusedSend", { threadId, by: me, code: g.code });
+                return { refused: true, ...g };
+            }
+            const threadType = p.threadType === "group" ? "group" : "dm";
+            const mark = staff.mark || `👤 ${staff.name}:`;
+            const r = await send(`${mark} ${text}`, threadId, threadType);
+            const msgId = r?.message?.msgId ?? r?.msgId ?? null;
+            const cliMsgId = r?.message?.cliMsgId ?? r?.cliMsgId ?? null;
+            sentBy?.record(
+                [msgId, cliMsgId].filter(Boolean).map(String),
+                { agent: { slug: me, name: staff.name }, sub: null, credential: "staff" },
+                threadId,
+            );
+            claims.assign(threadId, me, { ms: settingOf(cfg, "claimTtl"), held: true });
+            emit("staffReply", { threadId, threadType, by: me, channel: "console" });
+            return {
+                sent: true,
+                msgId: msgId === null ? null : String(msgId),
+                cliMsgId: cliMsgId === null ? null : String(cliMsgId),
+            };
+        }
+        throw new Error(`unknown routing action "${action}"`);
     }
 
     return {
@@ -337,7 +536,15 @@ export function createRouterRuntime({
             if (to === "human") claims.startHuman(threadId, settingOf(cfg, "humanPause"));
             claims.release(threadId);
             if (to !== "human") claims.assign(threadId, to, { ms: settingOf(cfg, "claimTtl"), note });
+            emit("handoff", { threadId: String(threadId), by: who.agent?.slug ?? null, to });
             return { ok: true };
         },
+        /** Note a refused send (the guard's answer) in the routing events. */
+        noteRefused(who, threadId, code) {
+            emit("refusedSend", { threadId: String(threadId), by: who.agent?.slug ?? null, code });
+        },
+        /** Where the events stand (the daemon's health carries it, so the controller reads new ones only). */
+        eventsHead: () => (on() ? { bootId, seq } : null),
+        serve,
     };
 }

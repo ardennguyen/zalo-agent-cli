@@ -34,6 +34,7 @@ import { acquireLock, releaseLock } from "../core/lock.js";
 import { describeQuotaEvent, describeStorage, runStoragePass } from "../core/storage-quota.js";
 import { purgeDeadDeliveries } from "../core/webhook-outbox.js";
 import { copyDatabase, runReadOnlyQuery } from "../core/db-tools.js";
+import { loadMCPConfig } from "../mcp/mcp-config.js";
 import { buildExport } from "../core/data-export.js";
 import { passwordProblem } from "../core/export-crypt.js";
 import { promptSecret, readSecretFromStream } from "../utils/secret-input.js";
@@ -340,7 +341,10 @@ export function registerDbCommands(program) {
             let r;
             try {
                 initDb(file);
-                r = { accountId: ownId, ...describeStorage(ownId, { dbBytes: dbUsedBytes() }) };
+                r = {
+                    accountId: ownId,
+                    ...describeStorage(ownId, { dbBytes: dbUsedBytes(), config: loadMCPConfig() }),
+                };
             } catch (e) {
                 fail(e);
             } finally {

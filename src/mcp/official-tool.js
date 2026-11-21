@@ -19,6 +19,7 @@ import { registerOACommands } from "../commands/oa.js";
 import { registerZbsCommands } from "../commands/zbs.js";
 import { registerSocialCommands } from "../commands/social.js";
 import { confirmInput, dryRunInput, ticketInput } from "./action-tool.js";
+import { REMOTE_FILE_HINT, fileSourceSchema } from "./file-input.js";
 
 /** Official commands with no MCP counterpart, and why. Mirrored in skill/references/mcp-guide.md. */
 export const OFFICIAL_CLI_ONLY = Object.freeze({
@@ -74,6 +75,28 @@ export function officialCommands() {
 /** An option's flag name without the dashes ("oa-id", "no-wait"). */
 const flagName = (o) => (o.long ?? o.short).replace(/^-+/, "");
 
+/** The argument and option names that take a file on the machine the command runs on. */
+const FILE_ARG_NAMES = new Set(["file", "file-path"]);
+const FILE_OPTION_NAMES = new Set(["file", "image", "rsa-key"]);
+
+/**
+ * A command's file parameters: its positional arguments and options that take a path (`oa upload image <file-path>`,
+ * `oa msg image --file`, `zbs send --rsa-key`), by name, with the position of an argument.
+ *
+ * @param {import("commander").Command} cmd
+ * @returns {Map<string, {kind: "arg", index: number}|{kind: "option", option: object}>}
+ */
+export function officialFileParams(cmd) {
+    const out = new Map();
+    cmd.registeredArguments.forEach((a, index) => {
+        if (FILE_ARG_NAMES.has(a.name())) out.set(a.name(), { kind: "arg", index });
+    });
+    for (const o of cmd.options) {
+        if (FILE_OPTION_NAMES.has(flagName(o)) && !o.negate) out.set(flagName(o), { kind: "option", option: o });
+    }
+    return out;
+}
+
 /** What an option takes: nothing (a switch), one value, an optional value, or a list. */
 function takes(o) {
     if (o.variadic) return "values";
@@ -108,6 +131,7 @@ export function describeOfficial(path, cmd) {
                 ...(o.defaultValue !== undefined && typeof o.defaultValue !== "boolean" && { default: o.defaultValue }),
             })),
         ...(cmd.zaloGuard && { guarded: true }),
+        ...(officialFileParams(cmd).size && { fileArgs: [...officialFileParams(cmd).keys()] }),
     };
 }
 
@@ -232,7 +256,9 @@ export function officialMeta() {
             '{"oa-id": "shop", "quote": "<message id>"}; a switch takes true. The logins themselves (`oa login`, ' +
             "`oa setup`, `oa init`, `social setup`, `social login`) and `oa listen` are run by the owner on the CLI. " +
             "Guarded commands (deletions, `oa purchase confirm-order`, `oa call consent-request`) take `confirm` " +
-            "and `dryRun` like every guarded action.",
+            "and `dryRun` like every guarded action. A command that takes a file (its listing names its `fileArgs`, " +
+            "e.g. `oa upload image`'s 'file-path') takes it in `fileArgs` as {fileId}, {url} or {data, name}; a " +
+            "path in `args`/`options` is read only for a caller on the machine this server runs on.",
         inputSchema: z
             .object({
                 command: z
@@ -251,6 +277,14 @@ export function officialMeta() {
                     )
                     .optional()
                     .describe('Options by CLI flag name without dashes, e.g. {"oa-id": "shop", "all": true}'),
+                fileArgs: z
+                    .record(z.string(), fileSourceSchema())
+                    .optional()
+                    .describe(
+                        "A command's file arguments or options, by name (its listing's `fileArgs`), as files: e.g. " +
+                            '{"file-path": {"fileId": "f_..."}} for `oa upload image`. ' +
+                            REMOTE_FILE_HINT,
+                    ),
                 confirm: confirmInput("a guarded command (deletions, paying an order, a call consent request)"),
                 dryRun: dryRunInput("a guarded command"),
                 ticket: ticketInput(),
@@ -268,12 +302,68 @@ export function officialMeta() {
  * @returns {(args: object, extra?: object) => Promise<object>}
  */
 export function officialTool(ctx, { run = runOfficialCli } = {}) {
-    return async ({ command, args = [], options = {}, confirm, dryRun, ticket } = {}, extra) => {
+    return async ({ command, args = [], options = {}, fileArgs, confirm, dryRun, ticket } = {}, extra) => {
         const commands = officialCommands();
         if (!command) return ctx.ok({ commands: [...commands].map(([p, c]) => describeOfficial(p, c)) });
         const cmd = commands.get(command);
         if (!cmd) return ctx.err(`Unknown official command '${command}'. Omit command to list them.`);
-        const built = officialArgv(command, cmd, args.map(String), options);
+
+        // The files: `fileArgs` items, and any path given as a file argument or option (which a caller on another
+        // machine may not name), resolved to paths here for the one run (src/core/file-inputs.js).
+        const params = officialFileParams(cmd);
+        const argList = args.map(String);
+        const opts = { ...options };
+        const items = [];
+        const place = [];
+        for (const [name, source] of Object.entries(fileArgs ?? {})) {
+            const p = params.get(name);
+            if (!p) {
+                return ctx.err(
+                    `'${command}' takes no file '${name}'` +
+                        (params.size
+                            ? ` (its file arguments: ${[...params.keys()].join(", ")})`
+                            : " (it takes no file)") +
+                        ".",
+                );
+            }
+            if (p.kind === "option" && opts[name] !== undefined)
+                return ctx.err(`Give '${name}' in fileArgs or in options, not both.`);
+            items.push(source);
+            place.push({ name, ...p });
+        }
+        for (const [name, p] of params) {
+            if (fileArgs?.[name] !== undefined) continue;
+            const v = p.kind === "arg" ? argList[p.index] : opts[name];
+            if (typeof v !== "string" || /^https?:\/\//i.test(v)) continue;
+            items.push(v);
+            place.push({ name, ...p, given: true });
+        }
+        // An argument given through fileArgs goes in at its position, ahead of the arguments after it.
+        for (const pl of [...place].filter((x) => x.kind === "arg" && !x.given).sort((a, b) => a.index - b.index)) {
+            if (argList.length < pl.index) {
+                return ctx.err(`'${command}' needs its arguments before '${pl.name}' in args.`);
+            }
+            argList.splice(pl.index, 0, "");
+        }
+        const runWith = async (paths) => {
+            paths.forEach((path, i) => {
+                const pl = place[i];
+                if (pl.kind === "arg") argList[pl.index] = path;
+                else opts[pl.name] = path;
+            });
+            return runCommand(command, cmd, argList, opts, { confirm, dryRun, ticket }, extra);
+        };
+        if (!items.length) return runWith([]);
+        if (!ctx.files) {
+            if (place.some((x) => !x.given)) return ctx.err("This server takes no files in fileArgs.");
+            return runCommand(command, cmd, argList, opts, { confirm, dryRun, ticket }, extra);
+        }
+        const out = await ctx.files.run(items, "fileArgs", (files) => runWith(files.map((f) => f.path)));
+        return out.fileError ? ctx.err(out.fileError) : out;
+    };
+
+    async function runCommand(command, cmd, argList, opts, { confirm, dryRun, ticket }, extra) {
+        const built = officialArgv(command, cmd, argList, opts);
         if (built.error) return ctx.err(built.error);
 
         const guard = cmd.zaloGuard;
@@ -300,5 +390,5 @@ export function officialTool(ctx, { run = runOfficialCli } = {}) {
             `'${command}' exited with code ${r.code}`;
         console.error(`[mcp-tools] zalo_official ${command} error:`, why);
         return ctx.err(String(why));
-    };
+    }
 }

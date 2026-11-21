@@ -134,6 +134,8 @@ import { resolveCurrentUserNames, withCurrentSenderNames } from "../core/current
 import { aliasFor, noteAliasSet, personNameFields, senderNameFields } from "../core/contact-names.js";
 import { actionTool, confirmInput, dryRunInput, ticketInput } from "./action-tool.js";
 import { gateToolsByPresence } from "./tool-presence.js";
+import { REMOTE_FILE_HINT, fileItemSchema, fileResolver, fileSourceSchema } from "./file-input.js";
+import { FILE_META, fileTool } from "./file-tool.js";
 import { BIN_TO_DISPLAY, generateQrTransferImage, qrTransferCaption, resolveBankBin } from "../utils/bank-helpers.js";
 import { CONVERSATION_ACTIONS, CONVERSATION_META } from "./actions-conversation.js";
 import { PROFILE_ACTIONS, PROFILE_META } from "./actions-profile.js";
@@ -906,6 +908,9 @@ export function registerTools(
         mediaRoot: config.media?.downloadDir ?? null,
         // zalo_profile 'presence_resume': the daemon's presence (null under a server that runs none).
         presence: extras?.presence ?? null,
+        // Files a call names (src/mcp/file-input.js): a path for a caller on this machine, else fileId, url or data.
+        files: fileResolver({ server, config, accountDir, accountId: () => ownIdOf(api) || undefined }),
+        accountDir: accountDir ?? null,
     };
     const friendExtra = actionTool("zalo_friend", FRIEND_EXTRA_ACTIONS, toolCtx);
     const groupExtra = actionTool("zalo_group", GROUP_EXTRA_ACTIONS, toolCtx);
@@ -1006,6 +1011,7 @@ export function registerTools(
             title: "Send Zalo Message",
             description:
                 "Send a message to a Zalo conversation: text, files or images, a link preview card, a contact card, a sticker, a voice message or a video from a URL, a bank account card, or a VietQR transfer image. Give `threadId` and one kind of content: `text`, `filePath` or `files`, `link`, `cardUserId`, `sticker`, `voiceUrl`, `video`, `bankCard` or `qrTransfer`. With files, a link, a video or a QR transfer, `text` is an optional caption. " +
+                "Files from a caller on another machine (an HTTP connection): put them in `files` as {data: <base64>, name} (small files, up to 10 MB a call by default), {url} (this server downloads it) or {fileId} (uploaded first through zalo_file 'upload_begin'); a path is read only for a caller on the machine this server runs on. " +
                 'Text: use real line breaks, never the two characters backslash and n (Zalo shows those as typed). Markdown is converted to Zalo formatting by default; `format: "plain"` sends the text exactly as written. A text over 3000 bytes (a Chinese, Japanese, Korean, Thai or Hindi character is 3, a Cyrillic or Arabic one 2) is split into several messages at paragraph or sentence ends, as Zalo does, and the reply then lists every part (`splitInto`, `parts`). ' +
                 "Mention in a group: put `@[userId]` in the text where the tag belongs (`@[-1]` is @All). Take the user id from a message's `senderId` (zalo_get_messages, zalo_get_history) or from zalo_get_group_members. It is sent as `@Their Name` and notifies that person; a user id the cache cannot name is tagged as the bare id and listed in `unresolvedMentions`. Mentions only work in groups. " +
                 "Reply to a message: pass its msgId as `quoteMsgId` (text messages only, and the message must be in the local cache). " +
@@ -1030,14 +1036,19 @@ export function registerTools(
                         .min(1)
                         .optional()
                         .describe(
-                            "Local path of ONE file or image to send, on the machine this server runs on. `text` becomes its caption.",
+                            "Path of ONE file or image on the machine this server runs on (a caller on that machine only). `text` becomes its caption. " +
+                                REMOTE_FILE_HINT +
+                                ", in `files`.",
                         ),
                     files: z
-                        .array(z.string().min(1))
+                        .array(fileItemSchema())
                         .min(1)
+                        .max(50)
                         .optional()
                         .describe(
-                            "Local paths of several files or images to send in one call, on the machine this server runs on. `text` is the caption.",
+                            "Files or images to send in one call, `text` as the caption. Each is {fileId} (an upload, zalo_file), {url, name?} (this server downloads it), {data, name, mimeType?} (base64, small files), or a path on the machine this server runs on (a caller on that machine only). " +
+                                REMOTE_FILE_HINT +
+                                ".",
                         ),
                     link: z
                         .string()
@@ -1065,24 +1076,22 @@ export function registerTools(
                     video: z
                         .object({
                             source: z
-                                .string()
-                                .min(1)
+                                .union([z.string().min(1), fileSourceSchema()])
                                 .describe(
-                                    "The video: an http(s) URL Zalo fetches, or a local file path on the machine this server runs on (uploaded)",
+                                    "The video: an http(s) URL string Zalo fetches itself, a path on the machine this server runs on, or {fileId} / {url} / {data, name} (an mp4 this server uploads; the way for a caller on another machine)",
                                 ),
                             thumbnail: z
-                                .string()
-                                .min(1)
-                                .describe("Its thumbnail: an image URL, or a local jpg/png/webp path (uploaded)"),
+                                .union([z.string().min(1), fileSourceSchema()])
+                                .describe(
+                                    "Its thumbnail: an image URL string, a path on the machine this server runs on, or {fileId} / {url} / {data, name} (a jpg/png/webp this server uploads)",
+                                ),
                             durationMs: z.number().int().min(0).optional().describe("Its length in milliseconds"),
                             width: z.number().int().min(1).optional().describe("Its width in pixels (default 1280)"),
                             height: z.number().int().min(1).optional().describe("Its height in pixels (default 720)"),
                         })
                         .strict()
                         .optional()
-                        .describe(
-                            "A video to send, from a URL or a local file, with its thumbnail. `text` is the caption.",
-                        ),
+                        .describe("A video to send, from a URL or a file, with its thumbnail. `text` is the caption."),
                     bankCard: z
                         .object({
                             bank: z
@@ -1234,7 +1243,7 @@ export function registerTools(
                     if (video) {
                         // As `msg send-video`: a URL Zalo fetches, or a local file uploaded on this server's socket; a
                         // thumbnail likewise.
-                        const isUrl = (v) => /^https?:\/\//i.test(v);
+                        const isUrl = (v) => typeof v === "string" && /^https?:\/\//i.test(v);
                         const size = {
                             duration: video.durationMs,
                             width: video.width ?? 1280,
@@ -1255,24 +1264,29 @@ export function registerTools(
                         }
                         if (isUrl(video.source)) {
                             return err(
-                                "A video sent from a URL takes a thumbnail URL too; a local thumbnail goes with a local video.",
+                                "A video sent from a URL takes a thumbnail URL too; a thumbnail file goes with a video file " +
+                                    "(give the video as {url} to have this server download and upload it).",
                             );
                         }
-                        const file = resolve(video.source.trim());
-                        const thumb = isUrl(video.thumbnail) ? null : resolve(video.thumbnail.trim());
-                        const missing = [file, thumb].filter((p) => p && !existsSync(p));
-                        if (missing.length > 0) return err(`File not found: ${missing.join(", ")}`);
-                        const result = await api.sendVideoFile(
-                            {
-                                file,
-                                msg: marked(text ?? ""),
-                                ...(thumb ? { thumbnailFile: thumb } : { thumbnailUrl: video.thumbnail }),
-                                ...size,
-                            },
-                            threadId,
-                            Number(threadType),
+                        // The video and a thumbnail that is not a URL: paths for this call (a path, an upload, a
+                        // download or inline bytes), removed afterwards.
+                        const items = isUrl(video.thumbnail) ? [video.source] : [video.source, video.thumbnail];
+                        const out = await toolCtx.files.run(items, "video", async ([file, thumb]) =>
+                            sentReply(
+                                "video",
+                                await api.sendVideoFile(
+                                    {
+                                        file: file.path,
+                                        msg: marked(text ?? ""),
+                                        ...(thumb ? { thumbnailFile: thumb.path } : { thumbnailUrl: video.thumbnail }),
+                                        ...size,
+                                    },
+                                    threadId,
+                                    Number(threadType),
+                                ),
+                            ),
                         );
-                        return sentReply("video", result);
+                        return out.fileError ? err(out.fileError) : out;
                     }
                     if (bankCard || qrTransfer) {
                         const spec = bankCard || qrTransfer;
@@ -1347,12 +1361,8 @@ export function registerTools(
                     }
 
                     const rawFiles = [...(filePath ? [filePath] : []), ...(Array.isArray(files) ? files : [])];
-                    if (rawFiles.length > 0) {
-                        const absPaths = rawFiles.map((p) => resolve(String(p).trim()));
-                        const missing = absPaths.filter((p) => !existsSync(p));
-                        if (missing.length > 0) {
-                            return err(`File not found: ${missing.join(", ")}`);
-                        }
+                    const sendFiles = async (got) => {
+                        const absPaths = got.map((f) => f.path);
                         // A caption is text too: Markdown in it is converted the same way.
                         const caption = prefixMark(
                             text && resolveSendFormat({ explicit: formatIn, fallback: "markdown" }) === "markdown"
@@ -1386,13 +1396,22 @@ export function registerTools(
                         return ok({
                             success: true,
                             kind: "attachment",
-                            files: absPaths,
+                            // A path the caller gave comes back as it was resolved; anything else by its name.
+                            files: got.map((f) => (f.from === "path" ? f.path : f.name)),
                             sent,
                             msgId: messageId,
                             ...(cliMsgId !== null && { cliMsgId: String(cliMsgId) }),
                             threadType: threadTypeName(threadType),
                             ...(thread.notice && { threadId, notice: thread.notice }),
                         });
+                    };
+                    if (rawFiles.length > 0) {
+                        const out = await toolCtx.files.run(
+                            rawFiles,
+                            filePath && !files ? "filePath" : "files",
+                            sendFiles,
+                        );
+                        return out.fileError ? err(out.fileError) : out;
                     }
 
                     if (!text) {
@@ -4537,6 +4556,9 @@ export function registerTools(
             }
         },
     );
+
+    // --- zalo_file: the account's upload store, for callers on another machine (src/mcp/file-tool.js) ---
+    server.registerTool("zalo_file", FILE_META, fileTool(toolCtx));
 
     // --- zalo_inbox: who the caller is among the account's agents (src/mcp/inbox-tool.js) ---
     server.registerTool(

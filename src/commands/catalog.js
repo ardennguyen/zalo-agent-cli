@@ -9,6 +9,7 @@ import { allCatalogs, allProducts } from "../core/list-all.js";
 import { parseIntOption } from "../utils/parse-options.js";
 import { parseOnOff } from "../utils/cli-args.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
+import { cliFileItems, withCliFiles } from "../utils/cli-files.js";
 
 export function registerCatalogCommands(program) {
     const catalog = program.command("catalog").description("Manage Zalo Shop catalogs and products");
@@ -167,12 +168,21 @@ export function registerCatalogCommands(program) {
         });
 
     catalog
-        .command("upload-photo <filePath>")
-        .description("Upload a product photo (returns URL for use with add-product --photos)")
-        .action(async (filePath) => {
+        .command("upload-photo [filePath]")
+        .description(
+            "Upload a product photo (returns URL for use with add-product --photos); a path, --url or --file-id",
+        )
+        .option("--url <url>", "Download the image from this http(s) link first (public addresses only)")
+        .option("--file-id <fileId>", "An image stored with `file put` (or uploaded through zalo_file)")
+        .action(async (filePath, opts) => {
             try {
-                const absPath = resolve(filePath);
-                const result = await getApi().uploadProductPhoto({ file: absPath });
+                const items = cliFileItems({
+                    paths: filePath ? [resolve(filePath)] : [],
+                    urls: opts.url ? [opts.url] : [],
+                    fileIds: opts.fileId ? [opts.fileId] : [],
+                });
+                if (items.length !== 1) throw new Error("Give one image: a path, --url or --file-id.");
+                const result = await withCliFiles(items, ([f]) => getApi().uploadProductPhoto({ file: f.path }));
                 output(result, program.opts().json, () => {
                     info("Photo uploaded. Use the URL with: catalog add-product --photos <url>");
                 });

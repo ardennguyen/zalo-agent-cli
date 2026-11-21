@@ -5,8 +5,6 @@
  */
 
 import { nameFor, personNameFields } from "../core/contact-names.js";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
 import { z } from "zod";
 import { getInviteBoxInfo } from "../zalo/custom/group-invite.js";
 import { allGroupBlocked, groupLinkInfoAll, inviteInfoAll } from "../core/list-all.js";
@@ -16,6 +14,7 @@ import { lastOnlineStatus } from "../core/last-online.js";
 import { recordOwnExit } from "../core/group-exit.js";
 import { planDisperse, runDisperse } from "../core/group-departure.js";
 import { groupNames } from "../core/mutual-groups.js";
+import { fileInput, singleFileCheck, withSingleFile } from "./file-input.js";
 
 /** The session's own uid, or "". */
 function ownOf(api) {
@@ -188,12 +187,6 @@ export const FRIEND_EXTRA_INPUTS = {
 
 // --- zalo_group ---
 
-/** A local file the server can read, or the refusal that names it. */
-function localFile(path) {
-    const abs = resolve(String(path).trim());
-    return existsSync(abs) ? { abs } : { error: `File not found on the machine this server runs on: ${abs}` };
-}
-
 /** `settings` as the GroupSetting changes Zalo takes (1 on, 0 off), only for the settings given. */
 function settingChanges(settings) {
     const changes = {};
@@ -206,10 +199,10 @@ function settingChanges(settings) {
 /** zalo_group's further actions. */
 export const GROUP_EXTRA_ACTIONS = {
     avatar: {
-        needs: ["groupId", "filePath"],
-        check: (a) => localFile(a.filePath).error,
-        async run(a, { api }) {
-            await api.changeGroupAvatar(localFile(a.filePath).abs, a.groupId);
+        needs: ["groupId"],
+        check: singleFileCheck,
+        async run(a, ctx) {
+            await withSingleFile(a, ctx, (path) => ctx.api.changeGroupAvatar(path, a.groupId));
             return { success: true, groupId: a.groupId };
         },
     },
@@ -468,7 +461,11 @@ export const GROUP_EXTRA_INPUTS = {
         .string()
         .min(1)
         .optional()
-        .describe("Only for 'avatar': a local image path on the machine this server runs on"),
+        .describe(
+            "Only for 'avatar': an image path on the machine this server runs on (a caller on that machine " +
+                "only; anyone else sends `file`)",
+        ),
+    file: fileInput("'avatar'"),
     link: z
         .string()
         .url()

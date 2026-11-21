@@ -283,9 +283,9 @@ Mỗi tài khoản cá nhân đã đăng ký có cơ sở dữ liệu SQLite (`<
    zalo-mcp --account 202 sync --days 7
    ```
 
-### Danh sách 38 MCP tools
+### Danh sách 39 MCP tools
 
-Engine này đăng ký **38 MCP tools** trong `src/mcp/mcp-tools.js`: 37 tool cho **tài khoản cá nhân**, và `zalo_official` cho các API chính thức:
+Engine này đăng ký **39 MCP tools** trong `src/mcp/mcp-tools.js`: 38 tool cho **tài khoản cá nhân**, và `zalo_official` cho các API chính thức:
 
 | Tool | Công dụng |
 |:---|:---|
@@ -326,6 +326,7 @@ Engine này đăng ký **38 MCP tools** trong `src/mcp/mcp-tools.js`: 37 tool ch
 | `zalo_sticker` | Tìm sticker theo từ khóa và xem chi tiết |
 | `zalo_link` | Xem trước một liên kết và kiểm tra Zalo có coi nó là an toàn không |
 | `zalo_official` | Chạy một lệnh Official Account, ZBS hoặc Social API (`oa …`, `zbs …`, `social …`) theo tên lệnh CLI, trên các lần đăng nhập chính thức của chủ tài khoản; bỏ `command` để liệt kê |
+| `zalo_file` | Đưa tệp lên máy chủ cho client ở máy khác: `upload_begin` (link tải lên dùng một lần, PUT tệp vào đó), `upload` (`data` base64 hoặc `url`), `info`, `list`, `delete`; các tool nhận tệp sau đó dùng `{fileId}` |
 | `zalo_inbox` | Người gọi là ai trong số các agent dùng chung tài khoản: `whoami`, `status` (listening/away), `agents` cùng trạng thái (Phân công trợ lý) |
 
 Xem thêm [Chi tiết sử dụng đồng bộ qua MCP](docs/mcp-sync.vi.md) / [English](docs/mcp-sync.md).

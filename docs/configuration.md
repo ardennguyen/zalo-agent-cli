@@ -57,7 +57,7 @@ Files and the environment are read once at start; the policy is read again on ev
 The policy takes `confirmMode`, `hiddenChats`, `allowPinArgument`, `ownMyDocuments`, `routing.*`, `approval.*`, `media.deliver`, `media.inlineMaxBytes`,
 `media.allowDeliver`, `media.linkTtl`, `media.tempfileTtl`, `media.linkAuth`, `media.linkRateLimit`,
 `media.capability.*`, `media.autoOpen`, `webhook`, `webhookBatchSize`, `webhookMaxAge`, `quota.*`, `retention.*`,
-`groups.onLeave`, `presence.*` and `session.renew.*` (`presence.alwaysOn.*` only in a tenant's or a user's policy; `quota.tenant.*` only
+`groups.onLeave`, `presence.*`, `session.renew.*` and the `uploads.*` caps (not `uploads.localPaths`, `localPathRoots` or `allowPrivateUrls`) (`presence.alwaysOn.*` only in a tenant's or a user's policy; `quota.tenant.*` only
 in a tenant's).
 A key read only at start (`httpPort`, `host`, `publicUrl`, `tls`, `oauth`, `trustedProxies`, `admin`,
 `media.downloadDir`, the key provider and its options, `accounts`) and every secret (`webhookSecret`) is refused with
@@ -539,6 +539,16 @@ The official APIs take no `mcp-config.json` key; their only environment variable
 | `media.linkAuth` | unset (= `auto`) | `auto`, `bearer` or `capability` (see `ZALO_MCP_MEDIA_LINK_AUTH`) |
 | `media.linkRateLimit` | `60` | requests a minute one client address may make to media links (and 10 unknown tokens a minute), then `429` |
 | `media.capability.maxClients`, `.ttl` | `3`, `"15m"` | a capability link that leaves this machine serves at most this many distinct client addresses, each for this long from its first request (load balancers, a reconnect on a new network, a video player's range requests). Raise per account in `accounts.<ownId>.media.capability` |
+| `uploads.inlineMaxBytes` | `"10MB"` | the decoded bytes of every `{data}` file item of one MCP call together (at most `32MB`); the MCP request body limit follows it (base64 is 4/3 of the bytes, plus 1 MB) |
+| `uploads.maxBytes` | `"100MB"` | one upload into the account's store (`POST /zalo/files`, a `zalo_file` upload link, `file put`) |
+| `uploads.urlMaxBytes`, `uploads.urlTimeout` | `"100MB"`, `"60s"` | one `{url}` file item the server downloads |
+| `uploads.quota` | `"500MB"` | what the account's upload store (`accounts/<ownId>/uploads/`) holds at once; an upload over it is refused with `507` |
+| `uploads.ttl` | `"24h"` | how long an upload is kept |
+| `uploads.uploadLinkTtl` | `"15m"` | how long a `zalo_file` `upload_begin` link waits for its file |
+| `uploads.warnAt` | `0.8` | the share of `uploads.quota` where the store's `level` (usage reports) turns `warn` |
+| `uploads.localPaths` | `"loopback"` | who may name a path on this machine in a tool input: `loopback` (a stdio client, an HTTP client on this machine), `any`, or `none`. File only, never a policy |
+| `uploads.localPathRoots` | `[]` | folders whose paths any caller may name (a folder another container shares with this one). File only |
+| `uploads.allowPrivateUrls` | `false` | a `{url}` item may reach a private, loopback or link-local address (a LAN that serves its own files). File only |
 | `trustedProxies` | `null` (none) | reverse proxies whose `X-Forwarded-For` is believed (see `ZALO_MCP_TRUSTED_PROXIES`). List your proxy's address, or the per-client limits see one client |
 | `notify.enabled`, `.thread`, `.on`, `.cooldown` | off | notify a Zalo group when the agent is away |
 | `webhook`, `webhookSecret` | `null` | push each message to a URL, signed (prefer `ZALO_WEBHOOK_SECRET`) |
@@ -639,6 +649,7 @@ Keep the engine on loopback and put a TLS reverse proxy in front of it.
 - Files: [`env/internet-server.env`](config-samples/env/internet-server.env), [`mcp-config/internet.json`](config-samples/mcp-config/internet.json), and one proxy sample: [`proxy/Caddyfile.internet`](config-samples/proxy/Caddyfile.internet) or [`proxy/nginx.internet.conf`](config-samples/proxy/nginx.internet.conf).
 - The proxy must not buffer responses and must allow reads of at least 310 s: `/events/wait` holds a request for up to 300 s. Both samples are tested for it.
 - **Authentication:** a bearer token for scripts and backends; OAuth 2.1 for remote connectors that insist on it (below). Set `ZALO_MCP_PUBLIC_URL` (or `publicUrl`) to the public `https://` address: the OAuth issuer, the MCP endpoint and every link to a one-time page are built from it. Without it the links use the server's own address, and the OAuth metadata and the `WWW-Authenticate` header are built from the request's `Host` header (`X-Forwarded-Host` / `X-Forwarded-Proto` only from a proxy in `trustedProxies`); with OAuth on and the server listening off loopback, it refuses to start without one. (`ZALO_MCP_ISSUER_URL`, `--issuer-url` and `oauth.issuerUrl` are its deprecated 2.x names and still work.)
+- **Files from remote agents.** A remote caller cannot pass a path: it sends `{data, name}` (small files), `{url}` (the server downloads it, public addresses only) or `{fileId}`. `zalo_file` `upload_begin` returns a one-time `<publicUrl>/zalo/files/u/<token>` to `PUT` the file to, with no token; a client holding the bearer can `POST <publicUrl>/zalo/files?name=<file>`. Let the proxy pass request bodies up to `uploads.maxBytes` (100 MB) on `/zalo/files` and up to about 4/3 of `uploads.inlineMaxBytes` plus 1 MB (15 MB with the defaults) on the MCP endpoint, and give uploads the same read timeout as `/events/wait`. A path a remote caller passes is refused with what to send instead, unless it lies under `uploads.localPathRoots`.
 - Native HTTPS (`--cert` / `--key`) without a proxy works, but the engine **also tries to listen on port 443** next to your port. Prefer the proxy.
 - Add what the engine does not have: an IP allow-list at the proxy, and a log that never records the `Authorization` header. The engine limits only the OAuth endpoints' request rate. The server answers most origins with `Access-Control-Allow-Origin: *` (not a `/register` answer carrying a client secret); strip or replace the header at the proxy if browsers should not call it.
 
@@ -691,7 +702,7 @@ A CRM needs three things from an account: to **hear** new messages, to **send**,
 
 **Hear: pull.** `GET /events/wait?timeout=55&since=<cursor>` returns every message already waiting in the buffer (`&limit=<n>` caps how many), or `{"status":"timeout"}`, with a cursor to resume from. The reply has `messages` (in order), `count`, `hasMore` and `cursor`, the **last** message's, so `since=<cursor>` continues exactly where the batch ended; `message` is the first. **Breaking in 3.0.0:** the default was one message per call; a client that reads only `message` and continues from `cursor` now skips the rest of the batch: read `messages`, or send `limit=1`. With a `limit`, drain a backlog by calling again at once while `hasMore` is true; `settle=200` (ms, at most 5000) waits that long after the first message so a burst lands in one reply. The same `limit` and `settleMs` exist on the `zalo_wait_for_message` tool and as `mcp wait --limit --settle`. The buffer behind it holds up to `limits.bufferMaxSize` messages per thread for `limits.bufferMaxAge` (the CRM sample raises both to 2,000 and 6 h). Past that, read the cache with `zalo_get_history` / `zalo_get_messages`.
 
-**Send.** A JSON-RPC call to `POST /mcp`: [`clients/crm-send-message.sh`](config-samples/clients/crm-send-message.sh). Send `Accept: application/json, text/event-stream` (without both the server answers 406); the reply is one SSE `data:` line, and a successful send returns `{"success":true,"msgId":…,"cliMsgId":…,"threadType":…}`. `threadId` is a user id for a direct message or a group id for a group. Each `/mcp` request builds a fresh server with all 38 tools, which costs a few milliseconds of CPU: fine for a CRM, and the reason one account tops out at roughly 60–170 requests/s (see [`docs/deployment.md`](deployment.md) §1.4).
+**Send.** A JSON-RPC call to `POST /mcp`: [`clients/crm-send-message.sh`](config-samples/clients/crm-send-message.sh). Send `Accept: application/json, text/event-stream` (without both the server answers 406); the reply is one SSE `data:` line, and a successful send returns `{"success":true,"msgId":…,"cliMsgId":…,"threadType":…}`. `threadId` is a user id for a direct message or a group id for a group. Each `/mcp` request builds a fresh server with all 39 tools, which costs a few milliseconds of CPU: fine for a CRM, and the reason one account tops out at roughly 60–170 requests/s (see [`docs/deployment.md`](deployment.md) §1.4).
 
 **Catch up.** After downtime, ask for what was missed: `zalo_get_history` per thread, or `zalo-agent sync --from <date>` (which can ask the owner's phone to confirm).
 
@@ -740,7 +751,7 @@ curl -s -H "Authorization: Bearer $TOKEN" http://HOST:PORT/status | head -c 400
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://HOST:PORT/mcp
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://HOST:PORT/mcp -H 'Authorization: Bearer wrong'
 
-# the tools are served (expect 38 names):
+# the tools are served (expect 39 names):
 curl -s http://HOST:PORT/mcp -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | grep -o '"name":"zalo_[a-z_]*"' | wc -l

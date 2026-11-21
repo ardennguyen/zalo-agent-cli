@@ -6,6 +6,19 @@
         "bufferMaxAge": "2h",
         "bufferMaxSize": 500
     },
+    "uploads": {
+        "inlineMaxBytes": "10MB",
+        "maxBytes": "100MB",
+        "urlMaxBytes": "100MB",
+        "urlTimeout": "60s",
+        "quota": "500MB",
+        "ttl": "24h",
+        "uploadLinkTtl": "15m",
+        "warnAt": 0.8,
+        "localPaths": "loopback",
+        "localPathRoots": [],
+        "allowPrivateUrls": false
+    },
     "media": {
         "downloadDir": null,
         "autoOpen": true,

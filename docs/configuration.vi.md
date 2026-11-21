@@ -57,7 +57,7 @@ máy chủ đang chạy. Tệp và biến môi trường chỉ được đọc m
 Chính sách nhận `confirmMode`, `hiddenChats`, `allowPinArgument`, `ownMyDocuments`, `routing.*`, `approval.*`, `media.deliver`, `media.inlineMaxBytes`,
 `media.allowDeliver`, `media.linkTtl`, `media.tempfileTtl`, `media.linkAuth`, `media.linkRateLimit`,
 `media.capability.*`, `media.autoOpen`, `webhook`, `webhookBatchSize`, `webhookMaxAge`, `quota.*`, `retention.*`,
-`groups.onLeave`, `presence.*` và `session.renew.*` (`presence.alwaysOn.*` chỉ có trong chính sách của tenant hoặc người dùng;
+`groups.onLeave`, `presence.*`, `session.renew.*` và các giới hạn `uploads.*` (trừ `uploads.localPaths`, `localPathRoots` và `allowPrivateUrls`) (`presence.alwaysOn.*` chỉ có trong chính sách của tenant hoặc người dùng;
 `quota.tenant.*` chỉ có trong chính sách của tenant). Khóa chỉ đọc khi khởi động (`httpPort`, `host`, `publicUrl`, `tls`,
 `oauth`, `trustedProxies`, `admin`, `media.downloadDir`, bộ cung cấp khóa và các tùy chọn của nó, `accounts`) và mọi bí
 mật (`webhookSecret`) bị từ chối với `restartRequired`; khóa khác bị từ chối vì không biết. Các tệp được niêm phong bằng
@@ -526,6 +526,16 @@ Các API chính thức không có khóa `mcp-config.json` nào; biến môi trư
 | `media.linkAuth` | không đặt (= `auto`) | `auto`, `bearer` hoặc `capability` (xem `ZALO_MCP_MEDIA_LINK_AUTH`) |
 | `media.linkRateLimit` | `60` | số yêu cầu mỗi phút một địa chỉ client được gửi tới link media (và 10 token lạ mỗi phút), sau đó `429` |
 | `media.capability.maxClients`, `.ttl` | `3`, `"15m"` | link capability ra ngoài máy này phục vụ tối đa chừng này địa chỉ client khác nhau, mỗi địa chỉ trong chừng này thời gian kể từ yêu cầu đầu tiên (load balancer, kết nối lại trên mạng khác, các yêu cầu range của trình phát video). Nâng theo tài khoản trong `accounts.<ownId>.media.capability` |
+| `uploads.inlineMaxBytes` | `"10MB"` | tổng số byte (đã giải mã) của mọi tệp `{data}` trong một lời gọi MCP (tối đa `32MB`); giới hạn thân request MCP theo nó (base64 bằng 4/3 số byte, cộng 1 MB) |
+| `uploads.maxBytes` | `"100MB"` | một lần tải lên kho của tài khoản (`POST /zalo/files`, link tải lên của `zalo_file`, `file put`) |
+| `uploads.urlMaxBytes`, `uploads.urlTimeout` | `"100MB"`, `"60s"` | một tệp `{url}` mà máy chủ tự tải về |
+| `uploads.quota` | `"500MB"` | dung lượng tối đa kho tải lên của tài khoản (`accounts/<ownId>/uploads/`) giữ cùng lúc; vượt thì bị từ chối với `507` |
+| `uploads.ttl` | `"24h"` | một tệp tải lên được giữ bao lâu |
+| `uploads.uploadLinkTtl` | `"15m"` | link `upload_begin` của `zalo_file` chờ tệp bao lâu |
+| `uploads.warnAt` | `0.8` | tỷ lệ của `uploads.quota` mà từ đó `level` của kho (trong báo cáo dung lượng) chuyển thành `warn` |
+| `uploads.localPaths` | `"loopback"` | ai được ghi một đường dẫn trên máy này vào input của tool: `loopback` (client stdio, client HTTP trên cùng máy), `any` hoặc `none`. Chỉ trong tệp, không bao giờ là chính sách |
+| `uploads.localPathRoots` | `[]` | các thư mục mà mọi client đều được ghi đường dẫn bên trong (thư mục một container khác chia sẻ với máy chủ). Chỉ trong tệp |
+| `uploads.allowPrivateUrls` | `false` | tệp `{url}` được trỏ tới địa chỉ private, loopback hoặc link-local (một mạng LAN tự phục vụ tệp). Chỉ trong tệp |
 | `trustedProxies` | `null` (không có) | các reverse proxy mà `X-Forwarded-For` được tin (xem `ZALO_MCP_TRUSTED_PROXIES`). Ghi địa chỉ proxy của bạn, nếu không giới hạn theo client chỉ thấy một client |
 | `notify.enabled`, `.thread`, `.on`, `.cooldown` | tắt | báo vào một nhóm Zalo khi agent vắng mặt |
 | `webhook`, `webhookSecret` | `null` | đẩy mỗi tin tới một URL, có ký (nên dùng `ZALO_WEBHOOK_SECRET`) |
@@ -626,6 +636,7 @@ Giữ engine trên loopback và đặt reverse proxy TLS phía trước.
 - Tệp: [`env/internet-server.env`](config-samples/env/internet-server.env), [`mcp-config/internet.json`](config-samples/mcp-config/internet.json) và một mẫu proxy: [`proxy/Caddyfile.internet`](config-samples/proxy/Caddyfile.internet) hoặc [`proxy/nginx.internet.conf`](config-samples/proxy/nginx.internet.conf).
 - Proxy không được đệm phản hồi và phải cho phép đọc tối thiểu 310 giây: `/events/wait` giữ một request tới 300 giây. Cả hai mẫu đều được kiểm thử điều này.
 - **Xác thực:** bearer token cho script và backend; OAuth 2.1 cho các connector từ xa đòi hỏi nó (bên dưới). Đặt `ZALO_MCP_PUBLIC_URL` (hoặc `publicUrl`) là địa chỉ `https://` công khai: OAuth issuer, endpoint MCP và mọi link tới trang dùng một lần đều được dựng từ đó. Nếu không, link dùng địa chỉ của chính server, còn metadata OAuth và header `WWW-Authenticate` được dựng từ header `Host` của request (`X-Forwarded-Host` / `X-Forwarded-Proto` chỉ được tin khi đến từ một proxy trong `trustedProxies`); khi OAuth bật và server nghe ngoài loopback, server từ chối khởi động nếu thiếu nó. (`ZALO_MCP_ISSUER_URL`, `--issuer-url` và `oauth.issuerUrl` là tên cũ của nó từ 2.x, vẫn dùng được.)
+- **Tệp từ agent ở xa.** Client ở máy khác không gửi được đường dẫn: nó gửi `{data, name}` (tệp nhỏ), `{url}` (máy chủ tự tải về, chỉ địa chỉ công khai) hoặc `{fileId}`. `upload_begin` của `zalo_file` trả về link dùng một lần `<publicUrl>/zalo/files/u/<token>` để `PUT` tệp lên, không cần token; client có bearer có thể `POST <publicUrl>/zalo/files?name=<tệp>`. Cho proxy nhận thân request tới `uploads.maxBytes` (100 MB) trên `/zalo/files` và khoảng 4/3 của `uploads.inlineMaxBytes` cộng 1 MB (15 MB với mặc định) trên endpoint MCP, và để các lần tải lên cùng thời gian đọc như `/events/wait`. Đường dẫn do client ở xa gửi bị từ chối kèm hướng dẫn gửi cách khác, trừ khi nó nằm trong `uploads.localPathRoots`.
 - HTTPS gốc (`--cert` / `--key`) không qua proxy chạy được, nhưng engine **còn cố nghe thêm port 443** bên cạnh port của bạn. Nên dùng proxy.
 - Thêm những gì engine không có: danh sách IP được phép tại proxy, và log không bao giờ ghi header `Authorization`. Engine chỉ giới hạn tốc độ request ở các endpoint OAuth. Máy chủ trả `Access-Control-Allow-Origin: *` cho hầu hết origin (trừ câu trả lời `/register` có chứa client secret); xóa hoặc thay header này tại proxy nếu không muốn trình duyệt gọi.
 
@@ -678,7 +689,7 @@ CRM cần ba thứ từ một tài khoản: **nghe** tin mới, **gửi**, và *
 
 **Nghe: kéo.** `GET /events/wait?timeout=55&since=<cursor>` trả về mọi tin đang chờ trong bộ đệm (`&limit=<n>` giới hạn số tin), hoặc `{"status":"timeout"}`, kèm cursor để tiếp tục. Phản hồi có `messages` (đúng thứ tự), `count`, `hasMore` và `cursor` là của tin **cuối**, nên `since=<cursor>` tiếp tục đúng chỗ lô vừa kết thúc; `message` là tin đầu. **Thay đổi không tương thích ở 3.0.0:** trước đây mặc định là một tin mỗi lần gọi; client chỉ đọc `message` rồi đi tiếp từ `cursor` giờ sẽ bỏ sót phần còn lại của lô: hãy đọc `messages`, hoặc gửi `limit=1`. Khi có `limit`, để xả một đống tồn, gọi lại ngay khi `hasMore` còn true; `settle=200` (ms, tối đa 5000) chờ thêm chừng đó sau tin đầu tiên để một đợt tin đến dồn vào một phản hồi. `limit` và `settleMs` cũng có ở tool `zalo_wait_for_message` và ở `mcp wait --limit --settle`. Bộ đệm phía sau giữ tối đa `limits.bufferMaxSize` tin cho mỗi thread trong `limits.bufferMaxAge` (mẫu CRM nâng cả hai lên 2.000 và 6 giờ). Quá mức đó, đọc cache bằng `zalo_get_history` / `zalo_get_messages`.
 
-**Gửi.** Một lời gọi JSON-RPC tới `POST /mcp`: [`clients/crm-send-message.sh`](config-samples/clients/crm-send-message.sh). Gửi `Accept: application/json, text/event-stream` (thiếu một trong hai, máy chủ trả 406); phản hồi là một dòng SSE `data:`, và gửi thành công trả về `{"success":true,"msgId":…,"cliMsgId":…,"threadType":…}`. `threadId` là id người dùng cho tin nhắn riêng hoặc id nhóm cho nhóm. Mỗi request `/mcp` dựng một máy chủ mới với đủ 38 tool, tốn vài mili giây CPU: ổn cho CRM, và là lý do một tài khoản chạm trần khoảng 60–170 request/giây (xem [`docs/deployment.vi.md`](deployment.vi.md) §1.4).
+**Gửi.** Một lời gọi JSON-RPC tới `POST /mcp`: [`clients/crm-send-message.sh`](config-samples/clients/crm-send-message.sh). Gửi `Accept: application/json, text/event-stream` (thiếu một trong hai, máy chủ trả 406); phản hồi là một dòng SSE `data:`, và gửi thành công trả về `{"success":true,"msgId":…,"cliMsgId":…,"threadType":…}`. `threadId` là id người dùng cho tin nhắn riêng hoặc id nhóm cho nhóm. Mỗi request `/mcp` dựng một máy chủ mới với đủ 39 tool, tốn vài mili giây CPU: ổn cho CRM, và là lý do một tài khoản chạm trần khoảng 60–170 request/giây (xem [`docs/deployment.vi.md`](deployment.vi.md) §1.4).
 
 **Bắt kịp.** Sau thời gian ngừng, hỏi những gì đã lỡ: `zalo_get_history` theo từng thread, hoặc `zalo-agent sync --from <date>` (có thể yêu cầu chủ tài khoản xác nhận trên điện thoại).
 
@@ -727,7 +738,7 @@ curl -s -H "Authorization: Bearer $TOKEN" http://HOST:PORT/status | head -c 400
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://HOST:PORT/mcp
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://HOST:PORT/mcp -H 'Authorization: Bearer wrong'
 
-# các tool được phục vụ (mong đợi 38 tên):
+# các tool được phục vụ (mong đợi 39 tên):
 curl -s http://HOST:PORT/mcp -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | grep -o '"name":"zalo_[a-z_]*"' | wc -l

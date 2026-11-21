@@ -72,6 +72,7 @@ const EXPECTED_TOOLS = [
     "zalo_sticker",
     "zalo_link",
     "zalo_official",
+    "zalo_file",
     "zalo_inbox",
 ];
 

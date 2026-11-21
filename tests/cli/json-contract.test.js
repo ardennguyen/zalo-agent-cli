@@ -33,11 +33,11 @@ import { SANDBOX_HOME, SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sa
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { copyFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Command } from "commander";
-import { CONFIG_DIR, getAccountDbPath, saveCredentials } from "../../src/core/credentials.js";
+import { CONFIG_DIR, getAccountDbPath, getAccountDir, saveCredentials } from "../../src/core/credentials.js";
 import { addAccount } from "../../src/core/accounts.js";
 import { closeDb, initDb, insertMessage, upsertThread } from "../../src/core/db.js";
 import { PINNED_MESSAGE_TOPIC } from "../../src/zalo/custom/pin.js";
@@ -55,6 +55,28 @@ const FIXTURES = join(ROOT, "tests", "fixtures");
 const SPARE_ACCOUNT = "1000000000000000009";
 /** A conversation only `conv forget` touches, so the others keep their cached message. */
 const FORGET_THREAD = "1000000000000000004";
+
+/** A file in the fake account's upload store, as `file put` leaves one (src/core/upload-store.js). */
+const FAKE_FILE_ID = "f_contractFakeFileId000000";
+
+/** Put {@link FAKE_FILE_ID} into the upload store (again): `file delete` removes it each walk. */
+function seedUpload() {
+    const dir = join(getAccountDir(FAKE_OWN_ID), "uploads", FAKE_FILE_ID);
+    mkdirSync(join(dir, "f"), { recursive: true });
+    writeFileSync(join(dir, "f", "fake.txt"), "fake upload");
+    const t = Date.now();
+    writeFileSync(
+        join(dir, "meta.json"),
+        JSON.stringify({
+            fileId: FAKE_FILE_ID,
+            name: "fake.txt",
+            mimeType: "text/plain",
+            size: 11,
+            createdAt: t,
+            expiresAt: t + 3_600_000,
+        }),
+    );
+}
 
 /**
  * The cached messages of the current walk: one each for `msg delete` and `msg undo` (which turn theirs into a
@@ -163,6 +185,16 @@ let dbCopies = 0;
 /** Per-command argv where the name-based guess is not valid input. Values follow the command path. */
 const argvTable = () => ({
     "msg react": [msgs.main, FAKE_PEER_ID, "like"],
+    // A file argument is optional where --url / --file-id can stand for it: name one.
+    "msg send-image": [FAKE_PEER_ID, files.image],
+    "msg send-file": [FAKE_PEER_ID, files.text],
+    "profile avatar": [files.image],
+    "group avatar": [FAKE_GROUP_ID, files.image],
+    "catalog upload-photo": [files.image],
+    "file put": [files.text],
+    // The upload store's file seeded for each walk (seedUpload): read, then deleted.
+    "file info": [FAKE_FILE_ID],
+    "file delete": [FAKE_FILE_ID],
     "msg unpin": [msgs.main, FAKE_PEER_ID],
     "msg report": [FAKE_PEER_ID, "--reason", "annoy"],
     "msg send-bank": [FAKE_PEER_ID, "0123456789", "--bank", "vcb"],
@@ -398,6 +430,7 @@ function seedAccounts() {
  * @param {number} walk - 0 for the first walk, 1 for the next, ...
  */
 function seedMessages(walk) {
+    seedUpload();
     // Opened afresh: the walk before ran `account security rekey`, which re-encrypted the cache under a new key.
     closeDb();
     initDb(getAccountDbPath(FAKE_OWN_ID));

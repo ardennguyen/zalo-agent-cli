@@ -45,6 +45,7 @@ import {
     resolveMediaDelivery,
     resolveOwnMyDocuments,
     resolveMediaLinkAuth,
+    resolveUploads,
 } from "./deploy-policy.js";
 import {
     PolicyError,
@@ -195,6 +196,7 @@ export function describeEffective(ownId, config = {}, { publicUrl = null, extra 
             capability: { maxClients: auth.maxClients, ttlMs: auth.clientTtlMs },
         },
         webhook: { batchSize: webhook.batchSize, maxAgeMs: webhook.maxAgeMs },
+        uploads: resolveUploads({ config, accountId: ownId }),
         presence: resolvePresenceSettings({ config, accountId: ownId }).settings,
         ...(extra ? extra(ownId) : {}),
     };

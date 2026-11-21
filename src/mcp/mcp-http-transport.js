@@ -16,11 +16,14 @@ import { newMcpServer } from "./new-server.js";
 import { maskSecurePath, SECURE_PATH_PREFIX } from "../core/secure-page.js";
 import { maskQrPath, QR_PATH_PREFIX } from "../utils/qr-http-server.js";
 import { maskMediaPath, MEDIA_PATH_PREFIX } from "../core/media-deliver.js";
-import { clientIpOf, handleMediaRequest, isLoopbackIp } from "../core/media-route.js";
+import { clientIpOf, handleMediaRequest, isLoopbackIp, normalizeIp } from "../core/media-route.js";
 import { ADMIN_PATH_PREFIX } from "../core/admin-api.js";
 import { PRESENCE_PATH_PREFIX } from "../core/presence-leases.js";
 import { approverFor } from "../core/approval.js";
 import { AGENT_PATH, mountOAuth, oauthStartCheck, safeEqual } from "./mcp-oauth.js";
+import { UPLOAD_PATH_PREFIX, handleUploadRequest, maskUploadPath } from "../core/upload-route.js";
+import { getUploadStore } from "../core/upload-store.js";
+import { resolveUploads } from "../core/deploy-policy.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -104,6 +107,16 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
             };
         return null;
     };
+    // The account's upload policy (src/core/deploy-policy.js resolveUploads), read on every request.
+    const accountIdOf = () => {
+        try {
+            const id = deps.api?.getOwnId?.();
+            return id === undefined || id === null ? undefined : String(id);
+        } catch {
+            return undefined;
+        }
+    };
+    const uploadPolicy = () => resolveUploads({ config: deps.config || {}, accountId: accountIdOf() });
     const isAuthorized = (req) => {
         const authHeader = String(req.headers.authorization || "");
         const token = /^bearer\s+/i.test(authHeader) ? authHeader.replace(/^bearer\s+/i, "").trim() : "";
@@ -121,16 +134,16 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
                 const ua = String(req.headers["user-agent"] || "-").slice(0, 80);
                 const h = String(req.headers.host || "-");
                 console.error(
-                    `${DEBUG_MARK}[mcp-http] ${req.method} ${maskMediaPath(maskQrPath(maskSecurePath(req.originalUrl)))} -> ${res.statusCode} (host=${h} ip=${remoteIp} ua="${ua}")`,
+                    `${DEBUG_MARK}[mcp-http] ${req.method} ${maskUploadPath(maskMediaPath(maskQrPath(maskSecurePath(req.originalUrl))))} -> ${res.statusCode} (host=${h} ip=${remoteIp} ua="${ua}")`,
                 );
             });
         }
         res.setHeader("Access-Control-Allow-Origin", "*");
         res.setHeader(
             "Access-Control-Allow-Headers",
-            "Authorization, Content-Type, Accept, Mcp-Session-Id, MCP-Protocol-Version",
+            "Authorization, Content-Type, Accept, Mcp-Session-Id, MCP-Protocol-Version, X-File-Name",
         );
-        res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+        res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
         res.setHeader("Access-Control-Expose-Headers", "WWW-Authenticate, Mcp-Session-Id");
         if (req.method === "OPTIONS") {
             return res.status(204).end();
@@ -188,6 +201,27 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
         });
     }
 
+    // Uploads (/zalo/files, src/core/upload-route.js), before the body parsers (the body is the file, read as a stream)
+    // and before the bearer check: a plain upload checks this server's own Authorization itself, an upload link is
+    // admitted by its one-time token.
+    if (deps.accountDir) {
+        app.use(UPLOAD_PATH_PREFIX, (req, res, next) => {
+            req.url = `${UPLOAD_PATH_PREFIX}${req.url === "/" ? "" : req.url}`;
+            handleUploadRequest(req, res, {
+                store: () => getUploadStore(deps.accountDir),
+                policy: uploadPolicy,
+                authorize: authOn() ? isAuthorized : null,
+                log: (line) => console.error(line),
+            })
+                .then((handled) => {
+                    if (!handled) next();
+                })
+                .catch(() => {
+                    if (!res.headersSent) res.status(500).set("Cache-Control", "no-store").end();
+                });
+        });
+    }
+
     // The admin API (src/core/admin-api.js), before the bearer check too: it takes its own credential (an admin token
     // or a client certificate) and refuses the agent's, so an agent can never change its own policy.
     if (deps.admin) {
@@ -209,7 +243,13 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
         deps.admin.isAgentToken = isAgentToken;
     }
 
-    app.use(express.json());
+    // JSON bodies: small everywhere, except the MCP endpoint, which may carry a file inline (`data`, up to
+    // uploads.inlineMaxBytes as base64). That one is parsed only after the bearer check below, so a caller without a
+    // token is never read past the default limit.
+    const isMcpPath = (req) => req.path === "/mcp" || AGENT_PATH.test(req.path);
+    const jsonType = (req) =>
+        /^application\/(?:[\w.+-]+\+)?json\s*(?:;|$)/i.test(String(req.headers["content-type"] || ""));
+    app.use(express.json({ type: (req) => !isMcpPath(req) && jsonType(req) }));
     app.use(express.urlencoded({ extended: false }));
 
     // A body that is not valid JSON or form data: an OAuth-shaped error (JSON-RPC on /mcp), never express's HTML page.
@@ -275,6 +315,36 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
             .json({ error: token ? "invalid_token" : "unauthorized", error_description: description });
     });
 
+    // The MCP endpoint's body, after the bearer check: base64 is 4/3 of the bytes, plus the rest of the request.
+    const mcpParsers = new Map();
+    app.use((req, res, next) => {
+        if (!isMcpPath(req)) return next();
+        const limit = Math.ceil((uploadPolicy().inlineMaxBytes * 4) / 3) + 1024 * 1024;
+        let parser = mcpParsers.get(limit);
+        if (!parser) {
+            parser = express.json({ limit });
+            mcpParsers.set(limit, parser);
+        }
+        parser(req, res, (err) => {
+            if (!err) return next();
+            const tooLarge = err.type === "entity.too.large";
+            res.status(tooLarge ? 413 : 400)
+                .set("Cache-Control", "no-store")
+                .json({
+                    jsonrpc: "2.0",
+                    error: {
+                        code: tooLarge ? -32600 : -32700,
+                        message: tooLarge
+                            ? `The request is over this server's limit for one MCP call (${limit} bytes). Send a large ` +
+                              "file through zalo_file 'upload_begin' (a one-time upload link) or as a url, and pass " +
+                              "its fileId"
+                            : "Parse error",
+                    },
+                    id: null,
+                });
+        });
+    });
+
     // MCP endpoint — stateless, fresh server+transport per request (POST, GET, DELETE per Streamable HTTP spec)
     // `/mcp/a/<slug>`: one agent's connector address (a Claude app project's own connector); OAuth grants made for it
     // are that agent's (src/mcp/mcp-oauth.js), any other credential is the same as on `/mcp`.
@@ -290,7 +360,13 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
             server.statelessHttp = true;
             // Whether this request's client runs on this machine: only then can a tempfile path mean anything to it
             // (src/core/media-deliver.js chooseDelivery). X-Forwarded-For counts only from a trusted proxy.
-            server.clientLoopback = isLoopbackIp(clientIpOf(req, deps.trustedProxies || []));
+            // A request a proxy forwarded (X-Forwarded-For, Forwarded, X-Real-IP) from a peer that is not a trusted proxy
+            // is not taken for this machine's own: behind a proxy on this host every caller would otherwise look local
+            // and could name this machine's paths (src/core/file-inputs.js).
+            const clientIp = clientIpOf(req, deps.trustedProxies || []);
+            const forwarded = ["x-forwarded-for", "forwarded", "x-real-ip"].some((h) => req.headers[h]);
+            server.clientLoopback =
+                isLoopbackIp(clientIp) && !(forwarded && clientIp === normalizeIp(req.socket?.remoteAddress));
             registerToolsFn(
                 server,
                 deps.api,

@@ -56,6 +56,7 @@ import {
     resolveTrustedProxies,
 } from "../core/deploy-policy.js";
 import { getMediaLinks, linkForCachedMessage, startTempfileSweeper } from "../core/media-deliver.js";
+import { startUploadSweeper } from "../core/upload-store.js";
 import { ensureMediaServed } from "../core/media-route.js";
 import { scopeOfDir } from "../core/keystore/keyring.js";
 import { approverFor, approverStatus } from "../core/approval.js";
@@ -940,6 +941,8 @@ export function registerMCPCommands(program) {
             });
             // Decrypted copies a CLI command or a crash left behind expire on time while this daemon runs.
             startTempfileSweeper({ ttlMs: mediaPolicy.tempfileTtlMs, accountId: activeAcc.ownId });
+            // The upload store (src/core/upload-store.js): files past uploads.ttl, and scratch a crash left, go.
+            startUploadSweeper(accountDir);
             // Logged in and the friend and group lists are loaded: the heavy part of start-up is over.
             gate.leave();
 
@@ -1088,6 +1091,7 @@ export function registerMCPCommands(program) {
                                     ...describeStorage(activeAcc.ownId, {
                                         mediaRoot: MEDIA_DIR || config.media?.downloadDir,
                                         dbBytes: dbUsedBytes(),
+                                        config,
                                     }),
                                 },
                             ],

@@ -16,6 +16,7 @@ import {
     MEDIA_DELIVER_MODES,
     MEDIA_KINDS,
     MEDIA_LINK_AUTHS,
+    UPLOAD_INLINE_CEILING,
     durationMs,
 } from "./deploy-policy.js";
 import { ACCOUNT_MARKS, checkAgents } from "./routing-policy.js";
@@ -104,6 +105,13 @@ const duration = (minMs) => (value) => {
 const bytes = (value) => {
     const b = parseBytes(value);
     return b === null ? { error: 'is not a size (bytes, or e.g. "2GB", or "unlimited")' } : { value };
+};
+/** A size with an upper bound: no "unlimited". */
+const sizeUpTo = (max) => (value) => {
+    const b = parseBytes(value);
+    return typeof b === "number" && b <= max
+        ? { value }
+        : { error: `is not a size (bytes, or e.g. "10MB")${max < Number.MAX_SAFE_INTEGER ? " of at most 32MB" : ""}` };
 };
 const reserve = (value) => {
     if (value === 0 || String(value ?? "").trim() === "0") return { value: 0 };
@@ -220,6 +228,16 @@ export const POLICY_KEYS = Object.freeze({
     "media.autoOpen": { check: bool },
     // Which media kinds are kept at all (text-only storage): the one downloader (src/core/sync-v2/media.js) skips the rest.
     "media.store": { check: mediaStore },
+    // Files a caller hands the server (src/core/file-inputs.js, src/core/upload-store.js): read on every call. Which
+    // paths the server reads from its own disk (uploads.localPaths, localPathRoots, allowPrivateUrls) is not a policy.
+    "uploads.inlineMaxBytes": { check: sizeUpTo(UPLOAD_INLINE_CEILING) },
+    "uploads.maxBytes": { check: sizeUpTo(Number.MAX_SAFE_INTEGER) },
+    "uploads.urlMaxBytes": { check: sizeUpTo(Number.MAX_SAFE_INTEGER) },
+    "uploads.urlTimeout": { check: duration(1000) },
+    "uploads.quota": { check: sizeUpTo(Number.MAX_SAFE_INTEGER) },
+    "uploads.ttl": { check: duration(60_000) },
+    "uploads.uploadLinkTtl": { check: duration(60_000) },
+    "uploads.warnAt": { check: fraction },
     webhook: { check: webhookUrl },
     webhookBatchSize: { check: wholeNumber(1, 100) },
     webhookMaxAge: { check: duration(60_000) },
@@ -302,6 +320,9 @@ export const RESTART_KEYS = Object.freeze([
     "admin",
     "webhookSecret",
     "media.downloadDir",
+    "uploads.localPaths",
+    "uploads.localPathRoots",
+    "uploads.allowPrivateUrls",
     "provider",
     "dkeyLayer",
     "dpapi",

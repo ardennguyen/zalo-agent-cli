@@ -11,7 +11,8 @@
  *   .tmp/<random>/<name>    a file one call fetched or decoded (a `url` or `data` item), removed when the call ends
  *
  * Folders are 0700 and files 0600. A file is kept until `uploads.ttl` after it arrived (24 h), then swept; the store
- * holds at most `uploads.quota` (500 MB) at once, and an upload that would go over it is refused. Nothing here is
+ * holds at most `uploads.quota` (two files of the account's Zalo limit) at once, and an upload that would go over it
+ * is refused. A file a send used goes as soon as its message is recorded (`markSent`, `reapSent`). Nothing here is
  * ever sent anywhere by itself: a file leaves only when a send names its fileId.
  */
 
@@ -87,6 +88,8 @@ export class UploadStore {
         this.links = new Map();
         /** Bytes of uploads under way, counted against the quota before they land. */
         this.inflight = 0;
+        /** The timer of {@link UploadStore#watchSent}, while sent files wait for their record. */
+        this.watching = null;
     }
 
     #ensure() {
@@ -110,8 +113,9 @@ export class UploadStore {
         }
     }
 
-    /** The public view of a stored file. */
+    /** The public view of a stored file, with its state: `stored`, `sent` (waiting for its record) or `consumed`. */
     #view(m) {
+        const c = m.consumed ?? null;
         return {
             fileId: m.fileId,
             name: m.name,
@@ -119,7 +123,39 @@ export class UploadStore {
             size: m.size,
             createdAt: new Date(m.createdAt).toISOString(),
             expiresAt: new Date(m.expiresAt).toISOString(),
+            status: !c ? "stored" : c.removedAt ? "consumed" : "sent",
+            ...(c
+                ? {
+                      sent: {
+                          at: new Date(c.at).toISOString(),
+                          msgIds: c.msgIds,
+                          ...(c.threadId ? { threadId: c.threadId } : {}),
+                          ...(c.removedAt
+                              ? { removedAt: new Date(c.removedAt).toISOString(), removedBecause: c.reason }
+                              : {}),
+                      },
+                  }
+                : {}),
         };
+    }
+
+    #writeMeta(m) {
+        try {
+            writeFileSync(join(this.dir, m.fileId, "meta.json"), JSON.stringify(m), { mode: 0o600 });
+        } catch {
+            /* gone meanwhile */
+        }
+    }
+
+    /** Remove a sent file's bytes and keep its record (a tombstone) until it would have expired. */
+    #consume(m, reason) {
+        try {
+            rmSync(join(this.dir, m.fileId, "f"), { recursive: true, force: true });
+        } catch {
+            /* the next reap tries again */
+        }
+        m.consumed = { ...m.consumed, removedAt: this.now(), reason };
+        this.#writeMeta(m);
     }
 
     /**
@@ -131,7 +167,7 @@ export class UploadStore {
      */
     get(fileId) {
         const m = this.#meta(fileId);
-        if (!m) return null;
+        if (!m || m.consumed?.removedAt) return null;
         const path = join(this.dir, fileId, "f", m.name);
         if (m.expiresAt <= this.now() || !existsSync(path)) {
             this.#remove(fileId);
@@ -170,7 +206,8 @@ export class UploadStore {
      * @returns {boolean} whether there was one
      */
     delete(fileId) {
-        if (!this.#meta(fileId)) return false;
+        const m = this.#meta(fileId);
+        if (!m || m.consumed?.removedAt) return false;
         this.#remove(fileId);
         return true;
     }
@@ -185,11 +222,100 @@ export class UploadStore {
         let files = 0;
         for (const id of this.#ids()) {
             const m = this.#meta(id);
-            if (!m) continue;
+            if (!m || m.consumed?.removedAt) continue;
             bytes += Number(m.size) || 0;
             files++;
         }
         return { bytes, files };
+    }
+
+    /**
+     * What is known of a fileId: its view (any state), or null when it never existed or its record is gone.
+     *
+     * @param {string} fileId
+     * @returns {object|null}
+     */
+    status(fileId) {
+        const m = this.#meta(fileId);
+        if (!m) return null;
+        if (m.expiresAt <= this.now()) {
+            this.#remove(fileId);
+            return null;
+        }
+        return this.#view(m);
+    }
+
+    /**
+     * Mark stored files as sent by a message: they go as soon as the message is recorded (`reapSent`), or at once
+     * when there is nothing to record (an avatar, a product photo, an official upload). A send that failed marks
+     * nothing, so the caller can retry with the same fileId until it expires.
+     *
+     * @param {string} fileId
+     * @param {{msgIds?: string[], threadId?: string|null, needsRecord?: boolean}} [sent]
+     * @returns {boolean} whether the fileId was a stored file
+     */
+    markSent(fileId, { msgIds = [], threadId = null, needsRecord = true } = {}) {
+        const m = this.#meta(fileId);
+        if (!m || m.consumed?.removedAt) return false;
+        const ids = [...new Set([...(m.consumed?.msgIds ?? []), ...msgIds.filter(Boolean).map(String)])];
+        m.consumed = { at: this.now(), msgIds: ids, threadId: threadId === null ? null : String(threadId) };
+        if (!needsRecord || !ids.length) this.#consume(m, "used");
+        else this.#writeMeta(m);
+        return true;
+    }
+
+    /**
+     * Remove the bytes of sent files whose messages are recorded (`isRecorded(msgId)` for each), or that waited
+     * `recordWaitMs` without it.
+     *
+     * @param {(msgId: string) => boolean} isRecorded
+     * @param {number} recordWaitMs
+     * @returns {{removed: number, waiting: number}}
+     */
+    reapSent(isRecorded, recordWaitMs) {
+        let removed = 0;
+        let waiting = 0;
+        for (const id of this.#ids()) {
+            const m = this.#meta(id);
+            const c = m?.consumed;
+            if (!c || c.removedAt) continue;
+            let recorded = false;
+            try {
+                recorded = c.msgIds.every((msgId) => isRecorded(msgId));
+            } catch {
+                recorded = false;
+            }
+            if (recorded) {
+                this.#consume(m, "recorded");
+                removed++;
+            } else if (this.now() - c.at >= recordWaitMs) {
+                this.#consume(m, "not recorded in time");
+                removed++;
+            } else waiting++;
+        }
+        return { removed, waiting };
+    }
+
+    /**
+     * Reap sent files every `intervalMs` until none is waiting (a send just marked some). The timer never keeps the
+     * process alive; a daemon's sweeper reaps whatever a short-lived process left.
+     *
+     * @param {(msgId: string) => boolean} isRecorded
+     * @param {number} recordWaitMs
+     * @param {number} [intervalMs]
+     */
+    watchSent(isRecorded, recordWaitMs, intervalMs = 2000) {
+        if (this.watching) return;
+        const tick = () => {
+            const { waiting } = this.reapSent(isRecorded, recordWaitMs);
+            if (!waiting) {
+                clearInterval(this.watching);
+                this.watching = null;
+            }
+        };
+        this.watching = setInterval(tick, intervalMs);
+        this.watching.unref?.();
+        tick();
     }
 
     /**
@@ -260,7 +386,10 @@ export class UploadStore {
                       "QUOTA",
                   );
         if (Number.isFinite(declaredSize) && declaredSize > cap) {
-            if (!Buffer.isBuffer(source)) source.resume?.();
+            if (!Buffer.isBuffer(source)) {
+                source.on?.("error", () => {}); // a stream not read on may still fail (its file removed): ignored
+                source.pause?.(); // not read on: the caller answers and closes
+            }
             throw over(declaredSize);
         }
         const partialDir = join(this.dir, ".partial");
@@ -283,7 +412,8 @@ export class UploadStore {
                         if (settled) return;
                         settled = true;
                         source.unpipe?.(out);
-                        source.resume?.();
+                        source.on?.("error", () => {});
+                        source.pause?.(); // stop reading at the cap: a large body is never read to its end
                         out.destroy();
                         reject(e);
                     };
@@ -425,14 +555,16 @@ export function getUploadStore(accountDir) {
  * Sweep the account's store now and every `intervalMs` (a daemon). The timer never keeps the process alive.
  *
  * @param {string} accountDir
- * @param {{intervalMs?: number}} [opts]
+ * @param {{intervalMs?: number, reap?: {isRecorded: (msgId: string) => boolean, recordWaitMs: () => number}|null}}
+ *   [opts] - `reap`: also remove sent files whose messages are recorded
  * @returns {() => void} stop
  */
-export function startUploadSweeper(accountDir, { intervalMs = 10 * 60_000 } = {}) {
+export function startUploadSweeper(accountDir, { intervalMs = 10 * 60_000, reap = null } = {}) {
     const store = getUploadStore(accountDir);
     const sweep = () => {
         try {
             store.sweep();
+            if (reap) store.reapSent(reap.isRecorded, reap.recordWaitMs());
         } catch (e) {
             console.error(`[uploads] sweep failed: ${e?.message ?? e}`);
         }
@@ -440,5 +572,19 @@ export function startUploadSweeper(accountDir, { intervalMs = 10 * 60_000 } = {}
     sweep();
     const timer = setInterval(sweep, intervalMs);
     timer.unref?.();
-    return () => clearInterval(timer);
+    // Sent uploads are looked at more often: they go as soon as their message is recorded.
+    const reaper = reap
+        ? setInterval(() => {
+              try {
+                  store.reapSent(reap.isRecorded, reap.recordWaitMs());
+              } catch (e) {
+                  console.error(`[uploads] reap failed: ${e?.message ?? e}`);
+              }
+          }, 30_000)
+        : null;
+    reaper?.unref?.();
+    return () => {
+        clearInterval(timer);
+        if (reaper) clearInterval(reaper);
+    };
 }

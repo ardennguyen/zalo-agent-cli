@@ -54,9 +54,13 @@ import {
     resolveMediaLinkAuth,
     resolvePublicUrl,
     resolveTrustedProxies,
+    resolveUploads,
 } from "../core/deploy-policy.js";
 import { getMediaLinks, linkForCachedMessage, startTempfileSweeper } from "../core/media-deliver.js";
 import { startUploadSweeper } from "../core/upload-store.js";
+import { sentMessageRecorded } from "../core/upload-consume.js";
+import { readAccountFileLimit } from "../core/zalo-file-limit.js";
+import { getCloudUsage } from "../zalo/zcloud.js";
 import { ensureMediaServed } from "../core/media-route.js";
 import { scopeOfDir } from "../core/keystore/keyring.js";
 import { approverFor, approverStatus } from "../core/approval.js";
@@ -941,8 +945,20 @@ export function registerMCPCommands(program) {
             });
             // Decrypted copies a CLI command or a crash left behind expire on time while this daemon runs.
             startTempfileSweeper({ ttlMs: mediaPolicy.tempfileTtlMs, accountId: activeAcc.ownId });
-            // The upload store (src/core/upload-store.js): files past uploads.ttl, and scratch a crash left, go.
-            startUploadSweeper(accountDir);
+            // The upload store (src/core/upload-store.js): files past uploads.ttl, and scratch a crash left, go; a sent
+            // upload goes once its message is recorded (src/core/upload-consume.js).
+            startUploadSweeper(accountDir, {
+                reap: {
+                    isRecorded: sentMessageRecorded(activeAcc.ownId),
+                    recordWaitMs: () => resolveUploads({ config, accountId: activeAcc.ownId }).recordWaitMs,
+                },
+            });
+            // The account's Zalo file limit (src/core/zalo-file-limit.js), read from the session's settings, and its
+            // zCloud plan for the report (a read Zalo's clients make at start; a failure leaves the tier unknown).
+            readAccountFileLimit(getApi(), accountDir);
+            getCloudUsage(getApi())
+                .then((u) => readAccountFileLimit(getApi(), accountDir, { plan: u?.plan ?? null }))
+                .catch(() => {});
             // Logged in and the friend and group lists are loaded: the heavy part of start-up is over.
             gate.leave();
 

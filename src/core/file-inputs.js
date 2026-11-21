@@ -177,14 +177,25 @@ export async function materializeFiles(items, { store, policy, remote, label = "
                 const got = FILE_ID_SHAPE.test(id) && store ? store.get(id) : null;
                 if (!got) {
                     const waiting = FILE_ID_SHAPE.test(id) && store ? store.pending(id) : null;
+                    const known = FILE_ID_SHAPE.test(id) && store ? store.status(id) : null;
                     throw new FileInputError(
                         waiting
                             ? `${where}.fileId ${id} has an upload link that was not used yet: upload the file to it first`
-                            : `${where}.fileId ${id} is unknown or has expired (uploads are kept ${Math.round(policy.ttlMs / 3_600_000)} h): upload the file again`,
+                            : known?.status === "consumed"
+                              ? `${where}.fileId ${id} was already sent (message ${known.sent.msgIds.join(", ") || "-"}) ` +
+                                "and removed: a sent upload is not kept. Forward that message, or upload the file again"
+                              : `${where}.fileId ${id} is unknown or has expired (uploads are kept ${Math.round(policy.ttlMs / 3_600_000)} h): upload the file again`,
                         "UNKNOWN_FILE_ID",
                     );
                 }
-                files.push({ path: got.path, name: got.name, mimeType: got.mimeType, size: got.size, from: "fileId" });
+                files.push({
+                    path: got.path,
+                    name: got.name,
+                    mimeType: got.mimeType,
+                    size: got.size,
+                    from: "fileId",
+                    fileId: id,
+                });
                 continue;
             }
             if (item.url !== undefined) {

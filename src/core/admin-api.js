@@ -36,7 +36,8 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { CONFIG_DIR } from "./credentials.js";
+import { CONFIG_DIR, getAccountDir } from "./credentials.js";
+import { knownAccountFileLimit } from "./zalo-file-limit.js";
 import { readSealedJson, scopeOfDir, writeSealedJson } from "./keystore/index.js";
 import { resolveConfirmMode } from "./confirm-guard.js";
 import {
@@ -196,7 +197,11 @@ export function describeEffective(ownId, config = {}, { publicUrl = null, extra 
             capability: { maxClients: auth.maxClients, ttlMs: auth.clientTtlMs },
         },
         webhook: { batchSize: webhook.batchSize, maxAgeMs: webhook.maxAgeMs },
-        uploads: resolveUploads({ config, accountId: ownId }),
+        uploads: resolveUploads({
+            config,
+            accountId: ownId,
+            zaloLimitBytes: knownAccountFileLimit(getAccountDir(String(ownId)))?.bytes ?? null,
+        }),
         presence: resolvePresenceSettings({ config, accountId: ownId }).settings,
         ...(extra ? extra(ownId) : {}),
     };

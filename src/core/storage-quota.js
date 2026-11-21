@@ -46,6 +46,7 @@ import { policyFor } from "./policy-layer.js";
 import { parseBytes, parseDays } from "./policy-schema.js";
 import { durationMs, resolveUploads } from "./deploy-policy.js";
 import { getUploadStore } from "./upload-store.js";
+import { knownAccountFileLimit } from "./zalo-file-limit.js";
 import { writeFileAtomic } from "../zalo/kernel/atomic-file.js";
 import * as cacheDb from "./db.js";
 import { checkLock } from "./lock.js";
@@ -972,7 +973,11 @@ export function describeStorage(ownId, { mediaRoot = null, dbBytes = null, confi
  *   warnAt: number, ttlMs: number}}
  */
 export function describeUploads(dir, ownId, config = null) {
-    const policy = resolveUploads({ config: config || {}, accountId: String(ownId) });
+    const policy = resolveUploads({
+        config: config || {},
+        accountId: String(ownId),
+        zaloLimitBytes: knownAccountFileLimit(dir)?.bytes ?? null,
+    });
     const u = getUploadStore(dir).usage();
     const ratio = u.bytes / policy.quotaBytes;
     return {

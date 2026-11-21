@@ -9,6 +9,8 @@ import { z } from "zod";
 import { resolveUploads } from "../core/deploy-policy.js";
 import { getUploadStore } from "../core/upload-store.js";
 import { FileInputError, materializeFiles } from "../core/file-inputs.js";
+import { knownAccountFileLimit, readAccountFileLimit } from "../core/zalo-file-limit.js";
+import { sentMessageRecorded } from "../core/upload-consume.js";
 
 /** What every file input's description ends with: how a caller on another machine sends a file. */
 export const REMOTE_FILE_HINT =
@@ -20,7 +22,9 @@ export const fileIdSchema = () =>
     z
         .string()
         .regex(/^f_[A-Za-z0-9_-]{24}$/, "a fileId from zalo_file (f_ and 24 letters, digits, _ or -)")
-        .describe("A file uploaded earlier (zalo_file 'upload_begin' or 'upload'), kept for a day");
+        .describe(
+            "A file uploaded earlier (zalo_file 'upload_begin' or 'upload'): kept until a send uses it, or a day",
+        );
 
 /**
  * A file given as itself rather than a path: `{fileId}`, `{url, name?}` or `{data, name, mimeType?}`.
@@ -111,7 +115,12 @@ export const singleFileOf = (a) => (a.file !== undefined ? a.file : a.filePath);
  */
 export async function withSingleFile(a, ctx, fn) {
     const label = a.file !== undefined ? "file" : "filePath";
-    const out = await ctx.files.run([singleFileOf(a)], label, ([f]) => fn(f.path).then((value) => ({ value })));
+    const out = await ctx.files.run([singleFileOf(a)], label, async ([f]) => {
+        const value = await fn(f.path);
+        // Used: an uploaded image goes now (an avatar or a product photo is no message to record).
+        ctx.files.consume?.([f], { needsRecord: false });
+        return { value };
+    });
     if (out.fileError) throw new Error(out.fileError);
     return out.value;
 }
@@ -134,11 +143,38 @@ export function isRemoteCaller(server) {
  * @returns {{run: <T>(items: Array<string|object>, label: string, fn: (files: object[]) => Promise<T>) => Promise<T|
  *   {fileError: string}>, policy: () => object, remote: () => boolean}}
  */
-export function fileResolver({ server, config, accountDir, accountId }) {
-    const policy = () => resolveUploads({ config, accountId: accountId() || undefined });
+export function fileResolver({ server, config, accountDir, accountId, api = null }) {
+    // The account's Zalo file limit, read from the session on every call (src/core/zalo-file-limit.js).
+    const policy = () =>
+        resolveUploads({
+            config,
+            accountId: accountId() || undefined,
+            zaloLimitBytes:
+                (api ? readAccountFileLimit(api, accountDir ?? null) : null)?.bytes ??
+                (accountDir ? knownAccountFileLimit(accountDir)?.bytes : null) ??
+                null,
+        });
     return {
         policy,
         remote: () => isRemoteCaller(server),
+        /**
+         * The uploads among `files` were sent: they go once the message is recorded (or at once with nothing to
+         * record). Files of a failed send are never passed here, so the caller can retry with the same fileId.
+         *
+         * @param {object[]} files - from {@link materializeFiles}
+         * @param {{msgIds?: string[], threadId?: string|null, needsRecord?: boolean}} [sent]
+         */
+        consume(files, { msgIds = [], threadId = null, needsRecord = true } = {}) {
+            if (!accountDir) return;
+            const store = getUploadStore(accountDir);
+            let waiting = false;
+            for (const f of files) {
+                if (f?.from !== "fileId" || !f.fileId) continue;
+                const marked = store.markSent(f.fileId, { msgIds, threadId, needsRecord });
+                if (marked && needsRecord && msgIds.length) waiting = true;
+            }
+            if (waiting) store.watchSent(sentMessageRecorded(accountId() || null), policy().recordWaitMs);
+        },
         /**
          * Resolve the items and run `fn` with them; a refusal of an item comes back as `{fileError}`.
          */

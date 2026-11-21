@@ -12,7 +12,7 @@ import { withCurrentSenderNames } from "../core/current-user-names.js";
 import { success, error, info, output, warning } from "../utils/output.js";
 import { sendRefusal } from "../core/group-exit.js";
 import { parseIntOption } from "../utils/parse-options.js";
-import { cliFileItems, collect, materializeCliFiles } from "../utils/cli-files.js";
+import { cliFileItems, collect, consumeCliSent, materializeCliFiles } from "../utils/cli-files.js";
 import { parseThreadTypeArg, parseReportReason } from "../utils/cli-args.js";
 import { getActive } from "../core/accounts.js";
 import { getAccountDir, getAccountDbPath } from "../core/credentials.js";
@@ -959,6 +959,7 @@ export function registerMsgCommands(program) {
                 listenerStarted,
                 viaDaemon,
             } = await sendAttachments(getApi(), absPaths, threadId, Number(opts.type), opts).finally(files.cleanup);
+            if (!err) consumeCliSent(files.files, result?.attachment, threadId);
             if (err) error(err);
             // Surface which socket carried this. sendAttachments() has always
             // returned viaDaemon, and every caller dropped it on the floor —
@@ -1011,6 +1012,7 @@ export function registerMsgCommands(program) {
                 listenerStarted,
                 viaDaemon,
             } = await sendAttachments(getApi(), absPaths, threadId, Number(opts.type), opts).finally(files.cleanup);
+            if (!err) consumeCliSent(files.files, result?.attachment, threadId);
             if (err) error(err);
             else
                 output(

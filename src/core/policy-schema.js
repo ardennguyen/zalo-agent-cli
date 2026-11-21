@@ -237,6 +237,7 @@ export const POLICY_KEYS = Object.freeze({
     "uploads.quota": { check: sizeUpTo(Number.MAX_SAFE_INTEGER) },
     "uploads.ttl": { check: duration(60_000) },
     "uploads.uploadLinkTtl": { check: duration(60_000) },
+    "uploads.recordWait": { check: duration(10_000) },
     "uploads.warnAt": { check: fraction },
     webhook: { check: webhookUrl },
     webhookBatchSize: { check: wholeNumber(1, 100) },

@@ -138,6 +138,8 @@ export async function handleUploadRequest(req, res, { store, policy, authorize, 
     } catch (e) {
         if (link) s.releaseUploadLink(token);
         if (e instanceof UploadError) {
+            // The rest of the body is not read: answer, then drop the connection.
+            res.once("finish", () => req.destroy());
             send(res, STATUS[e.code] ?? 400, { error: e.code.toLowerCase(), error_description: e.message }, close);
         } else {
             log(`[uploads] an upload failed: ${e?.message ?? e}`);

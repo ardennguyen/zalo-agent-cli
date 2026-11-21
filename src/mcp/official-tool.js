@@ -358,7 +358,12 @@ export function officialTool(ctx, { run = runOfficialCli } = {}) {
             if (place.some((x) => !x.given)) return ctx.err("This server takes no files in fileArgs.");
             return runCommand(command, cmd, argList, opts, { confirm, dryRun, ticket }, extra);
         }
-        const out = await ctx.files.run(items, "fileArgs", (files) => runWith(files.map((f) => f.path)));
+        const out = await ctx.files.run(items, "fileArgs", async (files) => {
+            const result = await runWith(files.map((f) => f.path));
+            // Used by a command that succeeded: an uploaded file goes now (an official upload is no message here).
+            if (!result?.isError) ctx.files.consume?.(files, { needsRecord: false });
+            return result;
+        });
         return out.fileError ? ctx.err(out.fileError) : out;
     };
 

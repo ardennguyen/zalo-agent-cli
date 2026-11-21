@@ -53,7 +53,10 @@ export const FILE_ACTIONS = {
             const policy = ctx.files.policy();
             const maxBytes = a.size ? Math.min(policy.maxBytes, a.size) : policy.maxBytes;
             if (a.size && a.size > policy.maxBytes) {
-                throw new Error(`The file is over the ${sizeText(policy.maxBytes)} limit for one upload.`);
+                throw new Error(
+                    `The file is over the ${sizeText(policy.maxBytes)} limit for one upload` +
+                        (policy.sources?.maxBytes === "zalo" ? " (this account's Zalo file limit)." : "."),
+                );
             }
             const link = store.beginUpload({
                 name: a.name ?? null,
@@ -109,12 +112,10 @@ export const FILE_ACTIONS = {
         async run(a, ctx) {
             const { store, error } = storeOf(ctx);
             if (error) throw new Error(error);
-            const got = store.get(a.fileId);
-            if (got) {
-                const view = { ...got };
-                delete view.path;
-                return { ...view, status: "stored" };
-            }
+            // stored (not sent yet), sent (waiting for its message to be recorded), consumed (sent and removed:
+            // `sent.msgIds` names the message), or waiting (an upload link not used yet).
+            const known = store.status(a.fileId);
+            if (known) return known;
             const waiting = store.pending(a.fileId);
             if (waiting)
                 return { fileId: a.fileId, status: "waiting", expiresAt: new Date(waiting.expiresAt).toISOString() };
@@ -134,7 +135,14 @@ export const FILE_ACTIONS = {
         async run(a, ctx) {
             const { store, error } = storeOf(ctx);
             if (error) throw new Error(error);
-            if (!store.delete(a.fileId)) throw new Error(`fileId ${a.fileId} is unknown or has expired.`);
+            if (!store.delete(a.fileId)) {
+                const known = store.status(a.fileId);
+                throw new Error(
+                    known?.status === "consumed"
+                        ? `fileId ${a.fileId} was already sent and removed.`
+                        : `fileId ${a.fileId} is unknown or has expired.`,
+                );
+            }
             return { success: true, fileId: a.fileId };
         },
     },
@@ -147,11 +155,12 @@ export const FILE_META = {
         "Get a file onto this server before sending it, for a caller on another machine (an HTTP connection), " +
         "which cannot pass a path: the file tools then take `{fileId}`. Actions: 'upload_begin' (a one-time upload " +
         "link: PUT the raw file to `uploadUrl`, e.g. `curl -T photo.jpg <uploadUrl>`, no token needed; returns the " +
-        "`fileId` it will have; for large files, up to 100 MB by default), 'upload' (a file given as `data` (base64, " +
+        "`fileId` it will have; for large files, up to the account's Zalo file limit), 'upload' (a file given as `data` (base64, " +
         "with `name`) or as a `url` this server downloads, stored now so several sends can use it), 'info' (a " +
         "`fileId`'s name, size and expiry, or whether its upload link is still waiting), 'list' (the stored files " +
-        "and the space they use) and 'delete'. Files are kept for a day, in a per-account store with its own quota " +
-        "(500 MB by default). A small file can also go straight into a send as {data, name}, and a file on the web " +
+        "and the space they use) and 'delete'. An upload is removed as soon as a send used it and the message is " +
+        "recorded ('info' then says `consumed` and names the msgId); a file whose send failed is kept for a retry, " +
+        "and an unused one for a day. A small file can also go straight into a send as {data, name}, and a file on the web " +
         "as {url}, without this tool.",
     inputSchema: z
         .object({

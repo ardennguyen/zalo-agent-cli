@@ -24,6 +24,7 @@ import { AGENT_PATH, mountOAuth, oauthStartCheck, safeEqual } from "./mcp-oauth.
 import { UPLOAD_PATH_PREFIX, handleUploadRequest, maskUploadPath } from "../core/upload-route.js";
 import { getUploadStore } from "../core/upload-store.js";
 import { resolveUploads } from "../core/deploy-policy.js";
+import { readAccountFileLimit } from "../core/zalo-file-limit.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -116,7 +117,12 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
             return undefined;
         }
     };
-    const uploadPolicy = () => resolveUploads({ config: deps.config || {}, accountId: accountIdOf() });
+    const uploadPolicy = () =>
+        resolveUploads({
+            config: deps.config || {},
+            accountId: accountIdOf(),
+            zaloLimitBytes: deps.accountDir ? (readAccountFileLimit(deps.api, deps.accountDir)?.bytes ?? null) : null,
+        });
     const isAuthorized = (req) => {
         const authHeader = String(req.headers.authorization || "");
         const token = /^bearer\s+/i.test(authHeader) ? authHeader.replace(/^bearer\s+/i, "").trim() : "";

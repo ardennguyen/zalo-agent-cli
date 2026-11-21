@@ -51,12 +51,15 @@ export function getDefaultConfig() {
         // src/core/deploy-policy.js). Unset (null) keys take the defaults named beside them.
         uploads: {
             inlineMaxBytes: null, // 10485760 (10 MB): base64 `data` items of one call together (at most 32 MB)
-            maxBytes: null, // 104857600 (100 MB): one upload (POST /zalo/files, a zalo_file upload link, `file put`)
-            urlMaxBytes: null, // 104857600 (100 MB): one `url` item the server downloads
+            // One upload (POST /zalo/files, a zalo_file upload link, `file put`) and one `url` item: unset = the account's
+            // Zalo file limit (src/core/zalo-file-limit.js, 1 GiB on current settings); a value here only lowers it.
+            maxBytes: null,
+            urlMaxBytes: null,
             urlTimeout: null, // "60s"
-            quota: null, // "500MB": the account's upload store at once
+            quota: null, // two files of maxBytes: what the account's upload store holds at once
             ttl: null, // "24h": how long an upload is kept
             uploadLinkTtl: null, // "15m": how long a zalo_file 'upload_begin' link waits for its file
+            recordWait: null, // "10m": a sent upload goes once its message is recorded, or after this long
             warnAt: null, // 0.8: the usage share where the store's level turns "warn"
             localPaths: null, // "loopback": who may name a path on this machine ("loopback", "any", "none")
             localPathRoots: [], // folders whose paths any caller may name (a folder shared with another container)

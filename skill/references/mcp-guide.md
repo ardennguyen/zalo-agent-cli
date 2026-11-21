@@ -869,16 +869,16 @@ Mỗi văn bản (và chú thích tệp, link, video) một agent gửi bằng `
 Đường dẫn trong input của tool là đường dẫn **trên máy chạy server**. Server chỉ đọc nó cho client stdio và client HTTP trên cùng máy (`uploads.localPaths: "loopback"`, mặc định), hoặc khi nó nằm trong `uploads.localPathRoots`. Client ở máy khác (phiên AI trên cloud, ứng dụng ở máy khác) gửi chính tệp:
 
 - `{data, name, mimeType?}`: base64 (chấp nhận cả `data:` URL), tổng mọi `data` của một lần gọi tối đa `uploads.inlineMaxBytes` (10 MB);
-- `{url, name?}`: server tự tải về (http/https, chỉ địa chỉ công khai, kiểm tra cả mọi địa chỉ phân giải và mọi lần chuyển hướng; tối đa 100 MB trong 60 giây; không nhận trang web);
+- `{url, name?}`: server tự tải về (http/https, chỉ địa chỉ công khai, kiểm tra cả mọi địa chỉ phân giải và mọi lần chuyển hướng; tối đa bằng giới hạn tệp Zalo của tài khoản, trong 60 giây; không nhận trang web);
 - `{fileId}`: tệp đã nằm trong kho tải lên của tài khoản.
 
 | Action của `zalo_file` | Làm gì |
 |---|---|
-| `upload_begin` | Trả về `uploadUrl` dùng một lần (15 phút) và `fileId` tệp sẽ có: `PUT` (hoặc `POST`) nguyên tệp vào đó, không cần token, ví dụ `curl -T anh.jpg "<uploadUrl>"`. Dành cho tệp lớn (mặc định tới 100 MB) |
+| `upload_begin` | Trả về `uploadUrl` dùng một lần (15 phút) và `fileId` tệp sẽ có: `PUT` (hoặc `POST`) nguyên tệp vào đó, không cần token, ví dụ `curl -T anh.jpg "<uploadUrl>"`. Dành cho tệp lớn (tới giới hạn tệp Zalo của tài khoản, 1 GB với cài đặt hiện tại) |
 | `upload` | Lưu ngay một tệp gửi bằng `data` (kèm `name`) hoặc `url`, để gửi nhiều lần |
 | `info` / `list` / `delete` | Tên, kích thước, hạn của một `fileId` (hoặc link tải lên còn đang chờ); danh sách và dung lượng đã dùng; xóa |
 
-Tệp được giữ 24 giờ (`uploads.ttl`), kho mỗi tài khoản tối đa 500 MB (`uploads.quota`). Client có bearer của server cũng có thể `POST <publicUrl>/zalo/files?name=<tên>` với thân là nguyên tệp. Lệnh CLI tương ứng: `zalo-agent file put|list|info|delete`, và cờ `--url` / `--file-id` trên `msg send-image`, `msg send-file`, `profile avatar`, `group avatar`, `catalog upload-photo`.
+Tệp đã được một lần gửi dùng sẽ bị xóa ngay khi tin nhắn được ghi lại (listener đã lưu và kho media đã có tệp); `info` khi đó trả `consumed` kèm msgId. Gửi thất bại thì tệp được giữ để gửi lại bằng cùng `fileId`; tệp chưa ai dùng được giữ 24 giờ (`uploads.ttl`). Mỗi tệp tối đa bằng giới hạn tệp Zalo của tài khoản (đọc từ cài đặt của phiên; 1 GB với cài đặt hiện tại, như nhau cho gói miễn phí và trả phí; gói zBusiness không đặt giới hạn tệp), kho giữ tối đa hai tệp cỡ đó (`uploads.quota`). Client có bearer của server cũng có thể `POST <publicUrl>/zalo/files?name=<tên>` với thân là nguyên tệp. Lệnh CLI tương ứng: `zalo-agent file put|list|info|delete`, và cờ `--url` / `--file-id` trên `msg send-image`, `msg send-file`, `profile avatar`, `group avatar`, `catalog upload-photo`.
 
 Chiều ngược lại: `zalo_view_media` trả ảnh và tin thoại trực tiếp (nội dung image/audio của MCP) và media lớn hơn qua một `url` ngắn hạn trên server; đường dẫn `tempfile` chỉ dành cho client trên máy chạy server.
 

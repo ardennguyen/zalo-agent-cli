@@ -18,6 +18,7 @@ import { MediaLinks, setMediaLinks } from "../../src/core/media-deliver.js";
 import { getUploadStore } from "../../src/core/upload-store.js";
 import { officialTool } from "../../src/mcp/official-tool.js";
 import { fileResolver } from "../../src/mcp/file-input.js";
+import { sentMessageRecorded } from "../../src/core/upload-consume.js";
 
 before(() => assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR));
 
@@ -31,7 +32,7 @@ const b64 = (s) => Buffer.from(s).toString("base64");
  * A session that records each call, and for each file a call names, the file's name and bytes at the moment of the
  * call (the server removes a fetched or decoded file right after).
  */
-function fakeApi() {
+function fakeApi({ sendFails = null } = {}) {
     const calls = [];
     const snap = (p) => ({
         name: p.split(/[\\/]/).pop(),
@@ -40,10 +41,18 @@ function fakeApi() {
     });
     const api = {
         getOwnId: () => OWN,
-        getContext: () => ({ loginInfo: {} }),
         sendMessage: async (content, threadId) => {
-            calls.push({ method: "sendMessage", threadId, files: (content.attachments ?? []).map(snap) });
-            return { message: { msgId: "m1", cliMsgId: "c1" } };
+            const files = (content.attachments ?? []).map(snap);
+            calls.push({ method: "sendMessage", threadId, files });
+            // One row per file, as Zalo answers: `sendFails` (a count) lets that many go out, then fails like Zalo.
+            const rows = files.map((f, i) => ({ msgId: `9000${i + 1}`, cliMsgId: `8000${i + 1}` }));
+            if (sendFails !== null) {
+                throw Object.assign(new Error("Lỗi không xác định"), {
+                    code: 112,
+                    partial: { message: null, attachment: rows.slice(0, sendFails) },
+                });
+            }
+            return { message: null, attachment: rows };
         },
         sendVideoFile: async (o) => {
             calls.push({
@@ -61,6 +70,10 @@ function fakeApi() {
             calls.push({ method: "changeGroupAvatar", groupId, file: snap(p) });
             return {};
         },
+        getContext: () => ({
+            loginInfo: {},
+            settings: { features: { sharefile: { max_size_share_file_v3: 1 } } },
+        }),
         uploadProductPhoto: async ({ file }) => {
             calls.push({ method: "uploadProductPhoto", file: snap(file) });
             return { photoUrl: "https://cdn.example/p.jpg" };
@@ -305,6 +318,151 @@ describe("zalo_file", () => {
         } finally {
             setMediaLinks(null);
         }
+    });
+});
+
+describe("a sent upload goes as soon as its message is recorded; a failed one stays", () => {
+    const store = () => getUploadStore(accountDir);
+    const stored = (name, bytes = "X") =>
+        store().save(Buffer.from(bytes), { name, maxBytes: 1e6, quotaBytes: 1e8, ttlMs: 60_000 });
+
+    it("a successful send marks it sent with its msgId; recorded, its bytes go and info says consumed", async () => {
+        const { api } = fakeApi();
+        const { call } = tools({ remote: true, api });
+        const f = await stored("deck.pdf");
+        const r = await call("zalo_send_message", {
+            threadId: "1234567",
+            threadType: "group",
+            files: [{ fileId: f.fileId }],
+        });
+        assert.equal(r.isError, false, r.text);
+        const sent = store().status(f.fileId);
+        assert.equal(sent.status, "sent");
+        assert.deepEqual(sent.sent.msgIds, ["90001"]);
+        assert.ok(existsSync(store().get(f.fileId).path), "kept until the listener records the message");
+        // The listener has not stored it yet: it stays.
+        store().reapSent(() => false, 60_000);
+        assert.equal(store().status(f.fileId).status, "sent");
+        // Recorded (the row with its media): the bytes go, the record stays.
+        store().reapSent((id) => id === "90001", 60_000);
+        assert.equal(store().status(f.fileId).status, "consumed");
+        const info = await call("zalo_file", { action: "info", fileId: f.fileId });
+        assert.equal(info.body.status, "consumed");
+        assert.deepEqual(info.body.sent.msgIds, ["90001"]);
+        assert.equal(info.body.sent.removedBecause, "recorded");
+        const again = await call("zalo_send_message", {
+            threadId: "1234567",
+            threadType: "group",
+            files: [{ fileId: f.fileId }],
+        });
+        assert.match(again.text, /already sent \(message 90001\)/);
+    });
+
+    it("a failed send keeps the upload for a retry with the same fileId", async () => {
+        const { api } = fakeApi({ sendFails: 0 });
+        const { call } = tools({ remote: true, api });
+        const f = await stored("retry.pdf");
+        const r = await call("zalo_send_message", {
+            threadId: "1234567",
+            threadType: "group",
+            files: [{ fileId: f.fileId }],
+        });
+        assert.equal(r.isError, true);
+        assert.equal(store().status(f.fileId).status, "stored");
+        assert.ok(store().get(f.fileId), "still usable");
+    });
+
+    it("a multi-file send that fails part way: what went out is sent, the rest stays, and the error says so", async () => {
+        const { api } = fakeApi({ sendFails: 1 });
+        const { call } = tools({ remote: true, api });
+        const a = await stored("one.pdf");
+        const b = await stored("two.pdf");
+        const r = await call("zalo_send_message", {
+            threadId: "1234567",
+            threadType: "group",
+            files: [{ fileId: a.fileId }, { fileId: b.fileId }],
+        });
+        assert.equal(r.isError, true);
+        assert.match(r.text, /1 of 2 file\(s\) went out before this/);
+        assert.equal(store().status(a.fileId).status, "sent");
+        assert.deepEqual(store().status(a.fileId).sent.msgIds, ["90001"]);
+        assert.equal(store().status(b.fileId).status, "stored");
+    });
+
+    it("a sent file whose message is never recorded goes after recordWait", async () => {
+        let t = Date.now();
+        const s = new (getUploadStore(accountDir).constructor)(join(accountDir, "uploads-wait"), { now: () => t });
+        const f = await s.save(Buffer.from("x"), { name: "w.txt", maxBytes: 10, quotaBytes: 100, ttlMs: 3_600_000 });
+        s.markSent(f.fileId, { msgIds: ["70001"], threadId: "1234567" });
+        assert.equal(s.reapSent(() => false, 600_000).waiting, 1);
+        t += 600_001;
+        assert.equal(s.reapSent(() => false, 600_000).removed, 1);
+        assert.equal(s.status(f.fileId).sent.removedBecause, "not recorded in time");
+        assert.equal(s.usage().files, 0, "a consumed file no longer counts against the quota");
+    });
+
+    it("an avatar from a fileId is consumed at once (no message to record); a failed one stays", async () => {
+        const { api } = fakeApi();
+        const { call } = tools({ remote: true, api });
+        const f = await stored("me.png");
+        const ok = await call("zalo_profile", { action: "avatar", file: { fileId: f.fileId } });
+        assert.equal(ok.isError, false, ok.text);
+        assert.equal(store().status(f.fileId).status, "consumed");
+        const g = await stored("me2.png");
+        api.changeAccountAvatar = async () => {
+            throw new Error("Zalo refused it");
+        };
+        const bad = await call("zalo_profile", { action: "avatar", file: { fileId: g.fileId } });
+        assert.equal(bad.isError, true);
+        assert.equal(store().status(g.fileId).status, "stored");
+    });
+
+    it("sentMessageRecorded: a row with its file, without an attachment, or of a kind not kept, counts", () => {
+        const rows = {
+            1: null,
+            2: { has_attachment: 1, type: "file", localPath: "/x" },
+            3: { has_attachment: 0, type: "webchat" },
+            4: { has_attachment: 1, type: "file", localPath: null },
+        };
+        const check = sentMessageRecorded(OWN, { getRow: (id) => rows[id] ?? null });
+        assert.deepEqual(["1", "2", "3", "4"].map(check), [false, true, true, false]);
+        const failing = sentMessageRecorded(OWN, {
+            getRow: () => {
+                throw new Error("Database not initialized");
+            },
+        });
+        assert.equal(failing("2"), false);
+    });
+});
+
+describe("the account's Zalo file limit caps uploads, urls and fileArgs", () => {
+    it("the session's settings set the cap; a larger configured value is lowered to it", () => {
+        const { api } = fakeApi();
+        const { map } = tools({ remote: true, api });
+        assert.ok(map.has("zalo_file"));
+        const files = fileResolver({
+            server: { statelessHttp: true },
+            config: { uploads: { maxBytes: "100MB", urlMaxBytes: "100MB" } },
+            accountDir,
+            accountId: () => OWN,
+            api,
+        });
+        const p = files.policy();
+        assert.equal(p.zaloLimitBytes, 1024 * 1024, "max_size_share_file_v3 1 (MB) on this fake session");
+        assert.equal(p.maxBytes, 1024 * 1024);
+        assert.equal(p.urlMaxBytes, 1024 * 1024);
+        assert.equal(p.sources.maxBytes, "zalo");
+        assert.equal(p.quotaBytes, 2 * 1024 * 1024);
+    });
+
+    it("an inline item over the account's limit is refused before anything is sent (fileArgs too)", async () => {
+        const { api, calls } = fakeApi();
+        const { call } = tools({ remote: true, api });
+        const big = Buffer.alloc(1024 * 1024 + 10).toString("base64");
+        const r = await call("zalo_file", { action: "upload", data: big, name: "big.bin" });
+        assert.equal(r.isError, true);
+        assert.match(r.text, /over the 1\.0 MB limit for one upload/);
+        assert.equal(calls.length, 0);
     });
 });
 

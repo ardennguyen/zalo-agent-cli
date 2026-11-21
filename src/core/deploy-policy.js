@@ -631,11 +631,16 @@ export const UPLOAD_LOCAL_PATHS = Object.freeze(["loopback", "any", "none"]);
 /** The defaults of the `uploads.*` settings. */
 export const UPLOAD_DEFAULTS = Object.freeze({
     inlineMaxBytes: 10 * 1024 * 1024,
-    maxBytes: 100 * 1024 * 1024,
-    urlMaxBytes: 100 * 1024 * 1024,
+    // One file: the account's Zalo limit (src/core/zalo-file-limit.js); this only while the session's settings were
+    // never read (no daemon has run for the account yet). Zalo's own send path still checks the real one.
+    unknownZaloLimitBytes: 1024 * 1024 * 1024,
     urlTimeoutMs: 60_000,
-    quotaBytes: 500 * 1024 * 1024,
+    // The store holds this many files of the largest size at once (2 GiB at a 1 GiB limit).
+    quotaFiles: 2,
     ttlMs: 24 * 3_600_000,
+    // A sent upload is removed once the listener recorded the message (and the media store has its file), or after
+    // this long when it never does.
+    recordWaitMs: 10 * 60_000,
     uploadLinkTtlMs: 15 * 60_000,
     warnAt: 0.8,
     localPaths: "loopback",
@@ -658,9 +663,11 @@ function sizeBytes(v) {
  * (`uploads.*` in mcp-config.json, `accounts.<ownId>.uploads`, then the live policy on top). Read on every call.
  *
  * - `inlineMaxBytes` (10 MB): the decoded bytes of every `data` item in one call (at most 32 MB);
- * - `maxBytes` (100 MB): one upload (POST /zalo/files, a zalo_file upload link, `file put`);
- * - `urlMaxBytes` (100 MB) and `urlTimeout` ("60s"): one download of a `url` item;
- * - `quota` (500 MB): what the account's upload store may hold at once; `ttl` ("24h"): how long an upload is kept;
+ * - `maxBytes`: one upload (POST /zalo/files, a zalo_file upload link, `file put`), and `urlMaxBytes` (with `urlTimeout`,
+ *   "60s"): one download of a `url` item. Both default to the account's Zalo file limit (`zaloLimitBytes`,
+ *   src/core/zalo-file-limit.js; 1 GiB while it was never read), and a value set here only lowers them;
+ * - `quota` (two files of `maxBytes`): what the account's upload store may hold at once; `ttl` ("24h"): how long an unused
+ *   upload is kept; `recordWait` ("10m"): how long a sent upload waits for its message to be recorded before it goes;
  * - `localPaths`: who may name a path on this machine. `loopback` (the default): a stdio client and an HTTP client
  *   on this machine; `any`: every caller; `none`: no caller. A path under one of `localPathRoots` (a folder another
  *   container shares with this one) is read for any caller, whatever `localPaths` says. Read from mcp-config.json
@@ -676,7 +683,7 @@ function sizeBytes(v) {
  *   ttlMs: number, uploadLinkTtlMs: number, warnAt: number, localPaths: "loopback"|"any"|"none",
  *   localPathRoots: string[], allowPrivateUrls: boolean}}
  */
-export function resolveUploads({ config, accountId, policy } = {}) {
+export function resolveUploads({ config, accountId, policy, zaloLimitBytes = null } = {}) {
     const id = accountId ? String(accountId).trim() : "";
     const own = id && config?.accounts && typeof config.accounts === "object" ? config.accounts[id]?.uploads : null;
     const live = livePolicy(policy, accountId)?.uploads;
@@ -710,13 +717,34 @@ export function resolveUploads({ config, accountId, policy } = {}) {
         ? fileLayer.localPathRoots.map((r) => String(r ?? "").trim()).filter(Boolean)
         : [];
     const warnAt = Number(u.warnAt);
+    // One file's cap: the account's Zalo limit; a deployment's value only lowers it, never raises it above Zalo's.
+    const zalo = Number.isSafeInteger(zaloLimitBytes) && zaloLimitBytes > 0 ? zaloLimitBytes : null;
+    const ceiling = zalo ?? UPLOAD_DEFAULTS.unknownZaloLimitBytes;
+    const capped = (value, name) => {
+        const set = size(value, name, null);
+        if (set === null) return { bytes: ceiling, source: zalo ? "zalo" : "zalo-unknown" };
+        return set < ceiling
+            ? { bytes: set, source: "set" }
+            : { bytes: ceiling, source: zalo ? "zalo" : "zalo-unknown" };
+    };
+    const max = capped(u.maxBytes, "maxBytes");
+    const url = capped(u.urlMaxBytes, "urlMaxBytes");
+    const quotaSet = size(u.quota, "quota", null);
     return {
         inlineMaxBytes: size(u.inlineMaxBytes, "inlineMaxBytes", UPLOAD_DEFAULTS.inlineMaxBytes, UPLOAD_INLINE_CEILING),
-        maxBytes: size(u.maxBytes, "maxBytes", UPLOAD_DEFAULTS.maxBytes),
-        urlMaxBytes: size(u.urlMaxBytes, "urlMaxBytes", UPLOAD_DEFAULTS.urlMaxBytes),
+        maxBytes: max.bytes,
+        urlMaxBytes: url.bytes,
+        zaloLimitBytes: zalo,
+        // Where each cap came from: "zalo" (the account's limit, the default), "zalo-unknown" (not read yet), "set".
+        sources: {
+            maxBytes: max.source,
+            urlMaxBytes: url.source,
+            quota: quotaSet === null ? "default" : "set",
+        },
         urlTimeoutMs: duration(u.urlTimeout, "urlTimeout", UPLOAD_DEFAULTS.urlTimeoutMs),
-        quotaBytes: size(u.quota, "quota", UPLOAD_DEFAULTS.quotaBytes),
+        quotaBytes: quotaSet ?? UPLOAD_DEFAULTS.quotaFiles * max.bytes,
         ttlMs: duration(u.ttl, "ttl", UPLOAD_DEFAULTS.ttlMs),
+        recordWaitMs: duration(u.recordWait, "recordWait", UPLOAD_DEFAULTS.recordWaitMs),
         uploadLinkTtlMs: duration(u.uploadLinkTtl, "uploadLinkTtl", UPLOAD_DEFAULTS.uploadLinkTtlMs),
         warnAt: warnAt > 0 && warnAt <= 1 ? warnAt : UPLOAD_DEFAULTS.warnAt,
         localPaths,

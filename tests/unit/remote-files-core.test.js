@@ -16,6 +16,12 @@ import { UrlFetchError, fetchUrlToFile, isPublicAddress } from "../../src/core/u
 import { FILE_ID_SHAPE, UploadError, UploadStore } from "../../src/core/upload-store.js";
 import { FileInputError, materializeFiles } from "../../src/core/file-inputs.js";
 import { UPLOAD_DEFAULTS, resolveUploads } from "../../src/core/deploy-policy.js";
+import {
+    knownAccountFileLimit,
+    readAccountFileLimit,
+    resetKnownFileLimits,
+    zaloFileLimit,
+} from "../../src/core/zalo-file-limit.js";
 import { RESTART_KEYS, POLICY_KEYS } from "../../src/core/policy-schema.js";
 import { describeUploads } from "../../src/core/storage-quota.js";
 
@@ -406,11 +412,102 @@ describe("materializeFiles", () => {
     });
 });
 
+describe("the account's Zalo file limit (src/core/zalo-file-limit.js)", () => {
+    const GIB = 1024 * MB;
+    const features = (v3, zmax) => ({
+        ...(v3 === undefined ? {} : { sharefile: { max_size_share_file_v3: v3 } }),
+        ...(zmax === undefined ? {} : { multi_site_upload: { zcloud_upload_file_max_size: zmax } }),
+    });
+
+    it("is the share-file limit, bounded by the zCloud upload limit, for every plan; the plan names the tier", () => {
+        const free = zaloFileLimit(features(1024, 10 * GIB), { plan: -1 });
+        assert.equal(free.bytes, GIB);
+        assert.equal(free.tier, "free");
+        assert.equal(free.planAllowsBytes, GIB);
+        const paid = zaloFileLimit(features(1024, 10 * GIB), { plan: 0 });
+        assert.equal(paid.bytes, GIB, "this engine's chat upload carries at most the share-file limit");
+        assert.equal(paid.tier, "zcloud");
+        assert.equal(paid.planAllowsBytes, 10 * GIB, "what a paid plan allows through Zalo's cloud upload");
+        assert.equal(zaloFileLimit(features(1024, 10 * GIB), { plan: 100 }).tier, "grace");
+        assert.equal(zaloFileLimit(features(1024, 10 * GIB), { plan: 69 }).planAllowsBytes, GIB);
+        assert.equal(zaloFileLimit(features(1024, 10 * GIB)).tier, "unknown");
+        // A zCloud upload limit below the share-file limit bounds it.
+        assert.equal(zaloFileLimit(features(1024, 300 * MB)).bytes, 300 * MB);
+    });
+
+    it("falls back as Zalo's clients do: 25 MB without a share-file limit, 1 GiB without a zCloud one", () => {
+        assert.equal(zaloFileLimit(features(undefined, 10 * GIB)).bytes, 25 * MB);
+        assert.equal(zaloFileLimit(features(4096, undefined)).bytes, GIB);
+        assert.equal(zaloFileLimit({}).fromSettings, false);
+    });
+
+    it("a daemon's reading is kept in the account folder for a CLI without a session", () => {
+        resetKnownFileLimits();
+        const dir = freshDir("limit");
+        const api = { getContext: () => ({ settings: { features: features(300, 10 * GIB) } }) };
+        assert.equal(readAccountFileLimit(api, dir).bytes, 300 * MB);
+        resetKnownFileLimits();
+        assert.equal(knownAccountFileLimit(dir).bytes, 300 * MB);
+        assert.equal(knownAccountFileLimit(freshDir("never")), null);
+    });
+
+    it("resolveUploads: the limit is the default and the ceiling; a lower setting wins, a higher one does not", () => {
+        const at = (config) => resolveUploads({ config, policy: null, zaloLimitBytes: 300 * MB });
+        assert.equal(at({}).maxBytes, 300 * MB);
+        assert.equal(at({}).sources.maxBytes, "zalo");
+        assert.equal(at({}).quotaBytes, 600 * MB);
+        assert.equal(at({ uploads: { maxBytes: "50MB" } }).maxBytes, 50 * MB);
+        assert.equal(at({ uploads: { maxBytes: "50MB" } }).sources.maxBytes, "set");
+        assert.equal(at({ uploads: { maxBytes: "2GB", urlMaxBytes: "2GB" } }).maxBytes, 300 * MB);
+        assert.equal(at({ uploads: { urlMaxBytes: "2GB" } }).urlMaxBytes, 300 * MB);
+        assert.equal(
+            resolveUploads({ config: {}, policy: { uploads: { maxBytes: "5GB" } }, zaloLimitBytes: 300 * MB }).maxBytes,
+            300 * MB,
+            "a policy cannot raise it either",
+        );
+        assert.equal(at({ uploads: { quota: "5GB" } }).quotaBytes, 5 * 1024 * MB);
+    });
+
+    it("a url over the account's limit is refused while it downloads", async () => {
+        const p = { ...resolveUploads({ config: {}, policy: null, zaloLimitBytes: 2 * MB }), allowPrivateUrls: true };
+        await assert.rejects(
+            materializeFiles([{ url: `${base}/chunked-big` }], {
+                store: new UploadStore(freshDir("u")),
+                policy: p,
+                remote: true,
+            }),
+            (e) => e.code === "URL" && /over the 2097152-byte limit/.test(e.message),
+        );
+    });
+
+    it("an upload stream over the limit stops when it crosses it, never held whole in memory", async () => {
+        const store = new UploadStore(freshDir("stream"));
+        let produced = 0;
+        const source = new Readable({
+            read() {
+                if (produced >= 64 * MB) return this.push(null);
+                produced += MB;
+                this.push(Buffer.alloc(MB));
+            },
+        });
+        await assert.rejects(
+            store.save(source, { name: "big.bin", maxBytes: 3 * MB, quotaBytes: 100 * MB, ttlMs: 60_000 }),
+            { code: "TOO_LARGE" },
+        );
+        assert.ok(produced < 16 * MB, `read ${produced} bytes before stopping`);
+        assert.equal(store.usage().files, 0);
+    });
+});
+
 describe("resolveUploads and the policy keys", () => {
     it("defaults, mcp-config.json, the account's block and the live policy, in that order", () => {
         const d = resolveUploads({ config: {}, policy: null });
         assert.equal(d.inlineMaxBytes, UPLOAD_DEFAULTS.inlineMaxBytes);
-        assert.equal(d.quotaBytes, 500 * MB);
+        // No session read yet: one file may be 1 GiB until the account's Zalo limit is known; the store holds two.
+        assert.equal(d.maxBytes, 1024 * MB);
+        assert.equal(d.sources.maxBytes, "zalo-unknown");
+        assert.equal(d.quotaBytes, 2 * 1024 * MB);
+        assert.equal(d.recordWaitMs, 10 * 60_000);
         assert.equal(d.ttlMs, 24 * 3_600_000);
         assert.equal(d.localPaths, "loopback");
         assert.equal(d.allowPrivateUrls, false);

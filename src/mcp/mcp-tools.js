@@ -909,7 +909,7 @@ export function registerTools(
         // zalo_profile 'presence_resume': the daemon's presence (null under a server that runs none).
         presence: extras?.presence ?? null,
         // Files a call names (src/mcp/file-input.js): a path for a caller on this machine, else fileId, url or data.
-        files: fileResolver({ server, config, accountDir, accountId: () => ownIdOf(api) || undefined }),
+        files: fileResolver({ server, config, accountDir, accountId: () => ownIdOf(api) || undefined, api }),
         accountDir: accountDir ?? null,
     };
     const friendExtra = actionTool("zalo_friend", FRIEND_EXTRA_ACTIONS, toolCtx);
@@ -1271,21 +1271,23 @@ export function registerTools(
                         // The video and a thumbnail that is not a URL: paths for this call (a path, an upload, a
                         // download or inline bytes), removed afterwards.
                         const items = isUrl(video.thumbnail) ? [video.source] : [video.source, video.thumbnail];
-                        const out = await toolCtx.files.run(items, "video", async ([file, thumb]) =>
-                            sentReply(
-                                "video",
-                                await api.sendVideoFile(
-                                    {
-                                        file: file.path,
-                                        msg: marked(text ?? ""),
-                                        ...(thumb ? { thumbnailFile: thumb.path } : { thumbnailUrl: video.thumbnail }),
-                                        ...size,
-                                    },
-                                    threadId,
-                                    Number(threadType),
-                                ),
-                            ),
-                        );
+                        const out = await toolCtx.files.run(items, "video", async ([file, thumb]) => {
+                            const result = await api.sendVideoFile(
+                                {
+                                    file: file.path,
+                                    msg: marked(text ?? ""),
+                                    ...(thumb ? { thumbnailFile: thumb.path } : { thumbnailUrl: video.thumbnail }),
+                                    ...size,
+                                },
+                                threadId,
+                                Number(threadType),
+                            );
+                            // Sent: an uploaded video goes once its message is recorded, its thumbnail at once.
+                            const msgId = result?.msgId ?? result?.message?.msgId ?? null;
+                            toolCtx.files.consume([file], { msgIds: msgId ? [String(msgId)] : [], threadId });
+                            if (thumb) toolCtx.files.consume([thumb], { needsRecord: false });
+                            return sentReply("video", result);
+                        });
                         return out.fileError ? err(out.fileError) : out;
                     }
                     if (bankCard || qrTransfer) {
@@ -1370,15 +1372,41 @@ export function registerTools(
                                 : { text: text || "", styles: [] },
                             mark,
                         );
-                        const result = await api.sendMessage(
-                            {
-                                msg: caption.text,
-                                attachments: absPaths,
-                                ...(caption.styles.length > 0 && { styles: caption.styles }),
-                            },
-                            threadId,
-                            Number(threadType),
-                        );
+                        // Which file each sent attachment is: files and photos in the order given, GIFs last
+                        // (src/zalo/api/upload.js). An uploaded file goes once its own message is recorded; a file
+                        // whose send failed is kept, so the caller can send it again with the same fileId.
+                        const order = [
+                            ...got.map((f, i) => i).filter((i) => !/\.gif$/i.test(got[i].path)),
+                            ...got.map((f, i) => i).filter((i) => /\.gif$/i.test(got[i].path)),
+                        ];
+                        const consumeSent = (rows) =>
+                            (Array.isArray(rows) ? rows : rows ? [rows] : []).forEach((r, j) => {
+                                const f = got[order[j]];
+                                const id = r?.msgId ?? null;
+                                if (f && id !== null) toolCtx.files.consume([f], { msgIds: [String(id)], threadId });
+                            });
+                        let result;
+                        try {
+                            result = await api.sendMessage(
+                                {
+                                    msg: caption.text,
+                                    attachments: absPaths,
+                                    ...(caption.styles.length > 0 && { styles: caption.styles }),
+                                },
+                                threadId,
+                                Number(threadType),
+                            );
+                        } catch (e) {
+                            const partial = e?.partial?.attachment ?? [];
+                            consumeSent(partial);
+                            if (partial.length && e instanceof Error) {
+                                e.message +=
+                                    ` (${partial.length} of ${got.length} file(s) went out before this; the uploads ` +
+                                    "not sent are kept, so send those again with the same fileId)";
+                            }
+                            throw e;
+                        }
+                        consumeSent(result?.attachment);
                         const rawAtt = result?.attachment;
                         const attRows = rawAtt ? (Array.isArray(rawAtt) ? rawAtt : [rawAtt]) : [];
                         const sent = attRows

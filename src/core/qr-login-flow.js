@@ -139,7 +139,8 @@ export async function runQrLogin({
         switch (event.type) {
             case QR_EVENT.QR_GENERATED:
                 closeOffer();
-                codes++;
+                // A second QR (layer 2) belongs to the code just scanned: it is not one more code.
+                if (event.data?.layer !== 2) codes++;
                 displayQR(event);
                 // The QR is a login token, so the page binds loopback unless --qr-url asks for the LAN.
                 if (!server) server = openPage();

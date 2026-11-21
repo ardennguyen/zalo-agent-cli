@@ -28,7 +28,7 @@ const freePort = () =>
  */
 const fakeLogin = (then) => (_proxy, onEvent) =>
     new Promise((resolve, reject) => {
-        const ctl = { codes: 0, resolve, reject };
+        const ctl = { codes: 0, resolve, reject, emit: onEvent };
         ctl.actions = {
             retry: () => ctl.show(),
             abort: () => reject(new Error("The QR login was aborted")),
@@ -88,6 +88,28 @@ describe("a QR login and its expired codes", () => {
         assert.match(err.message, /expired 3 times without a scan/);
         assert.equal(ctl.codes, 3, "no more codes than the cap");
         await err.finish("failed", err.message);
+    });
+
+    it("a second QR (layer 2) is not counted as one more code", async () => {
+        let ctl;
+        const result = await runQrLogin({
+            jsonMode: true,
+            interactive: false,
+            qrPort: await freePort(),
+            maxCodes: 2,
+            login: fakeLogin((c) => {
+                ctl = c;
+                setImmediate(() => {
+                    c.emit({ type: QR_EVENT.QR_GENERATED, data: { image: "", layer: 2 }, actions: c.actions });
+                    c.expire();
+                    // The expiry of the second QR replaces the code (1 of 2 used), it does not end the login.
+                    setImmediate(() => c.resolve({ ownId: "fake-own-id" }));
+                });
+            }),
+        }).catch((e) => e);
+        assert.equal(result instanceof Error, false, String(result));
+        assert.equal(ctl.codes, 2, "the expired code was replaced once");
+        await result.finish("done");
     });
 
     it("with someone at the terminal, waits for Enter instead of replacing the code on its own", async () => {

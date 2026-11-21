@@ -9,6 +9,11 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+#### Fixed
+
+- **QR login for accounts on the older trusted-device scheme.** When the first scan is answered with a request for a second scan that is not the linking QR (`status 4` without `new_qr_supported`), the login now shows that second QR (layer 2, drawn from the answer's token), waits for its scan on the new code, and confirms on it. Before, it announced the scan and waited for a confirm the phone never sent, because the phone was still waiting for the second QR. The scan is announced only once the last QR is scanned.
+- **A slow confirm is no longer cut off by the QR's expiry.** The QR's 100-second expiry stops once its scan is in; each second QR gets its own full lifetime. A login waiting for the tap on the phone ends when the phone or Zalo answers, or when it is cancelled. A second QR no longer counts against the number of codes a login without a terminal may show.
+
 ## [3.3.2] — 2026-11-19
 
 #### Added

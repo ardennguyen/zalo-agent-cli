@@ -17,9 +17,16 @@
  *     the page's trusted-device module (./trust-wasm.js, ./qr-image.js). This is the QR that is "swapped" on the
  *     login page after the first scan. The long poll is then asked again on the new code, and its answer carries
  *     the name and `link_data`, which the module turns into a proof of this device.
+ *     The same `status 4` with `new_qr_supported: false` (the older trusted-device scheme) also asks for a second
+ *     scan, of a plain QR: the text `http://zaloapp.com/qr/l?tk=<token>`, drawn by the client like any other
+ *     (the `image` that comes with the answer is not what is shown). The long poll is asked again on the new code,
+ *     which carries the name, and the confirm goes on that code with no proof. A `status 4` can follow another.
+ *     `options.enabledCheckOCR` only adds a caption under the QR ("only for logging in to Zalo on a computer").
  *  6. `POST /account/authen/qr/waiting-confirm`, form `{continue, code, bundle, v}`: a long poll, asked again
  *     until the phone confirms. `bundle` is the proof (base64 of `{encLinkMetaData, encAccSign, encDeviceSign,
  *     encCompPubKey}`); an account without a trusted device has none and confirms the first QR, with no bundle.
+ *     The code is the one whose scan was answered last. Once the scan is in, no QR is on screen, so the QR's own
+ *     expiry no longer runs: the server ends a confirm that never comes with an error, like a decline.
  *  7. `GET /account/checksession?continue=...` and the redirects it starts: `jr.zaloapp.com/jr/syncsession`,
  *     `jr.chat.zalo.me/jr/pushsession` (which sets `zpw_sek`), and the chat page.
  *
@@ -56,6 +63,12 @@ const BUILD_PATTERN = /https:\/\/stc-zlogin\.zdn\.vn\/main-([\d.]+)\.js/;
  * What the server answers a first scan with when the account has a trusted device: `status` 4, and a second code.
  */
 const SECOND_LAYER_STATUS = 4;
+
+/** The text of the plain second QR (a `status 4` answer without `new_qr_supported`), before its token. */
+const PLAIN_QR_PREFIX = "http://zaloapp.com/qr/l?tk=";
+
+/** A scan answer's `status` when the login cannot go on. */
+const SCAN_FAILED = 5;
 
 /** Zalo's answer when a saved device identity is refused (the phone side was reset): link as a new device. */
 const RELINK_REFUSED = -21;
@@ -120,6 +133,27 @@ export function scriptUrlOf(html) {
  */
 export function wantsSecondQr(data) {
     return data?.status === SECOND_LAYER_STATUS && data?.new_qr_supported === true && !!data?.token && !!data?.code;
+}
+
+/**
+ * Whether a scan answer asks for a second scan of a plain QR (the older trusted-device scheme): `status` 4 without
+ * `new_qr_supported`.
+ *
+ * @param {object|null|undefined} data
+ * @returns {boolean}
+ */
+export function wantsPlainSecondQr(data) {
+    return data?.status === SECOND_LAYER_STATUS && data?.new_qr_supported !== true && !!data?.code;
+}
+
+/**
+ * The text of the plain second QR: the token in Zalo's QR link, as the login page draws it.
+ *
+ * @param {{token?: string}} data
+ * @returns {string|null}
+ */
+export function plainQrText(data) {
+    return data?.token ? `${PLAIN_QR_PREFIX}${data.token}` : null;
 }
 
 /**
@@ -306,6 +340,30 @@ async function attempt(ctx, { controller, emit, actions, qrPath, lifetimeMs, sta
         });
         link = { uid: first.chatUid, identity, secret, proof };
     }
+
+    // 5, the older scheme: a plain second QR on a new code, scanned like the first, as often as the server asks.
+    while (!link && wantsPlainSecondQr(scanned.data)) {
+        const asked = scanned.data;
+        const text = plainQrText(asked);
+        const image = text
+            ? qrPng(text).toString("base64")
+            : String(asked.image ?? "").replace(/^data:image\/png;base64,/, "");
+        if (!image) throw new ZaloApiError("The request for a second QR carried neither a token nor an image");
+        show(asked, image, 2);
+        if (signal.aborted) return new Promise(() => {});
+        armExpiry();
+
+        code = asked.code;
+        scanned = await longPoll(ctx, "/account/authen/qr/waiting-scan", { continue: CHAT, code, v }, signal);
+        if (!scanned?.data) throw new ZaloApiError(`Cannot get scan result\nResponse: ${JSON.stringify(scanned)}`);
+    }
+    if (scanned.data.status === SCAN_FAILED) {
+        throw new ZaloApiError(`The login cannot go on after the scan\nResponse: ${JSON.stringify(scanned)}`);
+    }
+
+    // The last QR was scanned: nothing is on screen to expire. The confirm wait ends when the phone (or the server)
+    // answers, or when the caller aborts.
+    clearTimeout(state.timer);
     emit({ type: QR_EVENT.QR_SCANNED, data: scanned.data, actions });
 
     // 6: the phone confirms (or declines); with a proof, the proof goes with it.
@@ -325,7 +383,6 @@ async function attempt(ctx, { controller, emit, actions, qrPath, lifetimeMs, sta
     }
     confirmFields.v = v;
     const confirmed = await longPoll(ctx, "/account/authen/qr/waiting-confirm", confirmFields, signal);
-    clearTimeout(state.timer);
     if (!confirmed) throw new ZaloApiError("Cannot get confirm result");
     if (confirmed.error_code === DECLINED) {
         emit({ type: QR_EVENT.QR_DECLINED, data: { code }, actions });

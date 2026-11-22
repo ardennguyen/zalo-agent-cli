@@ -22,13 +22,24 @@ import {
     buildOf,
     deviceImeiFor,
     loadTrustFromPage,
+    plainQrText,
     qrLogin,
     scriptUrlOf,
+    wantsPlainSecondQr,
     wantsSecondQr,
 } from "../../src/zalo/qr-login.js";
+import { qrPng } from "../../src/zalo/qr-image.js";
 import { diffSequence } from "../helpers/replay/replay.js";
 import { WEB_QR_LOGIN, WEB_QR_LOGIN_FORBIDDEN } from "../helpers/replay/shapes.js";
-import { FAKE, SECOND_QR_ASKED, SECOND_QR_SCANNED, installFakeZalo, serveQrLogin } from "./fake-zalo-session.js";
+import {
+    FAKE,
+    PLAIN_SECOND_QR_ASKED,
+    PLAIN_SECOND_QR_SCANNED,
+    SECOND_QR_ASKED,
+    SECOND_QR_SCANNED,
+    installFakeZalo,
+    serveQrLogin,
+} from "./fake-zalo-session.js";
 
 const CHROME_UA =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36";
@@ -554,6 +565,168 @@ describe("the QR login", () => {
                 },
             });
             assert.equal(loaded, false);
+        });
+    });
+
+    describe("an account on the older trusted-device scheme (status 4 without new_qr_supported)", () => {
+        const plain = (serve = {}, extra = {}) => {
+            serveQrLogin(fake, {
+                second: { asked: PLAIN_SECOND_QR_ASKED, scanned: PLAIN_SECOND_QR_SCANNED, scan: [0] },
+                ...serve,
+            });
+            let loaded = false;
+            const store = fakeStore();
+            const { seen, onEvent } = events();
+            const run = qrLogin({
+                ...BASE,
+                onEvent,
+                loadTrust: async () => {
+                    loaded = true;
+                    throw new Error("the plain scheme needs no module");
+                },
+                trustStore: store,
+                ...extra,
+            });
+            return { run, seen, store, loaded: () => loaded };
+        };
+        const codes = (suffix) => fake.requests.filter((r) => r.path.endsWith(suffix)).map((r) => r.form.code);
+
+        it("shows a second QR, polls the scan on its code, and confirms on that code with no bundle", async () => {
+            const { run, store, loaded } = plain();
+            const result = await run;
+            assert.deepEqual(codes("/waiting-scan"), ["qr-code-1", "qr-code-1", "qr-code-2"]);
+            assert.deepEqual(codes("/waiting-confirm"), ["qr-code-2"]);
+            const confirm = fake.requests.find((r) => r.path.endsWith("/waiting-confirm"));
+            assert.deepEqual(Object.keys(confirm.form), ["continue", "code", "v"], "no proof in the older scheme");
+            assert.equal(fake.requests.filter((r) => r.path.endsWith("/qr/generate")).length, 1, "no new first QR");
+            assert.equal(loaded(), false, "the trusted-device module is not loaded");
+            assert.deepEqual(store.log.saved, [], "no device identity is kept");
+            assert.equal(result.trusted, null);
+            assert.ok(result.cookies.length > 0);
+        });
+
+        it("draws the second QR from the token as Zalo's QR link, shown as layer 2 before any scan event", async () => {
+            const { run, seen } = plain();
+            await run;
+            assert.deepEqual(
+                seen.map((e) => `${e.type}${e.data?.layer ?? ""}`),
+                [
+                    `${QR_EVENT.QR_GENERATED}1`,
+                    `${QR_EVENT.QR_GENERATED}2`,
+                    `${QR_EVENT.QR_SCANNED}`,
+                    `${QR_EVENT.GOT_LOGIN_INFO}`,
+                ],
+                "the scan of the first QR is not announced: the phone still has the second to scan",
+            );
+            const second = seen[1].data;
+            assert.equal(second.code, "qr-code-2");
+            assert.deepEqual(second.options, PLAIN_SECOND_QR_ASKED.options, "the caption options travel with the QR");
+            assert.equal(plainQrText(PLAIN_SECOND_QR_ASKED), "http://zaloapp.com/qr/l?tk=fake-token-2");
+            assert.equal(second.image, qrPng("http://zaloapp.com/qr/l?tk=fake-token-2").toString("base64"));
+            assert.notEqual(second.image, "iVBORw0KGgo=", "not the image that came with the answer");
+            assert.equal(seen[2].data.display_name, PLAIN_SECOND_QR_SCANNED.display_name);
+        });
+
+        it("a confirm that takes longer than a QR's lifetime is not cut off by the expiry", async () => {
+            const { run, seen } = plain(
+                { confirm: [{ wait: 250, then: 0 }] },
+                {
+                    lifetimeMs: 60,
+                    onEvent: (e) => {
+                        seen.push(e);
+                        // Without this an expiry would leave the login waiting forever: make it fail the test.
+                        if (e.type === QR_EVENT.QR_EXPIRED) e.actions.abort();
+                    },
+                },
+            );
+            const result = await run;
+            assert.ok(result.cookies.length > 0);
+            assert.ok(!seen.some((e) => e.type === QR_EVENT.QR_EXPIRED), "no expiry after the last scan");
+        });
+
+        it("a confirm on a QR without a trusted device is not cut off by the expiry either", async () => {
+            serveQrLogin(fake, { confirm: [{ wait: 250, then: 0 }] });
+            const { seen } = events();
+            const result = await qrLogin({
+                ...BASE,
+                lifetimeMs: 60,
+                onEvent: (e) => {
+                    seen.push(e);
+                    if (e.type === QR_EVENT.QR_EXPIRED) e.actions.abort();
+                },
+            });
+            assert.ok(result.cookies.length > 0);
+            assert.ok(!seen.some((e) => e.type === QR_EVENT.QR_EXPIRED));
+        });
+
+        it("the second QR gets a full lifetime of its own, not what was left of the first", async () => {
+            // Each scan answers after 150 ms of a 250 ms lifetime: 300 ms in all, so only a re-armed expiry lets it in.
+            const { run, seen } = plain(
+                {
+                    scan: [{ wait: 150, then: 0 }],
+                    second: {
+                        asked: PLAIN_SECOND_QR_ASKED,
+                        scanned: PLAIN_SECOND_QR_SCANNED,
+                        scan: [{ wait: 150, then: 0 }],
+                    },
+                },
+                {
+                    lifetimeMs: 250,
+                    onEvent: (e) => {
+                        seen.push(e);
+                        if (e.type === QR_EVENT.QR_EXPIRED) e.actions.abort();
+                    },
+                },
+            );
+            await run;
+            assert.ok(!seen.some((e) => e.type === QR_EVENT.QR_EXPIRED));
+        });
+
+        it("a second QR that is never scanned expires, and the caller can stop", async () => {
+            const { run, seen } = plain(
+                { second: { asked: PLAIN_SECOND_QR_ASKED, scanned: PLAIN_SECOND_QR_SCANNED, scan: ["hang"] } },
+                {
+                    lifetimeMs: 60,
+                    onEvent: (e) => {
+                        seen.push(e);
+                        if (e.type === QR_EVENT.QR_EXPIRED) e.actions.abort();
+                    },
+                },
+            );
+            await assert.rejects(run, (e) => e instanceof QrLoginAborted);
+            const kinds = seen.map((e) => `${e.type}${e.data?.layer ?? ""}`);
+            assert.ok(kinds.includes(`${QR_EVENT.QR_GENERATED}2`));
+            assert.ok(kinds.includes(String(QR_EVENT.QR_EXPIRED)));
+            assert.ok(!kinds.includes(String(QR_EVENT.QR_SCANNED)));
+            assert.ok(!fake.requests.some((r) => r.path.endsWith("/waiting-confirm")));
+        });
+
+        it("a decline on the phone is announced with the second code and rejects; no session is fetched", async () => {
+            const { run, seen, store } = plain({ confirm: [-13] });
+            await assert.rejects(run, (e) => e instanceof QrLoginDeclined);
+            const declined = seen.find((e) => e.type === QR_EVENT.QR_DECLINED);
+            assert.equal(declined?.data.code, "qr-code-2");
+            assert.deepEqual(store.log.saved, []);
+            assert.ok(!fake.requests.some((r) => r.path === "/account/checksession"));
+        });
+
+        it("a scan answer that says the login failed (status 5) ends it before any confirm", async () => {
+            const { run } = plain({
+                second: { asked: PLAIN_SECOND_QR_ASKED, scanned: { status: 5, error: 0 }, scan: [0] },
+            });
+            await assert.rejects(run, /cannot go on after the scan/);
+            assert.ok(!fake.requests.some((r) => r.path.endsWith("/waiting-confirm")));
+        });
+
+        it("tells the plain request from the other kinds of scan answer", () => {
+            assert.equal(wantsPlainSecondQr(PLAIN_SECOND_QR_ASKED), true);
+            assert.equal(wantsPlainSecondQr({ ...PLAIN_SECOND_QR_ASKED, new_qr_supported: undefined }), true);
+            assert.equal(wantsPlainSecondQr(SECOND_QR_ASKED), false, "the linking QR is the other path");
+            assert.equal(wantsPlainSecondQr({ ...PLAIN_SECOND_QR_ASKED, code: "" }), false);
+            assert.equal(wantsPlainSecondQr(PLAIN_SECOND_QR_SCANNED), false);
+            assert.equal(wantsPlainSecondQr(null), false);
+            assert.equal(wantsSecondQr(PLAIN_SECOND_QR_ASKED), false);
+            assert.equal(plainQrText({ token: "" }), null);
         });
     });
 

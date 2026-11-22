@@ -487,13 +487,35 @@ export const SECOND_QR_SCANNED = {
 };
 
 /**
+ * The older trusted-device scheme's answer to a first scan: a second scan is asked for, of a plain QR on a new code
+ * (no `new_qr_supported`, no `master_id`, no name). The shape of a live answer, with fake values.
+ */
+export const PLAIN_SECOND_QR_ASKED = {
+    status: 4,
+    new_qr_supported: false,
+    chatUid: "fake-chat-uid",
+    code: "qr-code-2",
+    token: "fake-token-2",
+    image: "data:image/png;base64,iVBORw0KGgo=",
+    options: { enabledCheckOCR: true, enabledMultiLayer: true },
+};
+
+/** What the long poll on the plain second code answers: the name, and no link data. */
+export const PLAIN_SECOND_QR_SCANNED = {
+    avatar: "https://avatar.invalid/a.png",
+    display_name: "Fake Person",
+    chatUid: "fake-chat-uid",
+};
+
+/**
  * Make the fake answer the id.zalo.me QR login the way Zalo does: the login page with its build number, the
  * QR, the two long polls, and the three-hop redirect that ends in the `zpw_sek` cookie.
  *
  * @param {ReturnType<typeof installFakeZalo>} fake
  * @param {object} [opts]
- * @param {Array<number|"hang">} [opts.scan] - answers of successive waiting-scan calls: an `error_code`
- *   (8 = not yet, 0 = scanned) or `"hang"` (never answers until aborted); the last one repeats
+ * @param {Array<number|"hang"|{wait: number, then: number}>} [opts.scan] - answers of successive waiting-scan
+ *   calls: an `error_code` (8 = not yet, 0 = scanned), `"hang"` (never answers until aborted), or `{wait, then}`
+ *   (the `then` answer after `wait` ms, as a long poll held open); the last one repeats
  * @param {Array<number|"hang">} [opts.confirm] - the same for waiting-confirm (0 = confirmed, -13 = declined)
  * @param {object} [opts.confirmData] - fields added to the confirm answer's data, e.g. `{chatUid}` as the captured
  *   logins carry it
@@ -511,7 +533,11 @@ export function serveQrLogin(fake, { scan = [8, 0], confirm = [0], second = fals
     const poll = (script, data) => {
         let i = 0;
         return async (req) => {
-            const step = script[Math.min(i++, script.length - 1)];
+            let step = script[Math.min(i++, script.length - 1)];
+            if (typeof step === "object" && step) {
+                await new Promise((resolve) => setTimeout(resolve, step.wait));
+                step = step.then;
+            }
             if (step === "hang") {
                 await new Promise((_, reject) => {
                     req.signal?.addEventListener("abort", () => reject(req.signal.reason));

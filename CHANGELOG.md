@@ -9,6 +9,8 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+## [3.3.3] — 2026-11-22
+
 #### Fixed
 
 - **QR login for accounts on the older trusted-device scheme.** When the first scan is answered with a request for a second scan that is not the linking QR (`status 4` without `new_qr_supported`), the login now shows that second QR (layer 2, drawn from the answer's token), waits for its scan on the new code, and confirms on it. Before, it announced the scan and waited for a confirm the phone never sent, because the phone was still waiting for the second QR. The scan is announced only once the last QR is scanned.
@@ -1031,7 +1033,8 @@ npm install -g @ardennguyen/zalo-agent-cli@2.0.0
 
 Commands, flags and defaults: `skill/references/command-reference.md`. Operating it on a server: `docs/deployment.md`.
 
-[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.3.2...v3.0-dev
+[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.3.3...v3.0-dev
+[3.3.3]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.3.3
 [3.3.2]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.3.2
 [3.3.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.3.1
 [3.3.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.3.0

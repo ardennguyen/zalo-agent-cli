@@ -144,7 +144,11 @@ if (cmd === "daemon") {
     });
     say(`controller: accounts ${ids.join(",")}, leases ${leaseFile}`);
     r.start();
+    // The reconcile's timer does not hold the process (in `fleet serve` the HTTP server does): without a lease yet, and so
+    // without a child, this process would end after its first pass.
+    const alive = setInterval(() => {}, 60_000);
     const quit = async () => {
+        clearInterval(alive);
         r.stop();
         for (const id of kids.keys()) await driver.stop(id);
         process.exit(0);

@@ -166,6 +166,25 @@ describe("startDaemonChannel", () => {
         assert.equal(res.status, 200);
     });
 
+    it("leased mode: once the lease ended, refuses every route but /stop and /status", async () => {
+        const d = fakeDaemon(dir);
+        let lost = false;
+        const chan = await startDaemonChannel({ getApi: d.getApi, accountDir: dir, leaseLost: () => lost });
+        started.push(chan);
+        const { token, port } = getDaemonChannel(dir);
+        const send = () =>
+            fetch(`http://127.0.0.1:${port}/send-attachments`, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ token, paths: ["/a.pdf"], threadId: "t1", type: 1 }),
+            });
+        assert.equal((await send()).status, 200);
+        lost = true;
+        const res = await send();
+        assert.equal(res.status, 409);
+        assert.equal((await res.json()).code, "LEASE_LOST");
+    });
+
     it("refuses a request with the wrong token", async () => {
         const d = fakeDaemon(dir);
         const chan = await startDaemonChannel({ getApi: d.getApi, accountDir: dir });

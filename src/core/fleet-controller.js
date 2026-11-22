@@ -69,6 +69,8 @@ const ACCOUNT_ID = /^[1-9][0-9]{0,30}$/;
  *   account's saved login ends, read from its saved cookie jar (a running daemon's own reading wins)
  * @param {{due: (ownId: string, expiry: object|null) => boolean}|null} [args.sessionNotices] - which thresholds were
  *   sent (./session-notice.js createSessionNotices); null sends no `session_expiring`
+ * @param {{holds: (ownId: string) => boolean}|null} [args.lease] - leased mode (./fleet-lease.js createLeaseReconciler):
+ *   a start, a restart or a job is refused (409 LEASE_NOT_HELD) for an account this engine holds no lease of
  * @param {(event: object) => void} [args.webhook] - the admin webhook
  * @param {(line: string) => void} [args.log]
  * @param {() => number} [args.now]
@@ -89,6 +91,7 @@ export function createFleetController({
     host = null,
     session = () => null,
     sessionNotices = null,
+    lease = null,
     webhook = () => {},
     log = () => {},
     now = Date.now,
@@ -223,6 +226,17 @@ export function createFleetController({
 
     const known = (ownId) => listAccounts().some((a) => a.ownId === ownId);
 
+    /** Leased mode: answer 409 LEASE_NOT_HELD (and true) when this engine holds no lease of the account. */
+    function refuseUnleased(res, ownId) {
+        if (!lease || lease.holds(ownId)) return false;
+        send(res, 409, {
+            error: `this engine holds no pool lease of account ${ownId}: another engine may run it`,
+            code: "LEASE_NOT_HELD",
+            accountId: ownId,
+        });
+        return true;
+    }
+
     async function accountsView() {
         const out = [];
         for (const { ownId } of listAccounts()) {
@@ -301,6 +315,7 @@ export function createFleetController({
                     true
                 );
             if (!jobs) return (send(res, 501, { error: "no account jobs here", code: "NOT_SUPPORTED" }), true);
+            if (req.method !== "GET" && refuseUnleased(res, id)) return true;
             if (jobs.handle(id, jm[2], req, res, ctx)) return true;
             send(res, 404, { error: "not found", code: "NOT_FOUND" });
             return true;
@@ -353,6 +368,7 @@ export function createFleetController({
         }
         if (req.method !== "POST") return (send(res, 405, { error: "POST only", code: "METHOD_NOT_ALLOWED" }), true);
         if (action === "start" || action === "stop" || action === "restart") {
+            if (action !== "stop" && refuseUnleased(res, ownId)) return true;
             const before = states.get(ownId)?.state ?? null;
             const r = await driver[action](ownId);
             // A start after a kick takes the account back from the other session: a person's decision, logged.

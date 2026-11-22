@@ -50,6 +50,14 @@ import {
 } from "../core/fleet-templates.js";
 import { createFleetController } from "../core/fleet-controller.js";
 import {
+    LEASE_STATE_FILE_ENV,
+    createLeaseReconciler,
+    leaseFileOf,
+    readFence,
+    readLeases,
+    writeLeaseState,
+} from "../core/fleet-lease.js";
+import {
     DEFAULT_CONTROLLER_PORT,
     adminWebhook,
     agentTokenHashes,
@@ -784,10 +792,24 @@ export function registerFleetCommands(program) {
                 process.env.ZALO_FLEET_WEBHOOK_SECRET || null,
             );
             const log = (l) => console.error(l);
+            // Leased mode (a pool engine, src/core/fleet-lease.js): only the accounts this engine holds a lease of run.
+            const leaseFile = leaseFileOf();
+            const leaseStateFile = String(process.env[LEASE_STATE_FILE_ENV] ?? "").trim() || null;
+            const leases = leaseFile
+                ? createLeaseReconciler({
+                      driver,
+                      listAccounts: () => listAccounts().map((a) => ({ ownId: a.ownId })),
+                      readLeases: () => readLeases(leaseFile),
+                      writeState: leaseStateFile ? (accounts) => writeLeaseState(leaseStateFile, accounts) : null,
+                      kicked: (id) => Boolean(readKickMarker(kickFile(getAccountDir(id)))),
+                      fenceToken: (id) => readFence(getAccountDir(id))?.token ?? null,
+                      log,
+                  })
+                : null;
             // The QR add (src/core/fleet-qr.js): one child login per flow, at most ZALO_FLEET_QR_FLOWS at once.
             const qr = createQrFlows({
                 spawnLogin: spawnLoginChild,
-                finish: (o) => finishQrAdd({ ...o, envDir, domain, trustProxy, driver }),
+                finish: (o) => finishQrAdd({ ...o, envDir, domain, trustProxy, driver, leased: Boolean(leaseFile) }),
                 isRunning: (id) => getDaemonStatus(getAccountDir(id)).running,
                 // Refused before the login starts: an unknown user, a user at limits.accountsPerUser, a full cap.
                 precheck: (o) => checkQrAdd(o),
@@ -833,6 +855,7 @@ export function registerFleetCommands(program) {
                 // The end of each saved login, and session_expiring once per threshold (kept across restarts).
                 session: (ownId) => sessionExpiryFromMarker(getAccountDir(ownId)) ?? sessionExpiryFor(ownId),
                 sessionNotices: createSessionNotices(fileNoticeStore(join(CONFIG_DIR, "fleet-session-notices.json"))),
+                lease: leases,
                 forget: (ownId) => forgetAccount(ownId, envDir),
                 qr,
                 // What a host agent applies to its reverse proxy: this process edits no proxy configuration.
@@ -871,8 +894,13 @@ export function registerFleetCommands(program) {
                 process.exit(1);
             });
             controller.start();
+            if (leases) {
+                info(`Leased mode: accounts run only with this engine's pool lease (${leaseFile})`);
+                leases.start();
+            }
             const stop = () => {
                 qr.stop();
+                leases?.stop();
                 controller.stop();
                 server.close();
                 process.exit(0);

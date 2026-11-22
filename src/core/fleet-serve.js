@@ -285,6 +285,8 @@ export function spawnLoginChild({ proxy = null } = {}) {
  * @param {string|null} [o.domain] - the proxy layout's host: the env file gets `ZALO_MCP_PUBLIC_URL=https://<domain>/a/<id>`
  * @param {boolean} [o.trustProxy] - also `ZALO_MCP_TRUSTED_PROXIES=127.0.0.1` (the shared env does not trust the proxy)
  * @param {{start: Function, restart: Function}} o.driver
+ * @param {boolean} [o.leased] - leased mode (./fleet-lease.js): nothing is started here; the controller starts the
+ *   account once its lease arrives
  * @param {() => string} [o.makeToken]
  * @returns {Promise<object>} what the `done` event carries
  */
@@ -298,6 +300,7 @@ export async function finishQrAdd({
     domain = null,
     trustProxy = false,
     driver,
+    leased = false,
     makeToken = () => randomBytes(32).toString("hex"),
 }) {
     const port = assignPorts([ownId]).ports[ownId];
@@ -340,6 +343,7 @@ export async function finishQrAdd({
         ...(envWritten && publicUrl ? { publicUrl } : {}),
         ...(demoted.length ? { demoted } : {}),
     };
+    if (leased) return { ...out, started: false, leased: true };
     if (wasRunning) {
         // The new login took the session from the running daemon (it exits 3): bring it back on purpose.
         const r = await driver.restart(ownId);

@@ -541,7 +541,9 @@ describe("socket host", () => {
 
     it("keeps the systemd unit from restarting a daemon that ended with either code", () => {
         assert.ok(
-            UNIT_TEMPLATE.includes(`RestartPreventExitStatus=${EXIT_CODE.KICKED} ${EXIT_CODE.SESSION_REVOKED}`),
+            UNIT_TEMPLATE.includes(
+                `RestartPreventExitStatus=${EXIT_CODE.KICKED} ${EXIT_CODE.SESSION_REVOKED} ${EXIT_CODE.LEASE_LOST}`,
+            ),
             "a kicked or refused daemon would be restarted into the same state",
         );
     });

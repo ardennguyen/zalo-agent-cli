@@ -8,7 +8,9 @@
  * {@link openDatabase} opens an account's database encrypted at rest: SQLCipher v4 (`cipher=sqlcipher, legacy=4`:
  * AES-256-CBC with an HMAC-SHA512 per page, so the file also opens in the standard SQLCipher tools with the key), keyed
  * with a raw 256-bit subkey of the account's data key (`getDataKey(ownId, "sqlcipher")`, no KDF), `secure_delete=ON`,
- * WAL. The account is the folder the file sits in (`accounts/<ownId>/zalo.db`), as for the keyring. A missing file is
+ * and the journal {@link journalModeFor} picks: WAL on a local disk, a rollback journal (TRUNCATE) on a network
+ * filesystem, where WAL's memory-mapped `-shm` file kills the process with SIGBUS when the storage under it switches
+ * servers (`ZALO_SQLITE_JOURNAL` overrides). The account is the folder the file sits in (`accounts/<ownId>/zalo.db`), as for the keyring. A missing file is
  * created encrypted; there is no plaintext create path.
  *
  * A plaintext database (written by 2.x) is migrated by the first writer that opens it: checkpointed and held against
@@ -58,6 +60,92 @@ export const PLAINTEXT_HEADER = Buffer.from("SQLite format 3\0", "latin1");
 
 /** How long a writer waits for another one (better-sqlite3's default, kept explicit). */
 const BUSY_TIMEOUT_MS = 5000;
+
+/** `ZALO_SQLITE_JOURNAL`: `auto` (the default), `wal` or `truncate`. */
+export const SQLITE_JOURNAL_ENV = "ZALO_SQLITE_JOURNAL";
+
+/**
+ * statfs `f_type` magic numbers of network and shared filesystems (linux/magic.h, and FUSE, which network mounts such
+ * as sshfs use). On them a database keeps a rollback journal: WAL maps its `-shm` index into memory, and a mapped page
+ * of a network file that goes away (an NFS server switching to its mirror) is SIGBUS, not an error.
+ */
+export const NETWORK_FS_TYPES = Object.freeze({
+    0x6969: "nfs",
+    0x517b: "smb",
+    0xff534d42: "cifs",
+    0xfe534d42: "smb2",
+    0x01021997: "9p",
+    0x65735546: "fuse",
+    0x00c36400: "ceph",
+    0x5346414f: "afs",
+    0x01161970: "gfs2",
+    0x7461636f: "ocfs2",
+    0x0bd00bd0: "lustre",
+});
+
+/**
+ * The journal a database in `dir` is opened with: `wal` or `truncate`.
+ *
+ * `ZALO_SQLITE_JOURNAL=wal|truncate` decides; `auto` (or unset) picks TRUNCATE when `dir` is on a network filesystem
+ * ({@link NETWORK_FS_TYPES}) and WAL otherwise. A folder statfs cannot read (missing, or a platform without the call)
+ * counts as local.
+ *
+ * @param {string} dir
+ * @param {{env?: NodeJS.ProcessEnv, statfs?: (dir: string) => {type: number|bigint}}} [o]
+ * @returns {"wal"|"truncate"}
+ */
+export function journalModeFor(dir, { env = process.env, statfs = statfsSync } = {}) {
+    const asked = String(env[SQLITE_JOURNAL_ENV] ?? "")
+        .trim()
+        .toLowerCase();
+    if (asked === "wal" || asked === "truncate") return asked;
+    try {
+        return NETWORK_FS_TYPES[Number(statfs(dir).type)] ? "truncate" : "wal";
+    } catch {
+        return "wal";
+    }
+}
+
+/** Accounts already told that their database stays in WAL for this open (once per file and process). */
+const journalNotices = new Set();
+
+/**
+ * Put a writable connection in the journal {@link journalModeFor} picks, and turn memory mapping off.
+ *
+ * WAL is stored in the database file; a rollback journal is not (each connection says it), so this runs on every
+ * open. Leaving WAL checkpoints it and needs the database to itself: while another connection holds it, this open stays
+ * in WAL (said once) and a later one switches. An older engine opening the file puts it back in WAL by itself.
+ *
+ * @param {import("better-sqlite3-multiple-ciphers").Database} db
+ * @param {string} path
+ * @param {{env?: NodeJS.ProcessEnv, statfs?: Function, log?: (line: string) => void}} [o]
+ * @returns {"wal"|"truncate"} the journal the connection is in
+ */
+export function applyJournalMode(db, path, { env = process.env, statfs = statfsSync, log } = {}) {
+    db.pragma("mmap_size = 0");
+    const want = journalModeFor(dirname(path), { env, statfs });
+    const now = String(db.pragma("journal_mode", { simple: true })).toLowerCase();
+    if (want === "wal") {
+        if (now !== "wal") db.pragma("journal_mode = WAL");
+        return "wal";
+    }
+    if (now === "truncate") return "truncate";
+    let got;
+    try {
+        got = String(db.pragma("journal_mode = TRUNCATE", { simple: true })).toLowerCase();
+    } catch (e) {
+        if (e?.code !== "SQLITE_BUSY" && e?.code !== "SQLITE_LOCKED") throw e;
+        got = now;
+    }
+    if (got !== "truncate" && !journalNotices.has(path)) {
+        journalNotices.add(path);
+        (log ?? ((l) => console.error(l)))(
+            `[db] ${basename(path)} stays in WAL for now: another connection holds it (it switches to a rollback ` +
+                "journal, for the network filesystem, at a later open)",
+        );
+    }
+    return got === "truncate" ? "truncate" : "wal";
+}
 /** Free disk a migration needs, as a multiple of the database (the copy, plus its journal while it is encrypted). */
 const DISK_FACTOR = 1.1;
 
@@ -206,8 +294,10 @@ export function openDatabase(file, { purpose = "sqlcipher", readonly = false, lo
         // which as a file cost about 45 µs per row on Windows.
         db.pragma("temp_store = MEMORY");
         if (!readonly) {
-            db.pragma("journal_mode = WAL");
+            applyJournalMode(db, path, { log });
             db.pragma("secure_delete = ON");
+        } else {
+            db.pragma("mmap_size = 0");
         }
         Object.defineProperty(db, "keyId", { value: keyId });
         return guard(db, path);
@@ -460,7 +550,8 @@ export function migratePlaintextDatabase(
                 enc.pragma("cipher = 'sqlcipher'");
                 enc.pragma("legacy = 4");
                 enc.pragma(`rekey = "x'${key.toString("hex")}'"`);
-                enc.pragma("journal_mode = WAL");
+                // Straight into the journal this folder wants (no -shm mapped on a network filesystem).
+                if (journalModeFor(dir) === "wal") enc.pragma("journal_mode = WAL");
             } finally {
                 enc.close();
             }

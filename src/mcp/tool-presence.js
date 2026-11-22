@@ -145,12 +145,17 @@ export function presenceGatedHandler(tool, handler, daemonPresence) {
  * Make every tool registered on `server` from now on go through the daemon's presence.
  *
  * @param {{registerTool: Function}} server
- * @param {object|null} daemonPresence - null: no presence (the tools run as they are)
+ * @param {object|null} daemonPresence - null: no presence (the tools run as they are; in leased mode the lease still
+ *   gates them, {@link gateToolsByLease})
  */
 export function gateToolsByPresence(server, daemonPresence) {
-    if (!daemonPresence || typeof server?.registerTool !== "function") return;
-    const raw = server.registerTool.bind(server);
-    server.registerTool = (name, meta, handler) => raw(name, meta, presenceGatedHandler(name, handler, daemonPresence));
+    if (daemonPresence && typeof server?.registerTool === "function") {
+        const raw = server.registerTool.bind(server);
+        server.registerTool = (name, meta, handler) =>
+            raw(name, meta, presenceGatedHandler(name, handler, daemonPresence));
+    }
+    // Leased mode: the lease is checked before presence (outermost), so a tool whose lease ended wakes nothing.
+    gateToolsByLease(server);
 }
 
 /**

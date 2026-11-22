@@ -9,6 +9,14 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+#### Added
+
+- **Leased mode for engine pools** (`ZALO_FLEET_LEASE_FILE`, `ZALO_FLEET_LEASE_STATE_FILE`). Several engines can now share one set of account folders without ever running an account twice: an account runs only on the engine that holds its lease. `fleet serve` starts the accounts whose lease is in the file and stops each one 5 seconds before its deadline at the latest; every daemon takes its token from the file, raises the account's fence (`lease-fence.json`), refuses to start below it, and exits with the new code **5** the moment its lease is gone, its token changes, its deadline passes or a newer holder raised the fence. Tool calls, daemon-channel requests, stored messages and webhook deliveries are refused once the lease has ended. A saved login, a start, a restart or a job is refused (`LEASE_NOT_HELD`) without a lease. The systemd unit keeps exit 5 down (`RestartPreventExitStatus=3 4 5`). Without the variable nothing changes.
+
+#### Changed
+
+- **SQLite on a network filesystem uses a rollback journal** (`ZALO_SQLITE_JOURNAL`, default `auto`). WAL maps its `-shm` file into memory, and a process with a mapped page of an NFS file that switched servers dies with SIGBUS. On NFS, SMB/CIFS, 9p, FUSE and the other shared filesystems the databases now use `journal_mode=TRUNCATE` (memory mapping off); on a local disk they stay in WAL. An existing database switches when it is opened (`wal` or `truncate` decides by hand).
+
 ## [3.3.3] — 2026-11-22
 
 #### Fixed

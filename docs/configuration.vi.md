@@ -54,10 +54,10 @@ máy chủ đang chạy. Tệp và biến môi trường chỉ được đọc m
 | môi trường | `.env`, `--env-file`, `EnvironmentFile` của systemd (chỉ để khởi động: port, địa chỉ bind, `publicUrl`, bộ cung cấp khóa, *tham chiếu* tới thông tin xác thực admin) |
 | **chính sách** | theo tenant `<CONFIG_DIR>/tenants/<tenantId>.json` (cho tài khoản của các người dùng thuộc tenant và các tài khoản liệt kê trong `quota.tenant.accounts`), rồi theo người dùng `<CONFIG_DIR>/users/<userId>.json` (cho các tài khoản người đó sở hữu), rồi theo tài khoản `<accountDir>/policy.json` |
 
-Chính sách nhận `confirmMode`, `hiddenChats`, `allowPinArgument`, `ownMyDocuments`, `approval.*`, `media.deliver`, `media.inlineMaxBytes`,
+Chính sách nhận `confirmMode`, `hiddenChats`, `allowPinArgument`, `ownMyDocuments`, `routing.*`, `approval.*`, `media.deliver`, `media.inlineMaxBytes`,
 `media.allowDeliver`, `media.linkTtl`, `media.tempfileTtl`, `media.linkAuth`, `media.linkRateLimit`,
 `media.capability.*`, `media.autoOpen`, `webhook`, `webhookBatchSize`, `webhookMaxAge`, `quota.*`, `retention.*`,
-`groups.onLeave`, `presence.*` và `session.renew.*` (`presence.alwaysOn.*` chỉ có trong chính sách của tenant hoặc người dùng;
+`groups.onLeave`, `presence.*`, `session.renew.*` và các giới hạn `uploads.*` (trừ `uploads.localPaths`, `localPathRoots` và `allowPrivateUrls`) (`presence.alwaysOn.*` chỉ có trong chính sách của tenant hoặc người dùng;
 `quota.tenant.*` chỉ có trong chính sách của tenant). Khóa chỉ đọc khi khởi động (`httpPort`, `host`, `publicUrl`, `tls`,
 `oauth`, `trustedProxies`, `admin`, `media.downloadDir`, bộ cung cấp khóa và các tùy chọn của nó, `accounts`) và mọi bí
 mật (`webhookSecret`) bị từ chối với `restartRequired`; khóa khác bị từ chối vì không biết. Các tệp được niêm phong bằng
@@ -313,6 +313,84 @@ xong, tối đa 60 giây; `ZALO_CONNECT_SLOT_WAIT` (giây, mặc định `120`) 
 tiếp tục. Cả hai có dạng `_<ownId>`. `/status` và `/metrics` có `lastWakeMs` / `lastCatchUpMs`
 (`zalo_presence_last_wake_seconds`, `zalo_presence_last_catch_up_seconds`) và thời gian kết nối được tính.
 
+### Nhiều agent dùng chung một tài khoản (`routing`)
+
+Nhiều agent có thể dùng cùng lúc máy chủ MCP của một tài khoản (trợ lý chạy sẵn, một phiên Claude Code, một connector
+của ứng dụng Claude). Khối `routing` đặt tên cho chúng, để máy chủ biết mỗi lời gọi đến từ agent nào, thêm **dấu** của
+agent vào đầu những gì nó gửi, và ghi lại agent nào đã gửi tin nào. Đây là phần đầu của Companion Router (Phân công phản
+hồi); chưa có gì được phân công hay bị từ chối, và mọi người gọi vẫn thấy mọi tin nhắn.
+
+```json
+"routing": {
+  "marks": "shown",
+  "presenceWindow": "90s",
+  "agents": [
+    {"slug": "dev", "name": "Dev", "credential": "apikey:0123456789ab"},
+    {"slug": "ai", "name": "AI", "kind": "companion", "credential": "apikey:ba9876543210", "mark": "🤖 AI:"},
+    {"slug": "claude", "name": "Claude", "credential": "oauth:claude-app", "markDisplay": "owner"}
+  ]
+}
+```
+
+- **`credential`** gắn agent với một thông tin xác thực máy chủ vốn đã kiểm tra: `apikey:<keyId>` (một API key có tên;
+  API `access` hoặc `mcp agents` liệt kê các id), `oauth:<clientId>` hoặc `oauth:<clientId>/<grantId>` (một connector,
+  hoặc một lần cấp quyền của nó), `connector:<slug>` (địa chỉ connector riêng của agent, xem bên dưới), `legacy` (token
+  triển khai `--auth`), `open` (máy chủ không đòi token), `stdio` hoặc `stdio:<tên>` (máy chủ stdio cục bộ chạy với
+  `ZALO_MCP_AGENT=<tên>`). Agent không bao giờ là cái tên người gọi tự gõ; `consumer` của tool chỉ là tên phụ (một nhãn,
+  không phải ranh giới).
+- **Mỗi agent một connector.** `<publicUrl>/mcp/a/<slug>` là chính máy chủ MCP này dưới địa chỉ riêng của một agent.
+  Thêm nó làm connector (ví dụ của một project trong ứng dụng Claude) sẽ chạy OAuth cho resource
+  `<publicUrl>/mcp/a/<slug>`: trang duyệt cho chủ biết đang kết nối agent nào, và token của lần cấp quyền đó có địa chỉ ấy
+  làm audience. Token như vậy mở được địa chỉ đó và `/mcp`, không bao giờ mở địa chỉ của agent khác; nó là agent gắn bằng
+  `connector:<slug>`, hoặc không là agent nào khi chưa có agent như thế (từ chối mặc định). Các thông tin xác thực khác
+  (API key, token triển khai) dùng ở địa chỉ này như ở `/mcp`.
+- **`mark`** (mặc định `🤖 <name>:`) được thêm vào đầu mọi văn bản và chú thích agent gửi bằng `zalo_send_message`, trừ
+  khi văn bản đã bắt đầu bằng nó. **`marks`** (`shown`, mặc định, hoặc `hidden`) là thiết lập của tài khoản;
+  **`markDisplay`** của agent ghi đè nó: `inherit` (mặc định), `everywhere`, `owner` (chỉ trong My Documents) hoặc
+  `none`.
+- **`delivery`**: `live` (mặc định) hoặc `onDemand` (mặc định cho connector OAuth): agent theo nhu cầu lâu không thấy
+  hiện `onDemand`, không bao giờ là offline. **`enabled`**: `false` hiện agent là `disabled`.
+- **`presenceWindow`** (mặc định `90s`, tối thiểu `10s`): agent được thấy gần đây như vậy, hoặc đang mở
+  `zalo_wait_for_message`, là `listening`; `zalo_inbox` `status` đặt `away`.
+- **Ai gửi gì** được giữ niêm phong trong `accounts/<ownId>/sent-by.json` (id và tên agent, không có nội dung; 30 ngày,
+  5.000 lần gửi mới nhất). `zalo_get_history` và `zalo_search_messages` trả `sentBy: {agent, name, sub}` cho tin của
+  chính tài khoản. Trạng thái hiện diện được ghi vào `accounts/<ownId>/agents-presence.json` (tên agent và thời gian).
+- `routing.agents`, `routing.marks` và `routing.presenceWindow` trong policy đang chạy thắng tệp và đổi không cần khởi
+  động lại (`routing.agents` chỉ trong policy riêng của tài khoản). Xem chúng bằng `zalo-agent mcp agents`, API admin
+  `GET /access/<ownId>/agents`, hoặc, với vai trò agent, `zalo_inbox`.
+
+**Phân công (giai đoạn 3-6).** Với `routing.enabled: true` mỗi tin đến có đúng một người xử lý, do engine quyết định
+một lần (src/core/message-router.js) và gắn vào tin dưới dạng `route: {to, by, ruleId, observers, ownership}` (cả trong
+webhook). Thứ tự: **tạm dừng khi chủ trả lời** (chủ tài khoản tự gửi từ điện thoại, PC hoặc web thì các agent dừng ở
+cuộc trò chuyện đó trong `humanPause`, mặc định 15 phút), **lệnh gọi** (`@dev` hoặc từ của một luồng, từ chủ, ở đầu tin;
+`#hashtag` ở bất kỳ đâu, từ bất kỳ ai nếu luồng cho phép; lệnh gọi được bỏ khỏi `text` và giữ trong `rawText`), **tập
+trung** (sau một lệnh gọi sticky, các tin tiếp theo của chủ ở lại với agent đó tới `@end` hoặc `stickyTtl`), **trả lời
+theo tin đã gửi** (trả lời một tin của agent thì quay lại agent đó, `affinityTtl`), **nhận việc** đang mở, rồi bảng
+**luồng** (khớp đầu tiên: `threads`, `threadType`, `myDocuments`, `senders`, nhãn Zalo `labels`, `kinds`, khung giờ
+`window`, `mentionsAccount` cho tin nhóm nhắc tới tài khoản hoặc @All), rồi **mặc định**. Nhận việc, tạm dừng và tập trung được giữ qua khởi động lại (niêm phong trong `routing-state.json`). Agent trực tiếp vắng lâu hơn `fallbackAfter` thì chuyển theo chuỗi `fallback` của luồng (agent
+khác, `human` kèm thông báo trong My Documents, hoặc `{autoReply: text}`). Nhận việc, tạm dừng, trả lời theo tin, tập
+trung và dự phòng cần `routing.claims: true`.
+
+- Mỗi agent đọc tin của mình: `zalo_get_messages` và `zalo_wait_for_message` nhận `view: "mine"` (mặc định khi bật phân
+  luồng) hoặc `"all"` (mỗi tin có `forMe`). Kết nối chưa gắn agent không nhận tin mới.
+- **Chặn gửi:** agent gửi vào cuộc trò chuyện chủ đang trả lời bị từ chối với `HUMAN_ACTIVE`; vào cuộc agent khác đang
+  giữ (hoặc trích tin agent khác sở hữu) với `CLAIMED`.
+- **Nhân viên** `staff:<id>` với `channels` `console` (trả lời trong console) và/hoặc `zalo` (tin được chuyển tới Zalo của
+  nhân viên; câu trả lời của họ được gửi lại cho khách từ tài khoản này kèm dấu của họ).
+- **`@agents`** chủ gõ ở bất kỳ cuộc trò chuyện nào được trả lời trong My Documents của chủ.
+- **Riêng tư theo agent** (`routing.isolation: true`): agent chỉ đọc các cuộc được phân cho nó hoặc nó đang giữ
+  (`NOT_ROUTED` cho phần còn lại) và không gửi ra ngoài.
+- `zalo_inbox` có thêm `claim`, `release`, `handoff`, `claims`, `route_test`; API admin trả lời cùng phép thử ở
+  `POST /access/<ownId>/route-test`.
+- **Bảng điều khiển xem bộ phân công đang chạy** (`POST /access/<ownId>/routing`, `{action, ...}`, do daemon của tài
+  khoản trả lời; 409 `DAEMON_NOT_RUNNING` khi không có daemon): `events` (quyết định phân công, giữ cuộc, chuyển giao,
+  chủ tạm dừng agent, lần gửi bị chặn; chỉ có id, không bao giờ có nội dung tin; lưu niêm phong trong `routing-events.json` ở thư mục tài khoản
+  `routing.logDays` ngày, mặc định 7, ít nhất một, tối đa 5.000 sự kiện mới nhất, giữ qua các lần khởi động lại), `claims`, `release`, `assign` (cho một agent, một nhân viên hoặc `human`), `human` / `endHuman` (bắt đầu hoặc
+  kết thúc lúc chủ tự trả lời), và hộp thư của nhân viên trả lời trong bảng điều khiển: `inbox`, `thread` (tin đã lưu của
+  cuộc trò chuyện), `claim`, `unclaim`, `send` (gửi từ tài khoản này kèm dấu của nhân viên). Nhân viên chỉ thấy các cuộc
+  được phân cho mình hoặc mình đang giữ (`NOT_ROUTED`). Fleet controller phát mỗi sự kiện mới trên
+  `GET /zalo/admin/events` dưới tên `routing` (không gửi qua webhook admin).
+
 ### Gia hạn phiên đăng nhập đã lưu (`session.renew`)
 
 Một lần đăng nhập QR kéo dài khoảng 90 ngày và Zalo không bao giờ tự gia hạn: chỉ một lần quét QR mới bằng điện thoại
@@ -380,6 +458,7 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 | `ZALO_MCP_CONFIRM_MODE` | có | ai xác nhận một thao tác không hoàn tác được của tool (thu hồi, xóa, rời nhóm, …): `agent` (mặc định; bên gọi gửi `confirm: true`), `human` (server tự hỏi người dùng: qua MCP form elicitation khi chạy stdio, còn lại qua một trang duyệt dùng một lần có link trong kết quả, dùng được cả qua HTTP) hoặc `off` (không hỏi; `zalo_write` vẫn cần `confirm`) | | `confirmMode` |
 | `ZALO_MCP_HIDDEN_CHATS` | có | MCP server cho thấy gì về các cuộc trò chuyện ẩn: `exclude` (mặc định: bỏ khỏi mọi danh sách, tìm kiếm, lịch sử và sự kiện), `contentless` (bỏ khỏi danh sách; sự kiện trong đó chỉ đến dưới dạng `{event, hidden: true}`, không có thread id hay nội dung) hoặc `include` (hiện như mọi cuộc khác: giao chúng cho agent) | | `hiddenChats` |
 | `ZALO_MCP_OWN_MY_DOCUMENTS` | có | `true` chuyển tin nhắn chính tài khoản gửi trong My Documents của mình (Cloud của tôi, `me`) tới agent: `zalo_get_messages`, `zalo_wait_for_message`, notifier và webhook, mỗi tin có `isSelf: true`, để chủ tài khoản trò chuyện với trợ lý ở đó. Mọi tin tự gửi khác vẫn bị bỏ, và tin trả lời của chính agent qua `zalo_send_message` không quay lại agent. Mặc định `false`: không tin tự gửi nào tới agent | | `ownMyDocuments` |
+| `ZALO_MCP_AGENT` | không | Tên người gọi của máy chủ stdio cục bộ: là `stdio:<tên>` cho khối `routing` (chữ thường, số, `-`). Chưa đặt: `stdio` | | |
 | `ZALO_MCP_ALLOW_PIN_ARGUMENT` | có | `true` cho phép các tool trò chuyện ẩn nhận mã PIN qua input `pin`. Mặc định `false`: input bị ghi vào log của MCP client và ngữ cảnh của mô hình. Chỉ dành cho client không phải AI | | `allowPinArgument` |
 | `ZALO_MCP_APPROVAL_SECRET` | có | trang duyệt (`confirmMode: "human"`) hỏi thêm gì ngoài một cú bấm, để một agent mở được link cũng không tự duyệt được hành động của chính nó: `pin` (mã PIN trò chuyện ẩn, có khóa tạm khi sai), `password` (mật khẩu người duyệt đặt bằng `zalo-agent mcp approver set`, chỉ lưu dạng băm scrypt có salt), `none` (bấm là duyệt: yếu hơn) hoặc `auto` (mặc định: mật khẩu người duyệt khi đã đặt và link đi qua agent, nếu không thì không hỏi gì và kết quả ghi `approverSecret: false`) | | `approval.secret` |
 | `ZALO_MCP_APPROVAL_DELIVER` | có | link của trang duyệt hoặc trang PIN được gửi đi đâu: `result` (mặc định: trong kết quả của tool), `webhook` (chỉ gửi tới webhook MCP, dạng sự kiện `approval_requested`; kết quả của tool không có link) hoặc `both` | | `approval.deliver` |
@@ -447,6 +526,17 @@ Các API chính thức không có khóa `mcp-config.json` nào; biến môi trư
 | `media.linkAuth` | không đặt (= `auto`) | `auto`, `bearer` hoặc `capability` (xem `ZALO_MCP_MEDIA_LINK_AUTH`) |
 | `media.linkRateLimit` | `60` | số yêu cầu mỗi phút một địa chỉ client được gửi tới link media (và 10 token lạ mỗi phút), sau đó `429` |
 | `media.capability.maxClients`, `.ttl` | `3`, `"15m"` | link capability ra ngoài máy này phục vụ tối đa chừng này địa chỉ client khác nhau, mỗi địa chỉ trong chừng này thời gian kể từ yêu cầu đầu tiên (load balancer, kết nối lại trên mạng khác, các yêu cầu range của trình phát video). Nâng theo tài khoản trong `accounts.<ownId>.media.capability` |
+| `uploads.inlineMaxBytes` | `"10MB"` | tổng số byte (đã giải mã) của mọi tệp `{data}` trong một lời gọi MCP (tối đa `32MB`); giới hạn thân request MCP theo nó (base64 bằng 4/3 số byte, cộng 1 MB) |
+| `uploads.maxBytes` | không đặt (= giới hạn tệp Zalo của tài khoản) | một lần tải lên kho của tài khoản (`POST /zalo/files`, link tải lên của `zalo_file`, `file put`). Mặc định là tệp lớn nhất Zalo cho tài khoản này gửi, đọc từ cài đặt của chính phiên (giới hạn gửi tệp, không vượt giới hạn tải lên zCloud; 1 GB với cài đặt hiện tại, như nhau cho gói miễn phí và trả phí qua đường tải lên của engine). Giá trị đặt ở đây chỉ hạ được nó; báo cáo dung lượng hiện giá trị đang áp dụng và nguồn của nó (`sources.maxBytes`). Giới hạn đã biết: gói zCloud trả phí cho phép tệp lớn hơn qua đường tải lên zCloud riêng của Zalo, mà engine chưa làm, nên cũng dừng ở giới hạn gửi tệp |
+| `uploads.urlMaxBytes`, `uploads.urlTimeout` | không đặt (= giới hạn tệp Zalo của tài khoản), `"60s"` | một tệp `{url}` mà máy chủ tự tải về, kiểm tra ngay khi đang tải |
+| `uploads.quota` | không đặt (= hai tệp cỡ `maxBytes`, 2 GB với cài đặt hiện tại) | dung lượng tối đa kho tải lên của tài khoản (`accounts/<ownId>/uploads/`) giữ cùng lúc; vượt thì bị từ chối với `507` |
+| `uploads.ttl` | `"24h"` | tệp tải lên chưa ai gửi được giữ bao lâu |
+| `uploads.recordWait` | `"10m"` | tệp đã được một lần gửi dùng sẽ bị xóa ngay khi tin nhắn được ghi lại (listener đã lưu và kho media đã có tệp); nếu không bao giờ được ghi thì xóa sau chừng này thời gian. Lần gửi thất bại thì tệp được giữ để gửi lại |
+| `uploads.uploadLinkTtl` | `"15m"` | link `upload_begin` của `zalo_file` chờ tệp bao lâu |
+| `uploads.warnAt` | `0.8` | tỷ lệ của `uploads.quota` mà từ đó `level` của kho (trong báo cáo dung lượng) chuyển thành `warn` |
+| `uploads.localPaths` | `"loopback"` | ai được ghi một đường dẫn trên máy này vào input của tool: `loopback` (client stdio, client HTTP trên cùng máy), `any` hoặc `none`. Chỉ trong tệp, không bao giờ là chính sách |
+| `uploads.localPathRoots` | `[]` | các thư mục mà mọi client đều được ghi đường dẫn bên trong (thư mục một container khác chia sẻ với máy chủ). Chỉ trong tệp |
+| `uploads.allowPrivateUrls` | `false` | tệp `{url}` được trỏ tới địa chỉ private, loopback hoặc link-local (một mạng LAN tự phục vụ tệp). Chỉ trong tệp |
 | `trustedProxies` | `null` (không có) | các reverse proxy mà `X-Forwarded-For` được tin (xem `ZALO_MCP_TRUSTED_PROXIES`). Ghi địa chỉ proxy của bạn, nếu không giới hạn theo client chỉ thấy một client |
 | `notify.enabled`, `.thread`, `.on`, `.cooldown` | tắt | báo vào một nhóm Zalo khi agent vắng mặt |
 | `webhook`, `webhookSecret` | `null` | đẩy mỗi tin tới một URL, có ký (nên dùng `ZALO_WEBHOOK_SECRET`) |
@@ -464,6 +554,7 @@ Các API chính thức không có khóa `mcp-config.json` nào; biến môi trư
 | `confirmMode` | chưa đặt (= `agent`) | `agent`, `human` hoặc `off`: ai xác nhận một thao tác không hoàn tác được của tool. Đặt `agent` cho AI agent; `human` để server tự hỏi người dùng |
 | `hiddenChats` | chưa đặt (= `exclude`) | `exclude`, `contentless` hoặc `include`: agent thấy gì về trò chuyện ẩn (xem biến ở trên) |
 | `ownMyDocuments` | chưa đặt (= `false`) | `true` chuyển tin của chủ tài khoản trong My Documents của mình tới agent, có `isSelf: true` (xem biến ở trên) |
+| `routing` | chưa đặt (không có agent, hiện dấu, `90s`) | `{agents, marks, presenceWindow}`: các agent dùng chung tài khoản, gắn với thông tin xác thực, và dấu của chúng (§1 "Nhiều agent dùng chung một tài khoản") |
 | `allowPinArgument` | chưa đặt (= `false`) | `true` cho các tool trò chuyện ẩn nhận PIN qua input; khi đó PIN nằm trong log của client |
 | `approval.secret` | không đặt (= `auto`) | `auto`, `pin`, `password` hoặc `none`: trang duyệt hỏi thêm gì ngoài một cú bấm (xem biến ở trên) |
 | `approval.deliver` | không đặt (= `result`) | `result`, `webhook` hoặc `both`: link của trang dùng một lần được gửi đi đâu |
@@ -546,6 +637,7 @@ Giữ engine trên loopback và đặt reverse proxy TLS phía trước.
 - Tệp: [`env/internet-server.env`](config-samples/env/internet-server.env), [`mcp-config/internet.json`](config-samples/mcp-config/internet.json) và một mẫu proxy: [`proxy/Caddyfile.internet`](config-samples/proxy/Caddyfile.internet) hoặc [`proxy/nginx.internet.conf`](config-samples/proxy/nginx.internet.conf).
 - Proxy không được đệm phản hồi và phải cho phép đọc tối thiểu 310 giây: `/events/wait` giữ một request tới 300 giây. Cả hai mẫu đều được kiểm thử điều này.
 - **Xác thực:** bearer token cho script và backend; OAuth 2.1 cho các connector từ xa đòi hỏi nó (bên dưới). Đặt `ZALO_MCP_PUBLIC_URL` (hoặc `publicUrl`) là địa chỉ `https://` công khai: OAuth issuer, endpoint MCP và mọi link tới trang dùng một lần đều được dựng từ đó. Nếu không, link dùng địa chỉ của chính server, còn metadata OAuth và header `WWW-Authenticate` được dựng từ header `Host` của request (`X-Forwarded-Host` / `X-Forwarded-Proto` chỉ được tin khi đến từ một proxy trong `trustedProxies`); khi OAuth bật và server nghe ngoài loopback, server từ chối khởi động nếu thiếu nó. (`ZALO_MCP_ISSUER_URL`, `--issuer-url` và `oauth.issuerUrl` là tên cũ của nó từ 2.x, vẫn dùng được.)
+- **Tệp từ agent ở xa.** Client ở máy khác không gửi được đường dẫn: nó gửi `{data, name}` (tệp nhỏ), `{url}` (máy chủ tự tải về, chỉ địa chỉ công khai) hoặc `{fileId}`. `upload_begin` của `zalo_file` trả về link dùng một lần `<publicUrl>/zalo/files/u/<token>` để `PUT` tệp lên, không cần token; client có bearer có thể `POST <publicUrl>/zalo/files?name=<tệp>`. Cho proxy nhận thân request tới `uploads.maxBytes` (giới hạn tệp Zalo của tài khoản, 1 GB với cài đặt hiện tại) trên `/zalo/files` và khoảng 4/3 của `uploads.inlineMaxBytes` cộng 1 MB (15 MB với mặc định) trên endpoint MCP, và để các lần tải lên cùng thời gian đọc như `/events/wait`. Đường dẫn do client ở xa gửi bị từ chối kèm hướng dẫn gửi cách khác, trừ khi nó nằm trong `uploads.localPathRoots`.
 - HTTPS gốc (`--cert` / `--key`) không qua proxy chạy được, nhưng engine **còn cố nghe thêm port 443** bên cạnh port của bạn. Nên dùng proxy.
 - Thêm những gì engine không có: danh sách IP được phép tại proxy, và log không bao giờ ghi header `Authorization`. Engine chỉ giới hạn tốc độ request ở các endpoint OAuth. Máy chủ trả `Access-Control-Allow-Origin: *` cho hầu hết origin (trừ câu trả lời `/register` có chứa client secret); xóa hoặc thay header này tại proxy nếu không muốn trình duyệt gọi.
 
@@ -598,7 +690,7 @@ CRM cần ba thứ từ một tài khoản: **nghe** tin mới, **gửi**, và *
 
 **Nghe: kéo.** `GET /events/wait?timeout=55&since=<cursor>` trả về mọi tin đang chờ trong bộ đệm (`&limit=<n>` giới hạn số tin), hoặc `{"status":"timeout"}`, kèm cursor để tiếp tục. Phản hồi có `messages` (đúng thứ tự), `count`, `hasMore` và `cursor` là của tin **cuối**, nên `since=<cursor>` tiếp tục đúng chỗ lô vừa kết thúc; `message` là tin đầu. **Thay đổi không tương thích ở 3.0.0:** trước đây mặc định là một tin mỗi lần gọi; client chỉ đọc `message` rồi đi tiếp từ `cursor` giờ sẽ bỏ sót phần còn lại của lô: hãy đọc `messages`, hoặc gửi `limit=1`. Khi có `limit`, để xả một đống tồn, gọi lại ngay khi `hasMore` còn true; `settle=200` (ms, tối đa 5000) chờ thêm chừng đó sau tin đầu tiên để một đợt tin đến dồn vào một phản hồi. `limit` và `settleMs` cũng có ở tool `zalo_wait_for_message` và ở `mcp wait --limit --settle`. Bộ đệm phía sau giữ tối đa `limits.bufferMaxSize` tin cho mỗi thread trong `limits.bufferMaxAge` (mẫu CRM nâng cả hai lên 2.000 và 6 giờ). Quá mức đó, đọc cache bằng `zalo_get_history` / `zalo_get_messages`.
 
-**Gửi.** Một lời gọi JSON-RPC tới `POST /mcp`: [`clients/crm-send-message.sh`](config-samples/clients/crm-send-message.sh). Gửi `Accept: application/json, text/event-stream` (thiếu một trong hai, máy chủ trả 406); phản hồi là một dòng SSE `data:`, và gửi thành công trả về `{"success":true,"msgId":…,"cliMsgId":…,"threadType":…}`. `threadId` là id người dùng cho tin nhắn riêng hoặc id nhóm cho nhóm. Mỗi request `/mcp` dựng một máy chủ mới với đủ 37 tool, tốn vài mili giây CPU: ổn cho CRM, và là lý do một tài khoản chạm trần khoảng 60–170 request/giây (xem [`docs/deployment.vi.md`](deployment.vi.md) §1.4).
+**Gửi.** Một lời gọi JSON-RPC tới `POST /mcp`: [`clients/crm-send-message.sh`](config-samples/clients/crm-send-message.sh). Gửi `Accept: application/json, text/event-stream` (thiếu một trong hai, máy chủ trả 406); phản hồi là một dòng SSE `data:`, và gửi thành công trả về `{"success":true,"msgId":…,"cliMsgId":…,"threadType":…}`. `threadId` là id người dùng cho tin nhắn riêng hoặc id nhóm cho nhóm. Mỗi request `/mcp` dựng một máy chủ mới với đủ 39 tool, tốn vài mili giây CPU: ổn cho CRM, và là lý do một tài khoản chạm trần khoảng 60–170 request/giây (xem [`docs/deployment.vi.md`](deployment.vi.md) §1.4).
 
 **Bắt kịp.** Sau thời gian ngừng, hỏi những gì đã lỡ: `zalo_get_history` theo từng thread, hoặc `zalo-agent sync --from <date>` (có thể yêu cầu chủ tài khoản xác nhận trên điện thoại).
 
@@ -647,7 +739,7 @@ curl -s -H "Authorization: Bearer $TOKEN" http://HOST:PORT/status | head -c 400
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://HOST:PORT/mcp
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://HOST:PORT/mcp -H 'Authorization: Bearer wrong'
 
-# các tool được phục vụ (mong đợi 37 tên):
+# các tool được phục vụ (mong đợi 39 tên):
 curl -s http://HOST:PORT/mcp -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | grep -o '"name":"zalo_[a-z_]*"' | wc -l

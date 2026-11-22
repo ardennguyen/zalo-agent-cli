@@ -1,6 +1,6 @@
 # Hướng dẫn Zalo MCP Server
 
-Model Context Protocol (MCP) cho phép Claude Code, Google Gemini và các MCP client tương tác với Zalo (tài khoản cá nhân) trực tiếp qua **37 tools**.
+Model Context Protocol (MCP) cho phép Claude Code, Google Gemini và các MCP client tương tác với Zalo (tài khoản cá nhân) trực tiếp qua **39 tools**.
 
 Từ 3.0, **mọi lệnh CLI của tài khoản cá nhân đều có một hành động MCP** (bạn bè, nhóm, hội thoại, hồ sơ, auto-reply, quick-msg, catalog, ngân hàng, zCloud, sticker, link, các read/write thô của Zalo, và mọi stage sync qua `zalo_sync` / `zalo_sync_status`). Chỉ còn Official Account (`oa …`, API chính thức riêng), đăng nhập/đăng xuất, quản lý tài khoản trên máy, `listen`, `mcp start`, `fleet`, `policy`, `presence status|wake|park` và các lệnh `db` (trừ `db usage`, có ở `zalo_profile` `usage`) là chỉ có trên CLI; agent gọi chúng bằng CLI với `--json` khi được phép. Xem bảng [Phạm vi tool](#phạm-vi-tool--cái-gì-có-cái-gì-phải-gọi-cli).
 
@@ -114,7 +114,7 @@ curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:3847/events/wait?tim
 
 ### Qua wrapper `zalo-mcp`
 
-Dự án [`zalo-mcp`](https://github.com/ardennguyen/zalo-mcp) (v2.0.0+) là bộ cài đặt và CLI launcher mỏng: cài lệnh global `zalo-mcp` (hoặc chạy `node mcp-server.js`). Khi không kèm lệnh con, nó chạy `zalo-agent mcp start`; khi kèm lệnh con (`zalo-mcp login`, `zalo-mcp status`, `zalo-mcp --account <ID> conv recent --json`, `zalo-mcp sync`, …), nó chuyển tiếp nguyên vẹn sang CLI. **Danh sách 37 MCP tool hoàn toàn giống nhau** — tool surface do `src/mcp/mcp-tools.js` của `zalo-agent-cli` quyết định.
+Dự án [`zalo-mcp`](https://github.com/ardennguyen/zalo-mcp) (v2.0.0+) là bộ cài đặt và CLI launcher mỏng: cài lệnh global `zalo-mcp` (hoặc chạy `node mcp-server.js`). Khi không kèm lệnh con, nó chạy `zalo-agent mcp start`; khi kèm lệnh con (`zalo-mcp login`, `zalo-mcp status`, `zalo-mcp --account <ID> conv recent --json`, `zalo-mcp sync`, …), nó chuyển tiếp nguyên vẹn sang CLI. **Danh sách 39 MCP tool hoàn toàn giống nhau** — tool surface do `src/mcp/mcp-tools.js` của `zalo-agent-cli` quyết định.
 
 - **Forward đầy đủ mọi flag của `mcp start` và global storage flags:** `--account <id>` (`ZALO_ACCOUNT`), `--http [port]`, `--auth <token>`, `--host <addr>`, `--cert <path>`, `--key <path>`, `--client-id <id>`, `--client-secret <secret>`, `--public-url <url>`, `--issuer-url <url>`, `-w`/`--webhook <url>`, `--webhook-secret <secret>`, `--config <path>`, `--no-self-heal`, `--no-delivered-receipts`, `-d`/`--daemon`, `--stop`, `--status`, cùng `--env-file`, `--config-dir`, `--credentials-dir`, `--data-dir`, `--media-dir`, `--oa-dir`.
 - **Phiên bản engine:** Wrapper chạy phiên bản `@ardennguyen/zalo-agent-cli` được cài trong `node_modules/` của nó (cập nhật lên bản mới nhất bằng `zalo-mcp.ps1 update` / `./zalo-mcp.sh update`). Kiểm tra phiên bản engine hiện tại bằng:
@@ -232,7 +232,7 @@ Những thao tác mà chính ứng dụng Zalo hỏi lại trước khi làm đ�
 
 **Với agent:** lần đầu gặp một thao tác được bảo vệ, hãy dừng lại và hỏi người dùng muốn xử lý các thao tác này thế nào (luôn hỏi trước, cho phép agent tự xác nhận với một số loại thao tác, hay không bao giờ làm), rồi ghi nhớ lựa chọn theo cách đã thống nhất với người dùng (bộ nhớ của agent, quy tắc dự án, `CLAUDE.md`/`AGENTS.md` của dự án) để không phải hỏi lại. Chỉ gửi `confirm: true` khi người dùng đã cho phép.
 
-## Tham chiếu Tools (37 tools)
+## Tham chiếu Tools (39 tools)
 
 ### `zalo_get_messages`
 Lấy tin nhắn đã buffer mà consumer này chưa đánh dấu đã đọc (xem `zalo_mark_read`), hỗ trợ cursor để đọc tăng dần (incremental polling).
@@ -288,8 +288,8 @@ Gửi tin nhắn văn bản, tệp/ảnh đính kèm (`filePath` hoặc `files`)
 |-----|------|--------|
 | `threadId` | string | ID của người dùng hoặc nhóm. `me` (hoặc uid của chính bạn) là My Documents — "Cloud của tôi" |
 | `text` | string (tuỳ chọn khi có `filePath`/`files`/`link`/`cardUserId`) | Nội dung tin nhắn (bắt buộc nếu không truyền tệp, `link` hay `cardUserId`; làm chú thích tuỳ chọn khi gửi tệp hoặc `link`) |
-| `filePath` | string (tuỳ chọn) | Đường dẫn tệp hoặc ảnh cục bộ để gửi đính kèm (dùng `text` làm chú thích nếu có) |
-| `files` | string[] (tuỳ chọn) | Danh sách đường dẫn tệp hoặc ảnh cục bộ để gửi đính kèm trong một lần gọi |
+| `filePath` | string (tuỳ chọn) | Đường dẫn MỘT tệp hoặc ảnh trên máy chạy server (chỉ client trên cùng máy đó; dùng `text` làm chú thích nếu có) |
+| `files` | mảng (tuỳ chọn) | Các tệp/ảnh gửi trong một lần gọi. Mỗi phần tử là `{fileId}` (tệp đã tải lên, `zalo_file`), `{url, name?}` (server tự tải về, chỉ địa chỉ công khai), `{data, name, mimeType?}` (base64, tệp nhỏ, mặc định tối đa 10 MB mỗi lần gọi) hoặc một đường dẫn trên máy chạy server (chỉ client trên cùng máy). Client ở máy khác gửi đường dẫn sẽ bị từ chối kèm hướng dẫn |
 | `link` | string URL (tuỳ chọn) | Gửi thẻ xem trước liên kết (dùng `text` làm chú thích nếu có) |
 | `cardUserId` | string (tuỳ chọn) | Gửi danh thiếp Zalo của user có ID này vào hội thoại |
 | `sticker` | string (tuỳ chọn) | Từ khóa: gửi sticker đầu tiên Zalo tìm được, như `msg sticker` (`zalo_sticker` `search` liệt kê) |
@@ -758,7 +758,7 @@ Kết quả theo từng `action`:
 - `rename`: `{success: true, groupId, name}` — mọi thành viên thấy tên mới; không cần `confirm` vì đổi lại được.
 - `leave`: chỉ tài khoản này rời nhóm (`disperse` mới xóa nhóm với mọi người). Tool đọc nhóm trước để biết vai trò: thành viên và phó nhóm rời bình thường; **trưởng nhóm của nhóm còn thành viên khác phải chọn** `newOwner` hoặc `randomOwner: true` (như ứng dụng Zalo: "Chọn trưởng nhóm mới trước khi rời"), nếu không hoặc `newOwner` không phải thành viên thì bị từ chối trước khi gửi gì. Kết quả `{success: true, groupId, silent, ownership?, newOwner?, localHistory}` (`ownership` là `chosen` hoặc `random`). `disperse` chỉ trưởng nhóm làm được (người khác bị từ chối trước khi gửi gì) và xóa nhóm với mọi thành viên. Khi Zalo báo thành công, lịch sử cục bộ của nhóm bị xóa ngay như ứng dụng Zalo làm (tin nhắn, cảm xúc, ghim, nhắc hẹn, chỉ mục cloud và media đã tải mà không hội thoại nào khác dùng); với `groups.onLeave: "keep"` thì được giữ và đánh dấu `gone`. `localHistory` là `{mode, leftAt, purged}` (`purged` là `null` khi giữ). `disperse` cũng vậy, với lý do `disbanded`. Một nhóm đã rời/bị xóa/bị chặn/bị giải tán: `zalo_send_message` từ chối gửi kèm lý do; `zalo_search_threads` và `zalo_list_conversations` bỏ nhóm ra khi đã xóa, hoặc liệt kê kèm `gone: true, leftAt, goneReason` khi giữ; mỗi lần rời có một sự kiện hệ thống `group_gone` trong `zalo_get_messages` / `zalo_wait_for_message`. Khi bạn không còn ở trong nhóm (đã rời hoặc chưa từng vào), Zalo trả mã 167 và tool giải thích bằng lời. Chủ nhóm vẫn rời được nhóm của mình (đã đo trên tài khoản thật).
 
-Các thao tác còn lại của `group`, đặt tên theo lệnh con (thay `-` bằng `_`) và gọi đúng lời gọi của lệnh đó: `avatar` (`filePath`), `add_admin` / `remove_admin` (`userIds`), `transfer_owner` (`userId`), `block_member` / `unblock_member` (`userIds`), `blocked` (`page`, `limit`), `upgrade_community`, `settings` (`settings`: object các công tắc của `group settings` theo tên Zalo — `blockName`, `signAdminMsg`, `enableMsgHistory`, `joinAppr`, `lockCreatePost`, `lockCreatePoll`, `lockSendMsg`, `lockViewMember`, `setTopicOnly`, mỗi cái true/false; cài đặt không nêu giữ nguyên, kết quả đọc lại sau khi gửi), `disperse`, `pending` / `approve` / `reject_member` (`userIds`), `enable_link` / `disable_link` / `link_info`, `link_preview` / `join` (`link`), `invite_boxes`, `invite_info` / `join_invite`, `delete_invite` (`groupIds`, `blockFutureInvites`), `invite_to` (`userId` + `groupIds`), `members_info` (`userIds`). Được bảo vệ: `remove_admin`, `transfer_owner`, `block_member`, `disperse`, `disable_link`, và `settings` khi tắt `joinAppr`.
+Các thao tác còn lại của `group`, đặt tên theo lệnh con (thay `-` bằng `_`) và gọi đúng lời gọi của lệnh đó: `avatar` (`file`: `{fileId}`/`{url}`/`{data, name}`, hoặc `filePath` cho client trên máy chạy server), `add_admin` / `remove_admin` (`userIds`), `transfer_owner` (`userId`), `block_member` / `unblock_member` (`userIds`), `blocked` (`page`, `limit`), `upgrade_community`, `settings` (`settings`: object các công tắc của `group settings` theo tên Zalo — `blockName`, `signAdminMsg`, `enableMsgHistory`, `joinAppr`, `lockCreatePost`, `lockCreatePoll`, `lockSendMsg`, `lockViewMember`, `setTopicOnly`, mỗi cái true/false; cài đặt không nêu giữ nguyên, kết quả đọc lại sau khi gửi), `disperse`, `pending` / `approve` / `reject_member` (`userIds`), `enable_link` / `disable_link` / `link_info`, `link_preview` / `join` (`link`), `invite_boxes`, `invite_info` / `join_invite`, `delete_invite` (`groupIds`, `blockFutureInvites`), `invite_to` (`userId` + `groupIds`), `members_info` (`userIds`). Được bảo vệ: `remove_admin`, `transfer_owner`, `block_member`, `disperse`, `disable_link`, và `settings` khi tắt `joinAppr`.
 
 Lưu ý: `leave` và `remove_member` không hoàn tác được từ tool nên là thao tác được bảo vệ (xem **Thao tác được bảo vệ** bên dưới): `dryRun: true` để xem trước, `confirm: true` để thực hiện; kiểm tra `groupId`/`userId` trước, `info` cho biết nhóm đó là nhóm nào. Rời im lặng chỉ ẩn thông báo, không ẩn việc bạn đã rời. Tool đã được chạy thử trên tài khoản thật (nhóm tạm thời): tạo nhóm, xem thông tin, thêm/xóa thành viên, rời nhóm với `silent`. Đã kiểm chứng trên tài khoản thật: với `silent: true`, các thành viên thường không thấy thông báo "đã rời nhóm", nhưng chủ nhóm vẫn thấy. Chủ nhóm rời nhóm thì quyền chủ nhóm được chuyển cho người khác trước, nên người đó thấy thông báo — muốn rời im lặng hoàn toàn với các thành viên, hãy chuyển quyền chủ nhóm (`group transfer-owner`) rồi mới rời.
 
@@ -835,14 +835,14 @@ Các lệnh `conv` cùng `msg typing` và `msg report`, mỗi thao tác gọi đ
 Được bảo vệ: `unhide`, `hidden_pin_reset`, `delete`, `forget`.
 
 ### `zalo_profile`
-Các lệnh `profile` và `account devices`: `avatar` (`filePath`), `bio` (đọc, hoặc đặt bằng `bio` rồi đọc lại), `update` (`name`, `dob` YYYY-MM-DD, `gender` `male`|`female`; trường không nêu giữ nguyên), `settings` (cùng JSON với `profile settings --json`: `{settings, readOnly, other}` — các cài đặt `set` đổi được kèm ý nghĩa, các cài đặt chỉ đọc như tin nhắn người lạ, xác thực hai lớp, tin nhắn nhanh, và mọi khóa khác Zalo trả về trong `other`), `set` (`setting` như `profile set`, `value`; có thêm `add-by-card` và `focused-tabs`), `avatars`, `full_avatar` (`userId`), `avatar_url` (`userIds`), `delete_avatar` (`photoIds`; được bảo vệ), `reuse_avatar` (`photoId`), `active` (`enabled`: trạng thái hiện diện của phiên, như Zalo gửi khi cửa sổ được/mất focus; không ẩn trạng thái online — việc đó là `set` `online-status` 0), `lang` (`language` `vi`|`en`), `devices` (điện thoại chính và các thiết bị liên kết, không kèm định danh đã ký), `usage` (chỉ đọc, như `db usage --json`: dung lượng của tài khoản trên server — cơ sở dữ liệu, media, outbox webhook, tính bằng byte —, hạn mức, mức `ok`/`warn`/`over` và ngày xóa, các quy tắc lưu giữ, lần xóa gần nhất), `presence_resume` (được bảo vệ, như `presence resume`: lấy lại tài khoản sau khi đã nhường — `yielded` — cho một phiên khác của cùng lần đăng nhập, khi người dùng xác nhận đã đóng phiên đó; lệnh gọi duy nhất được cho qua khi đang `yielded`). Hồ sơ của chính tài khoản đọc bằng `zalo_lookup_user` `self: true`.
+Các lệnh `profile` và `account devices`: `avatar` (`file` hoặc `filePath`, như `zalo_group`), `bio` (đọc, hoặc đặt bằng `bio` rồi đọc lại), `update` (`name`, `dob` YYYY-MM-DD, `gender` `male`|`female`; trường không nêu giữ nguyên), `settings` (cùng JSON với `profile settings --json`: `{settings, readOnly, other}` — các cài đặt `set` đổi được kèm ý nghĩa, các cài đặt chỉ đọc như tin nhắn người lạ, xác thực hai lớp, tin nhắn nhanh, và mọi khóa khác Zalo trả về trong `other`), `set` (`setting` như `profile set`, `value`; có thêm `add-by-card` và `focused-tabs`), `avatars`, `full_avatar` (`userId`), `avatar_url` (`userIds`), `delete_avatar` (`photoIds`; được bảo vệ), `reuse_avatar` (`photoId`), `active` (`enabled`: trạng thái hiện diện của phiên, như Zalo gửi khi cửa sổ được/mất focus; không ẩn trạng thái online — việc đó là `set` `online-status` 0), `lang` (`language` `vi`|`en`), `devices` (điện thoại chính và các thiết bị liên kết, không kèm định danh đã ký), `usage` (chỉ đọc, như `db usage --json`: dung lượng của tài khoản trên server — cơ sở dữ liệu, media, outbox webhook, tính bằng byte —, hạn mức, mức `ok`/`warn`/`over` và ngày xóa, các quy tắc lưu giữ, lần xóa gần nhất), `presence_resume` (được bảo vệ, như `presence resume`: lấy lại tài khoản sau khi đã nhường — `yielded` — cho một phiên khác của cùng lần đăng nhập, khi người dùng xác nhận đã đóng phiên đó; lệnh gọi duy nhất được cho qua khi đang `yielded`). Hồ sơ của chính tài khoản đọc bằng `zalo_lookup_user` `self: true`.
 
 ### `zalo_auto_reply`, `zalo_quick_message`
 `zalo_auto_reply` (lệnh `auto-reply`): `list`, `create` (`content`, `enabled`, `startTime`/`endTime` epoch ms — mặc định từ bây giờ đến một năm sau, `scope` `all`|`friends`|`strangers`, `userIds`), `update` (như trên, cho `autoReplyId`), `delete` (được bảo vệ).
 `zalo_quick_message` (lệnh `quick-msg`): `list`, `add` (`keyword`, `title`), `update` (`quickMessageId`), `remove` (`quickMessageIds`; được bảo vệ), `enable` / `disable` (bật/tắt tính năng tin nhắn nhanh như công tắc của ứng dụng Zalo; trả `{success, enabled}`).
 
 ### `zalo_catalog`, `zalo_bank`
-`zalo_catalog` (lệnh `catalog`): `list`, `create`, `rename`, `delete` (được bảo vệ), `products`, `product`, `add_product` / `update_product` (`name`, `price`, `description`, `photoUrls` lấy từ `upload_photo`), `delete_product` (`productIds`; được bảo vệ), `upload_photo` (`filePath`), `register` (`enabled`).
+`zalo_catalog` (lệnh `catalog`): `list`, `create`, `rename`, `delete` (được bảo vệ), `products`, `product`, `add_product` / `update_product` (`name`, `price`, `description`, `photoUrls` lấy từ `upload_photo`), `delete_product` (`productIds`; được bảo vệ), `upload_photo` (`file` hoặc `filePath`), `register` (`enabled`).
 `zalo_bank` (lệnh `bank`): `banks` (ngân hàng Zalo hỗ trợ, lọc bằng `query`), `accounts` (tài khoản đã lưu, có `bankAccountId`), `add` / `update` (`bank`, `accountNumber`, `holderName`), `remove` (được bảo vệ). Gửi thẻ ngân hàng hay ảnh VietQR vào hội thoại thì dùng `zalo_send_message`.
 
 ### `zalo_cloud`, `zalo_sticker`, `zalo_link`
@@ -850,8 +850,40 @@ Các lệnh `profile` và `account devices`: `avatar` (`filePath`), `bio` (đọ
 `zalo_sticker`: `search` (`keyword` → `stickerIds`, như `msg sticker-list`) và `detail` (`stickerIds`, như `msg sticker-detail`). Danh mục sticker là `zalo_read` `sticker-category`.
 `zalo_link`: `preview` (tiêu đề, mô tả, nguồn, ảnh, như `msg link-preview`) và `scan` (`isSafe`, như `msg scan-url`).
 
+### `zalo_inbox`
+
+Người gọi là ai trong số các agent dùng chung một tài khoản Zalo (Companion Router / Phân công trợ lý). Agent được gắn theo **thông tin xác thực** mà người gọi dùng để kết nối (một API key `apikey:<keyId>`, một OAuth client `oauth:<clientId>`, token triển khai `legacy`, `stdio[:<tên>]` với `ZALO_MCP_AGENT`), không bao giờ theo tên người gọi tự gõ; `consumer` chỉ là tên phụ (nhãn, không phải ranh giới).
+
+| Action | Làm gì |
+|---|---|
+| `whoami` | Agent của bạn (tên, dấu, cách nhận tin), tên phụ, routing đã bật chưa, các agent khác cùng trạng thái |
+| `status` | Báo cho các agent khác bạn đang `listening` hay `away` (kèm `note` ngắn) |
+| `agents` | Mọi agent của tài khoản cùng trạng thái: `listening`, `away`, `onDemand`, `idle`, `disabled` |
+| `claim` / `release` / `handoff` / `claims` | Khi bật phân công: nhận, trả, chuyển (cho agent khác, `human` hoặc `staff:<id>`) và liệt kê các cuộc trò chuyện đang giữ |
+| `route_test` | Tin này sẽ tới ai và vì sao; không thay đổi gì |
+
+Mỗi văn bản (và chú thích tệp, link, video) một agent gửi bằng `zalo_send_message` được máy chủ thêm **dấu** của agent ở đầu (mặc định `🤖 <Tên>:`); chủ tài khoản ẩn dấu cho cả tài khoản (`routing.marks: "hidden"`) hoặc theo từng agent (`markDisplay`: `inherit`, `everywhere`, `owner` chỉ trong My Documents, `none`). Mọi lần gửi đều được ghi lại là của agent nào; `zalo_get_history` và `zalo_search_messages` trả `sentBy: {agent, name, sub}` cho tin của chính tài khoản. Không tool nào sửa agent hay dấu: chủ tài khoản đặt chúng qua policy (`routing.agents`) hoặc khối `routing` của `mcp-config.json`; `zalo-agent mcp agents` liệt kê chúng.
+
+### `zalo_file` và tệp từ client ở máy khác
+
+Đường dẫn trong input của tool là đường dẫn **trên máy chạy server**. Server chỉ đọc nó cho client stdio và client HTTP trên cùng máy (`uploads.localPaths: "loopback"`, mặc định), hoặc khi nó nằm trong `uploads.localPathRoots`. Client ở máy khác (phiên AI trên cloud, ứng dụng ở máy khác) gửi chính tệp:
+
+- `{data, name, mimeType?}`: base64 (chấp nhận cả `data:` URL), tổng mọi `data` của một lần gọi tối đa `uploads.inlineMaxBytes` (10 MB);
+- `{url, name?}`: server tự tải về (http/https, chỉ địa chỉ công khai, kiểm tra cả mọi địa chỉ phân giải và mọi lần chuyển hướng; tối đa bằng giới hạn tệp Zalo của tài khoản, trong 60 giây; không nhận trang web);
+- `{fileId}`: tệp đã nằm trong kho tải lên của tài khoản.
+
+| Action của `zalo_file` | Làm gì |
+|---|---|
+| `upload_begin` | Trả về `uploadUrl` dùng một lần (15 phút) và `fileId` tệp sẽ có: `PUT` (hoặc `POST`) nguyên tệp vào đó, không cần token, ví dụ `curl -T anh.jpg "<uploadUrl>"`. Dành cho tệp lớn (tới giới hạn tệp Zalo của tài khoản, 1 GB với cài đặt hiện tại) |
+| `upload` | Lưu ngay một tệp gửi bằng `data` (kèm `name`) hoặc `url`, để gửi nhiều lần |
+| `info` / `list` / `delete` | Tên, kích thước, hạn của một `fileId` (hoặc link tải lên còn đang chờ); danh sách và dung lượng đã dùng; xóa |
+
+Tệp đã được một lần gửi dùng sẽ bị xóa ngay khi tin nhắn được ghi lại (listener đã lưu và kho media đã có tệp); `info` khi đó trả `consumed` kèm msgId. Gửi thất bại thì tệp được giữ để gửi lại bằng cùng `fileId`; tệp chưa ai dùng được giữ 24 giờ (`uploads.ttl`). Mỗi tệp tối đa bằng giới hạn tệp Zalo của tài khoản (đọc từ cài đặt của phiên; 1 GB với cài đặt hiện tại, như nhau cho gói miễn phí và trả phí; gói zBusiness không đặt giới hạn tệp), kho giữ tối đa hai tệp cỡ đó (`uploads.quota`). Client có bearer của server cũng có thể `POST <publicUrl>/zalo/files?name=<tên>` với thân là nguyên tệp. Lệnh CLI tương ứng: `zalo-agent file put|list|info|delete`, và cờ `--url` / `--file-id` trên `msg send-image`, `msg send-file`, `profile avatar`, `group avatar`, `catalog upload-photo`.
+
+Chiều ngược lại: `zalo_view_media` trả ảnh và tin thoại trực tiếp (nội dung image/audio của MCP) và media lớn hơn qua một `url` ngắn hạn trên server; đường dẫn `tempfile` chỉ dành cho client trên máy chạy server.
+
 ### `zalo_official`
-Chạy một lệnh API chính thức của Zalo — Official Account (`oa …`), ZBS Template Message (`zbs …`), Social API (`social …`) — đúng như CLI `zalo-agent --json <lệnh>`, trên các lần đăng nhập OAuth chính thức của chủ tài khoản, không bao giờ dùng tài khoản cá nhân. Bỏ `command` để liệt kê mọi lệnh cùng đối số và tùy chọn. `command` là tên lệnh CLI (`"oa msg text"`), `args` là các đối số theo thứ tự (id là chuỗi), `options` theo tên cờ CLI không có dấu gạch (`{"oa-id": "shop", "all": true}`; một công tắc nhận `true`). Các lệnh có bảo vệ (xóa, `oa purchase confirm-order`, `oa call consent-request`) nhận `confirm` / `dryRun` / `ticket` như mọi hành động có bảo vệ. Chỉ có trên CLI: `oa login`, `oa setup`, `oa init`, `social setup`, `social login` (nhận app secret/token hoặc đăng nhập qua trình duyệt) và `oa listen` (máy chủ webhook chạy lâu dài).
+Chạy một lệnh API chính thức của Zalo — Official Account (`oa …`), ZBS Template Message (`zbs …`), Social API (`social …`) — đúng như CLI `zalo-agent --json <lệnh>`, trên các lần đăng nhập OAuth chính thức của chủ tài khoản, không bao giờ dùng tài khoản cá nhân. Bỏ `command` để liệt kê mọi lệnh cùng đối số và tùy chọn. `command` là tên lệnh CLI (`"oa msg text"`), `args` là các đối số theo thứ tự (id là chuỗi), `options` theo tên cờ CLI không có dấu gạch (`{"oa-id": "shop", "all": true}`; một công tắc nhận `true`). Các lệnh có bảo vệ (xóa, `oa purchase confirm-order`, `oa call consent-request`) nhận `confirm` / `dryRun` / `ticket` như mọi hành động có bảo vệ. Lệnh nhận tệp (`oa upload image|file|gif`, `oa msg image|gif|file|anonymous`, `oa article video-upload`, `zbs upload-image`, `zbs send --rsa-key`) nhận tệp qua `fileArgs` theo tên đối số, ví dụ `{"file-path": {"fileId": "f_..."}}`; danh sách lệnh ghi `fileArgs` của từng lệnh. Chỉ có trên CLI: `oa login`, `oa setup`, `oa init`, `social setup`, `social login` (nhận app secret/token hoặc đăng nhập qua trình duyệt) và `oa listen` (máy chủ webhook chạy lâu dài).
 
 ---
 
@@ -1025,7 +1057,7 @@ Ring Buffer (in-memory, mỗi thread giữ tối đa bufferMaxSize tin, tự d�
      ↓
 Thread Filter (watchThreads) + Thread Name Cache (groups/friends, fuzzy search)
      ↓
-MCP Server (stdio hoặc HTTP/HTTPS + OAuth 2.0) — registerTools() đăng ký cả 37 tools
+MCP Server (stdio hoặc HTTP/HTTPS + OAuth 2.0) — registerTools() đăng ký cả 39 tools
      ↓
 Claude Code / Gemini / MCP Client
 ```

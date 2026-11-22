@@ -997,6 +997,18 @@ export function uploadMethods(s) {
             desc = "";
         }
 
+        try {
+            return await sendItems(items, { group, thread, cfg, desc, responses });
+        } catch (e) {
+            // What went out before the failure (`attachment[i]` in send order: files and photos as given, GIFs last),
+            // for a caller that keeps track of which file was sent.
+            if (e && typeof e === "object") e.partial = responses;
+            throw e;
+        }
+    }
+
+    /** Upload the items and send each, filling `responses.attachment` as each goes out. */
+    async function sendItems(items, { group, thread, cfg, desc, responses }) {
         const where = { group, threadId: thread, cfg };
         const uploads = await uploadAll(
             s,

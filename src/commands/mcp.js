@@ -11,7 +11,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { getApi, clearSession, renewLoginWithQR } from "../core/zalo-client.js";
 import { liveApi } from "../core/live-api.js";
-import { quotedReply, resolveReplyTo } from "../core/cached-message.js";
+import { cachedReplyTo, quotedReply, resolveReplyTo } from "../core/cached-message.js";
 import { parseAccountId, selectDaemonAccount, loginDaemonAccount } from "../core/daemon-account.js";
 import { getAccount, updateAccountName, updateAccountProfile } from "../core/accounts.js";
 import { CONFIG_DIR, getAccountDir, MEDIA_DIR, readSavedDevice, saveCredentials } from "../core/credentials.js";
@@ -54,8 +54,13 @@ import {
     resolveMediaLinkAuth,
     resolvePublicUrl,
     resolveTrustedProxies,
+    resolveUploads,
 } from "../core/deploy-policy.js";
 import { getMediaLinks, linkForCachedMessage, startTempfileSweeper } from "../core/media-deliver.js";
+import { startUploadSweeper } from "../core/upload-store.js";
+import { sentMessageRecorded } from "../core/upload-consume.js";
+import { readAccountFileLimit } from "../core/zalo-file-limit.js";
+import { getCloudUsage } from "../zalo/zcloud.js";
 import { ensureMediaServed } from "../core/media-route.js";
 import { scopeOfDir } from "../core/keystore/keyring.js";
 import { approverFor, approverStatus } from "../core/approval.js";
@@ -68,6 +73,7 @@ import {
     dbUsedBytes,
     initDb,
     getMessageById,
+    getMessages,
     getPendingSyncGaps,
     getSyncState,
     getThreadNames,
@@ -106,6 +112,15 @@ import { MessageBuffer } from "../mcp/message-buffer.js";
 import { ThreadFilter } from "../mcp/thread-filter.js";
 import { createAgentSends, ownMyDocumentsView, selfMessageRoute } from "../mcp/self-messages.js";
 import {
+    PRESENCE_FILE,
+    createAgentPresence,
+    createSentByStore,
+    inboxInstructions,
+    resolveCaller,
+    resolveRouting,
+} from "../mcp/agents.js";
+import { createRouterRuntime } from "../mcp/router-runtime.js";
+import {
     readMCPConfig,
     resolveAccountMCPConfig,
     envForAccount,
@@ -139,6 +154,7 @@ import { clearKickMarker, kickFile } from "../core/kick-marker.js";
 import { DEBUG_MARK, LOG_LEVELS } from "../core/log-sink.js";
 import { registerMCPWebhookCommands } from "./mcp-webhook.js";
 import { registerMCPApproverCommand } from "./mcp-approver.js";
+import { registerMCPAgentsCommand } from "./mcp-agents.js";
 import { createMCPServer } from "../mcp/mcp-server.js";
 import { registerTools } from "../mcp/mcp-tools.js";
 import { createHTTPServer } from "../mcp/mcp-http-transport.js";
@@ -327,6 +343,27 @@ export function warnApprovalPolicy({ config, accountId, accountDir, hasWebhook, 
     }
     for (const line of lines) (log ?? ((l) => console.error(`[mcp] WARNING: ${l}`)))(line);
     return lines;
+}
+
+/**
+ * One cached message as the staff inbox shows it: who wrote it, its text and kind, and what it quotes. No media path
+ * and no raw payload leave the daemon.
+ *
+ * @param {object} m - a `messages` row
+ * @param {string|null} [ownId] - the account's own id (its messages are `isSelf`)
+ * @returns {object}
+ */
+export function staffInboxRow(m, ownId = null) {
+    return {
+        msgId: m.msgId,
+        senderId: m.senderId || null,
+        senderName: m.senderName || null,
+        isSelf: Boolean(ownId && String(m.senderId) === String(ownId)),
+        text: m.text ?? "",
+        type: m.type ?? "text",
+        timestamp: m.timestamp,
+        replyTo: cachedReplyTo(m) ?? null,
+    };
 }
 
 /** A yes/no setting: true for 1/true/yes/on, false for 0/false/no/off, else null (unset or not understood). */
@@ -798,6 +835,10 @@ export function registerMCPCommands(program) {
             // The agents' own zalo_send_message calls, so their echo in My Documents is never handed back to them
             // (src/mcp/self-messages.js); every server this daemon builds shares the one buffer, so it lives on it.
             buffer.agentSends = createAgentSends();
+            // The agents of the account (src/mcp/agents.js): each one's presence, written for the console, and which
+            // agent sent which message (sealed in the account folder).
+            buffer.agentPresence = createAgentPresence({ file: join(accountDir, PRESENCE_FILE) });
+            buffer.sentBy = createSentByStore(accountDir);
             const filter = new ThreadFilter(config);
 
             // The owner's aliases, which every reply, buffer line and webhook names people by: kept in the account's
@@ -904,6 +945,20 @@ export function registerMCPCommands(program) {
             });
             // Decrypted copies a CLI command or a crash left behind expire on time while this daemon runs.
             startTempfileSweeper({ ttlMs: mediaPolicy.tempfileTtlMs, accountId: activeAcc.ownId });
+            // The upload store (src/core/upload-store.js): files past uploads.ttl, and scratch a crash left, go; a sent
+            // upload goes once its message is recorded (src/core/upload-consume.js).
+            startUploadSweeper(accountDir, {
+                reap: {
+                    isRecorded: sentMessageRecorded(activeAcc.ownId),
+                    recordWaitMs: () => resolveUploads({ config, accountId: activeAcc.ownId }).recordWaitMs,
+                },
+            });
+            // The account's Zalo file limit (src/core/zalo-file-limit.js), read from the session's settings, and its
+            // zCloud plan for the report (a read Zalo's clients make at start; a failure leaves the tier unknown).
+            readAccountFileLimit(getApi(), accountDir);
+            getCloudUsage(getApi())
+                .then((u) => readAccountFileLimit(getApi(), accountDir, { plan: u?.plan ?? null }))
+                .catch(() => {});
             // Logged in and the friend and group lists are loaded: the heavy part of start-up is over.
             gate.leave();
 
@@ -1052,6 +1107,7 @@ export function registerMCPCommands(program) {
                                     ...describeStorage(activeAcc.ownId, {
                                         mediaRoot: MEDIA_DIR || config.media?.downloadDir,
                                         dbBytes: dbUsedBytes(),
+                                        config,
                                     }),
                                 },
                             ],
@@ -1069,6 +1125,11 @@ export function registerMCPCommands(program) {
                             `[mcp] Admin API: on /zalo/admin${adminCreds.sources.length ? ` (${adminCreds.sources.join(", ")})` : ""}${adminCa ? ", mTLS" : ""}`,
                         );
                     const deps = {
+                        // What each caller is told about itself on connect: its agent, the others (src/mcp/agents.js).
+                        instructionsFor: (caller) => {
+                            const routing = resolveRouting({ config, accountId: activeAcc.ownId });
+                            return inboxInstructions(resolveCaller(caller, routing), routing);
+                        },
                         admin,
                         api: sessionApi,
                         buffer,
@@ -1185,7 +1246,13 @@ export function registerMCPCommands(program) {
                         accountDir,
                         stageLock,
                         syncJobs,
-                        { presence: presenceDoor },
+                        {
+                            presence: presenceDoor,
+                            instructionsFor: (caller) => {
+                                const routing = resolveRouting({ config, accountId: activeAcc.ownId });
+                                return inboxInstructions(resolveCaller(caller, routing), routing);
+                            },
+                        },
                     );
                 }
             } catch (e) {
@@ -1387,12 +1454,46 @@ export function registerMCPCommands(program) {
              * dropped under `exclude`; under `contentless` the buffer keeps it (the tools show it without content)
              * and the notifier, whose preview names the sender, is skipped.
              */
-            const deliverToAgents = (n, { notify = true } = {}) => {
+            // The Companion Router (src/mcp/router-runtime.js): off unless routing.enabled; then every message delivered
+            // below carries its `route`, and the tools give each agent its own view, guard and privacy.
+            buffer.router = createRouterRuntime({
+                routingNow: () => resolveRouting({ config, accountId: activeAcc.ownId }),
+                getApi,
+                ids: () => {
+                    let send2meId = null;
+                    try {
+                        send2meId = getApi()?.getContext?.()?.loginInfo?.send2me_id ?? null;
+                    } catch {
+                        /* no session context */
+                    }
+                    return { ownId: activeAcc.ownId, send2meId: send2meId === null ? null : String(send2meId) };
+                },
+                presence: buffer.agentPresence,
+                sentBy: buffer.sentBy,
+                accountDir,
+                log: (line) => console.error(line),
+                // The staff inbox reads a conversation from the cache, as zalo_get_history does.
+                history: (threadId, limit) =>
+                    getMessages(threadId, limit).map((m) => staffInboxRow(m, activeAcc.ownId)),
+                threadNames: () => getThreadNames(),
+            });
+            health.setSource("routing", () => buffer.router.eventsHead());
+            const deliverToAgents = (n, { notify = true, mentionsMe = false } = {}) => {
                 const isHidden = hiddenPolicy.mode !== "include" && hidden.isHidden(n.threadId);
                 if (isHidden && hiddenPolicy.mode === "exclude") return;
-                buffer.push(n.threadId, n);
-                if (notify && !isHidden) notifier.onMessage(n);
-                queueWebhook(n);
+                // Hidden chats are never routed, logged or forwarded (routing runs after the hidden-chat policy).
+                const routed =
+                    isHidden || !buffer.router.enabled()
+                        ? Promise.resolve(n)
+                        : buffer.router.onIncoming(n, { mentionsMe });
+                routed
+                    .then((m) => {
+                        if (!m) return;
+                        buffer.push(m.threadId, m);
+                        if (notify && !isHidden) notifier.onMessage(m);
+                        queueWebhook(m);
+                    })
+                    .catch((e) => console.error(`[mcp] message not routed: ${e.message}`));
             };
 
             // Delivered receipts: the same shared implementation `listen` uses
@@ -1612,7 +1713,9 @@ export function registerMCPCommands(program) {
                 } catch {
                     /* no session context: only the own uid can name the self-chat */
                 }
-                return selfMessageRoute(msg, { enabled, ownId: activeAcc.ownId, send2meId });
+                // With routing on, the owner's own My Documents reach the router (his channel to the agents).
+                const routing = buffer.router?.enabled() ?? false;
+                return selfMessageRoute(msg, { enabled: enabled || routing, ownId: activeAcc.ownId, send2meId });
             }
 
             /**
@@ -1695,6 +1798,15 @@ export function registerMCPCommands(program) {
                     // Self-sent messages stay away from the agents, except the owner's own My Documents when the
                     // account's ownMyDocuments setting is on (src/mcp/self-messages.js).
                     const self = routeSelf(msg);
+                    if (msg?.isSelf && buffer.router?.enabled()) {
+                        // The owner writing from his phone, PC or web: the human pause, and `@agents` (answered in My Documents).
+                        const own = normalizeMessage(msg, stored.info);
+                        buffer.agentSends
+                            .wasSentByAgent(own)
+                            .then((byAgent) => buffer.router.onOwn(own, { byAgent }))
+                            .catch((e) => console.error(`[mcp] own message not seen by the router: ${e.message}`));
+                        if (/^\s*@agents(\s|$)/i.test(String(own.text ?? ""))) return;
+                    }
                     if (self === "drop") return;
                     if (self === "agents") {
                         deliverOwnMyDocuments(msg, stored.info);
@@ -1709,7 +1821,11 @@ export function registerMCPCommands(program) {
                     // Apply noise filter (stickers, system msgs, short emoji)
                     if (!filter.shouldKeep(normalized)) return;
 
-                    deliverToAgents(normalized);
+                    // Whether a group message mentions the account (or @All): a route condition, never stored.
+                    const mentionsMe = (Array.isArray(msg.data?.mentions) ? msg.data.mentions : []).some(
+                        (x) => String(x?.uid) === String(activeAcc.ownId) || String(x?.uid) === "-1",
+                    );
+                    deliverToAgents(normalized, { mentionsMe });
                     console.error(
                         `${DEBUG_MARK}[mcp] Buffered ${normalized.threadType} msg from ${normalized.threadId}`,
                     );
@@ -1814,6 +1930,14 @@ export function registerMCPCommands(program) {
                 lifecycle.setStopping();
                 health.noteStopping();
                 daemonPresence?.stop();
+                // What the router and the agent records hold goes to disk now, not a moment later.
+                for (const flush of [buffer.router?.flush, buffer.sentBy?.flush, buffer.agentPresence?.flush]) {
+                    try {
+                        flush?.();
+                    } catch (e) {
+                        console.error(`[mcp] not saved at shutdown: ${e.message}`);
+                    }
+                }
                 clearInterval(mcpHeartbeatTimer);
                 deliveredReceipts.stop();
                 const receipts = deliveredReceipts.stats();
@@ -1968,6 +2092,8 @@ export function registerMCPCommands(program) {
                         onPurge: ({ dryRun }) => ({ report: storageJobs.runNow({ dryRun: dryRun !== false }) }),
                         // `presence status|wake|park|resume`, and the fleet controller's relay.
                         onPresence: (p) => daemonPresence.serve(p),
+                        // The console's routing requests (claims, the staff inbox, routing events).
+                        onRouting: (p) => buffer.router.serve(p),
                         // `session renew`: a renewal link opened by hand (on this port, under publicUrl).
                         onSession: (p) => {
                             if (p?.action !== "renew") throw new Error(`unknown session action "${p?.action}" (renew)`);
@@ -2252,4 +2378,5 @@ export function registerMCPCommands(program) {
 
     registerMCPWebhookCommands(mcp, program);
     registerMCPApproverCommand(mcp, program);
+    registerMCPAgentsCommand(mcp, program);
 }

@@ -22,6 +22,13 @@
  *     POST   /access/<ownId>/webhook/test                 send one signed `webhook_test` event now
  *     PUT    /access/<ownId>/approver                     {password}: set the approver password (hashed)
  *     DELETE /access/<ownId>/approver                     clear it
+ *     GET    /access/<ownId>/agents                       the account's agents (routing.agents), their presence and
+ *                                                  marks, and its credentials with the agent each is bound to
+ *     POST   /access/<ownId>/routing                      {action, ...}: the running daemon's routing for the console:
+ *                                                  events, claims (release, assign, human, endHuman), the staff
+ *                                                  inbox (inbox, thread, claim, unclaim, send); 409 when no daemon
+ *     POST   /access/<ownId>/route-test                   {message, routing?, agents?}: who would get the message and
+ *                                                  why (the routes as saved, or the unsaved ones given); changes nothing
  *     GET    /access/<ownId>/cloud-key                    whether a zCloud key is stored (never the key)
  *     DELETE /access/<ownId>/cloud-key                    delete it
  *
@@ -40,6 +47,10 @@ import { clearWebhookSecret, readWebhookSecret, rotateWebhookSecret, webhookSecr
 import { describeWebhookUrl, webhookHeaders } from "./webhook-outbox.js";
 import { envForAccount, resolvePrimaryOAuthClient, resolveWebhookUrl } from "../mcp/mcp-config.js";
 import { resolvePublicUrl } from "./deploy-policy.js";
+import { agentsReport, resolveRouting } from "../mcp/agents.js";
+import { checkRouting, decide } from "./message-router.js";
+import { checkAgents } from "./routing-policy.js";
+import { callViaDaemon } from "./daemon-channel.js";
 import {
     MAX_ACCOUNT_CLIENTS,
     OAUTH_STATE_FILE,
@@ -58,6 +69,20 @@ import {
 
 const ACCOUNT_ID = /^[1-9][0-9]{0,30}$/;
 const ID = /^[A-Za-z0-9_.-]{1,128}$/;
+/** What the console may ask a daemon's Companion Router (src/mcp/router-runtime.js `serve`). */
+const ROUTING_ACTIONS = Object.freeze([
+    "events",
+    "claims",
+    "release",
+    "assign",
+    "human",
+    "endHuman",
+    "inbox",
+    "thread",
+    "claim",
+    "unclaim",
+    "send",
+]);
 /** A client id the owner chooses for a client made here. */
 const NEW_CLIENT_ID = /^[A-Za-z0-9._-]{3,64}$/;
 
@@ -69,6 +94,8 @@ const NEW_CLIENT_ID = /^[A-Za-z0-9._-]{3,64}$/;
  * @param {(ownId: string) => string|null|undefined} [args.publicUrlOf] - the account's publicUrl as its server knows it
  *   (a daemon passes its own, which may come from a flag); undefined falls back to the environment and config
  * @param {typeof fetch} [args.fetchFn]
+ * @param {(ownId: string, path: string, params: object) => Promise<object|null>} [args.relay] - the account's running
+ *   daemon (its channel); null answer: no daemon runs
  * @param {(line: string) => void} [args.log]
  * @returns {{handle: (req: object, res: object, ctx: {who: string, ip: string, path: string}) => Promise<boolean>}}
  */
@@ -77,6 +104,7 @@ export function createAccessApi({
     accountEnv = () => ({}),
     publicUrlOf = () => undefined,
     fetchFn = fetch,
+    relay = (ownId, path, params) => callViaDaemon(getAccountDir(ownId), path, params),
     log = () => {},
 } = {}) {
     const send = (res, code, body) => {
@@ -336,6 +364,89 @@ export function createAccessApi({
                 }
                 note(ctx, ownId, "oauth.client.remove", clientId);
                 return send(res, 200, { clientId, removed: true, grantsRevoked: n });
+            }
+            // ── Agents (the Companion Router's free part): read-only here, set through the policy ──
+            if (rest === "/agents") {
+                if (only("GET")) return true;
+                const credentials = [
+                    ...listApiKeys(dir).map((k) => ({
+                        credential: `apikey:${k.keyId}`,
+                        label: k.label,
+                        kind: "mcp-key",
+                        expired: k.expired,
+                    })),
+                    ...clientsOf(ownId, dir).map((c) => ({
+                        credential: `oauth:${c.clientId}`,
+                        label: c.name ?? c.clientId,
+                        kind: "mcp-oauth",
+                    })),
+                ];
+                return send(res, 200, agentsReport({ accountId: ownId, accountDir: dir, config, credentials }));
+            }
+            if (rest === "/routing") {
+                if (only("POST")) return true;
+                const action = typeof body.action === "string" ? body.action : "";
+                if (!ROUTING_ACTIONS.includes(action))
+                    return fail(res, 400, "INVALID_ROUTING_ACTION", `action is one of ${ROUTING_ACTIONS.join(", ")}`);
+                const params = { action };
+                for (const k of ["threadId", "to", "staff", "text", "threadType", "bootId"])
+                    if (typeof body[k] === "string") params[k] = body[k];
+                for (const k of ["since", "limit", "minutes"]) if (Number.isInteger(body[k])) params[k] = body[k];
+                const r = await relay(ownId, "/routing", params);
+                if (!r) return fail(res, 409, "DAEMON_NOT_RUNNING", "the account's daemon is not running");
+                if (!r.ok) return fail(res, 409, "ROUTING_REFUSED", r.error || "the daemon refused the request");
+                const out = { ...r };
+                delete out.ok;
+                if (out.refused) return fail(res, 409, out.code || "ROUTING_REFUSED", out.message || "refused", out);
+                if (!["events", "claims", "inbox", "thread"].includes(action)) note(ctx, ownId, `routing.${action}`);
+                return send(res, 200, out);
+            }
+            if (rest === "/route-test") {
+                if (only("POST")) return true;
+                const saved = resolveRouting({ config, accountId: ownId });
+                let cfg = saved.cfg;
+                let agents = saved.agents;
+                if (body.routing && typeof body.routing === "object") {
+                    const c = checkRouting({ ...body.routing, enabled: true });
+                    if (c.error) return fail(res, 400, "INVALID_ROUTING", c.error);
+                    cfg = c.value;
+                }
+                if (Array.isArray(body.agents)) {
+                    const a = checkAgents(body.agents);
+                    if (a.error) return fail(res, 400, "INVALID_AGENTS", a.error);
+                    agents = a.value;
+                }
+                const m = body.message && typeof body.message === "object" ? body.message : {};
+                if (typeof m.threadId !== "string" || !m.threadId)
+                    return fail(res, 400, "INVALID_MESSAGE", "message.threadId is required");
+                const at = typeof body.at === "string" && Date.parse(body.at) ? Date.parse(body.at) : Date.now();
+                const d = decide(
+                    {
+                        threadId: m.threadId,
+                        threadType: m.threadType === "group" ? "group" : "dm",
+                        senderId: typeof m.senderId === "string" ? m.senderId : null,
+                        isSelf: m.fromOwner === true,
+                        text: typeof m.text === "string" ? m.text.slice(0, 4000) : "",
+                        type: typeof m.kind === "string" ? m.kind : "text",
+                        replyTo: null,
+                    },
+                    {
+                        cfg,
+                        agents,
+                        now: at,
+                        myDocuments: m.myDocuments === true,
+                        labelsOf: () => (Array.isArray(m.labels) ? m.labels.map(String) : []),
+                    },
+                );
+                return send(res, 200, {
+                    to: d.to,
+                    by: d.by,
+                    ruleId: d.ruleId,
+                    observers: d.observers,
+                    ownership: d.ownership,
+                    text: d.text ?? null,
+                    trace: d.trace,
+                });
             }
             if (rest === "/oauth/grants") return only("GET") || send(res, 200, { grants: oauthOf(dir).listGrants() });
             r = /^\/oauth\/grants\/([^/]+)$/.exec(rest);

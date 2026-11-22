@@ -12,6 +12,7 @@ import { withCurrentSenderNames } from "../core/current-user-names.js";
 import { success, error, info, output, warning } from "../utils/output.js";
 import { sendRefusal } from "../core/group-exit.js";
 import { parseIntOption } from "../utils/parse-options.js";
+import { cliFileItems, collect, consumeCliSent, materializeCliFiles } from "../utils/cli-files.js";
 import { parseThreadTypeArg, parseReportReason } from "../utils/cli-args.js";
 import { getActive } from "../core/accounts.js";
 import { getAccountDir, getAccountDbPath } from "../core/credentials.js";
@@ -918,13 +919,27 @@ export function registerMsgCommands(program) {
             }
         });
 
-    msg.command("send-image <threadId> <paths...>")
+    msg.command("send-image <threadId> [paths...]")
         .description("Send one or more images (jpg/jpeg/png/webp/gif render inline; other formats arrive as files)")
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .option("-m, --caption <text>", "Caption text", "")
         .option("--upload-timeout <ms>", "Max wait for the upload-complete event", "120000")
+        .option("--url <url>", "Also send an image downloaded from this http(s) link (repeatable)", collect, [])
+        .option("--file-id <fileId>", "Also send a file stored with `file put` or zalo_file (repeatable)", collect, [])
         .action(async (threadId, paths, opts) => {
-            const absPaths = paths.map((p) => resolve(p));
+            const items = cliFileItems({ paths: paths.map((p) => resolve(p)), urls: opts.url, fileIds: opts.fileId });
+            if (!items.length) {
+                error("Give at least one image: a path, --url or --file-id.");
+                return;
+            }
+            let files;
+            try {
+                files = await materializeCliFiles(items);
+            } catch (e) {
+                error(e.message);
+                return;
+            }
+            const absPaths = files.files.map((f) => f.path);
 
             // A format Zalo does not render inline (bmp, tiff, heic, …) is
             // still uploaded — Zalo only denylists executables — but it
@@ -943,7 +958,8 @@ export function registerMsgCommands(program) {
                 error: err,
                 listenerStarted,
                 viaDaemon,
-            } = await sendAttachments(getApi(), absPaths, threadId, Number(opts.type), opts);
+            } = await sendAttachments(getApi(), absPaths, threadId, Number(opts.type), opts).finally(files.cleanup);
+            if (!err) consumeCliSent(files.files, result?.attachment, threadId);
             if (err) error(err);
             // Surface which socket carried this. sendAttachments() has always
             // returned viaDaemon, and every caller dropped it on the floor —
@@ -964,24 +980,39 @@ export function registerMsgCommands(program) {
             else if (err) process.exitCode = 1;
         });
 
-    msg.command("send-file <threadId> <paths...>")
+    msg.command("send-file <threadId> [paths...]")
         .description("Send files (docx, pdf, zip, etc.)")
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .option("-m, --caption <text>", "Caption text", "")
         .option("--upload-timeout <ms>", "Max wait for the upload-complete event", "120000")
+        .option("--url <url>", "Also send a file downloaded from this http(s) link (repeatable)", collect, [])
+        .option("--file-id <fileId>", "Also send a file stored with `file put` or zalo_file (repeatable)", collect, [])
         .action(async (threadId, paths, opts) => {
             // Shares sendAttachments() with `send-image`. It used to carry its
             // own copy of the bring-the-listener-up dance, which meant the
             // hand-off to a running daemon only ever applied to send-image --
             // and send-file is the command that needs it most, since every
             // non-inline attachment takes the socket path.
-            const absPaths = paths.map((p) => resolve(p));
+            const items = cliFileItems({ paths: paths.map((p) => resolve(p)), urls: opts.url, fileIds: opts.fileId });
+            if (!items.length) {
+                error("Give at least one file: a path, --url or --file-id.");
+                return;
+            }
+            let files;
+            try {
+                files = await materializeCliFiles(items);
+            } catch (e) {
+                error(e.message);
+                return;
+            }
+            const absPaths = files.files.map((f) => f.path);
             const {
                 result,
                 error: err,
                 listenerStarted,
                 viaDaemon,
-            } = await sendAttachments(getApi(), absPaths, threadId, Number(opts.type), opts);
+            } = await sendAttachments(getApi(), absPaths, threadId, Number(opts.type), opts).finally(files.cleanup);
+            if (!err) consumeCliSent(files.files, result?.attachment, threadId);
             if (err) error(err);
             else
                 output(
@@ -1171,7 +1202,18 @@ export function registerMsgCommands(program) {
         .option("-W, --width <px>", "Video width", parseIntOption, 1280)
         .option("-H, --height <px>", "Video height", parseIntOption, 720)
         .option("--upload-timeout <ms>", "Max wait for the upload-complete event (a local file)", "120000")
+        .option("--fetch", "Download a video URL here and upload it as a file, instead of Zalo fetching the URL")
         .action(async (threadId, videoUrl, opts) => {
+            let fetched = null;
+            if (opts.fetch && /^https?:\/\//i.test(videoUrl)) {
+                try {
+                    fetched = await materializeCliFiles([{ url: videoUrl }], { label: "video" });
+                } catch (e) {
+                    error(`Send video failed: ${e.message}`);
+                    return;
+                }
+                videoUrl = fetched.files[0].path;
+            }
             if (!/^https?:\/\//i.test(videoUrl)) {
                 // A local file: uploaded on the account's socket (or the running daemon's), then sent as a video.
                 const file = resolve(videoUrl);
@@ -1193,7 +1235,9 @@ export function registerMsgCommands(program) {
                     listenerStarted,
                     viaDaemon,
                     oldDaemon,
-                } = await sendAttachments(getApi(), [file], threadId, Number(opts.type), opts, video);
+                } = await sendAttachments(getApi(), [file], threadId, Number(opts.type), opts, video).finally(() =>
+                    fetched?.cleanup(),
+                );
                 if (err) error(`Send video failed: ${err}`);
                 else {
                     if (oldDaemon) {

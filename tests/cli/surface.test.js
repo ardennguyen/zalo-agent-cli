@@ -168,6 +168,7 @@ const COMMAND_SURFACE = {
     label: ["list", "update"],
     cloud: ["ls", "plan", "apply", "get", "key"],
     bank: ["list", "accounts", "add", "update", "remove"],
+    file: ["put", "list", "info", "delete"],
     catalog: [
         "list",
         "create",
@@ -467,7 +468,13 @@ const FLAG_CONTRACT = {
     "cloud get": ["--out", "--key-stdin", "--key-prompt", "--raw"],
     "cloud key setup": ["--confirm", "--slot", "--wait", "--dry-run"],
     "cloud key forget": ["--device", "--key"],
-    "msg send-video": ["--thumb", "--width", "--height", "--duration", "--upload-timeout"],
+    "msg send-video": ["--thumb", "--width", "--height", "--duration", "--upload-timeout", "--fetch"],
+    "msg send-image": ["--url", "--file-id"],
+    "msg send-file": ["--url", "--file-id"],
+    "profile avatar": ["--url", "--file-id"],
+    "group avatar": ["--url", "--file-id"],
+    "catalog upload-photo": ["--url", "--file-id"],
+    "file put": ["--url", "--name"],
     "friend add": ["--msg"],
     "profile update": ["--name", "--dob", "--gender"],
 };

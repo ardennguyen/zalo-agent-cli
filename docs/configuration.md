@@ -54,10 +54,10 @@ Files and the environment are read once at start; the policy is read again on ev
 | environment | `.env`, `--env-file`, a systemd `EnvironmentFile` (bootstrap only: port, bind address, `publicUrl`, the key provider, the admin credential's *reference*) |
 | **policy** | per tenant `<CONFIG_DIR>/tenants/<tenantId>.json` (for its users' accounts and the accounts it lists in `quota.tenant.accounts`), then per user `<CONFIG_DIR>/users/<userId>.json` (for the accounts it owns), then per account `<accountDir>/policy.json` |
 
-The policy takes `confirmMode`, `hiddenChats`, `allowPinArgument`, `ownMyDocuments`, `approval.*`, `media.deliver`, `media.inlineMaxBytes`,
+The policy takes `confirmMode`, `hiddenChats`, `allowPinArgument`, `ownMyDocuments`, `routing.*`, `approval.*`, `media.deliver`, `media.inlineMaxBytes`,
 `media.allowDeliver`, `media.linkTtl`, `media.tempfileTtl`, `media.linkAuth`, `media.linkRateLimit`,
 `media.capability.*`, `media.autoOpen`, `webhook`, `webhookBatchSize`, `webhookMaxAge`, `quota.*`, `retention.*`,
-`groups.onLeave`, `presence.*` and `session.renew.*` (`presence.alwaysOn.*` only in a tenant's or a user's policy; `quota.tenant.*` only
+`groups.onLeave`, `presence.*`, `session.renew.*` and the `uploads.*` caps (not `uploads.localPaths`, `localPathRoots` or `allowPrivateUrls`) (`presence.alwaysOn.*` only in a tenant's or a user's policy; `quota.tenant.*` only
 in a tenant's).
 A key read only at start (`httpPort`, `host`, `publicUrl`, `tls`, `oauth`, `trustedProxies`, `admin`,
 `media.downloadDir`, the key provider and its options, `accounts`) and every secret (`webhookSecret`) is refused with
@@ -313,6 +313,99 @@ at most 60 s; `ZALO_CONNECT_SLOT_WAIT` (seconds, default `120`) is how long a wa
 Both take an `_<ownId>` form. `/status` and `/metrics` carry `lastWakeMs` / `lastCatchUpMs`
 (`zalo_presence_last_wake_seconds`, `zalo_presence_last_catch_up_seconds`) and the metered connected time.
 
+### Agents sharing one account (`routing`)
+
+Several agents can use one account's MCP server at once (a hosted assistant, a Claude Code session, a Claude app
+connector). The `routing` block names them, so the server knows which agent each call comes from, puts the agent's
+**mark** in front of what it sends, and records which agent sent which message. This is the first part of the
+Companion Router; nothing is routed or refused yet, and every caller still sees every message.
+
+```json
+"routing": {
+  "marks": "shown",
+  "presenceWindow": "90s",
+  "agents": [
+    {"slug": "dev", "name": "Dev", "credential": "apikey:0123456789ab"},
+    {"slug": "ai", "name": "AI", "kind": "companion", "credential": "apikey:ba9876543210", "mark": "🤖 AI:"},
+    {"slug": "claude", "name": "Claude", "credential": "oauth:claude-app", "markDisplay": "owner"}
+  ]
+}
+```
+
+- **`credential`** binds the agent to a credential the server already checks: `apikey:<keyId>` (a named API key,
+  `access` API or `mcp agents` lists the ids), `oauth:<clientId>` or `oauth:<clientId>/<grantId>` (a connector, or one
+  grant of it), `connector:<slug>` (the agent's own connector address, see below), `legacy` (the `--auth` deploy token),
+  `open` (a server that asks for no token), `stdio` or `stdio:<name>` (a local stdio server started with
+  `ZALO_MCP_AGENT=<name>`). The agent is never a name the caller types; a tool's `consumer` input is only a sub-name (a
+  label, not a boundary).
+- **One connector per agent.** `<publicUrl>/mcp/a/<slug>` is the same MCP server under an agent's own address. Added as
+  a connector (a Claude app project's, say), it runs OAuth for the resource `<publicUrl>/mcp/a/<slug>`: the approve page
+  tells the owner which agent he connects, and the grant's tokens carry that address as their audience. Such a token
+  opens that address and `/mcp`, never another agent's address; it is the agent bound by `connector:<slug>`, or no
+  agent at all when none is (it fails closed). Other credentials (API keys, the deploy token) work on the address as on
+  `/mcp`.
+- **`mark`** (default `🤖 <name>:`) goes in front of every text and caption the agent sends with `zalo_send_message`,
+  unless the text already starts with it. **`marks`** (`shown`, the default, or `hidden`) is the account's setting;
+  an agent's **`markDisplay`** overrides it: `inherit` (default), `everywhere`, `owner` (My Documents only) or `none`.
+- **`delivery`**: `live` (default) or `onDemand` (default for OAuth connectors): an on-demand agent not seen lately
+  shows `onDemand`, never offline. **`enabled`**: `false` shows the agent `disabled`.
+- **`presenceWindow`** (default `90s`, at least `10s`): an agent seen this recently, or with a
+  `zalo_wait_for_message` open, is `listening`; `zalo_inbox` `status` sets `away`.
+- **Who sent what** is kept sealed in `accounts/<ownId>/sent-by.json` (ids and agent names, no text; 30 days, the
+  newest 5,000 sends). `zalo_get_history` and `zalo_search_messages` return `sentBy: {agent, name, sub}` on the
+  account's own messages. Presence is written to `accounts/<ownId>/agents-presence.json` (agent names and times).
+- The live policy's `routing.agents`, `routing.marks` and `routing.presenceWindow` win over the file and change with no
+  restart (`routing.agents` only in an account's own policy). See them with `zalo-agent mcp agents`, the admin API's
+  `GET /access/<ownId>/agents`, or, as an agent, `zalo_inbox`.
+
+**Routing (phases 3-6).** With `routing.enabled: true` every incoming message gets one handler, decided once by the
+engine (src/core/message-router.js) and carried on the message as `route: {to, by, ruleId, observers, ownership}`
+(also in the webhook). The order: the owner's **human pause** (his own send from his phone, PC or web pauses the agents
+in that conversation for `humanPause`, 15 min by default), an explicit **trigger** (`@dev` or a route's word from the
+owner, at the start; a `#hashtag` anywhere, from anyone when the route allows it; the trigger is removed from `text`
+and kept in `rawText`), **sticky focus** (after a sticky trigger the owner's next messages stay with that agent until
+`@end` or `stickyTtl`), **reply affinity** (a reply to an agent's message goes back to it, `affinityTtl`), an active
+**claim**, then the **routes** table (first match: `threads`, `threadType`, `myDocuments`, `senders`, Zalo `labels`,
+`kinds`, a time `window`, `mentionsAccount` for a group message that mentions the account or @All), then the **default**. Claims, the human pause and sticky focus survive a restart (sealed in `routing-state.json`). A live agent away for longer than `fallbackAfter` hands over to its
+route's `fallback` chain (another agent, `human` with a notice in My Documents, or `{autoReply: text}`). Claims, human
+pause, affinity, sticky focus and fallback need `routing.claims: true`.
+
+```json
+"routing": {
+  "enabled": true, "claims": true, "isolation": false, "owners": ["<the owner's other Zalo user id>"],
+  "routes": [
+    {"id": "dev", "target": "dev", "match": {"trigger": {"word": "@dev", "sticky": true}}},
+    {"id": "tickets", "target": "staff:lan", "match": {"trigger": {"word": "#ticket", "who": "anyone"}}},
+    {"id": "dms", "target": "ai", "match": {"threadType": "dm"}, "fallback": ["dev", "human"]}
+  ],
+  "default": {"target": "human"},
+  "staff": [{"id": "lan", "name": "Lan", "channels": ["zalo"], "zaloUserId": "<her Zalo user id>"}],
+  "settings": {"humanPause": "20m"}
+}
+```
+
+- Each agent reads its own messages: `zalo_get_messages` and `zalo_wait_for_message` take `view: "mine"` (default with
+  routing on) or `"all"` (each marked `forMe`). A connection bound to no agent gets nothing new.
+- **Send guard:** an agent's `zalo_send_message` or `zalo_forward_message` into a conversation the owner is answering is
+  refused with `HUMAN_ACTIVE`; into one another agent holds (or quoting a message another agent owns) with `CLAIMED`.
+- **Staff** targets: `staff:<id>` with `channels` `console` (answered in a console) and/or `zalo` (the message is
+  forwarded to the staff member's own Zalo; his reply to it is relayed to the customer from this account with his mark).
+- **`@agents`** typed by the owner in any chat is answered in his My Documents with the agents and their presence.
+- **Per-agent privacy** (`routing.isolation: true`): an agent reads only conversations routed to it or claimed by it
+  (`zalo_get_history`, `zalo_view_media`, `zalo_get_group_members`, `zalo_coverage` refuse with `NOT_ROUTED`; search and
+  lists leave the others out) and cannot send elsewhere.
+- `zalo_inbox` gains `claim`, `release`, `handoff`, `claims` and `route_test`; the admin API answers the same test at
+  `POST /access/<ownId>/route-test` (with unsaved routes, for a console's test box).
+- **A console's view of the running router** (`POST /access/<ownId>/routing`, `{action, ...}`, answered by the account's
+  daemon; 409 `DAEMON_NOT_RUNNING` when none runs): `events` (routing decisions, claims, hand-offs, human pauses and
+  refused sends, ids only, never a message's text; kept sealed in `routing-events.json` in the account folder
+  for `routing.logDays` days, default 7, at least one, the newest 5,000 at most, across restarts), `claims`, `release`,
+  `assign` (to an agent, a staff member or `human`), `human` / `endHuman` (start or end the owner's pause), and the staff
+  inbox for a staff member who answers in a console: `inbox`, `thread` (the conversation's cached messages), `claim`,
+  `unclaim`, `send` (sent from this account with the staff member's mark). A staff member reaches only conversations
+  routed to him or held by him (`NOT_ROUTED`). The fleet controller publishes each new event on `GET /zalo/admin/events`
+  as a `routing` event (not on the admin webhook).
+
 ### Renewing the saved login (`session.renew`)
 
 A QR login lasts about 90 days and Zalo never renews it: only a new QR scan by the account's phone does. An
@@ -378,6 +471,7 @@ restart; a `signed_out` or `yielded` daemon comes back, a parked one keeps it fo
 | `ZALO_MCP_CONFIRM_MODE` | yes | who confirms a destructive tool action (recall, delete, leave a group, …): `agent` (default; the caller sends `confirm: true`), `human` (the server asks the user: by MCP form elicitation under stdio, otherwise on a one-time approve page whose link is in the reply, which works over HTTP too) or `off` (no question; `zalo_write` still needs `confirm`) | | `confirmMode` |
 | `ZALO_MCP_HIDDEN_CHATS` | yes | what the MCP server shows of the account's hidden chats: `exclude` (default: left out of every list, search, history and event), `contentless` (left out of lists; an event in one arrives as `{event, hidden: true}` with no thread id or content) or `include` (shown like any other: hands them to the agent) | | `hiddenChats` |
 | `ZALO_MCP_OWN_MY_DOCUMENTS` | yes | `true` passes the account's own messages in its own My Documents (the self-chat, `me`) to the agents: `zalo_get_messages`, `zalo_wait_for_message`, the notifier and the webhook, each marked `isSelf: true`, so the owner can talk to an assistant there. Every other message the account sends itself stays out, and the agent's own `zalo_send_message` replies are not handed back to it. Default `false`: no self-sent message reaches the agents | | `ownMyDocuments` |
+| `ZALO_MCP_AGENT` | no | The name of a local stdio server's caller: it is `stdio:<name>` for the `routing` block (lowercase letters, digits, `-`). Unset: `stdio` | | |
 | `ZALO_MCP_ALLOW_PIN_ARGUMENT` | yes | `true` lets the hidden-chat tools take the PIN as a `pin` input. Default `false`: an input is written to the MCP client's logs and the model's context. Only for a non-AI client | | `allowPinArgument` |
 | `ZALO_MCP_APPROVAL_SECRET` | yes | what an approve page (`confirmMode: "human"`) asks besides a click, so an agent that can open the link cannot approve its own action: `pin` (the hidden-chat PIN, with its lockout), `password` (the approver password set with `zalo-agent mcp approver set`, stored only as a salted scrypt hash), `none` (a click approves: weaker) or `auto` (default: the approver password when one is set and the link reaches the agent, else nothing, and the reply says `approverSecret: false`) | | `approval.secret` |
 | `ZALO_MCP_APPROVAL_DELIVER` | yes | where the link of an approve or PIN page goes: `result` (default: in the tool result), `webhook` (only to the MCP webhook, as an `approval_requested` event; the tool result carries no link) or `both` | | `approval.deliver` |
@@ -445,6 +539,17 @@ The official APIs take no `mcp-config.json` key; their only environment variable
 | `media.linkAuth` | unset (= `auto`) | `auto`, `bearer` or `capability` (see `ZALO_MCP_MEDIA_LINK_AUTH`) |
 | `media.linkRateLimit` | `60` | requests a minute one client address may make to media links (and 10 unknown tokens a minute), then `429` |
 | `media.capability.maxClients`, `.ttl` | `3`, `"15m"` | a capability link that leaves this machine serves at most this many distinct client addresses, each for this long from its first request (load balancers, a reconnect on a new network, a video player's range requests). Raise per account in `accounts.<ownId>.media.capability` |
+| `uploads.inlineMaxBytes` | `"10MB"` | the decoded bytes of every `{data}` file item of one MCP call together (at most `32MB`); the MCP request body limit follows it (base64 is 4/3 of the bytes, plus 1 MB) |
+| `uploads.maxBytes` | unset (= the account's Zalo file limit) | one upload into the account's store (`POST /zalo/files`, a `zalo_file` upload link, `file put`). The default is the largest file Zalo lets this account send, read from the session's own settings (the share-file limit, bounded by the zCloud upload limit; 1 GB on current settings, the same for free and paid plans through this engine's upload). A value here only lowers it; usage reports show the effective value and whether it is Zalo's (`sources.maxBytes`). Known limit: a paid zCloud plan's larger allowance needs Zalo's separate zCloud upload, not made by this engine yet, so it is capped at the share-file limit too |
+| `uploads.urlMaxBytes`, `uploads.urlTimeout` | unset (= the account's Zalo file limit), `"60s"` | one `{url}` file item the server downloads, checked while it streams |
+| `uploads.quota` | unset (= two files of `maxBytes`, 2 GB on current settings) | what the account's upload store (`accounts/<ownId>/uploads/`) holds at once; an upload over it is refused with `507` |
+| `uploads.ttl` | `"24h"` | how long an upload nobody sent is kept |
+| `uploads.recordWait` | `"10m"` | an upload a send used is removed as soon as the message is recorded (the listener stored it and the media store has its file); one never recorded goes after this long. A failed send keeps it for a retry |
+| `uploads.uploadLinkTtl` | `"15m"` | how long a `zalo_file` `upload_begin` link waits for its file |
+| `uploads.warnAt` | `0.8` | the share of `uploads.quota` where the store's `level` (usage reports) turns `warn` |
+| `uploads.localPaths` | `"loopback"` | who may name a path on this machine in a tool input: `loopback` (a stdio client, an HTTP client on this machine), `any`, or `none`. File only, never a policy |
+| `uploads.localPathRoots` | `[]` | folders whose paths any caller may name (a folder another container shares with this one). File only |
+| `uploads.allowPrivateUrls` | `false` | a `{url}` item may reach a private, loopback or link-local address (a LAN that serves its own files). File only |
 | `trustedProxies` | `null` (none) | reverse proxies whose `X-Forwarded-For` is believed (see `ZALO_MCP_TRUSTED_PROXIES`). List your proxy's address, or the per-client limits see one client |
 | `notify.enabled`, `.thread`, `.on`, `.cooldown` | off | notify a Zalo group when the agent is away |
 | `webhook`, `webhookSecret` | `null` | push each message to a URL, signed (prefer `ZALO_WEBHOOK_SECRET`) |
@@ -463,6 +568,7 @@ The official APIs take no `mcp-config.json` key; their only environment variable
 | `groupConfirm` | | deprecated: `false` means `confirmMode: "off"` when no confirm mode is set |
 | `hiddenChats` | unset (= `exclude`) | `exclude`, `contentless` or `include`: what agents see of hidden chats (see the variable above) |
 | `ownMyDocuments` | unset (= `false`) | `true` passes the owner's own My Documents messages to the agents, marked `isSelf: true` (see the variable above) |
+| `routing` | unset (no agents, marks shown, `90s`) | `{agents, marks, presenceWindow}`: the agents sharing the account, bound to credentials, and their marks (§1 "Agents sharing one account") |
 | `allowPinArgument` | unset (= `false`) | `true` lets the hidden-chat tools take the PIN as an input; it then sits in the client's logs |
 | `approval.secret` | unset (= `auto`) | `auto`, `pin`, `password` or `none`: what an approve page asks besides a click (see the variable above) |
 | `approval.deliver` | unset (= `result`) | `result`, `webhook` or `both`: where a one-time page's link goes |
@@ -544,6 +650,7 @@ Keep the engine on loopback and put a TLS reverse proxy in front of it.
 - Files: [`env/internet-server.env`](config-samples/env/internet-server.env), [`mcp-config/internet.json`](config-samples/mcp-config/internet.json), and one proxy sample: [`proxy/Caddyfile.internet`](config-samples/proxy/Caddyfile.internet) or [`proxy/nginx.internet.conf`](config-samples/proxy/nginx.internet.conf).
 - The proxy must not buffer responses and must allow reads of at least 310 s: `/events/wait` holds a request for up to 300 s. Both samples are tested for it.
 - **Authentication:** a bearer token for scripts and backends; OAuth 2.1 for remote connectors that insist on it (below). Set `ZALO_MCP_PUBLIC_URL` (or `publicUrl`) to the public `https://` address: the OAuth issuer, the MCP endpoint and every link to a one-time page are built from it. Without it the links use the server's own address, and the OAuth metadata and the `WWW-Authenticate` header are built from the request's `Host` header (`X-Forwarded-Host` / `X-Forwarded-Proto` only from a proxy in `trustedProxies`); with OAuth on and the server listening off loopback, it refuses to start without one. (`ZALO_MCP_ISSUER_URL`, `--issuer-url` and `oauth.issuerUrl` are its deprecated 2.x names and still work.)
+- **Files from remote agents.** A remote caller cannot pass a path: it sends `{data, name}` (small files), `{url}` (the server downloads it, public addresses only) or `{fileId}`. `zalo_file` `upload_begin` returns a one-time `<publicUrl>/zalo/files/u/<token>` to `PUT` the file to, with no token; a client holding the bearer can `POST <publicUrl>/zalo/files?name=<file>`. Let the proxy pass request bodies up to `uploads.maxBytes` (the account's Zalo file limit, 1 GB on current settings) on `/zalo/files` and up to about 4/3 of `uploads.inlineMaxBytes` plus 1 MB (15 MB with the defaults) on the MCP endpoint, and give uploads the same read timeout as `/events/wait`. A path a remote caller passes is refused with what to send instead, unless it lies under `uploads.localPathRoots`.
 - Native HTTPS (`--cert` / `--key`) without a proxy works, but the engine **also tries to listen on port 443** next to your port. Prefer the proxy.
 - Add what the engine does not have: an IP allow-list at the proxy, and a log that never records the `Authorization` header. The engine limits only the OAuth endpoints' request rate. The server answers most origins with `Access-Control-Allow-Origin: *` (not a `/register` answer carrying a client secret); strip or replace the header at the proxy if browsers should not call it.
 
@@ -596,7 +703,7 @@ A CRM needs three things from an account: to **hear** new messages, to **send**,
 
 **Hear: pull.** `GET /events/wait?timeout=55&since=<cursor>` returns every message already waiting in the buffer (`&limit=<n>` caps how many), or `{"status":"timeout"}`, with a cursor to resume from. The reply has `messages` (in order), `count`, `hasMore` and `cursor`, the **last** message's, so `since=<cursor>` continues exactly where the batch ended; `message` is the first. **Breaking in 3.0.0:** the default was one message per call; a client that reads only `message` and continues from `cursor` now skips the rest of the batch: read `messages`, or send `limit=1`. With a `limit`, drain a backlog by calling again at once while `hasMore` is true; `settle=200` (ms, at most 5000) waits that long after the first message so a burst lands in one reply. The same `limit` and `settleMs` exist on the `zalo_wait_for_message` tool and as `mcp wait --limit --settle`. The buffer behind it holds up to `limits.bufferMaxSize` messages per thread for `limits.bufferMaxAge` (the CRM sample raises both to 2,000 and 6 h). Past that, read the cache with `zalo_get_history` / `zalo_get_messages`.
 
-**Send.** A JSON-RPC call to `POST /mcp`: [`clients/crm-send-message.sh`](config-samples/clients/crm-send-message.sh). Send `Accept: application/json, text/event-stream` (without both the server answers 406); the reply is one SSE `data:` line, and a successful send returns `{"success":true,"msgId":…,"cliMsgId":…,"threadType":…}`. `threadId` is a user id for a direct message or a group id for a group. Each `/mcp` request builds a fresh server with all 37 tools, which costs a few milliseconds of CPU: fine for a CRM, and the reason one account tops out at roughly 60–170 requests/s (see [`docs/deployment.md`](deployment.md) §1.4).
+**Send.** A JSON-RPC call to `POST /mcp`: [`clients/crm-send-message.sh`](config-samples/clients/crm-send-message.sh). Send `Accept: application/json, text/event-stream` (without both the server answers 406); the reply is one SSE `data:` line, and a successful send returns `{"success":true,"msgId":…,"cliMsgId":…,"threadType":…}`. `threadId` is a user id for a direct message or a group id for a group. Each `/mcp` request builds a fresh server with all 39 tools, which costs a few milliseconds of CPU: fine for a CRM, and the reason one account tops out at roughly 60–170 requests/s (see [`docs/deployment.md`](deployment.md) §1.4).
 
 **Catch up.** After downtime, ask for what was missed: `zalo_get_history` per thread, or `zalo-agent sync --from <date>` (which can ask the owner's phone to confirm).
 
@@ -645,7 +752,7 @@ curl -s -H "Authorization: Bearer $TOKEN" http://HOST:PORT/status | head -c 400
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://HOST:PORT/mcp
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://HOST:PORT/mcp -H 'Authorization: Bearer wrong'
 
-# the tools are served (expect 37 names):
+# the tools are served (expect 39 names):
 curl -s http://HOST:PORT/mcp -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | grep -o '"name":"zalo_[a-z_]*"' | wc -l

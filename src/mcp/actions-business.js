@@ -4,14 +4,13 @@
  * makes the call its CLI command makes (`auto-reply`, `quick-msg`, `catalog`, `bank`).
  */
 
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
 import { z } from "zod";
 import { activeWindow, AUTO_REPLY_SCOPES } from "../core/auto-reply.js";
 import { findBankAccount, filterBanks } from "../core/bank-accounts.js";
 import { setQuickMessageStatus } from "../core/profile-settings.js";
 import { resolveBankBin, BIN_TO_DISPLAY } from "../utils/bank-helpers.js";
 import { confirmInput, dryRunInput, ticketInput } from "./action-tool.js";
+import { fileInput, singleFileCheck, withSingleFile } from "./file-input.js";
 import { allBankAccounts, allCatalogs, allProducts } from "../core/list-all.js";
 
 /** A bank name or BIN as the BIN Zalo wants, or the refusal (as `bank add` words it). */
@@ -297,13 +296,9 @@ export const CATALOG_ACTIONS = {
         },
     },
     upload_photo: {
-        needs: ["filePath"],
-        check: (a) =>
-            existsSync(resolve(String(a.filePath).trim()))
-                ? undefined
-                : `File not found on the machine this server runs on: ${resolve(String(a.filePath).trim())}`,
-        async run(a, { api }) {
-            const res = await api.uploadProductPhoto({ file: resolve(String(a.filePath).trim()) });
+        check: singleFileCheck,
+        async run(a, ctx) {
+            const res = await withSingleFile(a, ctx, (path) => ctx.api.uploadProductPhoto({ file: path }));
             return { success: true, data: res ?? null };
         },
     },
@@ -323,8 +318,8 @@ export const CATALOG_META = {
         "Manage this account's Zalo Shop catalogs and their products (the `catalog` commands). Actions: 'list', " +
         "'create' (`name`), 'rename' (`catalogId`, `name`), 'delete' (a catalog and every product in it), " +
         "'products' (a catalog's products), 'product' (one product by `productId`), 'add_product' / 'update_product' (`name`, `price`, `description`, " +
-        "optional `photoUrls` from 'upload_photo'), 'delete_product' (`productIds`), 'upload_photo' (a local " +
-        "image, `filePath`; returns its URL) and 'register' (turn the catalog feature on or off). 'delete' and " +
+        "optional `photoUrls` from 'upload_photo'), 'delete_product' (`productIds`), 'upload_photo' (an " +
+        "image, `file`: {fileId}, {url} or {data, name}, or `filePath` for a caller on the server's machine; returns its URL) and 'register' (turn the catalog feature on or off). 'delete' and " +
         "'delete_product' are asked about first: `confirm`, `dryRun`.",
     inputSchema: z
         .object({
@@ -354,7 +349,11 @@ export const CATALOG_META = {
                 .string()
                 .min(1)
                 .optional()
-                .describe("Only for 'upload_photo': a local image path on the machine this server runs on"),
+                .describe(
+                    "Only for 'upload_photo': an image path on the machine this server runs on (a caller on that " +
+                        "machine only; anyone else sends `file`)",
+                ),
+            file: fileInput("'upload_photo'"),
             enabled: z.boolean().optional().describe("Only for 'register': true turns the catalog on, false off"),
             limit: z
                 .number()

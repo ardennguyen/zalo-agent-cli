@@ -283,9 +283,9 @@ Mỗi tài khoản cá nhân đã đăng ký có cơ sở dữ liệu SQLite (`<
    zalo-mcp --account 202 sync --days 7
    ```
 
-### Danh sách 37 MCP tools
+### Danh sách 39 MCP tools
 
-Engine này đăng ký **37 MCP tools** trong `src/mcp/mcp-tools.js`: 36 tool cho **tài khoản cá nhân**, và `zalo_official` cho các API chính thức:
+Engine này đăng ký **39 MCP tools** trong `src/mcp/mcp-tools.js`: 38 tool cho **tài khoản cá nhân**, và `zalo_official` cho các API chính thức:
 
 | Tool | Công dụng |
 |:---|:---|
@@ -326,6 +326,8 @@ Engine này đăng ký **37 MCP tools** trong `src/mcp/mcp-tools.js`: 36 tool ch
 | `zalo_sticker` | Tìm sticker theo từ khóa và xem chi tiết |
 | `zalo_link` | Xem trước một liên kết và kiểm tra Zalo có coi nó là an toàn không |
 | `zalo_official` | Chạy một lệnh Official Account, ZBS hoặc Social API (`oa …`, `zbs …`, `social …`) theo tên lệnh CLI, trên các lần đăng nhập chính thức của chủ tài khoản; bỏ `command` để liệt kê |
+| `zalo_file` | Đưa tệp lên máy chủ cho client ở máy khác: `upload_begin` (link tải lên dùng một lần, PUT tệp vào đó), `upload` (`data` base64 hoặc `url`), `info`, `list`, `delete`; các tool nhận tệp sau đó dùng `{fileId}` |
+| `zalo_inbox` | Người gọi là ai trong số các agent dùng chung tài khoản: `whoami`, `status` (listening/away), `agents` cùng trạng thái (Phân công trợ lý) |
 
 Xem thêm [Chi tiết sử dụng đồng bộ qua MCP](docs/mcp-sync.vi.md) / [English](docs/mcp-sync.md).
 
@@ -407,7 +409,7 @@ Thông tin xác thực Official Account được lưu riêng tại `~/.zalo-agen
 
 ## Tham chiếu nhanh lệnh CLI (qua `npx zalo-agent <lệnh>`)
 
-Thêm `--json` vào bất kỳ lệnh nào để nhận kết quả JSON phục vụ tự động hóa. Dưới đây là các lệnh tiêu biểu — tài liệu tham chiếu đầy đủ cho toàn bộ 326 lệnh nằm tại [skill/references/command-reference.md](skill/references/command-reference.md).
+Thêm `--json` vào bất kỳ lệnh nào để nhận kết quả JSON phục vụ tự động hóa. Dưới đây là các lệnh tiêu biểu — tài liệu tham chiếu đầy đủ cho toàn bộ 327 lệnh nằm tại [skill/references/command-reference.md](skill/references/command-reference.md).
 
 ### Phiên đăng nhập & bảo trì
 | Lệnh | Mô tả |

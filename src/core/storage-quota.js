@@ -44,7 +44,9 @@ import { CONFIG_DIR, getAccountDir, resolveMediaRoot } from "./credentials.js";
 import { readStorageFile } from "./keystore/config.js";
 import { policyFor } from "./policy-layer.js";
 import { parseBytes, parseDays } from "./policy-schema.js";
-import { durationMs } from "./deploy-policy.js";
+import { durationMs, resolveUploads } from "./deploy-policy.js";
+import { getUploadStore } from "./upload-store.js";
+import { knownAccountFileLimit } from "./zalo-file-limit.js";
 import { writeFileAtomic } from "../zalo/kernel/atomic-file.js";
 import * as cacheDb from "./db.js";
 import { checkLock } from "./lock.js";
@@ -103,14 +105,25 @@ function sqliteSize(file) {
  * @param {{mediaRoot?: string|null, dbBytes?: number|null}} [opts] - `dbBytes`: the database's used bytes when the
  *   caller holds it open (the pages in use, which a purge lowers at once; the file keeps its size until a VACUUM);
  *   otherwise the file sizes
- * @returns {{accountId: string, db: number, media: number, outbox: number, total: number, measuredAt: number}}
+ * @returns {{accountId: string, db: number, media: number, outbox: number, uploads: number, total: number,
+ *   measuredAt: number}}
  */
 export function measureUsage(ownId, { mediaRoot = null, dbBytes = null } = {}) {
     const dir = getAccountDir(String(ownId));
     const db = Number.isFinite(dbBytes) ? dbBytes : sqliteSize(join(dir, "zalo.db"));
     const media = folderSize(resolveMediaRoot(dir, mediaRoot));
     const outbox = sqliteSize(join(dir, "webhook-outbox.db"));
-    return { accountId: String(ownId), db, media, outbox, total: db + media + outbox, measuredAt: Date.now() };
+    // Files callers uploaded for sends (src/core/upload-store.js): kept a day, under their own quota, counted here too.
+    const uploads = folderSize(join(dir, "uploads"));
+    return {
+        accountId: String(ownId),
+        db,
+        media,
+        outbox,
+        uploads,
+        total: db + media + outbox + uploads,
+        measuredAt: Date.now(),
+    };
 }
 
 /**
@@ -903,7 +916,7 @@ export function hostUsage(ownIds, { statfs = statfsSync, now = Date.now() } = {}
  * @param {{mediaRoot?: string|null, dbBytes?: number|null}} [opts]
  * @returns {object}
  */
-export function describeStorage(ownId, { mediaRoot = null, dbBytes = null } = {}) {
+export function describeStorage(ownId, { mediaRoot = null, dbBytes = null, config = null } = {}) {
     const dir = getAccountDir(String(ownId));
     const state = readQuotaState(dir);
     const usage = Number.isFinite(dbBytes) || !state.usage ? measureUsage(ownId, { mediaRoot, dbBytes }) : state.usage;
@@ -945,6 +958,36 @@ export function describeStorage(ownId, { mediaRoot = null, dbBytes = null } = {}
             purgeEvery: `${Math.round(retention.purgeEveryMs / 60_000)}m`,
         },
         lastPurge: state.lastPurge,
+        uploads: describeUploads(dir, ownId, config),
+    };
+}
+
+/**
+ * The account's upload store against its own quota (`uploads.quota`): `level` is "ok", "warn" (at `uploads.warnAt`,
+ * 80% by default) or "full", for a console's notice.
+ *
+ * @param {string} dir - the account's folder
+ * @param {string} ownId
+ * @param {object|null} config - the MCP config, for its `uploads` block
+ * @returns {{bytes: number, files: number, quotaBytes: number, percent: number, level: "ok"|"warn"|"full",
+ *   warnAt: number, ttlMs: number}}
+ */
+export function describeUploads(dir, ownId, config = null) {
+    const policy = resolveUploads({
+        config: config || {},
+        accountId: String(ownId),
+        zaloLimitBytes: knownAccountFileLimit(dir)?.bytes ?? null,
+    });
+    const u = getUploadStore(dir).usage();
+    const ratio = u.bytes / policy.quotaBytes;
+    return {
+        bytes: u.bytes,
+        files: u.files,
+        quotaBytes: policy.quotaBytes,
+        percent: Math.round(ratio * 1000) / 10,
+        level: ratio >= 1 ? "full" : ratio >= policy.warnAt ? "warn" : "ok",
+        warnAt: policy.warnAt,
+        ttlMs: policy.ttlMs,
     };
 }
 

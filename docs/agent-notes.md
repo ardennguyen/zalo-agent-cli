@@ -111,11 +111,11 @@ Each of these reports success, or names the wrong cause. They were all learned t
 
 | Invariant | Current | Source of truth | How to check |
 |---|---|---|---|
-| CLI commands | **326** invokable leaves (232 personal + 94 OA/ZBS/Social) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
+| CLI commands | **331** invokable leaves (237 personal + 94 OA/ZBS/Social) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
 | Command groups | **42** containers — 25 top-level + 11 OA subgroups + 3 ZBS subgroups + `mcp webhook` + `account security` + `cloud key` | the live commander tree | walk it. The number of `register*` calls in `src/index.js` is neither number: `oa` registers 11 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
-| MCP tools | **37** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
+| MCP tools | **38** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA/ZBS/Social commands | **94** (70 `oa` + 18 `zbs` + 6 `social`) | `src/commands/oa.js` + `src/commands/oa/*.js`, `src/commands/zbs.js`, `src/commands/social.js` | `node scripts/count-surface.mjs`. `zbs` counts with `oa`: both are the official API on the OA's OAuth token, so "personal" stays the unofficial surface |
-| Offline tests | **5751** as of 2026-11-22 (5746 pass, 5 skipped, 0 todo, 0 fail; Linux) | `npm test` | the run's own summary line |
+| Offline tests | **5856** as of 2026-11-21 (5851 pass, 5 skipped, 0 todo, 0 fail; Linux) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -953,6 +953,7 @@ the old names and made `threadType` the words `"dm"` / `"group"` in every MCP in
 | conversation type | `threadType` | `"dm"` or `"group"`, in inputs and in replies |
 | one message | `msgId` | every input and every reply; `quoteMsgId` and `lastMsgId` are msgIds with a role, `msgIds` several (zalo_conversation `seen`). Dropped in 3.0: `id` (live messages), `messageId` (send replies) |
 | the sender's own id for a message | `cliMsgId` | returned by a send; react and undo need it |
+| a file in the account's upload store | `fileId` | `f_` + 24 characters; from `zalo_file` (`upload_begin`, `upload`), `POST /zalo/files` or `file put`; every file input takes `{fileId}` |
 | a Zalo user | `userId` | a message's author is `senderId` (a userId); `@[userId]` mentions. Dropped in 3.0: `uid` (group members) |
 | a message's author, as an input | `senderId` | `zalo_search_messages` and `zalo_delete_message`; never `uidFrom` |
 | reading position | `cursor` | from a read or wait reply, back into `since` or `zalo_mark_read` |

@@ -429,7 +429,15 @@ export async function handleSecureRequest(req, res, { store, accountId, publicUr
         }
     }
     // Only the named fields are passed on, and nothing typed is written back into a page.
-    const typed = { pin: fields.pin, newPin: fields.newPin, newPin2: fields.newPin2, secret: fields.secret };
+    const typed = {
+        pin: fields.pin,
+        newPin: fields.newPin,
+        newPin2: fields.newPin2,
+        secret: fields.secret,
+        // Not secrets: the OAuth approve page's agent choice (Companion Router).
+        agent: typeof fields.agent === "string" ? fields.agent : undefined,
+        agentNew: typeof fields.agentNew === "string" ? fields.agentNew : undefined,
+    };
     fields = null;
     let result;
     let notice = null;

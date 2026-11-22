@@ -116,6 +116,16 @@ import {
 import { gateMcp, removedLabels } from "../core/confirm-guard.js";
 import { getSecurePage } from "../core/secure-page.js";
 import { hiddenChatsFor, hiddenEventView, readThreadIds, withoutHidden } from "../core/hidden-chats.js";
+import { INBOX_META, inboxHandler } from "./inbox-tool.js";
+import {
+    annotateSentBy,
+    createAgentPresence,
+    createSentByStore,
+    prefixMark,
+    resolveCaller,
+    resolveRouting,
+} from "./agents.js";
+import { markFor } from "../core/routing-policy.js";
 
 /** The conversation ids a raw read names (moved to src/core/hidden-chats.js; `read run` uses it too). */
 export { readThreadIds } from "../core/hidden-chats.js";
@@ -124,6 +134,8 @@ import { resolveCurrentUserNames, withCurrentSenderNames } from "../core/current
 import { aliasFor, noteAliasSet, personNameFields, senderNameFields } from "../core/contact-names.js";
 import { actionTool, confirmInput, dryRunInput, ticketInput } from "./action-tool.js";
 import { gateToolsByPresence } from "./tool-presence.js";
+import { REMOTE_FILE_HINT, fileItemSchema, fileResolver, fileSourceSchema } from "./file-input.js";
+import { FILE_META, fileTool } from "./file-tool.js";
 import { BIN_TO_DISPLAY, generateQrTransferImage, qrTransferCaption, resolveBankBin } from "../utils/bank-helpers.js";
 import { CONVERSATION_ACTIONS, CONVERSATION_META } from "./actions-conversation.js";
 import { PROFILE_ACTIONS, PROFILE_META } from "./actions-profile.js";
@@ -477,6 +489,59 @@ function err(message) {
 }
 
 /**
+ * The ids a send tool's reply names (its `msgId`, `cliMsgId`, each part's and each sent file's), and its `threadId`.
+ *
+ * @param {object} result - an MCP tool result
+ * @returns {{ids: string[], threadId: string|null}}
+ */
+function idsOfResult(result) {
+    const ids = [];
+    let threadId = null;
+    for (const c of result?.content ?? []) {
+        if (c?.type !== "text" || typeof c.text !== "string" || !c.text.startsWith("{")) continue;
+        let body;
+        try {
+            body = JSON.parse(c.text);
+        } catch {
+            continue;
+        }
+        if (body?.threadId) threadId = String(body.threadId);
+        for (const m of [body, ...(Array.isArray(body?.parts) ? body.parts : []), ...(body?.sent ?? [])])
+            for (const v of [m?.msgId, m?.cliMsgId]) if (v !== undefined && v !== null && v !== "") ids.push(String(v));
+    }
+    return { ids, threadId };
+}
+
+/**
+ * A tool reply with each of its message lists (`messages`, `results`, `conversations`, `threads`) passed through `fn`;
+ * `message` (zalo_wait_for_message's first) follows `messages`. Errors and non-JSON replies come back as they were.
+ *
+ * @param {object} result
+ * @param {(list: object[]) => object[]} fn
+ * @returns {object}
+ */
+function mapResultLists(result, fn) {
+    if (!result || result.isError) return result;
+    const content = (result.content ?? []).map((c) => {
+        if (c?.type !== "text" || typeof c.text !== "string" || !c.text.startsWith("{")) return c;
+        let body;
+        try {
+            body = JSON.parse(c.text);
+        } catch {
+            return c;
+        }
+        for (const k of ["messages", "results", "conversations", "threads"])
+            if (Array.isArray(body[k])) body[k] = fn(body[k]);
+        if ("message" in body && Array.isArray(body.messages)) {
+            body.message = body.messages[0] ?? null;
+            if (typeof body.count === "number") body.count = body.messages.length;
+        }
+        return { ...c, text: JSON.stringify(body) };
+    });
+    return { ...result, content };
+}
+
+/**
  * One cached message as zalo_get_history returns it.
  * @param {object} m - a `messages` row
  * @returns {object}
@@ -658,14 +723,113 @@ export function registerTools(
     syncJobs,
     extras = {},
 ) {
-    // A send tool's handler, run through the daemon's record of the agents' own sends (src/mcp/self-messages.js).
+    // The caller (src/mcp/agents.js): the agent its credential is bound to in the account's routing settings, read
+    // live on every call. Presence and the record of who sent what live on the daemon's one buffer, as agentSends does.
+    if (buffer && !buffer.agentPresence) buffer.agentPresence = createAgentPresence();
+    if (buffer && !buffer.sentBy) buffer.sentBy = createSentByStore(null);
+    const routingNow = () => resolveRouting({ config, accountId: ownIdOf(api) || null });
+    // The daemon's Companion Router (src/mcp/router-runtime.js); absent in a bare test server.
+    const router = buffer?.router ?? null;
+    const callerOf = (consumer = null) => resolveCaller(server?.caller ?? null, routingNow(), consumer);
+    // The mark this caller's text starts with in this conversation ("" for none), by the agent's and account's settings.
+    const markOf = (who, threadId) => {
+        if (!who.agent || who.agent.enabled === false) return "";
+        let send2meId = null;
+        try {
+            send2meId = api.getContext?.()?.loginInfo?.send2me_id ?? null;
+        } catch {
+            /* no context: not My Documents */
+        }
+        const ownerChat = [ownIdOf(api), send2meId].some((id) => id && String(id) === String(threadId));
+        return markFor(who.agent, { marks: routingNow().marks, ownerChat });
+    };
+
+    // A send tool's handler, run through the daemon's record of the agents' own sends (src/mcp/self-messages.js), and
+    // the record of which agent sent it (sentBy).
     const trackAgentSend =
         (handler) =>
-        (...args) =>
-            buffer?.agentSends ? buffer.agentSends.track(() => handler(...args)) : handler(...args);
+        (...args) => {
+            const who = callerOf(args[0]?.consumer ?? null);
+            const run = async () => {
+                // The Companion Router's send guard (src/core/message-router.js guardSend): the owner's human pause,
+                // another agent's claim, or (Pro) a conversation never routed to this agent refuse the send.
+                const target = args[0]?.threadId;
+                if (router?.enabled() && target && String(target).toLowerCase() !== "me") {
+                    const g = router.guard(who, String(target), args[0]?.quoteMsgId ?? null);
+                    if (!g.ok) {
+                        router.noteRefused?.(who, String(target), g.code);
+                        return err(`${g.code}: ${g.message}`);
+                    }
+                }
+                const result = await handler(...args, who);
+                if (buffer?.sentBy && !result?.isError) {
+                    const ids = idsOfResult(result);
+                    if (ids.ids.length) buffer.sentBy.record(ids.ids, who, ids.threadId ?? args[0]?.threadId ?? null);
+                    if (router && who.agent) router.onAgentSend(who.agent.slug, ids.threadId ?? target);
+                }
+                return result;
+            };
+            return buffer?.agentSends ? buffer.agentSends.track(run) : run();
+        };
 
     // On-demand presence: refused while yielded or signed out, a hold per call, warming by the tool's class.
     gateToolsByPresence(server, extras?.presence ?? null);
+    // Agent presence (src/mcp/agents.js): every call is the caller seen; an open wait is the caller listening.
+    if (buffer?.agentPresence && typeof server?.registerTool === "function") {
+        const raw = server.registerTool.bind(server);
+        // Forwards are sends too (sentBy); the replies that list messages name the agent on the account's own.
+        const SENT_BY_READS = [
+            "zalo_get_history",
+            "zalo_search_messages",
+            "zalo_get_messages",
+            "zalo_wait_for_message",
+        ];
+        const ISOLATED_READS = ["zalo_get_history", "zalo_view_media", "zalo_get_group_members", "zalo_coverage"];
+        const ISOLATED_LISTS = ["zalo_search_messages", "zalo_list_conversations", "zalo_list_threads"];
+        server.registerTool = (name, meta, handler) => {
+            const inner = name === "zalo_forward_message" ? trackAgentSend(handler) : handler;
+            return raw(name, meta, async (...args) => {
+                const end = buffer.agentPresence.begin(callerOf(args[0]?.consumer ?? null), {
+                    waiting: name === "zalo_wait_for_message",
+                });
+                try {
+                    const who = callerOf(args[0]?.consumer ?? null);
+                    // Per-agent privacy (Pro): a conversation never routed to this agent cannot be read.
+                    if (
+                        router &&
+                        ISOLATED_READS.includes(name) &&
+                        args[0]?.threadId &&
+                        !router.mayRead(who, args[0].threadId)
+                    )
+                        return err("NOT_ROUTED: this conversation was not routed to you.");
+                    let result = await inner(...args);
+                    if (SENT_BY_READS.includes(name)) result = annotateSentBy(result, buffer.sentBy);
+                    if (router?.enabled()) {
+                        if (name === "zalo_get_messages" || name === "zalo_wait_for_message")
+                            result = mapResultLists(result, (list) =>
+                                router.viewFilter(list, who, args[0]?.view ?? "mine"),
+                            );
+                        else if (ISOLATED_LISTS.includes(name))
+                            result = mapResultLists(result, (list) =>
+                                list.filter((m) => !m?.threadId || router.mayRead(who, m.threadId)),
+                            );
+                    }
+                    return result;
+                } finally {
+                    end();
+                }
+            });
+        };
+    }
+
+    // The Companion Router's view of the buffer: `mine` (default with routing on) or `all`.
+    const viewSchema = z
+        .enum(["mine", "all"])
+        .optional()
+        .describe(
+            "With the account's Companion Router on: `mine` (the default) returns the messages routed to your agent or " +
+                "that it observes; `all` returns every message, each marked `forMe`. Without routing every caller sees all.",
+        );
 
     // Several bots can share one listener, each with its own read cursor
     // (triage M7). A bot that names none reads as "default", as before.
@@ -744,6 +908,9 @@ export function registerTools(
         mediaRoot: config.media?.downloadDir ?? null,
         // zalo_profile 'presence_resume': the daemon's presence (null under a server that runs none).
         presence: extras?.presence ?? null,
+        // Files a call names (src/mcp/file-input.js): a path for a caller on this machine, else fileId, url or data.
+        files: fileResolver({ server, config, accountDir, accountId: () => ownIdOf(api) || undefined, api }),
+        accountDir: accountDir ?? null,
     };
     const friendExtra = actionTool("zalo_friend", FRIEND_EXTRA_ACTIONS, toolCtx);
     const groupExtra = actionTool("zalo_group", GROUP_EXTRA_ACTIONS, toolCtx);
@@ -781,6 +948,7 @@ export function registerTools(
                     .optional()
                     .describe("Most messages to return in one call. Omit it for every unread message buffered."),
                 consumer: consumerSchema,
+                view: viewSchema,
             }),
         },
         async ({ threadId, since, limit, consumer }) => {
@@ -843,6 +1011,7 @@ export function registerTools(
             title: "Send Zalo Message",
             description:
                 "Send a message to a Zalo conversation: text, files or images, a link preview card, a contact card, a sticker, a voice message or a video from a URL, a bank account card, or a VietQR transfer image. Give `threadId` and one kind of content: `text`, `filePath` or `files`, `link`, `cardUserId`, `sticker`, `voiceUrl`, `video`, `bankCard` or `qrTransfer`. With files, a link, a video or a QR transfer, `text` is an optional caption. " +
+                "Files from a caller on another machine (an HTTP connection): put them in `files` as {data: <base64>, name} (small files, up to 10 MB a call by default), {url} (this server downloads it) or {fileId} (uploaded first through zalo_file 'upload_begin'); a path is read only for a caller on the machine this server runs on. " +
                 'Text: use real line breaks, never the two characters backslash and n (Zalo shows those as typed). Markdown is converted to Zalo formatting by default; `format: "plain"` sends the text exactly as written. A text over 3000 bytes (a Chinese, Japanese, Korean, Thai or Hindi character is 3, a Cyrillic or Arabic one 2) is split into several messages at paragraph or sentence ends, as Zalo does, and the reply then lists every part (`splitInto`, `parts`). ' +
                 "Mention in a group: put `@[userId]` in the text where the tag belongs (`@[-1]` is @All). Take the user id from a message's `senderId` (zalo_get_messages, zalo_get_history) or from zalo_get_group_members. It is sent as `@Their Name` and notifies that person; a user id the cache cannot name is tagged as the bare id and listed in `unresolvedMentions`. Mentions only work in groups. " +
                 "Reply to a message: pass its msgId as `quoteMsgId` (text messages only, and the message must be in the local cache). " +
@@ -867,14 +1036,19 @@ export function registerTools(
                         .min(1)
                         .optional()
                         .describe(
-                            "Local path of ONE file or image to send, on the machine this server runs on. `text` becomes its caption.",
+                            "Path of ONE file or image on the machine this server runs on (a caller on that machine only). `text` becomes its caption. " +
+                                REMOTE_FILE_HINT +
+                                ", in `files`.",
                         ),
                     files: z
-                        .array(z.string().min(1))
+                        .array(fileItemSchema())
                         .min(1)
+                        .max(50)
                         .optional()
                         .describe(
-                            "Local paths of several files or images to send in one call, on the machine this server runs on. `text` is the caption.",
+                            "Files or images to send in one call, `text` as the caption. Each is {fileId} (an upload, zalo_file), {url, name?} (this server downloads it), {data, name, mimeType?} (base64, small files), or a path on the machine this server runs on (a caller on that machine only). " +
+                                REMOTE_FILE_HINT +
+                                ".",
                         ),
                     link: z
                         .string()
@@ -902,24 +1076,22 @@ export function registerTools(
                     video: z
                         .object({
                             source: z
-                                .string()
-                                .min(1)
+                                .union([z.string().min(1), fileSourceSchema()])
                                 .describe(
-                                    "The video: an http(s) URL Zalo fetches, or a local file path on the machine this server runs on (uploaded)",
+                                    "The video: an http(s) URL string Zalo fetches itself, a path on the machine this server runs on, or {fileId} / {url} / {data, name} (an mp4 this server uploads; the way for a caller on another machine)",
                                 ),
                             thumbnail: z
-                                .string()
-                                .min(1)
-                                .describe("Its thumbnail: an image URL, or a local jpg/png/webp path (uploaded)"),
+                                .union([z.string().min(1), fileSourceSchema()])
+                                .describe(
+                                    "Its thumbnail: an image URL string, a path on the machine this server runs on, or {fileId} / {url} / {data, name} (a jpg/png/webp this server uploads)",
+                                ),
                             durationMs: z.number().int().min(0).optional().describe("Its length in milliseconds"),
                             width: z.number().int().min(1).optional().describe("Its width in pixels (default 1280)"),
                             height: z.number().int().min(1).optional().describe("Its height in pixels (default 720)"),
                         })
                         .strict()
                         .optional()
-                        .describe(
-                            "A video to send, from a URL or a local file, with its thumbnail. `text` is the caption.",
-                        ),
+                        .describe("A video to send, from a URL or a file, with its thumbnail. `text` is the caption."),
                     bankCard: z
                         .object({
                             bank: z
@@ -998,23 +1170,27 @@ export function registerTools(
         },
         // Tracked: with ownMyDocuments on, the echo of this send in My Documents is not handed back to the agent.
         trackAgentSend(
-            async ({
-                threadId: threadIdIn,
-                text,
-                filePath,
-                files,
-                link,
-                cardUserId,
-                sticker,
-                voiceUrl,
-                video,
-                bankCard,
-                qrTransfer,
-                threadType: threadTypeIn,
-                quoteMsgId,
-                urgency: urgencyIn,
-                format: formatIn,
-            }) => {
+            async (
+                {
+                    threadId: threadIdIn,
+                    text,
+                    filePath,
+                    files,
+                    link,
+                    cardUserId,
+                    sticker,
+                    voiceUrl,
+                    video,
+                    bankCard,
+                    qrTransfer,
+                    threadType: threadTypeIn,
+                    quoteMsgId,
+                    urgency: urgencyIn,
+                    format: formatIn,
+                },
+                _extra,
+                who = null,
+            ) => {
                 // `me` (or the own uid) is My Documents, always a 1-1 -- resolved
                 // before anything else reads the thread id, as `msg send me` is.
                 const thread = actionThread(api, threadIdIn, threadTypeIn);
@@ -1023,6 +1199,9 @@ export function registerTools(
                     return err(thread.error);
                 }
                 const { threadId, threadType } = thread;
+                // The caller's agent mark (src/mcp/agents.js), in front of every text and caption it sends here.
+                const mark = who ? markOf(who, threadId) : "";
+                const marked = (t) => (mark ? prefixMark({ text: t || "" }, mark).text : t);
                 // A group this account left or lost (src/core/group-exit.js): refused here, not at the server.
                 const goneRefusal = sendRefusal(threadId);
                 if (goneRefusal) return err(goneRefusal);
@@ -1064,7 +1243,7 @@ export function registerTools(
                     if (video) {
                         // As `msg send-video`: a URL Zalo fetches, or a local file uploaded on this server's socket; a
                         // thumbnail likewise.
-                        const isUrl = (v) => /^https?:\/\//i.test(v);
+                        const isUrl = (v) => typeof v === "string" && /^https?:\/\//i.test(v);
                         const size = {
                             duration: video.durationMs,
                             width: video.width ?? 1280,
@@ -1072,7 +1251,12 @@ export function registerTools(
                         };
                         if (isUrl(video.source) && isUrl(video.thumbnail)) {
                             const result = await api.sendVideo(
-                                { videoUrl: video.source, thumbnailUrl: video.thumbnail, msg: text ?? "", ...size },
+                                {
+                                    videoUrl: video.source,
+                                    thumbnailUrl: video.thumbnail,
+                                    msg: marked(text ?? ""),
+                                    ...size,
+                                },
                                 threadId,
                                 Number(threadType),
                             );
@@ -1080,24 +1264,31 @@ export function registerTools(
                         }
                         if (isUrl(video.source)) {
                             return err(
-                                "A video sent from a URL takes a thumbnail URL too; a local thumbnail goes with a local video.",
+                                "A video sent from a URL takes a thumbnail URL too; a thumbnail file goes with a video file " +
+                                    "(give the video as {url} to have this server download and upload it).",
                             );
                         }
-                        const file = resolve(video.source.trim());
-                        const thumb = isUrl(video.thumbnail) ? null : resolve(video.thumbnail.trim());
-                        const missing = [file, thumb].filter((p) => p && !existsSync(p));
-                        if (missing.length > 0) return err(`File not found: ${missing.join(", ")}`);
-                        const result = await api.sendVideoFile(
-                            {
-                                file,
-                                msg: text ?? "",
-                                ...(thumb ? { thumbnailFile: thumb } : { thumbnailUrl: video.thumbnail }),
-                                ...size,
-                            },
-                            threadId,
-                            Number(threadType),
-                        );
-                        return sentReply("video", result);
+                        // The video and a thumbnail that is not a URL: paths for this call (a path, an upload, a
+                        // download or inline bytes), removed afterwards.
+                        const items = isUrl(video.thumbnail) ? [video.source] : [video.source, video.thumbnail];
+                        const out = await toolCtx.files.run(items, "video", async ([file, thumb]) => {
+                            const result = await api.sendVideoFile(
+                                {
+                                    file: file.path,
+                                    msg: marked(text ?? ""),
+                                    ...(thumb ? { thumbnailFile: thumb.path } : { thumbnailUrl: video.thumbnail }),
+                                    ...size,
+                                },
+                                threadId,
+                                Number(threadType),
+                            );
+                            // Sent: an uploaded video goes once its message is recorded, its thumbnail at once.
+                            const msgId = result?.msgId ?? result?.message?.msgId ?? null;
+                            toolCtx.files.consume([file], { msgIds: msgId ? [String(msgId)] : [], threadId });
+                            if (thumb) toolCtx.files.consume([thumb], { needsRecord: false });
+                            return sentReply("video", result);
+                        });
+                        return out.fileError ? err(out.fileError) : out;
                     }
                     if (bankCard || qrTransfer) {
                         const spec = bankCard || qrTransfer;
@@ -1121,7 +1312,7 @@ export function registerTools(
                         );
                         if (!qrPath) return err("Could not generate the VietQR image; nothing was sent.");
                         try {
-                            const caption = text || qrTransferCaption(bin, qrTransfer);
+                            const caption = marked(text || qrTransferCaption(bin, qrTransfer));
                             const result = await api.sendMessage(
                                 { msg: caption, attachments: [qrPath] },
                                 threadId,
@@ -1156,7 +1347,7 @@ export function registerTools(
                     }
 
                     if (link) {
-                        const linkOpts = text ? { link, msg: text } : { link };
+                        const linkOpts = text || mark ? { link, msg: marked(text ?? "") } : { link };
                         const result = await api.sendLink(linkOpts, threadId, Number(threadType));
                         const messageId = result?.msgId ?? result?.message?.msgId ?? null;
                         const cliMsgId = result?.cliMsgId ?? result?.message?.cliMsgId ?? null;
@@ -1172,26 +1363,50 @@ export function registerTools(
                     }
 
                     const rawFiles = [...(filePath ? [filePath] : []), ...(Array.isArray(files) ? files : [])];
-                    if (rawFiles.length > 0) {
-                        const absPaths = rawFiles.map((p) => resolve(String(p).trim()));
-                        const missing = absPaths.filter((p) => !existsSync(p));
-                        if (missing.length > 0) {
-                            return err(`File not found: ${missing.join(", ")}`);
-                        }
+                    const sendFiles = async (got) => {
+                        const absPaths = got.map((f) => f.path);
                         // A caption is text too: Markdown in it is converted the same way.
-                        const caption =
+                        const caption = prefixMark(
                             text && resolveSendFormat({ explicit: formatIn, fallback: "markdown" }) === "markdown"
                                 ? markdownToZalo(text)
-                                : { text: text || "", styles: [] };
-                        const result = await api.sendMessage(
-                            {
-                                msg: caption.text,
-                                attachments: absPaths,
-                                ...(caption.styles.length > 0 && { styles: caption.styles }),
-                            },
-                            threadId,
-                            Number(threadType),
+                                : { text: text || "", styles: [] },
+                            mark,
                         );
+                        // Which file each sent attachment is: files and photos in the order given, GIFs last
+                        // (src/zalo/api/upload.js). An uploaded file goes once its own message is recorded; a file
+                        // whose send failed is kept, so the caller can send it again with the same fileId.
+                        const order = [
+                            ...got.map((f, i) => i).filter((i) => !/\.gif$/i.test(got[i].path)),
+                            ...got.map((f, i) => i).filter((i) => /\.gif$/i.test(got[i].path)),
+                        ];
+                        const consumeSent = (rows) =>
+                            (Array.isArray(rows) ? rows : rows ? [rows] : []).forEach((r, j) => {
+                                const f = got[order[j]];
+                                const id = r?.msgId ?? null;
+                                if (f && id !== null) toolCtx.files.consume([f], { msgIds: [String(id)], threadId });
+                            });
+                        let result;
+                        try {
+                            result = await api.sendMessage(
+                                {
+                                    msg: caption.text,
+                                    attachments: absPaths,
+                                    ...(caption.styles.length > 0 && { styles: caption.styles }),
+                                },
+                                threadId,
+                                Number(threadType),
+                            );
+                        } catch (e) {
+                            const partial = e?.partial?.attachment ?? [];
+                            consumeSent(partial);
+                            if (partial.length && e instanceof Error) {
+                                e.message +=
+                                    ` (${partial.length} of ${got.length} file(s) went out before this; the uploads ` +
+                                    "not sent are kept, so send those again with the same fileId)";
+                            }
+                            throw e;
+                        }
+                        consumeSent(result?.attachment);
                         const rawAtt = result?.attachment;
                         const attRows = rawAtt ? (Array.isArray(rawAtt) ? rawAtt : [rawAtt]) : [];
                         const sent = attRows
@@ -1209,13 +1424,22 @@ export function registerTools(
                         return ok({
                             success: true,
                             kind: "attachment",
-                            files: absPaths,
+                            // A path the caller gave comes back as it was resolved; anything else by its name.
+                            files: got.map((f) => (f.from === "path" ? f.path : f.name)),
                             sent,
                             msgId: messageId,
                             ...(cliMsgId !== null && { cliMsgId: String(cliMsgId) }),
                             threadType: threadTypeName(threadType),
                             ...(thread.notice && { threadId, notice: thread.notice }),
                         });
+                    };
+                    if (rawFiles.length > 0) {
+                        const out = await toolCtx.files.run(
+                            rawFiles,
+                            filePath && !files ? "filePath" : "files",
+                            sendFiles,
+                        );
+                        return out.fileError ? err(out.fileError) : out;
                     }
 
                     if (!text) {
@@ -1242,8 +1466,16 @@ export function registerTools(
                         if (!name && uid !== ALL_MENTION_UID) unresolved.push(uid);
                         return name;
                     });
-                    const mentions = expanded.mentions;
-                    const styles = shiftStyles(converted.styles, expanded.edits);
+                    const markedText = prefixMark(
+                        {
+                            text: expanded.text,
+                            styles: shiftStyles(converted.styles, expanded.edits),
+                            mentions: expanded.mentions,
+                        },
+                        mark,
+                    );
+                    const mentions = markedText.mentions;
+                    const styles = markedText.styles;
 
                     // The session drops mentions outside a group, so a DM send would
                     // quietly arrive with the names as plain text and nobody tagged.
@@ -1302,7 +1534,7 @@ export function registerTools(
                     // Zalo refuses one oversized message (114 plain, 112 styled), so a long text goes out as Zalo sends
                     // it: split at 3000 bytes of text plus styles, in order, 300 ms apart. The quote and the urgency
                     // belong to the first part only.
-                    const parts = splitMessage({ text: expanded.text, styles, mentions });
+                    const parts = splitMessage({ text: markedText.text, styles, mentions });
                     const contentOf = (part, index) => {
                         const first = index === 0;
                         const extras =
@@ -1339,7 +1571,8 @@ export function registerTools(
                         ...(thread.notice && { threadId, notice: thread.notice }),
                         // Only when it differs, so the common send keeps its shape:
                         // the agent wrote `@[123]` and needs to know what was sent.
-                        ...(expanded.text !== text && { text: expanded.text }),
+                        ...(markedText.text !== text && { text: markedText.text }),
+                        ...(mark && { mark }),
                         ...(styles.length > 0 && { formatted: styles.length }),
                         ...(unresolved.length > 0 && { unresolvedMentions: unresolved }),
                         // Only when it was split: every part's ids, in order (msgId/cliMsgId above are the first).
@@ -3506,6 +3739,7 @@ export function registerTools(
                     .describe(
                         `After the first message arrives, wait this many ms for the rest of a burst (default 0, max ${MAX_SETTLE_MS})`,
                     ),
+                view: viewSchema,
             }),
         },
         async ({ threadId, since, timeoutSec = 55, limit, settleMs = 0 }) => {
@@ -4349,5 +4583,15 @@ export function registerTools(
                 return err(e.message);
             }
         },
+    );
+
+    // --- zalo_file: the account's upload store, for callers on another machine (src/mcp/file-tool.js) ---
+    server.registerTool("zalo_file", FILE_META, fileTool(toolCtx));
+
+    // --- zalo_inbox: who the caller is among the account's agents (src/mcp/inbox-tool.js) ---
+    server.registerTool(
+        "zalo_inbox",
+        INBOX_META,
+        inboxHandler({ callerOf, routingNow, presence: buffer?.agentPresence ?? null, router }),
     );
 }

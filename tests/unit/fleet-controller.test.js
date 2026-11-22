@@ -457,3 +457,70 @@ describe("admin webhook", () => {
         assert.equal(adminWebhook(null, null)({}), undefined);
     });
 });
+
+describe("routing events", () => {
+    it(
+        "SSE carries a daemon's new routing events once, read only when its head moves",
+        { timeout: 15_000 },
+        async () => {
+            const events = [
+                {
+                    id: "b1-1",
+                    seq: 1,
+                    at: "2026-11-18T10:00:00.000Z",
+                    kind: "routed",
+                    threadId: "5001",
+                    to: "staff:lan",
+                },
+                {
+                    id: "b1-2",
+                    seq: 2,
+                    at: "2026-11-18T10:00:01.000Z",
+                    kind: "claimed",
+                    threadId: "5001",
+                    by: "staff:lan",
+                },
+            ];
+            const asked = [];
+            const hooked = [];
+            const { controller, probes, base } = await rig({
+                accounts: [A],
+                extra: {
+                    relay: async (id, path, params) => {
+                        asked.push([path, params.action, params.since]);
+                        return { ok: true, bootId: "b1", seq: 2, events: events.filter((e) => e.seq > params.since) };
+                    },
+                    webhook: (e) => hooked.push(e.event),
+                },
+            });
+            const ac = new AbortController();
+            const res = await fetch(`${base}/events`, {
+                headers: { Authorization: `Bearer ${ADMIN}` },
+                signal: ac.signal,
+            });
+            const reader = res.body.getReader();
+            let text = "";
+            probes.set(A, { running: true, health: { socket: { state: "idle" }, routing: { bootId: "b1", seq: 2 } } });
+            await controller.poll();
+            await controller.poll();
+            while ((text.match(/event: routing\n/g) || []).length < 2)
+                text += new TextDecoder().decode((await reader.read()).value);
+            const routing = text
+                .split("\n\n")
+                .filter((b) => b.startsWith("event: routing"))
+                .map((b) => JSON.parse(/^data: (.+)$/m.exec(b)[1]));
+            assert.deepEqual(
+                routing.map((e) => [e.event, e.accountId, e.id, e.kind]),
+                [
+                    ["routing", A, "b1-1", "routed"],
+                    ["routing", A, "b1-2", "claimed"],
+                ],
+            );
+            // The second poll saw the same head: nothing is read again. Routing events stay off the admin webhook.
+            assert.deepEqual(asked, [["/routing", "events", 0]]);
+            assert.equal(hooked.includes("routing"), false);
+            controller.stop();
+            ac.abort();
+        },
+    );
+});

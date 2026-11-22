@@ -16,8 +16,11 @@ import {
     MEDIA_DELIVER_MODES,
     MEDIA_KINDS,
     MEDIA_LINK_AUTHS,
+    UPLOAD_INLINE_CEILING,
     durationMs,
 } from "./deploy-policy.js";
+import { ACCOUNT_MARKS, checkAgents } from "./routing-policy.js";
+import { checkRouting } from "./message-router.js";
 
 const CONFIRM_MODES = ["agent", "human", "off"];
 const TRUE = ["1", "true", "on", "yes"];
@@ -103,6 +106,13 @@ const bytes = (value) => {
     const b = parseBytes(value);
     return b === null ? { error: 'is not a size (bytes, or e.g. "2GB", or "unlimited")' } : { value };
 };
+/** A size with an upper bound: no "unlimited". */
+const sizeUpTo = (max) => (value) => {
+    const b = parseBytes(value);
+    return typeof b === "number" && b <= max
+        ? { value }
+        : { error: `is not a size (bytes, or e.g. "10MB")${max < Number.MAX_SAFE_INTEGER ? " of at most 32MB" : ""}` };
+};
 const reserve = (value) => {
     if (value === 0 || String(value ?? "").trim() === "0") return { value: 0 };
     const b = parseBytes(value);
@@ -184,6 +194,12 @@ const mediaStore = (value) => {
     return kinds.length ? { value: [...new Set(kinds)].sort() } : { value: "none" };
 };
 
+/** One key of a routing block, checked by checkRouting and kept as given (the reader normalizes it). */
+const routingPart = (key) => (value) => {
+    const r = checkRouting({ [key]: value });
+    return r.error ? { error: r.error } : { value };
+};
+
 /** The presence modes (src/core/presence.js). */
 export const PRESENCE_MODES = Object.freeze(["on-demand", "always-on"]);
 
@@ -212,6 +228,17 @@ export const POLICY_KEYS = Object.freeze({
     "media.autoOpen": { check: bool },
     // Which media kinds are kept at all (text-only storage): the one downloader (src/core/sync-v2/media.js) skips the rest.
     "media.store": { check: mediaStore },
+    // Files a caller hands the server (src/core/file-inputs.js, src/core/upload-store.js): read on every call. Which
+    // paths the server reads from its own disk (uploads.localPaths, localPathRoots, allowPrivateUrls) is not a policy.
+    "uploads.inlineMaxBytes": { check: sizeUpTo(UPLOAD_INLINE_CEILING) },
+    "uploads.maxBytes": { check: sizeUpTo(Number.MAX_SAFE_INTEGER) },
+    "uploads.urlMaxBytes": { check: sizeUpTo(Number.MAX_SAFE_INTEGER) },
+    "uploads.urlTimeout": { check: duration(1000) },
+    "uploads.quota": { check: sizeUpTo(Number.MAX_SAFE_INTEGER) },
+    "uploads.ttl": { check: duration(60_000) },
+    "uploads.uploadLinkTtl": { check: duration(60_000) },
+    "uploads.recordWait": { check: duration(10_000) },
+    "uploads.warnAt": { check: fraction },
     webhook: { check: webhookUrl },
     webhookBatchSize: { check: wholeNumber(1, 100) },
     webhookMaxAge: { check: duration(60_000) },
@@ -261,6 +288,23 @@ export const POLICY_KEYS = Object.freeze({
     "session.renew.enabled": { check: bool },
     "session.renew.daysBefore": { check: wholeNumber(1, 14) },
     "session.renew.linkTtl": { check: duration(10 * 60_000) },
+    // The Companion Router (src/core/routing-policy.js, src/mcp/agents.js): the account's agents bound to its
+    // credentials, whether their marks show, and how recently seen counts as listening. Read on every call.
+    "routing.agents": { check: checkAgents, scopes: ["account"] },
+    "routing.marks": { check: oneOf(ACCOUNT_MARKS) },
+    "routing.presenceWindow": { check: duration(10_000) },
+    // How many days the daemon keeps its routing events (the console's Activity; the plan's retention, 0: a day, enough
+    // to hand them to the console).
+    "routing.logDays": { check: wholeNumber(0, 365) },
+    // Routing itself (src/core/message-router.js): each key checked as part of a routing block.
+    "routing.enabled": { check: bool },
+    "routing.claims": { check: bool },
+    "routing.isolation": { check: bool },
+    "routing.owners": { check: routingPart("owners"), scopes: ["account"] },
+    "routing.routes": { check: routingPart("routes"), scopes: ["account"] },
+    "routing.default": { check: routingPart("default"), scopes: ["account"] },
+    "routing.staff": { check: routingPart("staff"), scopes: ["account"] },
+    "routing.settings": { check: routingPart("settings") },
 });
 
 /**
@@ -277,6 +321,9 @@ export const RESTART_KEYS = Object.freeze([
     "admin",
     "webhookSecret",
     "media.downloadDir",
+    "uploads.localPaths",
+    "uploads.localPathRoots",
+    "uploads.allowPrivateUrls",
     "provider",
     "dkeyLayer",
     "dpapi",

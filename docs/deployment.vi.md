@@ -2,7 +2,7 @@
 
 [English](deployment.md)
 
-**Trạng thái:** cập nhật cho `zalo-agent-cli` `3.0.0` và `zalo-mcp` `2.1.0`: lớp giao thức Zalo riêng của engine (không còn zca-js), hiện diện theo nhu cầu cho daemon (tạm nghỉ và đánh thức, lease của CRM, nhường phiên, bị đăng xuất; §4.10), kho tin nhắn được mã hóa và các tệp được niêm phong, chính sách runtime cùng admin API, hạn mức lưu trữ, bộ điều khiển fleet (`fleet serve`) và năm bộ cấu hình mẫu theo tình huống, 37 MCP tool, cơ chế xác nhận trước thao tác phá hủy (`--yes` trên CLI, `confirm` và `confirmMode` qua MCP), các dòng log của bộ giám sát socket, khôi phục theo từng đợt với ba lần kết nối lại, đăng nhập QR chính thức cùng tệp thiết bị tin cậy, HTTPS gốc `--cert`/`--key`, máy chủ ủy quyền OAuth 2.0 / 2.1 tích hợp sẵn, webhook có chữ ký trên cả `listen` lẫn `mcp start`, long-polling 0% CPU qua `GET /events/wait` + `zalo_wait_for_message`, và vòng đời chạy nền `-d, --daemon` / `--stop` / `--status`.
+**Trạng thái:** cập nhật cho `zalo-agent-cli` `3.0.0` và `zalo-mcp` `2.1.0`: lớp giao thức Zalo riêng của engine (không còn zca-js), hiện diện theo nhu cầu cho daemon (tạm nghỉ và đánh thức, lease của CRM, nhường phiên, bị đăng xuất; §4.10), kho tin nhắn được mã hóa và các tệp được niêm phong, chính sách runtime cùng admin API, hạn mức lưu trữ, bộ điều khiển fleet (`fleet serve`) và năm bộ cấu hình mẫu theo tình huống, 39 MCP tool, cơ chế xác nhận trước thao tác phá hủy (`--yes` trên CLI, `confirm` và `confirmMode` qua MCP), các dòng log của bộ giám sát socket, khôi phục theo từng đợt với ba lần kết nối lại, đăng nhập QR chính thức cùng tệp thiết bị tin cậy, HTTPS gốc `--cert`/`--key`, máy chủ ủy quyền OAuth 2.0 / 2.1 tích hợp sẵn, webhook có chữ ký trên cả `listen` lẫn `mcp start`, long-polling 0% CPU qua `GET /events/wait` + `zalo_wait_for_message`, và vòng đời chạy nền `-d, --daemon` / `--stop` / `--status`.
 **Giấy phép:** từ bản 2.0.1 phần mềm này được cấp phép theo CC BY-NC-SA 4.0; việc sử dụng trong hoạt động kinh doanh của doanh nghiệp cần giấy phép thương mại riêng (xem [NOTICE](../NOTICE)).
 **Đối tượng đọc:** người vận hành hệ thống này trên máy chủ và bị gọi dậy khi nó ngừng chạy.
 
@@ -75,7 +75,7 @@ Vì vậy quyết định triển khai đầu tiên là bắt buộc: **bạn c�
 >
 > | | `listen` | `mcp start` |
 > |---|---|---|
-> | Bề mặt MCP tool (37 tool trong `src/mcp/mcp-tools.js`) | không | **có** |
+> | Bề mặt MCP tool (39 tool trong `src/mcp/mcp-tools.js`) | không | **có** |
 > | HTTP / HTTPS `/health`, `/ready`, `/status`, `/metrics`, `/events/wait`, các endpoint OAuth 2.1 (chỉ khi đã cấu hình một OAuth client) | không | **có** (chỉ với `--http`) |
 > | Đẩy ra ngoài qua `-w, --webhook <url>` + `--webhook-secret <secret>` | **có** | **có** |
 > | Lưu trữ JSONL `--save <dir>` | **có** | không |
@@ -92,7 +92,7 @@ Vì vậy quyết định triển khai đầu tiên là bắt buộc: **bạn c�
 > `tests/unit/listener-lifecycle-rules.test.js` giữ cả hai theo cùng quy tắc khoảng hở (mỗi bên dựng một `SyncManager` và ghi một khoảng hở lúc khởi động), và `tests/unit/self-heal-wiring.test.js` chạy các kiểm tra nối dây trên cả hai file. Vì vậy phát hiện mất tin không còn là lý do để chọn bên nào: chọn `mcp start` cho bot MCP (và webhook push / long-polling), `listen` cho bên tiêu thụ webhook hoặc JSONL chỉ dùng CLI.
 
 > [!NOTE]
-> **Các tool của `mcp start` đi theo lần đăng nhập lại.** Một socket mà bộ giám sát không giữ sống được trên phiên của nó (Zalo từ chối phiên, hoặc sau 8 lần thử liên tiếp vẫn không có socket dùng được) được socket host xử lý ngay trong tiến trình: `clearSession()`, rồi đăng nhập, tạo một đối tượng API mới (`loginWithCredentials` trong `src/core/zalo-client.js`). Các handler của listener, self-heal, kênh daemon và việc tải media đi theo đối tượng mới qua `getApi()`, và 37 tool cùng bộ thông báo cũng vậy: chúng nhận `liveApi(getApi)` (`src/core/live-api.js`), đọc phiên hiện hành ở mỗi lần gọi. Trước bản sửa của 2.0.0, chúng nhận đối tượng lúc khởi động một lần duy nhất, nên sau dòng `Re-login successful` chúng vẫn gọi vào phiên đã bị thay, và việc quét socket của `zalo_get_history` lật trang trên một listener đã đóng. Trong lúc đang đăng nhập lại, một lần gọi tool thất bại với "The Zalo session is logging in again after a dropped connection; try again in a few seconds."
+> **Các tool của `mcp start` đi theo lần đăng nhập lại.** Một socket mà bộ giám sát không giữ sống được trên phiên của nó (Zalo từ chối phiên, hoặc sau 8 lần thử liên tiếp vẫn không có socket dùng được) được socket host xử lý ngay trong tiến trình: `clearSession()`, rồi đăng nhập, tạo một đối tượng API mới (`loginWithCredentials` trong `src/core/zalo-client.js`). Các handler của listener, self-heal, kênh daemon và việc tải media đi theo đối tượng mới qua `getApi()`, và 39 tool cùng bộ thông báo cũng vậy: chúng nhận `liveApi(getApi)` (`src/core/live-api.js`), đọc phiên hiện hành ở mỗi lần gọi. Trước bản sửa của 2.0.0, chúng nhận đối tượng lúc khởi động một lần duy nhất, nên sau dòng `Re-login successful` chúng vẫn gọi vào phiên đã bị thay, và việc quét socket của `zalo_get_history` lật trang trên một listener đã đóng. Trong lúc đang đăng nhập lại, một lần gọi tool thất bại với "The Zalo session is logging in again after a dropped connection; try again in a few seconds."
 
 ### 1.2 `daemon-channel.js` thực chất là gì
 

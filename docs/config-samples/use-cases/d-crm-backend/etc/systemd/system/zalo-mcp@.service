@@ -52,7 +52,9 @@ RestartMaxDelaySec=300
 # signed_out, until the account is added again by QR). A restart fixes neither (it would
 # evict the other session again, or be refused again), so the unit stays down and enters
 # `failed` for your alert to catch.
-RestartPreventExitStatus=3 4
+# Exit 5 means this engine's pool lease of the account ended (ZALO_FLEET_LEASE_FILE): another
+# engine may run it now, and the fleet controller starts it here again only with a new lease.
+RestartPreventExitStatus=3 4 5
 
 StandardOutput=journal
 StandardError=journal

@@ -31,6 +31,7 @@ import { createHmac } from "node:crypto";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { KeystoreError } from "./keystore/container.js";
+import { assertLeaseCurrent, leaseLost } from "./fleet-lease.js";
 import { checkLock } from "./lock.js";
 import { Database, dbFileState, migratePlaintextDatabase, openDatabase, shredFile } from "./sqlite.js";
 
@@ -166,6 +167,8 @@ export function openOutbox(accountDir, { now = Date.now, readonly = false, log }
          * @returns {{ queued: boolean, seq: number|null }} `queued: false` when the same key is already waiting
          */
         enqueue(eventKey, body) {
+            // Leased mode: a holder whose pool lease ended writes nothing more into the shared folder.
+            assertLeaseCurrent();
             const r = insert.run(eventKey ?? null, body, now());
             return r.changes ? { queued: true, seq: Number(r.lastInsertRowid) } : { queued: false, seq: null };
         },
@@ -476,9 +479,10 @@ export function createWebhookDispatcher({
     }
 
     async function pump() {
-        if (stopped) return;
+        // Leased mode: an engine whose pool lease ended delivers nothing more (the new holder does).
+        if (stopped || leaseLost()) return;
         try {
-            while (!stopped) {
+            while (!stopped && !leaseLost()) {
                 const expired = outbox.expireOlderThan(now() - maxAgeMs);
                 if (expired)
                     log(

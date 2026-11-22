@@ -17,6 +17,7 @@ import { getAccount, updateAccountName, updateAccountProfile } from "../core/acc
 import { CONFIG_DIR, getAccountDir, MEDIA_DIR, readSavedDevice, saveCredentials } from "../core/credentials.js";
 import { createStartupGate, resolveStartupSettings } from "../core/startup-gate.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
+import { leaseLost, startDaemonLease } from "../core/fleet-lease.js";
 import { startMediaMigration } from "../core/media-store.js";
 import {
     createStageLock,
@@ -713,6 +714,13 @@ export function registerMCPCommands(program) {
             // writer, so the lock that used to guard only `listen` has to guard
             // this too — previously both could start, and Zalo silently killed
             // one of the two sockets.
+            // Leased mode (a pool engine, src/core/fleet-lease.js): only with this engine's lease of the account, and
+            // before the lock: a lock another engine holds in the shared folder looks stale from here.
+            const daemonLease = startDaemonLease({
+                ownId: activeAcc.ownId,
+                accountDir,
+                log: (m) => console.error(`[mcp] ${m}`),
+            });
             if (!acquireLock(accountDir)) {
                 console.error(
                     `[mcp] Another listener (listen daemon or MCP server) is already running for account ${activeAcc.ownId}.`,
@@ -738,6 +746,7 @@ export function registerMCPCommands(program) {
                     console.error(`[mcp] Failed to release lock: ${e.message}`);
                 }
             };
+            daemonLease?.onRelease(dropLock);
 
             // Spread a fleet's start-up: a random delay and a cap on daemons logging in at once
             // (ZALO_START_JITTER, ZALO_LOGIN_SLOTS; src/core/startup-gate.js). Both off by default.
@@ -1954,6 +1963,7 @@ export function registerMCPCommands(program) {
                 // duplicate-session close rebuilds it under us.
                 try {
                     channel = await startDaemonChannel({
+                        leaseLost,
                         getApi,
                         accountDir,
                         onLog: (m) => console.error(`[mcp] ${m}`),

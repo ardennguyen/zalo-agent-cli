@@ -123,7 +123,7 @@ import { resolveHiddenChats, resolveMediaDelivery } from "../core/deploy-policy.
 import { resolveCurrentUserNames, withCurrentSenderNames } from "../core/current-user-names.js";
 import { aliasFor, noteAliasSet, personNameFields, senderNameFields } from "../core/contact-names.js";
 import { actionTool, confirmInput, dryRunInput, ticketInput } from "./action-tool.js";
-import { gateToolsByPresence } from "./tool-presence.js";
+import { gateToolsByLease, gateToolsByPresence } from "./tool-presence.js";
 import { BIN_TO_DISPLAY, generateQrTransferImage, qrTransferCaption, resolveBankBin } from "../utils/bank-helpers.js";
 import { CONVERSATION_ACTIONS, CONVERSATION_META } from "./actions-conversation.js";
 import { PROFILE_ACTIONS, PROFILE_META } from "./actions-profile.js";
@@ -666,6 +666,8 @@ export function registerTools(
 
     // On-demand presence: refused while yielded or signed out, a hold per call, warming by the tool's class.
     gateToolsByPresence(server, extras?.presence ?? null);
+    // Leased mode: refused first once this engine's pool lease of the account has ended.
+    gateToolsByLease(server);
 
     // Several bots can share one listener, each with its own read cursor
     // (triage M7). A bot that names none reads as "default", as before.

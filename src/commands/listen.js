@@ -17,6 +17,7 @@ import { updateAccountName, updateAccountProfile } from "../core/accounts.js";
 import { CONFIG_DIR, getAccountDir } from "../core/credentials.js";
 import { createStartupGate, resolveStartupSettings } from "../core/startup-gate.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
+import { leaseLost, startDaemonLease } from "../core/fleet-lease.js";
 import { startMediaMigration } from "../core/media-store.js";
 import { getMediaLinks, linkForCachedMessage, startTempfileSweeper } from "../core/media-deliver.js";
 import { ensureMediaServed } from "../core/media-route.js";
@@ -303,6 +304,13 @@ export function registerListenCommand(program) {
                 return;
             }
 
+            // Leased mode (a pool engine, src/core/fleet-lease.js): only with this engine's lease of the account, and
+            // before the lock: a lock another engine holds in the shared folder looks stale from here.
+            const daemonLease = startDaemonLease({
+                ownId: activeAcc.ownId,
+                accountDir,
+                log: (m) => console.error(`[listen] ${m}`),
+            });
             if (!acquireLock(accountDir)) {
                 error(`Another listen daemon is already running for account ${activeAcc.ownId}.`);
                 process.exit(1);
@@ -324,6 +332,7 @@ export function registerListenCommand(program) {
                     console.error(`[listen] Failed to release lock: ${e.message}`);
                 }
             };
+            daemonLease?.onRelease(dropLock);
             // Spread a fleet's start-up: a random delay and a cap on daemons logging in at once
             // (ZALO_START_JITTER, ZALO_LOGIN_SLOTS; src/core/startup-gate.js). Both off by default.
             const startup = resolveStartupSettings({ env: process.env, ownId: activeAcc.ownId });
@@ -1412,6 +1421,7 @@ export function registerListenCommand(program) {
 
             try {
                 channel = await startDaemonChannel({
+                    leaseLost,
                     getApi,
                     accountDir,
                     onLog: (m) => info(m),

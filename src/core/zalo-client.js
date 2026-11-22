@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { getActive } from "./accounts.js";
 import { CONFIG_DIR, getAccountDir, loadCredentials, saveCredentials } from "./credentials.js";
 import { loadTestFakeSession, resolveTestFakeApi } from "./test-fake-session.js";
+import { LeaseError, assertLeaseHeld, leasedMode } from "./fleet-lease.js";
 import { attachLoginSession } from "./keystore/index.js";
 import { info } from "../utils/output.js";
 import { generateDeviceFingerprint } from "../zalo/device-fingerprint.js";
@@ -92,6 +93,23 @@ function persistCookies(ownId, creds, api) {
     }
 }
 
+/**
+ * Leased mode (src/core/fleet-lease.js): a saved login opens a Zalo session only on the engine that holds the account's
+ * lease, so a pool never has two clients on one login. A login whose account is not known beforehand is refused there.
+ *
+ * @param {string|null} ownId
+ */
+function leaseGate(ownId) {
+    if (!leasedMode()) return;
+    if (!ownId) {
+        throw new LeaseError(
+            "leased mode: a saved login is opened only for a known account that this engine holds the lease of",
+            "LEASE_NOT_HELD",
+        );
+    }
+    assertLeaseHeld(String(ownId), { accountDir: getAccountDir(String(ownId)) });
+}
+
 /** Set the active API + ownId (used after login). */
 function setSession(api, ownId) {
     _api = api;
@@ -114,7 +132,8 @@ export function clearSession() {
  *   rewritten when the login changed the cookies
  * @returns {object} - {api, ownId}
  */
-export async function loginWithCredentials(creds, proxyUrl = null, { ownId: knownId = null } = {}) {
+export async function loginWithCredentials(creds, proxyUrl = null, { ownId: knownId = null, leaseOwnId = null } = {}) {
+    leaseGate(knownId ?? leaseOwnId);
     const zaloOptions = buildOptions(proxyUrl);
     const api = await openSession(creds, { zaloOptions, ownId: knownId, drStoreFor });
     const ownId = api.getOwnId?.() || null;
@@ -136,6 +155,7 @@ export async function loginWithCredentials(creds, proxyUrl = null, { ownId: know
  * @throws {Error} when Zalo (or the network) did not
  */
 export async function probeSavedLogin(creds, proxyUrl = null, { ownId = null } = {}) {
+    leaseGate(ownId);
     const zaloOptions = buildOptions(proxyUrl);
     const api = await openSession(creds, { zaloOptions, ownId, drStoreFor, upkeep: false });
     return { ownId: api.getOwnId?.() || null };

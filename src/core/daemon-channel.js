@@ -325,6 +325,8 @@ function readJsonBody(req, reply) {
  * @param {(o: {kind: string, cls: "socket"|"wait"}) => Promise<{release: () => void}>} [args.presenceGate] - the
  *   daemon's presence door (src/core/daemon-presence.js `admit`): an upload, a sync stage and a wait each hold the
  *   socket for their duration; a refusal (`code` YIELDED, SIGNED_OUT or WARMING) is answered with that code
+ * @param {() => boolean} [args.leaseLost] - leased mode (src/core/fleet-lease.js `leaseLost`): once true, every route
+ *   but `/stop` and `/status` is refused with LEASE_LOST (the daemon is on its way out)
  * @returns {Promise<{port: number, stop: () => void}>}
  */
 export function startDaemonChannel({
@@ -343,6 +345,7 @@ export function startDaemonChannel({
     onPresence = null,
     onSession = null,
     presenceGate = null,
+    leaseLost = () => false,
 }) {
     const token = randomBytes(24).toString("hex");
 
@@ -619,6 +622,11 @@ export function startDaemonChannel({
             return reply(404, { error: "not found" });
         }
 
+        // Leased mode (src/core/fleet-lease.js): once this engine's pool lease of the account ended, nothing but /stop
+        // and /status is served (the daemon is on its way out).
+        if (req.url !== "/stop" && req.url !== "/status" && leaseLost()) {
+            return reply(409, { error: "this engine's pool lease of the account has ended", code: "LEASE_LOST" });
+        }
         const body = await readJsonBody(req, reply);
         if (!body) return; // already answered, or the request went away
         if (req.url === "/stop") return serveStop(body, reply);

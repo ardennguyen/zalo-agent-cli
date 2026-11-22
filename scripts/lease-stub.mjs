@@ -162,7 +162,15 @@ if (cmd === "daemon") {
     for (const id of existsSync(base) ? readdirSync(base).filter((x) => ID.test(x)) : []) {
         const file = join(base, id, "stub.db");
         if (!existsSync(file)) continue;
-        const db = new Database(file, { readonly: true, fileMustExist: true, timeout: 5000 });
+        // The writers keep their database busy (one row every 100 ms, each commit a synced write on a slow disk): wait long.
+        let db;
+        try {
+            db = new Database(file, { readonly: true, fileMustExist: true, timeout: 60_000 });
+        } catch (e) {
+            bad++;
+            report.push({ account: id, integrity: `open failed: ${e.code ?? e.message}`, rows: 0, backwards: 0, ok: false, runs: [] });
+            continue;
+        }
         try {
             const integrity = db.pragma("integrity_check", { simple: true });
             const rows = db.prepare("SELECT seq, token, holder, at FROM w ORDER BY seq").all();
@@ -179,6 +187,9 @@ if (cmd === "daemon") {
             const ok = integrity === "ok" && backwards === 0;
             if (!ok) bad++;
             report.push({ account: id, integrity, rows: rows.length, backwards, ok, runs });
+        } catch (e) {
+            bad++;
+            report.push({ account: id, integrity: `read failed: ${e.code ?? e.message}`, rows: 0, backwards: 0, ok: false, runs: [] });
         } finally {
             db.close();
         }

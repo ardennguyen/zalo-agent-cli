@@ -111,11 +111,11 @@ Each of these reports success, or names the wrong cause. They were all learned t
 
 | Invariant | Current | Source of truth | How to check |
 |---|---|---|---|
-| CLI commands | **326** invokable leaves (232 personal + 94 OA/ZBS/Social) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
+| CLI commands | **331** invokable leaves (237 personal + 94 OA/ZBS/Social) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
 | Command groups | **42** containers — 25 top-level + 11 OA subgroups + 3 ZBS subgroups + `mcp webhook` + `account security` + `cloud key` | the live commander tree | walk it. The number of `register*` calls in `src/index.js` is neither number: `oa` registers 11 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
-| MCP tools | **37** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
+| MCP tools | **38** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA/ZBS/Social commands | **94** (70 `oa` + 18 `zbs` + 6 `social`) | `src/commands/oa.js` + `src/commands/oa/*.js`, `src/commands/zbs.js`, `src/commands/social.js` | `node scripts/count-surface.mjs`. `zbs` counts with `oa`: both are the official API on the OA's OAuth token, so "personal" stays the unofficial surface |
-| Offline tests | **5751** as of 2026-11-22 (5746 pass, 5 skipped, 0 todo, 0 fail; Linux) | `npm test` | the run's own summary line |
+| Offline tests | **5900** as of 2026-11-23 (5895 pass, 5 skipped, 0 todo, 0 fail; Linux) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -953,6 +953,7 @@ the old names and made `threadType` the words `"dm"` / `"group"` in every MCP in
 | conversation type | `threadType` | `"dm"` or `"group"`, in inputs and in replies |
 | one message | `msgId` | every input and every reply; `quoteMsgId` and `lastMsgId` are msgIds with a role, `msgIds` several (zalo_conversation `seen`). Dropped in 3.0: `id` (live messages), `messageId` (send replies) |
 | the sender's own id for a message | `cliMsgId` | returned by a send; react and undo need it |
+| a file in the account's upload store | `fileId` | `f_` + 24 characters; from `zalo_file` (`upload_begin`, `upload`), `POST /zalo/files` or `file put`; every file input takes `{fileId}` |
 | a Zalo user | `userId` | a message's author is `senderId` (a userId); `@[userId]` mentions. Dropped in 3.0: `uid` (group members) |
 | a message's author, as an input | `senderId` | `zalo_search_messages` and `zalo_delete_message`; never `uidFrom` |
 | reading position | `cursor` | from a read or wait reply, back into `since` or `zalo_mark_read` |
@@ -1081,7 +1082,7 @@ on-demand presence: an on-demand daemon **yields** on a kick instead of exiting 
 login leaves either kind of daemon up as `signed_out`, refusing with `SIGNED_OUT`, because Zalo keeps one web login
 per account and a QR login into Zalo in a browser elsewhere is what revokes ours; `ZALO_EXIT_ON_SIGNED_OUT=1` keeps exit 4.) A
 login that fails for lack of a network is asked again, slowly, for as long as it takes. The shipped systemd unit
-has `RestartPreventExitStatus=3 4`, so neither is restarted into the same state.
+has `RestartPreventExitStatus=3 4 5`, so neither is restarted into the same state.
 
 **Retries follow the server's table.** `settings.features.socket` carries a per-key `{times, max}`; every close is
 mapped to a key by Zalo's rules (1006 asks the network first, 1001-1015 is `internal`, Zalo's own
@@ -2218,3 +2219,58 @@ each one means:
 
 The map is matched by `act_type/act` first, then `act_type`, then `act`, so a pair entry (`conv_settings/update_ttl`)
 leaves its siblings (`conv_settings/update_block_sharing`) reported as unhandled until someone decides them.
+
+## Engine pools: leased mode and the SQLite journal on NFS (v3.4, 2026-11-22)
+
+A hosting fleet runs several engines that see the same account folders (an NFS mount of a replicated volume), so any
+of them can take an account when another dies. Two things had to change for that.
+
+**The journal.** A rehearsal of the shared storage found that two test writers using SQLite in WAL mode with its
+shared-memory file both died with SIGBUS at the first planned switch of the NFS server: WAL maps `<db>-shm` into memory,
+and a mapped page of a network file whose server went away is a bus error, not an I/O error the code can catch. Three
+options were weighed:
+
+- `locking_mode=EXCLUSIVE` with WAL: the index lives in the process's own memory (no `-shm`), and the measured speed
+  is WAL's. But the connection then holds the database for its whole life, and this app opens an account's database
+  from several processes at once: the daemon writes, while `msg history` displays, `db backup|export` (`VACUUM INTO`),
+  the fleet's jobs and `storage-quota`'s copy read. Each of those would fail with SQLITE_BUSY beside a running daemon.
+- `journal_mode=DELETE`: no mapping, multi-process access through ordinary file locks (NFSv4 locks work across
+  clients); but every commit creates and unlinks the journal, two metadata round trips on NFS.
+- `journal_mode=TRUNCATE` (chosen): as DELETE, but the journal is truncated in place, not unlinked.
+
+`auto` picks TRUNCATE only where the folder is on a network filesystem (statfs magic: NFS, SMB/CIFS, 9p, FUSE, Ceph,
+AFS, GFS2, OCFS2, Lustre) and keeps WAL on a local disk, where WAL is far faster (on a Windows laptop's SSD with
+SQLCipher: about 7,700 single-row commits/s in WAL against 65 in TRUNCATE, which fsyncs twice per commit;
+`scripts/sqlite-journal-bench.mjs` measures any folder). The engine's write rate (messages as they arrive, a sync's
+batches in one transaction each) is far below either figure. `mmap_size` is set to 0 on every connection.
+
+WAL is a property of the file; a rollback journal is not (every connection says it), which is why
+`applyJournalMode` runs on every writable open. Leaving WAL needs the database to itself: while another connection
+holds it, `journal_mode=TRUNCATE` answers `wal` (or SQLITE_BUSY), the open stays in WAL, and a later open switches.
+An older engine opening the file puts it back in WAL by itself, so a roll back needs nothing.
+
+**Leased mode** (`src/core/fleet-lease.js`). A Zalo login permits one client, and two writers on one account folder
+would corrupt it. The control plane hands out per-account leases with a monotonic token; the engine never talks to it:
+a lease client on the machine writes `ZALO_FLEET_LEASE_FILE` with each lease's `deadline` in this host's clock,
+computed from the moment it *sent* the renewal (so the deadline is never later than the lease's end at the control
+plane, whatever the clock offset between machines; only the clock rate matters). Defense in depth, in order:
+
+1. `fleet serve` stops an account 5 s (`START_LEAD_MS`) before its deadline and starts only accounts whose lease is
+   valid past that lead.
+2. Each daemon checks the file every second and exits 5 on its own when its entry is gone, its token changed or its
+   deadline passed, even if the controller is dead or the file unreadable (the last deadline stands). Exit 5 is in
+   the unit's `RestartPreventExitStatus`, so systemd does not start it again behind the lease's back.
+3. `assertLeaseCurrent()` is a clock check with no I/O, run before every MCP tool call, daemon-channel request, stored
+   message and outbox write: the instants between the deadline and the exit do nothing.
+4. The fence file (`lease-fence.json` in the shared account folder): a daemon raises it to its token at start and
+   never starts below it; a running one that sees a higher token stops. NFS attribute caching can delay this by a few
+   seconds, which is why it is the last line, not the first.
+5. The lease check runs *before* `daemon.lock` is taken: a lock written by a daemon on another machine looks stale
+   from here (another boot id, another pid namespace), and taking it over without the lease would be the double
+   writer this mode exists to prevent.
+
+Every saved-login path (`loginWithCredentials`, `probeSavedLogin`, the daemon's pinned login) refuses
+`LEASE_NOT_HELD` in leased mode; a login of an account not named beforehand is refused there too. A QR add of a new
+account is allowed (the control plane placed it on that engine) but not started by the QR flow: the controller starts
+it when the lease arrives. `scripts/lease-stub.mjs` drives the real reconcile and the real daemon start with stand-in
+daemons that never log in, for rehearsals on throwaway machines.

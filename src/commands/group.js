@@ -12,6 +12,7 @@ import { allGroupBlocked, groupLinkInfoAll, inviteInfoAll } from "../core/list-a
 import { aliasFirst, ensureAliases, nameFor, senderNameFields } from "../core/contact-names.js";
 import { success, error, info, warning, output } from "../utils/output.js";
 import { parseIntOption, parseIntAtLeast } from "../utils/parse-options.js";
+import { cliFileItems, withCliFiles } from "../utils/cli-files.js";
 import { gateCli, guardSubcommand } from "../core/confirm-guard.js";
 import { departureMessage, planDisperse, planLeave, runDisperse, runLeave } from "../core/group-departure.js";
 import { getGroupInfoWatched, recordOwnExit, describeGroupGone } from "../core/group-exit.js";
@@ -307,11 +308,19 @@ export function registerGroupCommands(program) {
         });
 
     group
-        .command("avatar <groupId> <imagePath>")
-        .description("Change group avatar")
-        .action(async (groupId, imagePath) => {
+        .command("avatar <groupId> [imagePath]")
+        .description("Change group avatar (a path here, --url or --file-id)")
+        .option("--url <url>", "Download the image from this http(s) link first (public addresses only)")
+        .option("--file-id <fileId>", "An image stored with `file put` (or uploaded through zalo_file)")
+        .action(async (groupId, imagePath, opts) => {
             try {
-                const result = await getApi().changeGroupAvatar(resolve(imagePath), groupId);
+                const items = cliFileItems({
+                    paths: imagePath ? [resolve(imagePath)] : [],
+                    urls: opts.url ? [opts.url] : [],
+                    fileIds: opts.fileId ? [opts.fileId] : [],
+                });
+                if (items.length !== 1) throw new Error("Give one image: a path, --url or --file-id.");
+                const result = await withCliFiles(items, ([f]) => getApi().changeGroupAvatar(f.path, groupId));
                 output(result, program.opts().json, () => success("Group avatar changed"));
             } catch (e) {
                 error(`Change avatar failed: ${e.message}`);

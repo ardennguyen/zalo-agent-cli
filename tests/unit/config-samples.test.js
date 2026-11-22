@@ -283,6 +283,13 @@ describe("systemd unit and proxy samples", () => {
         const nginx = read("proxy", "nginx.internet.conf");
         assert.match(nginx, /proxy_read_timeout 3[1-9]\d?s/);
         assert.match(nginx, /proxy_buffering off/);
+        // Remote agents' files: an inline file in an MCP call, and uploads up to the Zalo limit (nginx allows 1 MB).
+        assert.match(nginx, /client_max_body_size 1[6-9]m;/);
+        assert.match(
+            /location \/zalo\/files \{([^}]*)\}/.exec(nginx)?.[1] ?? "",
+            /client_max_body_size \d{4,}m;/,
+            "uploads up to the account's Zalo file limit (1 GB)",
+        );
     });
 
     it("the proxies never compress media links (byte ranges) and give the engine the client's own address", () => {

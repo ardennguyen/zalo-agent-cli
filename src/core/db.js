@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { openDatabase } from "./sqlite.js";
+import { assertLeaseCurrent } from "./fleet-lease.js";
 import { stripVietnamese } from "../utils/vn-text.js";
 import { aliasFor, dmTitle } from "./contact-names.js";
 import { deriveDataKey, readKeyring, scopeOfDir } from "./keystore/keyring.js";
@@ -867,6 +868,8 @@ export function runInTransaction(fn) {
 
 export function insertMessage(msg) {
     if (!db) throw new Error("Database not initialized");
+    // Leased mode (src/core/fleet-lease.js): a holder whose pool lease ended stores nothing more.
+    assertLeaseCurrent();
     // Purged by quota or retention: never stored again (the listener, sync and history alike).
     if (belowFloor(msg)) return { changes: 0, belowRetentionFloor: true };
     // Deleted or left: nothing up to the conversation's delete marker comes back.
@@ -992,6 +995,8 @@ export function insertMessage(msg) {
  */
 export function insertMessageIfAbsent(msg) {
     if (!db) throw new Error("Database not initialized");
+    // Leased mode (src/core/fleet-lease.js): a holder whose pool lease ended stores nothing more.
+    assertLeaseCurrent();
     if (belowFloor(msg)) return { changes: 0, belowRetentionFloor: true };
     if (belowDeleteMarker(msg?.threadId, msg?.timestamp)) return { changes: 0, belowDeleteMarker: true };
 

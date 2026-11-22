@@ -13,7 +13,7 @@ Automate Zalo messaging, groups, contacts, payments, and real-time events via `z
 Handles: login/logout, messaging (text/image/file/sticker/voice/video/link), reactions, mentions, recall, message history, friends, groups, conversations, profile, polls, reminders, auto-reply, quick messages, labels, catalogs, listen (WebSocket), webhooks, local SQLite cache + mobile sync, bank cards, VietQR, multi-account with proxy, **Official Account (OA) API v3.0** (OAuth login, OA messaging, followers, tags, articles, store, webhook listener), **MCP Server** (Model Context Protocol for Claude Code and MCP clients).
 Does NOT handle: Zalo Mini App, Zalo Ads, ZNS templates, non-Zalo platforms.
 
-Surface: **326 CLI commands** across 42 command containers (25 top-level groups + 11 OA subgroups + 3 ZBS subgroups + `mcp webhook` + `account security` + `cloud key`) + **37 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
+Surface: **331 CLI commands** across 43 command containers (26 top-level groups + 11 OA subgroups + 3 ZBS subgroups + `mcp webhook` + `account security` + `cloud key`) + **39 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
 
 ## Prerequisites
 
@@ -29,7 +29,7 @@ Use `--account <ID>` (or `ZALO_ACCOUNT=<ID>`) on any personal-account CLI comman
 3. Execute command (Quick Reference below or `references/command-reference.md`)
 4. Append `--json` for machine-readable output
 5. For continuous monitoring → `listen --webhook` (`references/listen-mode-guide.md`)
-6. When running as an MCP server inside an AI client → use the 37 MCP tools: every CLI command has an MCP action (the official `oa`/`zbs`/`social` commands through `zalo_official`) (messages, long-poll waiting, search, user lookup, conversations, groups, friends, profile, catalog, bank, auto-replies, quick messages, labels, reminders, notes/pins, polls, sync stages, the zCloud index); shell out to the CLI only for the CLI-only commands listed in `references/mcp-guide.md` (login, the account registry, the daemon and fleet, `cloud get`, `db …`, `oa …`)
+6. When running as an MCP server inside an AI client → use the 39 MCP tools: every CLI command has an MCP action (the official `oa`/`zbs`/`social` commands through `zalo_official`) (messages, long-poll waiting, search, user lookup, conversations, groups, friends, profile, catalog, bank, auto-replies, quick messages, labels, reminders, notes/pins, polls, sync stages, the zCloud index); shell out to the CLI only for the CLI-only commands listed in `references/mcp-guide.md` (login, the account registry, the daemon and fleet, `cloud get`, `db …`, `oa …`)
 
 ## Quick Reference
 
@@ -289,7 +289,7 @@ The `zalo-mcp` deployment wrapper (`zalo-mcp` or `node mcp-server.js`) spawns `z
 
 To run **multiple Zalo accounts live at once**, launch one MCP server per account with `--account <ID>` (e.g. multiple entries in `.claude/settings.json` `mcpServers` for stdio, or separate `--http <port>` instances on a VPS) and pass `--account <ID>` when shelling out to CLI commands. See `references/mcp-guide.md`.
 
-**MCP tools exposed (37 — 36 for the personal account, plus `zalo_official` for the official APIs):**
+**MCP tools exposed (38 — 37 for the personal account, plus `zalo_official` for the official APIs):**
 
 | Tool | Purpose | Key params |
 |------|---------|-----------|
@@ -327,6 +327,8 @@ To run **multiple Zalo accounts live at once**, launch one MCP server per accoun
 | `zalo_cloud` | zCloud index summary and cleanup plan (`cloud ls`, `cloud plan`), and the guarded cleanup (`cloud apply`) | `action` (`summary`｜`plan`｜`apply`), filters, `confirm?`, `dryRun?` |
 | `zalo_sticker` / `zalo_link` | Find stickers (`msg sticker-list`, `sticker-detail`) / a link's preview and safety (`msg link-preview`, `scan-url`) | `action`, `keyword?`, `stickerIds?` / `url` |
 | `zalo_official` | Any `oa`, `zbs` or `social` command by its CLI name, on the official logins (not `oa login\|setup\|init\|listen`, `social setup\|login`); omit `command` to list them | `command?`, `args?`, `options?` (flag names without dashes), `confirm?`, `dryRun?` |
+| `zalo_file` | Upload a file for a later send when you are not on the server's machine (`upload_begin` gives a one-time `uploadUrl`; `upload` takes `data` or `url`), then pass `{fileId}`; `info`, `list`, `delete` |
+| `zalo_inbox` | Who you are among the agents sharing the account (`whoami`), your presence (`status`), every agent's presence (`agents`) |
 
 Sync requests share the daemon socket and lock. Reuse requestId and arguments after a timeout; keep polling the same job. Ten jobs are held in RAM, lost on restart. No safe cancellation is exposed. Never initiate restore merely because coverage reports a gap. [Details](../docs/mcp-sync.md) / [Tiếng Việt](../docs/mcp-sync.vi.md).
 
@@ -365,6 +367,8 @@ Sync requests share the daemon socket and lock. Reuse requestId and arguments af
 
 Use stdio mode for local Claude Code, HTTP mode for VPS deployments. In HTTP mode `/health` and `/ready` are the only unauthenticated status endpoints (one-time pages, media and approval links carry their own single-purpose token).
 ### Using the MCP tools (rules for the agent that calls them)
+
+- **Files when you are not on the server's machine.** A path is read only for a caller on the machine the server runs on. From anywhere else, give a file as `{data: <base64>, name}` (small files), `{url}` (the server downloads it) or `{fileId}`; for a large file call `zalo_file` `upload_begin`, `PUT` the file to its `uploadUrl` (no token), then pass the `fileId`. A path from a remote caller is refused with exactly this advice.
 
 The server sends these as its `instructions` when a client connects; they are repeated here for agents that read the skill. One concept has one name in every tool input and reply:
 
@@ -410,7 +414,7 @@ Every write changes something. 26 of the 27 have been answered by a live account
 
 | File | Contents |
 |------|----------|
-| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 326 commands + 37 MCP tools) |
+| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 331 commands + 39 MCP tools) |
 | `references/mcp-guide.md` | MCP tools, parameters, return shapes, `mcp-config.json`, architecture (Vietnamese) |
 | `references/oa-command-reference.md` | Official Account, ZBS and Social API reference: every `oa`/`zbs`/`social` command, webhook events and signature, error codes, ZBS permissions, webhook checklist |
 | `references/login-flow.md` | QR login, headless credentials login, multi-account, proxy formats, troubleshooting |

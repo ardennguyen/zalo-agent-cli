@@ -1,7 +1,8 @@
 import { InvalidArgumentError } from "commander";
 import { getActive, getAccount } from "./accounts.js";
-import { loadCredentials } from "./credentials.js";
+import { getAccountDir, loadCredentials } from "./credentials.js";
 import { loginWithCredentials, clearSession } from "./zalo-client.js";
+import { assertLeaseHeld } from "./fleet-lease.js";
 
 /** Validate a full numeric account ID without number coercion, names, or prefix matching. */
 export function parseAccountId(value) {
@@ -35,21 +36,28 @@ export function selectDaemonAccount(id, { active = getActive, lookup = getAccoun
 /**
  * Authenticate only the daemon's pinned account, including after a disconnect.
  * Never consult the active registry or retain a session for a different user.
- * The caller must hold this account's daemon lock before invoking this function.
+ * The caller must hold this account's daemon lock before invoking this function. In leased mode
+ * (src/core/fleet-lease.js) it refuses (LEASE_NOT_HELD / LEASE_FENCED) unless this engine holds the account's lease.
  * @param {object} account - selectDaemonAccount() snapshot
  * @param {object} [deps] - offline-test collaborators
  * @returns {Promise<object>} authenticated API/ownId result
  */
 export async function loginDaemonAccount(
     account,
-    { read = loadCredentials, login = loginWithCredentials, reset = clearSession } = {},
+    {
+        read = loadCredentials,
+        login = loginWithCredentials,
+        reset = clearSession,
+        lease = (ownId) => assertLeaseHeld(ownId, { accountDir: getAccountDir(ownId) }),
+    } = {},
 ) {
     const id = parseAccountId(account.ownId);
     reset();
+    lease(id);
     const credentials = read(id);
     if (!credentials) throw new Error("No saved credentials for the pinned account. Log in to that account first.");
     try {
-        const session = await login(credentials, account.proxy || null);
+        const session = await login(credentials, account.proxy || null, { leaseOwnId: id });
         if (String(session?.ownId || "") !== id) {
             throw new Error("Authenticated account does not match the pinned ID; refusing to attach its listener");
         }

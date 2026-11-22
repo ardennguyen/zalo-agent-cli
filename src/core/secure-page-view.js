@@ -4,7 +4,8 @@
  *
  * A page is built from its ticket: the kind of form ("confirm", "pin", "pin-change"), its English title and
  * description (also what the agent and the webhook see), and an optional `view` that says more for the page alone:
- * - `view.type: "oauth"`: an app asks for access; `clientName`, `clientId`, `accountName`, `accountId`, `returnHost`;
+ * - `view.type: "oauth"`: an app asks for access; `clientName`, `clientId`, `accountName`, `accountId`, `returnHost`,
+ *   `agent` (a per-agent connector address: the agent the grant is for);
  * - `view.heading`, `view.lead`, `view.done`: `{en, vi}` texts that replace the default heading, the sentence under it,
  *   and what a successful answer says.
  * Every dynamic value (an app's name, an account's name, a server-made sentence) is escaped where it is written.
@@ -33,6 +34,11 @@ export const SECURE_TEXT = Object.freeze({
         oauthApp: "App",
         oauthAccount: "Account",
         oauthReturns: "After you answer, you return to",
+        oauthAgent: "It connects as the agent",
+        oauthAgentPick: "Agent of this connection (optional)",
+        oauthAgentNone: "No agent (it sees the account as before)",
+        oauthAgentNew: "A new agent…",
+        oauthAgentNewName: "New agent's name (when you chose a new agent)",
         oauthCan: "It will be able to",
         oauthCanText:
             "Use this account's MCP tools: read its messages and conversations, and send messages as this account.",
@@ -104,6 +110,11 @@ export const SECURE_TEXT = Object.freeze({
         oauthApp: "Ứng dụng",
         oauthAccount: "Tài khoản",
         oauthReturns: "Sau khi trả lời, bạn sẽ quay về",
+        oauthAgent: "Kết nối với vai trò agent",
+        oauthAgentPick: "Agent của kết nối này (không bắt buộc)",
+        oauthAgentNone: "Không gắn agent (thấy tài khoản như trước)",
+        oauthAgentNew: "Một agent mới…",
+        oauthAgentNewName: "Tên agent mới (khi bạn chọn agent mới)",
         oauthCan: "Ứng dụng sẽ có thể",
         oauthCanText:
             "Dùng các công cụ MCP của tài khoản này: đọc tin nhắn và cuộc trò chuyện, và gửi tin nhắn dưới tên " +
@@ -250,6 +261,18 @@ const passwordInput = () =>
     `<div class="field"><label for="secret">${say(pair("approverPassword"))}</label><input id="secret" name="secret" ` +
     `type="password" class="wide" autocomplete="off" maxlength="256" required></div>`;
 
+/**
+ * The OAuth approve page's agent picker (Companion Router): no agent, one of the account's agents, or a new one by name.
+ * The choice is the grant's agent; a new name becomes an agent the console offers to create.
+ */
+const agentPicker = (agents) =>
+    `<div class="field"><label for="agent">${say(pair("oauthAgentPick"))}</label><select id="agent" name="agent" class="wide">` +
+    `<option value="">${say(pair("oauthAgentNone"))}</option>` +
+    agents.map((a) => `<option value="${esc(a.slug)}">${esc(a.name)} (${esc(a.slug)})</option>`).join("") +
+    `<option value="+new">${say(pair("oauthAgentNew"))}</option></select></div>` +
+    `<div class="field"><label for="agentNew">${say(pair("oauthAgentNewName"))}</label><input id="agentNew" name="agentNew" ` +
+    `class="wide" maxlength="40" autocomplete="off"></div>`;
+
 const buttons = (yes, no, noValidate) =>
     `<div class="actions"><button type="submit" name="decision" value="approve">${say(pair(yes))}</button>` +
     `<button type="submit" name="decision" value="decline" class="secondary"${noValidate ? " formnovalidate" : ""}>` +
@@ -285,7 +308,9 @@ export function formView(ticket, notice = null, { lang = null } = {}) {
                 : ticket.secretKind === "password"
                   ? passwordInput()
                   : "";
-        fields = secret + buttons("approve", "decline", Boolean(secret));
+        const picker =
+            view.type === "oauth" && !view.agent && Array.isArray(view.agents) ? agentPicker(view.agents) : "";
+        fields = picker + secret + buttons("approve", "decline", Boolean(secret));
         if (view.type === "oauth") {
             badge = ICONS.link;
             heading = pair("oauthHeading");
@@ -294,6 +319,8 @@ export function formView(ticket, notice = null, { lang = null } = {}) {
             facts =
                 fact(pair("oauthApp"), app) +
                 fact(pair("oauthAccount"), accountValue(view.accountName, view.accountId)) +
+                // A per-agent connector address: the grant is that agent's (Companion Router).
+                (view.agent ? fact(pair("oauthAgent"), `<span class="host">${esc(view.agent)}</span>`) : "") +
                 fact(pair("oauthReturns"), `<span class="host">${esc(view.returnHost)}</span>`) +
                 fact(pair("oauthCan"), say(pair("oauthCanText")));
         } else {

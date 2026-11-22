@@ -322,9 +322,14 @@ function readJsonBody(req, reply) {
  * @param {(params: {action: "renew", fresh?: boolean}) => object|Promise<object>} [args.onSession] - the saved
  *   login's renewal (`session renew`; `POST /session`): opens a one-time QR login link on this daemon's HTTP port
  *   (src/core/session-renew.js). Without it the route answers 503.
+ * @param {(params: {action: string}) => Promise<object>} [args.onRouting] - the Companion Router's console requests
+ *   (`POST /routing`: routing events, claims, human pause, the staff inbox; src/mcp/router-runtime.js `serve`).
+ *   Without it the route answers 503.
  * @param {(o: {kind: string, cls: "socket"|"wait"}) => Promise<{release: () => void}>} [args.presenceGate] - the
  *   daemon's presence door (src/core/daemon-presence.js `admit`): an upload, a sync stage and a wait each hold the
  *   socket for their duration; a refusal (`code` YIELDED, SIGNED_OUT or WARMING) is answered with that code
+ * @param {() => boolean} [args.leaseLost] - leased mode (src/core/fleet-lease.js `leaseLost`): once true, every route
+ *   but `/stop` and `/status` is refused with LEASE_LOST (the daemon is on its way out)
  * @returns {Promise<{port: number, stop: () => void}>}
  */
 export function startDaemonChannel({
@@ -342,7 +347,9 @@ export function startDaemonChannel({
     onPurge = null,
     onPresence = null,
     onSession = null,
+    onRouting = null,
     presenceGate = null,
+    leaseLost = () => false,
 }) {
     const token = randomBytes(24).toString("hex");
 
@@ -619,6 +626,11 @@ export function startDaemonChannel({
             return reply(404, { error: "not found" });
         }
 
+        // Leased mode (src/core/fleet-lease.js): once this engine's pool lease of the account ended, nothing but /stop
+        // and /status is served (the daemon is on its way out).
+        if (req.url !== "/stop" && req.url !== "/status" && leaseLost()) {
+            return reply(409, { error: "this engine's pool lease of the account has ended", code: "LEASE_LOST" });
+        }
         const body = await readJsonBody(req, reply);
         if (!body) return; // already answered, or the request went away
         if (req.url === "/stop") return serveStop(body, reply);
@@ -631,6 +643,7 @@ export function startDaemonChannel({
         if (req.url === "/purge") return serveCall(onPurge, "purge", body, reply);
         if (req.url === "/presence") return serveCall(onPresence, "presence", body, reply);
         if (req.url === "/session") return serveCall(onSession, "session", body, reply);
+        if (req.url === "/routing") return serveCall(onRouting, "routing", body, reply);
         return stage ? serveStage(stage, body, res, reply) : serveAttachments(body, reply);
     });
 

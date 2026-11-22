@@ -13,6 +13,7 @@
  * Every class is refused while the account is yielded (YIELDED) or signed out (SIGNED_OUT), except the one call that
  * ends a yield, zalo_profile `presence_resume`, and zalo_official, which never uses the account's socket.
  */
+import { assertLeaseCurrent, leasedMode } from "../core/fleet-lease.js";
 
 /** A file, a video or a voice clip goes up through the socket's upload callbacks; text, links and cards do not. */
 const sendClass = (a) => (a?.filePath || (Array.isArray(a?.files) && a.files.length) || a?.video ? "socket" : "none");
@@ -56,14 +57,20 @@ export const TOOL_PRESENCE = Object.freeze({
     zalo_sticker: "none",
     zalo_link: "none",
     zalo_official: "none",
+    zalo_inbox: "none",
+    zalo_file: "none",
 });
 
 /**
- * The calls that skip presence: the one that ends a yield, and zalo_official, which uses the official APIs' own logins
- * and never the account's socket.
+ * The calls that skip presence: the one that ends a yield, zalo_official, which uses the official APIs' own logins
+ * and never the account's socket, zalo_inbox, which only reads and sets the caller's own agent state, and zalo_file,
+ * which only touches the account's upload store on this machine.
  */
 const passesRefusal = (tool, args) =>
-    (tool === "zalo_profile" && args?.action === "presence_resume") || tool === "zalo_official";
+    (tool === "zalo_profile" && args?.action === "presence_resume") ||
+    tool === "zalo_official" ||
+    tool === "zalo_inbox" ||
+    tool === "zalo_file";
 
 /**
  * The class of one call.
@@ -144,10 +151,37 @@ export function presenceGatedHandler(tool, handler, daemonPresence) {
  * Make every tool registered on `server` from now on go through the daemon's presence.
  *
  * @param {{registerTool: Function}} server
- * @param {object|null} daemonPresence - null: no presence (the tools run as they are)
+ * @param {object|null} daemonPresence - null: no presence (the tools run as they are; in leased mode the lease still
+ *   gates them, {@link gateToolsByLease})
  */
 export function gateToolsByPresence(server, daemonPresence) {
-    if (!daemonPresence || typeof server?.registerTool !== "function") return;
+    if (daemonPresence && typeof server?.registerTool === "function") {
+        const raw = server.registerTool.bind(server);
+        server.registerTool = (name, meta, handler) =>
+            raw(name, meta, presenceGatedHandler(name, handler, daemonPresence));
+    }
+    // Leased mode: the lease is checked before presence (outermost), so a tool whose lease ended wakes nothing.
+    gateToolsByLease(server);
+}
+
+/**
+ * Leased mode (src/core/fleet-lease.js): make every tool registered on `server` from now on refuse with LEASE_LOST once
+ * this engine's pool lease of the account has ended (a clock check, no I/O). Outside leased mode nothing is wrapped.
+ *
+ * @param {{registerTool: Function}} server
+ * @param {{env?: NodeJS.ProcessEnv, current?: () => void}} [o]
+ */
+export function gateToolsByLease(server, { env = process.env, current = assertLeaseCurrent } = {}) {
+    if (!leasedMode(env) || typeof server?.registerTool !== "function") return;
     const raw = server.registerTool.bind(server);
-    server.registerTool = (name, meta, handler) => raw(name, meta, presenceGatedHandler(name, handler, daemonPresence));
+    server.registerTool = (name, meta, handler) =>
+        raw(name, meta, async (args, extra) => {
+            try {
+                current();
+            } catch (e) {
+                if (e?.code) return refusalReply(e);
+                throw e;
+            }
+            return handler(args, extra);
+        });
 }

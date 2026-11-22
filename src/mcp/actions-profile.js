@@ -3,8 +3,6 @@
  * This account's own profile is read with zalo_lookup_user (`self: true`), as `profile me` and `whoami` print it.
  */
 
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
 import { z } from "zod";
 import { UPDATE_LANG } from "../zalo/enums.js";
 import { createTrustStore } from "../zalo/trust-store.js";
@@ -21,20 +19,14 @@ import {
 } from "../core/profile-settings.js";
 import { confirmInput, dryRunInput, ticketInput } from "./action-tool.js";
 import { allAvatars } from "../core/list-all.js";
-
-/** A local file the server can read, or the refusal that names it. */
-function localFile(path) {
-    const abs = resolve(String(path).trim());
-    return existsSync(abs) ? { abs } : { error: `File not found on the machine this server runs on: ${abs}` };
-}
+import { fileInput, singleFileCheck, withSingleFile } from "./file-input.js";
 
 /** The action table; see src/mcp/action-tool.js for what a row holds. */
 export const PROFILE_ACTIONS = {
     avatar: {
-        needs: ["filePath"],
-        check: (a) => localFile(a.filePath).error,
-        async run(a, { api }) {
-            await api.changeAccountAvatar(localFile(a.filePath).abs);
+        check: singleFileCheck,
+        async run(a, ctx) {
+            await withSingleFile(a, ctx, (path) => ctx.api.changeAccountAvatar(path));
             return { success: true };
         },
     },
@@ -164,7 +156,10 @@ export const PROFILE_ACTIONS = {
             } catch {
                 /* no open cache: the file sizes */
             }
-            return { accountId: ownId, ...describeStorage(ownId, { mediaRoot: ctx.mediaRoot ?? null, dbBytes }) };
+            return {
+                accountId: ownId,
+                ...describeStorage(ownId, { mediaRoot: ctx.mediaRoot ?? null, dbBytes, config: ctx.config }),
+            };
         },
     },
     presence_resume: {
@@ -184,7 +179,7 @@ export const PROFILE_META = {
     title: "Manage This Zalo Account's Profile",
     description:
         "Change this account's own profile and settings, as the `profile` commands do (read the profile itself " +
-        "with zalo_lookup_user `self: true`). Actions: 'avatar' (set the avatar from a local image, `filePath`), " +
+        "with zalo_lookup_user `self: true`). Actions: 'avatar' (set the avatar from an image, `file`: {fileId}, {url} or {data, name}; `filePath` only for a caller on the server's machine), " +
         "'bio' (read it, or set it to `bio`), 'update' (`name`, `dob`, `gender`), 'settings' (the privacy " +
         "settings, the read-only ones, and every other key Zalo sent under `other`) and 'set' (one of them: " +
         "`setting`, `value`), 'avatars' (the avatar gallery), 'full_avatar' " +
@@ -209,7 +204,11 @@ export const PROFILE_META = {
                 .string()
                 .min(1)
                 .optional()
-                .describe("Only for 'avatar': a local image path on the machine this server runs on"),
+                .describe(
+                    "Only for 'avatar': an image path on the machine this server runs on (a caller on that machine " +
+                        "only; anyone else sends `file`)",
+                ),
+            file: fileInput("'avatar'"),
             bio: z
                 .string()
                 .max(500)

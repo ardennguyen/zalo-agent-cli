@@ -9,6 +9,7 @@ import { success, error, info, output, warning } from "../utils/output.js";
 import { allAvatars } from "../core/list-all.js";
 import { parseIntOption } from "../utils/parse-options.js";
 import { parseOnOff, parseLanguage } from "../utils/cli-args.js";
+import { cliFileItems, withCliFiles } from "../utils/cli-files.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
 import { SETTING_MAP, describeSettings, profileUpdatePayload, updateSetting } from "../core/profile-settings.js";
 
@@ -38,12 +39,19 @@ export function registerProfileCommands(program) {
         });
 
     profile
-        .command("avatar <imagePath>")
-        .description("Change your profile avatar")
-        .action(async (imagePath) => {
+        .command("avatar [imagePath]")
+        .description("Change your profile avatar (a path here, --url or --file-id)")
+        .option("--url <url>", "Download the image from this http(s) link first (public addresses only)")
+        .option("--file-id <fileId>", "An image stored with `file put` (or uploaded through zalo_file)")
+        .action(async (imagePath, opts) => {
             try {
-                const absPath = resolve(imagePath);
-                const result = await getApi().changeAccountAvatar(absPath);
+                const items = cliFileItems({
+                    paths: imagePath ? [resolve(imagePath)] : [],
+                    urls: opts.url ? [opts.url] : [],
+                    fileIds: opts.fileId ? [opts.fileId] : [],
+                });
+                if (items.length !== 1) throw new Error("Give one image: a path, --url or --file-id.");
+                const result = await withCliFiles(items, ([f]) => getApi().changeAccountAvatar(f.path));
                 output(result, program.opts().json, () => success("Avatar updated"));
             } catch (e) {
                 error(`Avatar update failed: ${e.message}`);

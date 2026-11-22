@@ -33,6 +33,7 @@ const ALLOWED = {
     quoteMsgId: "the message being quoted",
     lastMsgId: "a server-side history cursor (a msgId)",
     cliMsgId: "the sender's own id for a message",
+    fileId: "a file in the account's upload store (zalo_file, POST /zalo/files, `file put`)",
     userId: "a Zalo user",
     userIds: "several Zalo users",
     cardUserId: "the user whose contact card is shared",

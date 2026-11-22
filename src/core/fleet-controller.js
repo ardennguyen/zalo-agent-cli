@@ -17,7 +17,8 @@
  *     DELETE /accounts/<ownId>                      guarded the same way: stop, `account remove` (crypto-shred)
  *     ...    /accounts/<ownId>/jobs[...]            sync, attachment download and purge jobs (./fleet-jobs.js)
  *     GET    /host                                  the machine's CPU and memory, and each daemon's (./host-metrics.js)
- *     GET    /events                                SSE: `account_state` and `session_expiring` for every account
+ *     GET    /events                                SSE: `account_state`, `session_expiring` and `routing` for every
+ *                                                   account
  *     GET    /routes                                account id -> loopback port and path, for a host agent that
  *                                                   keeps the reverse proxy's routes (this process edits no proxy)
  *     GET    /usage                                 storage of every account, summed per user and tenant (./admin-api.js
@@ -28,6 +29,8 @@
  * `account_state` comes from polling each daemon's channel every `pollMs` (5 s), plus `stopped` for an account with
  * no process; each change goes to the SSE clients and the admin webhook once. The same poll reads when each saved
  * login ends (`session` in the account list) and sends `session_expiring` once per threshold (./session-notice.js).
+ * A daemon whose Companion Router is on reports where its routing events stand (`health.routing`, `{bootId, seq}`); when
+ * that moves, the new events are read over the channel and published as `routing` events (ids only, never a text).
  */
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { ACCOUNT_STATES, accountStateOfHealth } from "./account-state.js";
@@ -66,6 +69,8 @@ const ACCOUNT_ID = /^[1-9][0-9]{0,30}$/;
  *   account's saved login ends, read from its saved cookie jar (a running daemon's own reading wins)
  * @param {{due: (ownId: string, expiry: object|null) => boolean}|null} [args.sessionNotices] - which thresholds were
  *   sent (./session-notice.js createSessionNotices); null sends no `session_expiring`
+ * @param {{holds: (ownId: string) => boolean}|null} [args.lease] - leased mode (./fleet-lease.js createLeaseReconciler):
+ *   a start, a restart or a job is refused (409 LEASE_NOT_HELD) for an account this engine holds no lease of
  * @param {(event: object) => void} [args.webhook] - the admin webhook
  * @param {(line: string) => void} [args.log]
  * @param {() => number} [args.now]
@@ -86,6 +91,7 @@ export function createFleetController({
     host = null,
     session = () => null,
     sessionNotices = null,
+    lease = null,
     webhook = () => {},
     log = () => {},
     now = Date.now,
@@ -93,6 +99,7 @@ export function createFleetController({
 }) {
     const states = new Map(); // ownId -> {state, at, pid}
     const sessions = new Map(); // ownId -> {expiresAt, daysLeft, expired}
+    const routingHeads = new Map(); // ownId -> {bootId, seq}: the routing events already published
     const clients = new Set();
     const confirms = new Map(); // token -> {action, ownId, expiresAt}
     let timer = null;
@@ -104,7 +111,7 @@ export function createFleetController({
             .json(body);
     };
 
-    function publish(event) {
+    function publish(event, { toWebhook = true } = {}) {
         const line = `event: ${event.event}\ndata: ${JSON.stringify(event)}\n\n`;
         for (const c of clients) {
             try {
@@ -113,6 +120,7 @@ export function createFleetController({
                 clients.delete(c);
             }
         }
+        if (!toWebhook) return;
         try {
             webhook(event);
         } catch (e) {
@@ -144,6 +152,18 @@ export function createFleetController({
             publish(sessionExpiringEvent(ownId, expiry, now()));
     }
 
+    /** Publish a daemon's new routing events (it said where they stand; nothing is read while that stays put). */
+    async function noteRouting(ownId, head) {
+        if (!head?.bootId || !Number.isInteger(head.seq)) return;
+        const seen = routingHeads.get(ownId);
+        if (seen && seen.bootId === head.bootId && seen.seq >= head.seq) return;
+        const since = seen && seen.bootId === head.bootId ? seen.seq : 0;
+        const r = await relay(ownId, "/routing", { action: "events", bootId: head.bootId, since });
+        if (!r?.ok || !Array.isArray(r.events)) return;
+        for (const e of r.events) publish({ ...e, event: "routing", accountId: ownId }, { toWebhook: false });
+        routingHeads.set(ownId, { bootId: r.bootId, seq: Number.isInteger(r.seq) ? r.seq : head.seq });
+    }
+
     /** Ask every account where it stands; each change is published once. */
     async function poll() {
         if (polling) return polling;
@@ -157,6 +177,7 @@ export function createFleetController({
                         ...(p.health?.presence ? { presence: p.health.presence.mode } : {}),
                     });
                     noteSession(ownId, p.health?.session ?? session(ownId));
+                    await noteRouting(ownId, p.health?.routing ?? null);
                 } catch (e) {
                     log(`[fleet] ${ownId}: ${e.message}`);
                 }
@@ -204,6 +225,17 @@ export function createFleetController({
     }
 
     const known = (ownId) => listAccounts().some((a) => a.ownId === ownId);
+
+    /** Leased mode: answer 409 LEASE_NOT_HELD (and true) when this engine holds no lease of the account. */
+    function refuseUnleased(res, ownId) {
+        if (!lease || lease.holds(ownId)) return false;
+        send(res, 409, {
+            error: `this engine holds no pool lease of account ${ownId}: another engine may run it`,
+            code: "LEASE_NOT_HELD",
+            accountId: ownId,
+        });
+        return true;
+    }
 
     async function accountsView() {
         const out = [];
@@ -283,6 +315,7 @@ export function createFleetController({
                     true
                 );
             if (!jobs) return (send(res, 501, { error: "no account jobs here", code: "NOT_SUPPORTED" }), true);
+            if (req.method !== "GET" && refuseUnleased(res, id)) return true;
             if (jobs.handle(id, jm[2], req, res, ctx)) return true;
             send(res, 404, { error: "not found", code: "NOT_FOUND" });
             return true;
@@ -335,6 +368,7 @@ export function createFleetController({
         }
         if (req.method !== "POST") return (send(res, 405, { error: "POST only", code: "METHOD_NOT_ALLOWED" }), true);
         if (action === "start" || action === "stop" || action === "restart") {
+            if (action !== "stop" && refuseUnleased(res, ownId)) return true;
             const before = states.get(ownId)?.state ?? null;
             const r = await driver[action](ownId);
             // A start after a kick takes the account back from the other session: a person's decision, logged.

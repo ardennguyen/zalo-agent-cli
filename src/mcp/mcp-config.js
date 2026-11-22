@@ -47,6 +47,28 @@ export function getDefaultConfig() {
             linkRateLimit: null, // 60 requests a minute per client address
             capability: null, // {maxClients: 3, ttl: "15m"}: distinct client addresses a capability link serves
         },
+        // Files callers hand the server (src/core/file-inputs.js, src/core/upload-store.js; resolveUploads in
+        // src/core/deploy-policy.js). Unset (null) keys take the defaults named beside them.
+        uploads: {
+            inlineMaxBytes: null, // 10485760 (10 MB): base64 `data` items of one call together (at most 32 MB)
+            // One upload (POST /zalo/files, a zalo_file upload link, `file put`) and one `url` item: unset = the account's
+            // Zalo file limit (src/core/zalo-file-limit.js, 1 GiB on current settings); a value here only lowers it.
+            maxBytes: null,
+            urlMaxBytes: null,
+            urlTimeout: null, // "60s"
+            quota: null, // two files of maxBytes: what the account's upload store holds at once
+            ttl: null, // "24h": how long an upload is kept
+            uploadLinkTtl: null, // "15m": how long a zalo_file 'upload_begin' link waits for its file
+            recordWait: null, // "10m": a sent upload goes once its message is recorded, or after this long
+            warnAt: null, // 0.8: the usage share where the store's level turns "warn"
+            localPaths: null, // "loopback": who may name a path on this machine ("loopback", "any", "none")
+            localPathRoots: [], // folders whose paths any caller may name (a folder shared with another container)
+            allowPrivateUrls: null, // false: a `url` may not reach a private, loopback or link-local address
+        },
+        // The Companion Router (src/core/routing-policy.js): {agents: [{slug, name, credential, mark?, markDisplay?,
+        // delivery?, enabled?}], marks: "shown"|"hidden", presenceWindow: "90s"}. Unset: no agents, marks shown, 90 s.
+        // The account's live policy (`routing.*`) wins over this block, read on every call.
+        routing: null,
         // Reverse proxies whose X-Forwarded-For is believed (e.g. ["127.0.0.1"]). Unset (null) means
         // ZALO_MCP_TRUSTED_PROXIES, else none: the client address is the socket's peer.
         trustedProxies: null,
@@ -160,6 +182,7 @@ export function mergeMCPConfigLayer(base, layer) {
         notify: { ...base.notify, ...(layer.notify || {}) },
         limits: { ...base.limits, ...(layer.limits || {}) },
         media: mergeMedia(base.media, layer.media),
+        uploads: { ...base.uploads, ...(layer.uploads || {}) },
         tls: { ...base.tls, ...(layer.tls || {}) },
         approval: { ...base.approval, ...(layer.approval || {}) },
         admin: { ...base.admin, ...(layer.admin || {}) },

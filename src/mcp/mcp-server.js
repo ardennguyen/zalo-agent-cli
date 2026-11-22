@@ -44,7 +44,13 @@ export async function createMCPServer(
     syncJobs,
     extras = {},
 ) {
-    const server = newMcpServer(pkg.version);
+    // A local stdio server has one caller: `stdio`, or `stdio:<name>` with ZALO_MCP_AGENT (src/mcp/agents.js).
+    const name = String(process.env.ZALO_MCP_AGENT ?? "")
+        .trim()
+        .toLowerCase();
+    const caller = { credential: /^[a-z0-9][a-z0-9-]{0,23}$/.test(name) ? `stdio:${name}` : "stdio" };
+    const server = newMcpServer(pkg.version, extras?.instructionsFor ? extras.instructionsFor(caller) : "");
+    server.caller = caller;
 
     registerTools(server, api, buffer, filter, config, nameCache, accountDir, stageLock, syncJobs, extras);
 

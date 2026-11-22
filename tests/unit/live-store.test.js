@@ -113,6 +113,41 @@ describe("storeLiveMessage", () => {
         assert.equal(r.stored, false);
         assert.equal(getMessages("t1").length, 0);
     });
+
+    it("writes the conversation, the message and the replaced placeholder in one transaction", () => {
+        // One commit per message (a rollback journal on a network filesystem syncs every commit), and all or nothing: a
+        // message row that cannot be written leaves the placeholder it would replace and creates no conversation.
+        const db = opened[opened.length - 1];
+        insertMessage({ msgId: "4242", threadId: "t9", senderId: "me", text: "pending", timestamp: 1, type: "text" });
+        db.exec(
+            "CREATE TEMP TRIGGER boom BEFORE INSERT ON messages WHEN NEW.text = 'boom' BEGIN SELECT RAISE(ABORT, 'boom'); END",
+        );
+        const r = storeLiveMessage(
+            liveMsg({ threadId: "t9" }, { msgId: "m9", cliMsgId: 4242, msgType: "webchat", content: "boom" }),
+        );
+        assert.equal(r.stored, false);
+        assert.deepEqual(
+            getMessages("t9").map((m) => m.msgId),
+            ["4242"],
+            "the placeholder is still there",
+        );
+        assert.equal(
+            getRecentThreads(50).find((t) => t.threadId === "t9"),
+            undefined,
+            "no conversation row either",
+        );
+        db.exec("DROP TRIGGER boom");
+        assert.equal(
+            storeLiveMessage(
+                liveMsg({ threadId: "t9" }, { msgId: "m9", cliMsgId: 4242, msgType: "webchat", content: "ok" }),
+            ).stored,
+            true,
+        );
+        assert.deepEqual(
+            getMessages("t9").map((m) => m.msgId),
+            ["m9"],
+        );
+    });
 });
 
 describe("attachLiveStore", () => {

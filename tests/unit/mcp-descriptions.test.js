@@ -33,8 +33,8 @@ const toolNames = new Set(tools.keys());
 const mentionedTools = (text) => [...text.matchAll(/\bzalo_[a-z_]+\b/g)].map((m) => m[0]);
 
 describe("every tool and parameter is described", () => {
-    it("has 37 tools, each with a description long enough to say what it does and when to use it", () => {
-        assert.equal(tools.size, 37);
+    it("has 39 tools, each with a description long enough to say what it does and when to use it", () => {
+        assert.equal(tools.size, 39);
         for (const [name, { meta }] of tools) {
             assert.ok(meta.description.length >= 80, `${name}: description is ${meta.description.length} characters`);
         }
@@ -101,7 +101,8 @@ describe("the id vocabulary is stated where an agent needs it", () => {
 
 describe("the server instructions", () => {
     it("stay short enough to sit in every session's context", () => {
-        assert.ok(Buffer.byteLength(SERVER_INSTRUCTIONS, "utf8") < 4000);
+        // 4000 until the FILES section (what a caller on another machine sends instead of a path).
+        assert.ok(Buffer.byteLength(SERVER_INSTRUCTIONS, "utf8") < 4400);
     });
 
     it("name the rules a model gets wrong unprompted", () => {

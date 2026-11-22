@@ -172,34 +172,45 @@ export function storeLiveMessage(msg, opts = {}) {
     const authoritative = typeof opts.threadName === "string" && opts.threadName !== "";
     const threadId = String(msg.threadId);
     const timestamp = data.ts ? Number(data.ts) : Date.now();
+    // One transaction, one commit: the conversation, the message (with the replaced placeholder row, when the sender's
+    // own echo replaces it) and the sighting. Apart, they were three to five commits per message, each a synced write on
+    // a rollback journal (a network filesystem pays a round trip to the storage for every one), and a crash between the
+    // placeholder's DELETE and the INSERT lost the message.
     try {
-        upsertThread({
-            threadId,
-            type: msg.type === THREAD_USER ? "dm" : "group",
-            name: authoritative ? opts.threadName : nameFromLiveMessage(msg),
-            lastUpdate: timestamp,
-            nameHint: !authoritative,
-        });
-        insertMessage({
-            msgId: String(data.msgId),
-            threadId,
-            senderId: String(data.uidFrom || ""),
-            senderName: String(data.dName || ""),
-            text: info.text || "",
-            timestamp,
-            type: info.type,
-            raw_data: info.raw,
-            has_attachment: info.hasAttachment,
-            // NOT data.status. The live `status` field is an undocumented
-            // enum (its type was only ever `status: number`) and is not Sync2's
-            // MessageStatus, which this column holds: four of the owner's own
-            // successfully-sent messages arrived carrying 1, which that column
-            // defines as "failed". Delivery state comes from the mobile sync
-            // and from the delivered/seen receipt events instead.
-        });
+        runInTransaction(() => storeLiveMessageRows(msg, data, info, opts, authoritative, threadId, timestamp));
     } catch (e) {
         return { stored: false, reason: e.message };
     }
+    if (typeof opts.onStored === "function") opts.onStored(info, msg);
+    return { stored: true, info };
+}
+
+/** {@link storeLiveMessage}'s writes, inside its transaction; throws when the message row could not be written. */
+function storeLiveMessageRows(msg, data, info, opts, authoritative, threadId, timestamp) {
+    upsertThread({
+        threadId,
+        type: msg.type === THREAD_USER ? "dm" : "group",
+        name: authoritative ? opts.threadName : nameFromLiveMessage(msg),
+        lastUpdate: timestamp,
+        nameHint: !authoritative,
+    });
+    insertMessage({
+        msgId: String(data.msgId),
+        threadId,
+        senderId: String(data.uidFrom || ""),
+        senderName: String(data.dName || ""),
+        text: info.text || "",
+        timestamp,
+        type: info.type,
+        raw_data: info.raw,
+        has_attachment: info.hasAttachment,
+        // NOT data.status. The live `status` field is an undocumented
+        // enum (its type was only ever `status: number`) and is not Sync2's
+        // MessageStatus, which this column holds: four of the owner's own
+        // successfully-sent messages arrived carrying 1, which that column
+        // defines as "failed". Delivery state comes from the mobile sync
+        // and from the delivered/seen receipt events instead.
+    });
     // A message is a sighting: the account is in this conversation. It clears
     // a gone marker set before it -- a group rejoined, a deleted DM the contact
     // wrote to again -- so prune-orphans stops treating the conversation as one
@@ -211,8 +222,6 @@ export function storeLiveMessage(msg, opts = {}) {
     } catch {
         /* the row is stored; getOrphanThreads still sees it as newer than the marker */
     }
-    if (typeof opts.onStored === "function") opts.onStored(info, msg);
-    return { stored: true, info };
 }
 
 /**

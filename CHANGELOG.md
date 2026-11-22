@@ -16,6 +16,7 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 #### Changed
 
 - **SQLite on a network filesystem uses a rollback journal** (`ZALO_SQLITE_JOURNAL`, default `auto`). WAL maps its `-shm` file into memory, and a process with a mapped page of an NFS file that switched servers dies with SIGBUS. On NFS, SMB/CIFS, 9p, FUSE and the other shared filesystems the databases now use `journal_mode=TRUNCATE` (memory mapping off); on a local disk they stay in WAL. An existing database switches when it is opened (`wal` or `truncate` decides by hand).
+- **A live message is stored in one transaction**: its conversation, the message (with the placeholder row it replaces) and the sighting commit once instead of three to five times. On a rollback journal every commit is a synced write (on a network filesystem a round trip to the storage), so a busy account's intake costs a third or less; and the placeholder's removal and the message's insert can no longer be split by a crash.
 
 ## [3.3.3] — 2026-11-22
 

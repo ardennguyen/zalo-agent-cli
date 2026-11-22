@@ -91,9 +91,9 @@ export function folderSize(dir) {
     return total;
 }
 
-/** The bytes of a SQLite file with its WAL and shared-memory files. */
+/** The bytes of a SQLite file with its WAL and shared-memory files, or its rollback journal (network filesystems). */
 function sqliteSize(file) {
-    return fileSize(file) + fileSize(`${file}-wal`) + fileSize(`${file}-shm`);
+    return fileSize(file) + fileSize(`${file}-wal`) + fileSize(`${file}-shm`) + fileSize(`${file}-journal`);
 }
 
 /**

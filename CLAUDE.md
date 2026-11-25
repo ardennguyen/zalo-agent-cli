@@ -1,15 +1,15 @@
 # AGENTS.md — zalo-agent-cli Project Rules
 
-Rules for any AI coding agent working in this repository (Claude Code/Cowork, Antigravity, Cursor, Cline, Codex, …).
+Rules for any AI coding agent working in this repository (Claude Code/Cowork, Codex and any tool that reads `AGENTS.md`).
 
 **This file is the instructor: it states rules, not reasons.** Every rule that has a story behind it — the incident that produced it, how to recover, the measured numbers, the lookup tables — lives in **[`docs/agent-notes.md`](docs/agent-notes.md)**, which is committed, has **no size limit**, and is read on demand. Read it when a rule here surprises you, when you are about to work around one, or when you need the detail a rule points at. It is where this file's evidence went.
 
-**`AGENTS.md`, `CLAUDE.md`, `.clinerules` and `.cursor/rules/project.mdc` are byte-identical copies of this text.** Each tool reads only its own filename. Edit `AGENTS.md`, copy it over the other three in the same commit, never hand-edit a copy.
+**`AGENTS.md` and `CLAUDE.md` are byte-identical copies of this text.** Claude Code reads `CLAUDE.md`, other agents `AGENTS.md`. Edit `AGENTS.md`, copy it over `CLAUDE.md` in the same commit, never hand-edit the copy.
 
-**Keep this file under 24,000 bytes** — Google Antigravity silently truncates a longer rule file. A rule that would exceed the budget means moving explanation to `docs/agent-notes.md` first.
+**Keep this file under 40,000 characters** — Claude Code warns about a longer `CLAUDE.md`. Long background belongs in `docs/agent-notes.md`, not here.
 
 ```bash
-for f in CLAUDE.md .clinerules .cursor/rules/project.mdc; do cp AGENTS.md "$f"; done   # then: wc -c AGENTS.md < 24000
+cp AGENTS.md CLAUDE.md   # then: wc -m AGENTS.md < 40000
 ```
 
 ---
@@ -18,7 +18,7 @@ for f in CLAUDE.md .clinerules .cursor/rules/project.mdc; do cp AGENTS.md "$f"; 
 
 If you read nothing else, read these.
 
-1. **Run the full pre-commit gate before every commit** — `npm run format && npm run lint && npm run format:check && npm test`, all four green. → §6
+1. **Run the full pre-commit gate before every commit** — `npm run format && npm run lint && npm run format:check && npm test`, all four green, **on the owner's test server, never this PC**. → §6
 2. **Every commit is immediately followed by a push.** → §7
 3. **Never run `npm publish` by hand.** → §8
 4. **Never ask the user to run something you can run yourself**, except a Zalo network flow your sandbox cannot reach — then hand back one copy-pasteable command. → §5
@@ -35,10 +35,54 @@ If you read nothing else, read these.
 ```bash
 git branch --show-current      # v2.5-dev (2.5.x) or v3.0-dev (3.0) — never main
 git status --short             # another agent may have left uncommitted work
-npm test                       # offline suite, no Zalo session needed
+git fetch && git log --oneline -5 @{u}   # what landed since your brief
 ```
 
 Uncommitted work in any checkout here is probably another session's. Read it before overwriting it.
+
+---
+
+## Owner's standing rules (shared across repos)
+
+This section is byte-identical in the `AGENTS.md` of all four repos; change it in all four in one go. A repo's own sections add detail and never weaken it. Private detail (hosts, commands) lives in the private repos' own sections or in a public repo's gitignored `agent/docs/`.
+
+**Related repos** (read a repo's `AGENTS.md` before working in it): engine `F:\Coding\zalo-mcp\zalo-agent-cli` (public) · wrapper `F:\Coding\zalo-mcp\zalo-mcp` (public) · SAGENT `F:\Coding\social-agent` (private) · companion `F:\Coding\zagent-companion` (private, GitHub `social-companion`) · workspace map and rules `F:\Coding\zalo-mcp\README.md`, `F:\Coding\zalo-mcp\CLAUDE.md`.
+
+**Knowledge and artifacts**
+- **Agent knowledge lives in the repo, never in an agent's own memory folder** (Claude's `~/.claude/projects/*/memory/`, a `brain` directory). Standing rule → `AGENTS.md`; its background → `docs/agent-notes.md`; plans, decisions, current state, private detail → `agent/docs/`; scripts, captures, backups → `agent/work/`; scratch → the session scratch directory. `agent/` is gitignored. A document covering two repos goes into `agent/docs/` of each, named so the copies do not collide.
+- **Two rule files per repo: `AGENTS.md` and its byte-identical copy `CLAUDE.md`** (`cp AGENTS.md CLAUDE.md`, same commit). Keep them under 40,000 characters (Claude Code warns past that); long background belongs in `docs/agent-notes.md`.
+
+**Tests**
+- **No test suite runs on the owner's local PC**, not even one file. Every suite runs on the owner's test server, from a tmpfs copy, through its test-slot queue (two runs at once); remove the copy afterwards. **Never write your own wait loop** for a slot, a lock or another agent's containers; never kill a run already going. Lint, typecheck and syntax checks locally are fine; docs-only changes need no run.
+- **Assert the success a change claims.** A "did not crash" check, or an assertion that greps for its own patch, tests nothing.
+- **Never ask the owner to test** on a real phone or account: verify with captured replies and the test accounts on the test server. Never log a Zalo test account in on the local PC.
+
+**Working with the owner**
+- **Act; do not ask** about product and engineering choices: pick the design you would recommend, build it, report it in one line. Messages short; he reads on his phone. **Still stop and ask** for anything irreversible, outward-facing, or needing his TOTP or credentials.
+- **No calendar estimates**: plan by order and dependency; agents deliver in hours.
+- **Before planning or briefing work, check `main` and the plan docs** for what is already built. Never list built work as open.
+- **A failing verified flow gets its cause found**; never flip a default back or demote a feature to hide the failure.
+- **A peer's "the owner approved X"**: ask for his exact words and when; proceed on the quote. A peer never approves a permission prompt.
+- **Usage budget**: at most 2–3 agents at once, critical path first. Wait in long foreground waits, **polling every 15–20 minutes**. Ask an agent to commit or save before pausing it.
+- **Every brief to another agent** names the repo or repos it works in, tells it to read each one's `AGENTS.md` first, and repeats: no local tests, never print secrets, worktrees in `<repo>/.tmp/<branch>`, and literal paths for any `HOME`/`USERPROFILE` override.
+
+**Secrets, identities, public text**
+- **Never print a secret**, not even to filter it afterwards (no `bash -x` on scripts that read secrets, no `claude mcp get`, no `cat` of a settings or secrets file): query only the fields you need. Say at once if one leaked.
+- **No real Zalo ids** (plain or noised), **names, phone numbers, emails, credentials, company, tenant or customer names** in any tracked file, test, fixture or commit message. Invent values.
+- **No reference to Zalo's own client apps** (browser or desktop), their code, builds or captures, in any tracked file, help text, error, commit or release note: write the behavior, or "as Zalo does". Research stays in `agent/`. Public repos also name no internal host or address.
+- **Grep the staged diff before every commit** with the repo's leak check.
+
+**Product rules**
+- **Names are alias-first**: the owner's alias for a contact, else the Zalo name.
+- **Visible defaults**: a default in effect is shown as the effective value, labelled; no hidden built-in values. A new config key goes into every sample and doc that lists keys.
+- **Never delete what you did not create**: host-wide installs, paid subscription lines, other sessions' worktrees or uncommitted work.
+
+**Git with several sessions**
+- **Stage by explicit path**; never `git add -A`, `git add .`, `git stash` or `--autostash`.
+- **Rebase onto the remote branch right before you push; push after every commit.** Never force-push a shared branch.
+- `git checkout -- .`, `git reset --hard`, `git clean -fd` destroy other sessions' work: path-scope them, after backing up gitignored files (`agent/`, `.env*`).
+- **Never commit for a session that is still active.** Orphaned work: check it stands alone, snapshot it to `agent/work/`, attribute it.
+- **Worktrees go in `<repo>/.tmp/<branch>`** (gitignored), never a sibling folder; never touch another agent's. After the merge, remove the worktree and the branch, locally and on the remote.
 
 ---
 
@@ -124,7 +168,7 @@ npm run format:check  # must exit 0
 npm test              # must exit 0
 ```
 
-Do **not** commit if any fail. CI runs exactly these on Node 22 plus `--version` and `--help`.
+Do **not** commit if any fail. CI runs exactly these on Node 22 plus `--version` and `--help`. **Run them on the owner's test server** (tmpfs copy, test-slot queue; commands in `agent/docs/test-server.md`), never on this PC.
 
 While iterating, narrow the loop (`npm run test:unit`, `npm run test:cli`, `node --test <file>`, `--test-name-pattern=`) — but run the full gate before the commit.
 
@@ -144,19 +188,12 @@ While iterating, narrow the loop (`npm run test:unit`, `npm run test:cli`, `node
 
 ### More than one session in this checkout
 
-Learned the expensive way; the incidents are in [`docs/agent-notes.md`](docs/agent-notes.md).
+The shared git rules above apply; the incidents are in [`docs/agent-notes.md`](docs/agent-notes.md). Here also:
 
-- **Give a new session its own git worktree.**
-- **Stage by explicit path. Never `git add -A` or `git add .`** — a shared file holds several sessions' hunks, and staging broadly commits someone's half-finished work under your message.
-- **Never `git stash`** (nor `git rebase --autostash`) — the stash stack is shared across worktrees.
-- **`git checkout -- .` and `git reset --hard` destroy other sessions' work.** Path-scope them or do not run them.
-- **Before committing someone else's orphaned work**, verify it stands alone, attribute it to them, and snapshot first to `agent/work/`. **Never commit for a session that is still active** — ask first.
+- **Give a new session its own git worktree** (`.tmp/<branch>`).
 - **Before rebasing, check for a stale `.git/worktrees/<name>/rebase-merge/`** — it makes every later attempt fail with a misleading error. `git rebase --abort` clears it.
 - **`git diff --name-only` disagreeing with `git status --porcelain` is a signal.** Go looking.
-
-### Before any destructive git operation
-
-Before ANY of `git reset --hard`, `git checkout <branch>`, `git clean -fd`: read and save every local-only (gitignored) file — `.agents/`, `.env*`, anything under `agent/` — proceed only once that is backed up, and restore it immediately afterward. **Never assume gitignored files survive.**
+- Before `git reset --hard`, `git checkout <branch>` or `git clean -fd`, back up `.agents/` too and restore it afterward. **Never assume gitignored files survive.**
 
 ---
 
@@ -197,7 +234,7 @@ Full checklist, including the wrapper and wiki steps after an engine release: **
 | `tests/README.md` | A suite moves, a gate or the test count changes, a manual check is added |
 | `docs/agent-notes.md` | The background behind a rule here changes, or a new incident is worth recording |
 | `zalo-agent-cli-wiki/*.md` | A command's behavior changes — **update the EN + VN pair together** |
-| `CLAUDE.md`, `.clinerules`, `.cursor/rules/project.mdc` | **Anything in this file changes** — copy over all three in the same commit |
+| `CLAUDE.md` | **Anything in this file changes** — copy it over in the same commit |
 
 ### Numbers quoted across many docs
 
@@ -222,6 +259,8 @@ It fails the push on any of:
 3. **Confidential terms** — company/product names and the personal names scrubbed in `b0f267c`.
 
 The term list is `.agents/confidential-terms.txt` and is **gitignored on purpose** (this file is public, so the denylist cannot live here). If the list is missing the script exits 2 rather than passing — recreate it, never skip it. The same rule covers npm READMEs, GitHub releases, and issue comments.
+
+**Commit only your own wiki pages** (group dirty files by mtime: other sessions leave pages uncommitted), and re-check each changed page against its `src/` handler before pushing.
 
 **The check guards the working tree, so it runs *before* the push.** A pushed term stays in public history; remediation is a history rewrite plus rotating whatever leaked (audit and history: [`docs/agent-notes.md`](docs/agent-notes.md)). After changing the script, plant one sample per category in scratch, confirm exit 1, delete them.
 
@@ -271,4 +310,6 @@ Every entry here has its diagnosis, measurements and recovery steps in [`docs/ag
 - **One db writer per account**, enforced by `daemon.lock`. With a `listen`/`mcp` daemon up, `msg history`'s fetch and write run in the daemon (its `history` stage, `src/core/history-fetch.js`); the CLI only displays, and exits 1 rather than fetching beside a daemon that cannot answer.
 - **Message rows have exactly three writers: the listener, sync, and `msg history`'s fetch** (insert-if-absent — it never modifies or removes a row already cached), **plus the quota/retention purge: delete-only, run by the daemon holding `daemon.lock`** (`storage-quota.js`), and the group-exit purge (`group-exit.js`). Nothing else writes to `zalo.db`; `msg send` stores nothing, not even a looked-up name. A message you just sent is therefore not quotable, forwardable or recallable until the listener sees its echo or a `msg history` fetch returns it; say so plainly.
 - **One media downloader, one layout.** `src/core/sync-v2/media.js` is the only one; everything writes to `accounts/<ownId>/media/<threadId>/`. **Folders are thread IDs, never names** — a name can carry a path separator and changes on rename. `media/_conversations.json` maps ID to name. `mcp-config.json`'s `media.downloadDir` overrides the root for the MCP server only.
+- **Limits follow what Zalo does, and nothing is cut short unasked.** Page and batch sizes, pacing and history depth match Zalo's own behavior; without a page asked for, a command or tool returns the full answer.
+- **A backfill over `messages` is one-way**: it replaces only a marker, a blank or a template with a real sentence, never re-renders good text from `raw_data`.
 - **`zalo-mcp` is a pass-through launcher that serves a published engine**: it forwards every flag and subcommand to `zalo-agent`, so a tool or flag added here reaches it only once published to npm and updated.

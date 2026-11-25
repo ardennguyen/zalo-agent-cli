@@ -1,8 +1,8 @@
 /**
- * The agent rule files: `AGENTS.md`, `CLAUDE.md`, `.clinerules` and `.cursor/rules/project.mdc` are four copies of one text,
- * each read by a different tool, and Google Antigravity silently drops the tail of any rule file past 24,000 bytes.
- * AGENTS.md says so itself, and until this test nothing enforced either rule: a hand edit of one copy, or a rule that
- * pushed the file over the limit, would have passed the gate and failed only in a tool nobody was watching.
+ * The agent rule files: `AGENTS.md` and `CLAUDE.md` are two copies of one text (Claude Code reads `CLAUDE.md`, other
+ * agents `AGENTS.md`), and Claude Code warns about a `CLAUDE.md` past 40,000 characters. AGENTS.md says so itself, and
+ * until this test nothing enforced either rule: a hand edit of one copy, or a rule that pushed the file over the limit,
+ * would have passed the gate and failed only in a tool nobody was watching.
  *
  * It also holds the MCP tool list in AGENTS.md (section 10) to `src/mcp/mcp-tools.js`, as that section demands.
  */
@@ -14,24 +14,24 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const COPIES = ["AGENTS.md", "CLAUDE.md", ".clinerules", ".cursor/rules/project.mdc"];
-/** Antigravity's cutoff: a file of this size or more loses its tail. */
-const LIMIT = 24_000;
+const COPIES = ["AGENTS.md", "CLAUDE.md"];
+/** Claude Code's warning threshold for a `CLAUDE.md`, in characters. */
+const LIMIT = 40_000;
 
 const bytes = (f) => readFileSync(join(ROOT, f));
 const sha = (b) => createHash("sha256").update(b).digest("hex");
 
 describe("the agent rule files", () => {
-    it("are four byte-identical copies of AGENTS.md", () => {
+    it("are two byte-identical copies of AGENTS.md", () => {
         const want = sha(bytes("AGENTS.md"));
         const odd = COPIES.filter((f) => sha(bytes(f)) !== want);
         assert.deepEqual(odd, [], `copy over AGENTS.md: ${odd.join(", ")}`);
     });
 
-    it(`are under ${LIMIT} bytes, the size at which Antigravity starts to truncate`, () => {
+    it(`are under ${LIMIT} characters, where Claude Code starts to warn`, () => {
         for (const f of COPIES) {
-            const n = bytes(f).length;
-            assert.ok(n < LIMIT, `${f} is ${n} bytes, ${n - LIMIT + 1} over the limit`);
+            const n = [...bytes(f).toString("utf8")].length;
+            assert.ok(n < LIMIT, `${f} is ${n} characters, ${n - LIMIT + 1} over the limit`);
         }
     });
 

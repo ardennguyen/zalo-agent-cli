@@ -9,6 +9,8 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+## [3.5.0] — 2026-11-27
+
 #### Added
 
 - **An id this account has never seen is refused, not tried: `UNKNOWN_TO_ACCOUNT`.** Zalo gives the same person a different user id on each account, so an agent that reaches several accounts could pass an id read on one to another, where it named someone else or no one. The tools and commands that take a person or a conversation now check the id against the account first, with no request when it is known: its conversations, a message in one or from that sender, its contact book, the owner's aliases, a presence push, its friend list and group list (read again on a miss at most every 5 minutes), and the ids it handed out itself. A refusal names the ids, says they differ per account, and says how to find the person on this account (by phone or username, or by name). MCP: `zalo_send_message` (`threadId`, `cardUserId`, `@[userId]` mentions), `zalo_forward_message`, `zalo_react`, `zalo_get_history`, `zalo_get_messages` and `zalo_wait_for_message` with a `threadId`, `zalo_lookup_user` with `userId`, `zalo_get_group_members`, and `zalo_friend` `status`, `send`, `undo`, `alias`, `remove`, `block`, `unblock`, `last_online`, `biz`, `block_feed`, `qr`, `common_groups` (`accept` and `reject` answer a request Zalo delivered to this account); the reply is an error whose JSON has `code: "UNKNOWN_TO_ACCOUNT"` and `unknownIds`. CLI: `msg send` (and its mentions), `send-image`, `send-file`, `send-card`, `send-bank`, `send-qr-transfer`, `sticker`, `send-voice`, `send-link`, `send-video`, `react`, `forward`, `history`, `typing`, `friend info`, `add`, `remove`, `block`, `unblock`, `last-online`, `alias`, `alias-remove`, `undo-request`, `request-status`, `qr`, `common-groups`, `biz`, `block-feed` and `group members` exit 1 (`--json`: `{error, code, unknownIds}`). A phone or username lookup (`zalo_lookup_user`, `friend find`, `friend find-username`, `find_phones`), a group's member list and the friend request lists record the ids they return (hashed, in `known-ids.json` in the account folder), so a stranger found by phone can be messaged right away. `allowUnknown: true` (CLI `--allow-unknown`) skips the check for the rare id the account knows but has never shown. When the friend or group list cannot be read, nothing is refused.
@@ -1096,7 +1098,8 @@ npm install -g @ardennguyen/zalo-agent-cli@2.0.0
 
 Commands, flags and defaults: `skill/references/command-reference.md`. Operating it on a server: `docs/deployment.md`.
 
-[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.4.2...v3.0-dev
+[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.5.0...v3.0-dev
+[3.5.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.5.0
 [3.4.2]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.4.2
 [3.4.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.4.1
 [3.4.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.4.0

@@ -53,7 +53,7 @@ This section is byte-identical in the `AGENTS.md` of all four repos; change it i
 - **Two rule files per repo: `AGENTS.md` and its byte-identical copy `CLAUDE.md`** (`cp AGENTS.md CLAUDE.md`, same commit). Keep them under 40,000 characters (Claude Code warns past that); long background belongs in `docs/agent-notes.md`.
 
 **Tests**
-- **No test suite runs on the owner's local PC**, not even one file. Every suite runs on the owner's test server, from a tmpfs copy, through its test-slot queue (two runs at once); remove the copy afterwards. **Never write your own wait loop** for a slot, a lock or another agent's containers; never kill a run already going. Lint, typecheck and syntax checks locally are fine; docs-only changes need no run.
+- **No test suite runs on the owner's local PC**, not even one file. Every suite runs on the owner's test servers, from a tmpfs copy, through the one test queue, `sagent-test [--pg] <cmd>`: it spreads the runs over every test host's slots (each host's slot count is a file read at every look) and runs each in a container; a suite its runner image cannot run still uses the older `sagent-test-slot`, as the repo's own section says. Remove the copy afterwards. **Start a run as one background call and never poll it**: the waiting happens inside the command, which ends when the run does. **Never write your own wait loop** for a slot, a lock or another agent's containers; no load guard or threshold; never kill a run already going. Lint, typecheck and syntax checks locally are fine; docs-only changes need no run.
 - **Assert the success a change claims.** A "did not crash" check, or an assertion that greps for its own patch, tests nothing.
 - **Never ask the owner to test** on a real phone or account: verify with captured replies and the test accounts on the test server. Never log a Zalo test account in on the local PC.
 
@@ -168,7 +168,7 @@ npm run format:check  # must exit 0
 npm test              # must exit 0
 ```
 
-Do **not** commit if any fail. CI runs exactly these on Node 22 plus `--version` and `--help`. **Run them on the owner's test server** (tmpfs copy, test-slot queue; commands in `agent/docs/test-server.md`), never on this PC.
+Do **not** commit if any fail. CI runs exactly these on Node 22 plus `--version` and `--help`. **Run them on the owner's test server** (tmpfs copy, one background call through the test queue, never polled; commands in `agent/docs/test-server.md`), never on this PC.
 
 While iterating, narrow the loop (`npm run test:unit`, `npm run test:cli`, `node --test <file>`, `--test-name-pattern=`) — but run the full gate before the commit.
 

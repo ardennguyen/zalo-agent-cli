@@ -163,7 +163,14 @@ import { oauthStartCheck } from "../mcp/mcp-oauth.js";
 import { createAdminApi, resolveAdminCredentials } from "../core/admin-api.js";
 import { createExportApi } from "../core/data-export.js";
 import { servePolicyRequest, startPolicyRuntime, touches } from "../core/policy-store.js";
-import { describeQuotaEvent, describeStorage, quotaSystemEvent, startStorageJobs } from "../core/storage-quota.js";
+import {
+    checkDiskRoom,
+    describeQuotaEvent,
+    describeStorage,
+    quotaSystemEvent,
+    startStorageJobs,
+} from "../core/storage-quota.js";
+import { attachAfterLogin } from "../core/after-login.js";
 import { applyGroupExit, describeGroupGone, groupGoneSystemEvent, setGroupGoneSink } from "../core/group-exit.js";
 import { ZaloNotifier } from "../mcp/notifier.js";
 import { deviceSinceOf, loginDeviceChange } from "../core/device-since.js";
@@ -1620,6 +1627,18 @@ export function registerMCPCommands(program) {
             // the offline-queue pull on every handshake (src/core/self-heal.js).
             // `stageLock` is the one created before the server above.
             const socketTap = createSocketTap({ log: (line) => console.error(`[mcp] ${line}`) });
+            // What a `login --session-only` left: the phone's "sync messages" offer and the zCloud key, done on this
+            // socket at the handshake (src/core/after-login.js). Same in `listen` and `mcp start`.
+            attachAfterLogin({
+                tap: socketTap,
+                getApi,
+                accountDir,
+                ownId: activeAcc.ownId,
+                lock: stageLock,
+                restore: (...a) => syncRunners.messages(...a),
+                checkRoom: checkDiskRoom,
+                log: daemonLog,
+            });
             // The read state other devices report, stored exactly as `listen`
             // stores it, so a thread the human read on the phone stops
             // looking unread (src/core/read-state.js).

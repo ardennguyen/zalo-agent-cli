@@ -64,7 +64,8 @@ import { describeGap } from "../core/sync-v2/gap-advice.js";
 import { createDeliveredReceipts } from "../zalo/receipts.js";
 import { envForAccount, resolveWebhookDelivery, resolveWebhookUrl } from "../mcp/mcp-config.js";
 import { servePolicyRequest, startPolicyRuntime, touches } from "../core/policy-store.js";
-import { describeQuotaEvent, startStorageJobs } from "../core/storage-quota.js";
+import { checkDiskRoom, describeQuotaEvent, startStorageJobs } from "../core/storage-quota.js";
+import { attachAfterLogin } from "../core/after-login.js";
 import { applyGroupExit, describeGroupGone, setGroupGoneSink } from "../core/group-exit.js";
 import { purgeDeadDeliveries, startWebhookDelivery } from "../core/webhook-outbox.js";
 import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
@@ -868,6 +869,26 @@ export function registerListenCommand(program) {
                 info(describeSocketPolicy(p, { exitOnSignedOut: daemonPresence.exitOnSignedOut }));
             }
             const socketTap = createSocketTap({ log: (line) => console.error(`[listen] ${line}`) });
+            // The socket stages this daemon runs: the channel's (`zalo-agent sync`) and its own after-login restore.
+            const syncRunners = createSyncRunners({
+                getApi,
+                accountName: activeAcc.ownId,
+                log: daemonLog,
+                monitor: loopMonitor,
+                onSelfName: (name) => updateAccountName(activeAcc.ownId, name),
+            });
+            // What a `login --session-only` left: the phone's "sync messages" offer and the zCloud key, done on this
+            // socket at the handshake (src/core/after-login.js). Same in `listen` and `mcp start`.
+            attachAfterLogin({
+                tap: socketTap,
+                getApi,
+                accountDir,
+                ownId: activeAcc.ownId,
+                lock: stageLock,
+                restore: (...a) => syncRunners.messages(...a),
+                checkRoom: checkDiskRoom,
+                log: daemonLog,
+            });
             // Read state other devices report -- a conversation read on the
             // phone, an unread mark set or cleared there -- which the listener's events
             // drop. Stored always, like reactions; printed only with
@@ -1425,13 +1446,7 @@ export function registerListenCommand(program) {
                     getApi,
                     accountDir,
                     onLog: (m) => info(m),
-                    runners: createSyncRunners({
-                        getApi,
-                        accountName: activeAcc.ownId,
-                        log: daemonLog,
-                        monitor: loopMonitor,
-                        onSelfName: (name) => updateAccountName(activeAcc.ownId, name),
-                    }),
+                    runners: syncRunners,
                     // The self-heal's lock: a stage and a catch-up never share the socket.
                     lock: stageLock,
                     onStop: shutdown,

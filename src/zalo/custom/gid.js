@@ -23,8 +23,8 @@ import { isRateLimitError, runPacedBatches } from "./user-info.js";
 export const GID_RETRY_DELAYS_MS = Object.freeze([500, 1500]);
 
 /**
- * Run `fn`, and again after each pause while it throws. A rate limit is not retried here: the paced batches back
- * off for those, and asking again at once would only make it worse.
+ * Run `fn`, and again after each pause while it throws. A rate limit is not retried: the paced batches start the
+ * process-wide cool-down for it (./user-info.js), and asking again would only make it worse.
  *
  * @template T
  * @param {() => Promise<T>} fn
@@ -71,9 +71,10 @@ function makeGidDecrypt(api) {
  * @param {object} api - logged-in session
  * @param {string[]} globalIds - the 32-char ids (partition without the `oneone/` prefix)
  * @param {(m: string) => void} [log]
+ * @param {{signal?: AbortSignal}} [o] - stops between requests
  * @returns {Promise<Map<string, {id: string, name: string}>>} globalId -> {id, name}
  */
-export async function resolveNonFriendDms(api, globalIds, log = () => {}) {
+export async function resolveNonFriendDms(api, globalIds, log = () => {}, { signal } = {}) {
     const out = new Map();
     if (!globalIds || !globalIds.length) return out;
 
@@ -90,6 +91,7 @@ export async function resolveNonFriendDms(api, globalIds, log = () => {}) {
         batchSize: GID_BATCH,
         label: "gid/decrypt",
         log,
+        signal,
         call: (batch) => retrying(() => gidDecrypt(batch)),
     });
     for (const map of decrypted.results) {
@@ -105,6 +107,7 @@ export async function resolveNonFriendDms(api, globalIds, log = () => {}) {
         batchSize: NAME_BATCH,
         label: "getUserInfo",
         log,
+        signal,
         call: (batch) => api.getUserInfo(batch),
     });
     for (const info of named.results) {
@@ -115,7 +118,8 @@ export async function resolveNonFriendDms(api, globalIds, log = () => {}) {
             }
         }
     }
-    if (named.failed || named.skippedIds) log("some names may be blank (getUserInfo did not answer for every batch)");
+    if ((named.failed || named.skippedIds) && !named.stoppedBy)
+        log("some names may be blank (getUserInfo did not answer for every batch)");
 
     for (const [gid, uid] of idToUser)
         out.set(gid, { id: uid, name: names.get(uid) || "", zaloName: zaloNames.get(uid) || "" });

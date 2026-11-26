@@ -45,6 +45,7 @@ import { ensureAssets, loadCodecs } from "../../zalo/transfer-sync/assets.js";
 import { classifySyncMessage } from "../../zalo/transfer-sync/message-types.js";
 import { resolveNonFriendDms } from "../../zalo/custom/gid.js";
 import { createSenderResolver } from "./senders.js";
+import { fillDeferredNames, queueDeferredNames } from "./deferred-names.js";
 import { readUserAliases, currentUserName, resolveCurrentUserNames } from "../current-user-names.js";
 import { refreshProfiles } from "../name-refresh.js";
 import { startKeepAlive } from "../../zalo/listener/keepalive.js";
@@ -103,6 +104,8 @@ const MAX_TS = 9007199254740991;
  * one-shard run.
  */
 const PER_SHARD_BUDGET_MS = 30000;
+/** Rows stored per transaction; the event loop is handed back between slices. */
+export const STORE_SLICE = 500;
 /** How long a session may be waited for before the restore says what it is still missing. */
 const STALL_NOTE_MS = 60_000;
 /**
@@ -663,6 +666,34 @@ export class SyncV2 {
      * @returns {Promise<{conversations:number, messagesSaved:number, threadsMapped:number, threadsUnmapped:number, reason:string, days:number|null, from:number, confirmed:boolean, resumes:number, rePrompted:boolean}>}
      */
     async restore(opts = {}) {
+        this._senders = null;
+        let res;
+        try {
+            res = await this._restoreRun(opts);
+        } finally {
+            // What a rate limit (or a cancel) kept this run from looking up: queued for the fill-in.
+            const deferred = this._senders?.deferred?.() ?? { opaque: [], uids: [] };
+            if (deferred.opaque.length || deferred.uids.length) {
+                try {
+                    queueDeferredNames(this.accountDir, deferred);
+                } catch {
+                    /* the queue is best-effort: the next replay resolves these too */
+                }
+            }
+        }
+        // The fill-in, when the cool-down is over by now (a long restore outlasts it).
+        let fill = null;
+        try {
+            fill = await fillDeferredNames(this.api, this.accountDir, { log: () => {}, signal: opts.signal });
+        } catch {
+            /* best-effort */
+        }
+        const queued = fill?.left ?? 0;
+        return queued ? { ...res, namesDeferred: queued } : res;
+    }
+
+    /** The restore itself; see {@link SyncV2#restore}. */
+    async _restoreRun(opts = {}) {
         // The server decides whether this account may sync from the phone at all:
         // `settings.features.sync_2_web.enable` false means no sync. (Live, 2026-10-28: true on a paid
         // and on a free account alike, with the same 300 s timeouts; the block does not depend on the zCloud plan.)
@@ -707,9 +738,17 @@ export class SyncV2 {
 
         onStatus({ phase: "contacts", detail: "reading friend/group lists for thread mapping" });
         const threadMap = await this._buildThreadMap(log);
-        const senders = createSenderResolver(this.api, threadMap, { log });
+        const senders = createSenderResolver(this.api, threadMap, { log, signal: opts.signal });
+        this._senders = senders;
 
         initDb(resolve(this.accountDir, "zalo.db"));
+        // Names an earlier restore left for later because Zalo was limiting lookups: filled in first, unless lookups
+        // are still resting (./deferred-names.js).
+        try {
+            await fillDeferredNames(this.api, this.accountDir, { log, signal: opts.signal });
+        } catch (e) {
+            log(`deferred names: ${e?.message || e}`);
+        }
         // A full resync trusts nothing an earlier run settled (Y5c).
         if (opts.fullResync) deleteSyncRanges();
         this._refreshThreadNames(threadMap);
@@ -1066,6 +1105,7 @@ export class SyncV2 {
                 .slice()
                 .sort((a, b) => (a.batchType === 2 ? -1 : 1) - (b.batchType === 2 ? -1 : 1) || a.idx - b.idx);
             for (const bt of ordered) {
+                if (aborted()) break;
                 if (!bt.msgUrl) continue;
                 await new Promise((r) => setImmediate(r));
                 let blob;
@@ -1081,6 +1121,7 @@ export class SyncV2 {
                     continue;
                 }
                 for (const chunk of splitChunks(blob)) {
+                    if (aborted()) break;
                     // Hand the event loop back before each chunk. Decode and
                     // store are synchronous and a single shard can carry tens of
                     // thousands of messages; the listener keeps the socket alive with
@@ -1222,7 +1263,7 @@ export class SyncV2 {
             if (unresolved.length) {
                 onStatus({ phase: "resolve", detail: `resolving ${unresolved.length} non-friend conversation(s)` });
                 try {
-                    const extra = await resolveNonFriendDms(this.api, unresolved, log);
+                    const extra = await resolveNonFriendDms(this.api, unresolved, log, { signal: opts.signal });
                     for (const [gid, v] of extra)
                         threadMap.set(gid, {
                             id: v.id,
@@ -1416,15 +1457,22 @@ export class SyncV2 {
                 // Network identity lookups must finish before opening
                 // the synchronous SQLite transaction for this chunk.
                 await senders.prepare((obj.partitionsList || []).flatMap((p) => p.messagesList || []));
-                // One transaction per decoded chunk rather than one per
-                // row: thousands of individual WAL commits is both slow
-                // and a long block on the event loop.
-                runInTransaction(() => {
-                    for (const part of obj.partitionsList || []) {
-                        const { gid, hit, threadId } = noteThread(part.id);
-                        const isGroup = part.id.startsWith("group/");
-                        const cm = (gid && convMeta.get(gid)) || {};
-                        for (const msg of part.messagesList || []) {
+                const rows = [];
+                for (const part of obj.partitionsList || []) {
+                    const { gid, hit, threadId } = noteThread(part.id);
+                    const isGroup = part.id.startsWith("group/");
+                    const cm = (gid && convMeta.get(gid)) || {};
+                    for (const msg of part.messagesList || []) rows.push({ part, hit, threadId, isGroup, cm, msg });
+                }
+                // A transaction per slice of rows rather than one per row (thousands of WAL commits are slow) or one
+                // per chunk: a chunk can carry tens of thousands of rows, and storing them in one go held the event
+                // loop long enough for the socket to miss its pings. Between slices the loop is handed back, and a
+                // cancel stops the storing (what is stored stays).
+                for (let at = 0; at < rows.length; at += STORE_SLICE) {
+                    if (at > 0) await new Promise((r) => setImmediate(r));
+                    if (aborted()) return;
+                    runInTransaction(() => {
+                        for (const { part, hit, threadId, isGroup, cm, msg } of rows.slice(at, at + STORE_SLICE)) {
                             // The payload's numeric msgType + meta decide the row;
                             // `content` is always a string, so it cannot.
                             const info = classifySyncMessage(msg);
@@ -1492,8 +1540,8 @@ export class SyncV2 {
                                 firstRowError ??= e?.message ?? String(e);
                             }
                         }
-                    }
-                });
+                    });
+                }
             };
 
             // ---- wave by wave: send, wait, decrypt, decode, store ----

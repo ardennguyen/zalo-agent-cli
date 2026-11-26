@@ -5,32 +5,37 @@
  * user ids) take at most 100 / 50 ids per request. A restore of a busy account
  * (100,000 messages in 90 days, thousands of non-friend conversations) asks for
  * thousands of ids, so it sends dozens of these requests back to back, and
- * Zalo answers with a "limit reached" error. The old loops swallowed that
- * error with a fixed message and went on to the next batch, so every remaining
- * batch failed the same way, the real error text was never written anywhere,
- * and the next restore started from zero again.
+ * Zalo answers with a "limit reached" error (code 221).
  *
- * This runs the batches one at a time with a short gap, retries a rate-limit
- * answer with a growing wait, stops the whole lookup after a rate limit that
- * persists (or after several failures in a row, whatever their text), and
- * writes what Zalo actually said -- code and message -- through `log`. The
- * callers keep their contract: a lookup that gives up leaves the names it did
- * not get blank or as ids, and nothing here throws.
+ * This runs the batches one at a time with a short gap and writes what Zalo
+ * actually said -- code and message -- through `log`. A rate-limit answer is
+ * not retried: retrying each batch after 2, 5 and 15 s cost a restore some 22 s
+ * per batch and kept Zalo's limit hot (seen live: 67 batches, ~25 minutes).
+ * It starts a cool-down for the whole process instead (`LOOKUP_COOL_DOWN_MS`):
+ * until it ends every lookup returns at once without asking, and the callers
+ * leave the names they did not get to be filled in later. That is said once,
+ * not per batch. Several failures in a row of any other kind stop one lookup;
+ * an aborted `signal` stops it between requests. The callers keep their
+ * contract: a lookup that gives up leaves the names it did not get blank or as
+ * ids, and nothing here throws.
  */
 
 /** Wait between two requests of one lookup. */
 export const DEFAULT_GAP_MS = 300;
-/** Waits before each retry of a rate-limited batch. */
-export const DEFAULT_BACKOFF_MS = Object.freeze([2000, 5000, 15000]);
+/** How long lookups rest, process-wide, after Zalo said it is limiting them. */
+export const LOOKUP_COOL_DOWN_MS = 10 * 60_000;
 /** Consecutive failed batches (any error) after which the rest are not attempted. */
 export const MAX_CONSECUTIVE_FAILURES = 3;
 
 /** What a rate-limit answer reads like. Zalo's wording was not captured, so this is deliberately loose. */
-const RATE_LIMIT_TEXT = /limit|giới hạn|too many|quá nhiều|frequen|tần suất|rate|throttl|try again later/i;
-/** Codes Zalo uses for "too many requests" elsewhere in this CLI (friend requests: 221). */
+const RATE_LIMIT_TEXT = /limit|giới hạn|too many|quá nhiều|vượt quá|frequen|tần suất|rate|throttl|try again later/i;
+/** Codes Zalo uses for "too many requests" (getUserInfo and friend requests: 221). */
 const RATE_LIMIT_CODES = new Set([221, 429]);
 
 let sink = null;
+
+/** When the process-wide cool-down ends (ms); 0 for none. */
+let coolUntil = 0;
 
 /**
  * Where lookups write their diagnostics when the caller passes no `log`.
@@ -76,22 +81,55 @@ export function isRateLimitError(e) {
 
 const realSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const pacing = { gapMs: DEFAULT_GAP_MS, backoffMs: DEFAULT_BACKOFF_MS, sleep: realSleep };
+const pacing = { gapMs: DEFAULT_GAP_MS, sleep: realSleep, now: () => Date.now() };
 
 /**
- * Override the module's pacing defaults (a test seam: the real gaps and back-offs are seconds).
+ * Override the module's pacing defaults (a test seam: the real gap is hundreds of ms).
  *
- * @param {{gapMs?: number, backoffMs?: readonly number[], sleep?: (ms: number) => Promise<void>}} [overrides]
+ * @param {{gapMs?: number, sleep?: (ms: number) => Promise<void>, now?: () => number}} [overrides]
  *   call with nothing to restore the defaults
  */
 export function configureUserInfo(overrides = {}) {
     pacing.gapMs = overrides.gapMs ?? DEFAULT_GAP_MS;
-    pacing.backoffMs = overrides.backoffMs ?? DEFAULT_BACKOFF_MS;
     pacing.sleep = overrides.sleep ?? realSleep;
+    pacing.now = overrides.now ?? (() => Date.now());
 }
 
 /**
- * Call `call(batch)` for each slice of `ids`, paced, retried and bounded.
+ * Whether lookups are resting after a rate limit.
+ *
+ * @returns {boolean}
+ */
+export function lookupsCoolingDown() {
+    return coolUntil > pacing.now();
+}
+
+/**
+ * Start (or extend) the cool-down; say so once, when it starts.
+ *
+ * @param {string} why - what Zalo said
+ * @param {(m: string) => void} [log]
+ * @returns {boolean} true when it was not already running
+ */
+export function noteLookupRateLimit(why, log = (m) => sink?.(m)) {
+    const fresh = !lookupsCoolingDown();
+    coolUntil = pacing.now() + LOOKUP_COOL_DOWN_MS;
+    if (fresh) {
+        log(
+            `names deferred: Zalo is limiting lookups (${why}); none are asked for until ` +
+                `${new Date(coolUntil).toISOString()}, and the names left blank are filled in later`,
+        );
+    }
+    return fresh;
+}
+
+/** End the cool-down (a test seam). */
+export function resetLookupCoolDown() {
+    coolUntil = 0;
+}
+
+/**
+ * Call `call(batch)` for each slice of `ids`, paced and bounded.
  *
  * @template T
  * @param {string[]} ids - already de-duplicated by the caller
@@ -101,11 +139,12 @@ export function configureUserInfo(overrides = {}) {
  * @param {string} [opts.label] - prefix for the log lines
  * @param {(message: string) => void} [opts.log] - defaults to the daemon sink, else silent
  * @param {number} [opts.gapMs] - wait between requests
- * @param {readonly number[]} [opts.backoffMs] - waits before each retry of a rate-limited batch
  * @param {number} [opts.maxConsecutiveFailures]
  * @param {(ms: number) => Promise<void>} [opts.sleep] - test seam
+ * @param {AbortSignal} [opts.signal] - stops the lookup between requests
  * @returns {Promise<{results: T[], batches: number, failed: number, skippedIds: number,
- *   stoppedBy: null|"rate-limit"|"repeated-failures", retries: number}>}
+ *   stoppedBy: null|"rate-limit"|"cooling-down"|"repeated-failures"|"cancelled", retries: number}>} `retries` stays
+ *   0 (a rate limit is never retried; kept for callers that read it)
  */
 export async function runPacedBatches(ids, opts) {
     const {
@@ -113,9 +152,9 @@ export async function runPacedBatches(ids, opts) {
         call,
         label = "user-info",
         gapMs = pacing.gapMs,
-        backoffMs = pacing.backoffMs,
         maxConsecutiveFailures = MAX_CONSECUTIVE_FAILURES,
         sleep = pacing.sleep,
+        signal,
     } = opts;
     const log = typeof opts.log === "function" ? opts.log : (m) => sink?.(m);
     const list = Array.isArray(ids) ? ids : [];
@@ -124,47 +163,42 @@ export async function runPacedBatches(ids, opts) {
     let consecutive = 0;
 
     for (let b = 0; b < total; b++) {
-        const batch = list.slice(b * batchSize, (b + 1) * batchSize);
         if (b > 0 && gapMs > 0) await sleep(gapMs);
-        for (let attempt = 0; ; attempt++) {
-            try {
-                out.results.push(await call(batch));
-                consecutive = 0;
+        // Cancelled, or resting after a rate limit: nothing more is asked, and nothing is said per batch.
+        const why = signal?.aborted ? "cancelled" : lookupsCoolingDown() ? "cooling-down" : null;
+        if (why) {
+            out.stoppedBy = why;
+            out.skippedIds = list.length - b * batchSize;
+            break;
+        }
+        const batch = list.slice(b * batchSize, (b + 1) * batchSize);
+        try {
+            out.results.push(await call(batch));
+            consecutive = 0;
+        } catch (e) {
+            out.failed++;
+            if (isRateLimitError(e)) {
+                // Never retried: the cool-down starts, said once for the whole process.
+                out.stoppedBy = "rate-limit";
+                out.skippedIds = Math.max(0, list.length - (b + 1) * batchSize);
+                noteLookupRateLimit(`${label}: ${describeLookupError(e)}`, log);
                 break;
-            } catch (e) {
-                const limited = isRateLimitError(e);
+            }
+            log(`${label}: batch ${b + 1}/${total} (${batch.length} id(s)) failed: ${describeLookupError(e)}`);
+            consecutive++;
+            if (consecutive >= maxConsecutiveFailures) {
+                out.stoppedBy = "repeated-failures";
+                out.skippedIds = Math.max(0, list.length - (b + 1) * batchSize);
                 log(
-                    `${label}: batch ${b + 1}/${total} (${batch.length} id(s)) failed: ${describeLookupError(e)}` +
-                        (limited ? " [looks like a rate limit]" : ""),
+                    `${label}: stopped after batch ${b + 1}/${total} (${consecutive} failed batches in a row); ` +
+                        `${out.skippedIds} id(s) in later batches were not looked up this time`,
                 );
-                if (limited && attempt < backoffMs.length) {
-                    out.retries++;
-                    log(`${label}: waiting ${backoffMs[attempt]}ms, then retrying batch ${b + 1}/${total}`);
-                    await sleep(backoffMs[attempt]);
-                    continue;
-                }
-                out.failed++;
-                consecutive++;
-                if (limited) out.stoppedBy = "rate-limit";
-                else if (consecutive >= maxConsecutiveFailures) out.stoppedBy = "repeated-failures";
                 break;
             }
         }
-        if (out.stoppedBy) {
-            out.skippedIds = list.length - (b + 1) * batchSize;
-            if (out.skippedIds < 0) out.skippedIds = 0;
-            log(
-                `${label}: stopped after batch ${b + 1}/${total} (${
-                    out.stoppedBy === "rate-limit"
-                        ? "Zalo is limiting these lookups"
-                        : `${consecutive} failed batches in a row`
-                }); ${out.skippedIds} id(s) in later batches were not looked up this time`,
-            );
-            break;
-        }
     }
-    if (total > 1 && !out.stoppedBy && (out.failed || out.retries)) {
-        log(`${label}: finished ${total} batch(es), ${out.failed} failed, ${out.retries} retried`);
+    if (total > 1 && !out.stoppedBy && out.failed) {
+        log(`${label}: finished ${total} batch(es), ${out.failed} failed`);
     }
     return out;
 }

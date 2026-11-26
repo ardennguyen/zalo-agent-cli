@@ -8,8 +8,11 @@ import { PARK_MS, PROFILE_CHUNK_SIZE, readParked, refreshProfiles } from "../../
 import { SyncV2 } from "../../src/core/sync-v2/index.js";
 import { initDb, upsertThread, getRecentThreads } from "../../src/core/db.js";
 import { ZaloApiError } from "../../src/zalo/errors.js";
+import { lookupsCoolingDown, resetLookupCoolDown } from "../../src/zalo/custom/user-info.js";
 
 before(() => assertSandboxed(CONFIG_DIR));
+// A 221 rests every lookup of the process (src/zalo/custom/user-info.js); each test starts rested.
+beforeEach(() => resetLookupCoolDown());
 
 /** Fake uids: 1001, 1002, ... (short, nowhere near a real id). */
 const uids = (n, from = 1001) => Array.from({ length: n }, (_, i) => String(from + i));
@@ -64,6 +67,12 @@ describe("non-friend name refresh (refreshProfiles)", () => {
         const parked = readParked(stateFile, now);
         assert.equal(parked.size, 500);
         assert.ok(parked.has("1501") && !parked.has("1500") && !parked.has("2001"));
+        // Every other lookup of the process rests too, and a refresh during the rest asks nothing.
+        assert.equal(lookupsCoolingDown(), true);
+        const resting = profileApi();
+        const during = await refreshProfiles(resting, uids(3, 9001), { gapMs: 0, now: () => now });
+        assert.deepEqual([resting.calls.length, during.stoppedBy], [0, "rate-limit"]);
+        resetLookupCoolDown();
 
         // The next run skips the parked uids and asks for the rest.
         const again = profileApi();

@@ -17,6 +17,8 @@ import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { registerTools } from "../../src/mcp/mcp-tools.js";
+import { fetchMemberNames } from "../../src/core/group-members.js";
+import { noteAliasSnapshot, resetAliasBook } from "../../src/core/contact-names.js";
 import {
     initDb,
     insertMessage,
@@ -182,6 +184,57 @@ describe("zalo_get_group_members", () => {
             { userId: B, displayName: null, alias: null, zaloName: null },
         ]);
         assert.match(out.warnings[0], /did not name 2 member\(s\): HTTP 414/);
+    });
+
+    it("names a member as this account knows them: the alias, then the contact name, then the Zalo name", async () => {
+        resetAliasBook();
+        try {
+            // A: the owner set an alias. B: Zalo answers a contact name (displayName) that differs from the member's
+            // own name. C: Zalo answers only the member's own name.
+            noteAliasSnapshot(new Map([[A, "Kế toán Lan"]]));
+            const api = groupApi({ uids: [A, B, C] });
+            api.getGroupMembersInfo = async (ids) => {
+                api.nameCalls.push(ids);
+                return {
+                    profiles: {
+                        [`${A}_0`]: { displayName: "Lan", zaloName: "Lan" },
+                        [`${B}_0`]: { displayName: "Anh Minh kho", zaloName: "Minh Trần" },
+                        [`${C}_0`]: { displayName: "Bích Ngọc", zaloName: "Bích Ngọc" },
+                    },
+                };
+            };
+            const out = payloadOf(await call("zalo_get_group_members", { groupId: GROUP }, api));
+            // Red if a contact name is reported as the member's own Zalo name, or shown after it.
+            // A's own name is reported when Zalo was asked for it, never the alias in its place.
+            assert.ok([null, "Lan"].includes(out.members[0].zaloName), JSON.stringify(out.members[0]));
+            assert.deepEqual(out.members, [
+                { userId: A, displayName: "Kế toán Lan", alias: "Kế toán Lan", zaloName: out.members[0].zaloName },
+                { userId: B, displayName: "Anh Minh kho", alias: null, zaloName: "Minh Trần" },
+                { userId: C, displayName: "Bích Ngọc", alias: null, zaloName: "Bích Ngọc" },
+            ]);
+        } finally {
+            resetAliasBook();
+        }
+    });
+
+    it("the lookup a mention uses names alias first and keeps the member's own name apart", async () => {
+        resetAliasBook();
+        try {
+            noteAliasSnapshot(new Map([[A, "Kế toán Lan"]]));
+            const api = {
+                getGroupMembersInfo: async () => ({
+                    profiles: {
+                        [`${A}_0`]: { displayName: "Lan", zaloName: "Lan" },
+                        [B]: { displayName: "Anh Minh kho", zaloName: "Minh Trần" },
+                    },
+                }),
+            };
+            const { names, zaloNames } = await fetchMemberNames(api, [A, B]);
+            assert.deepEqual(Object.fromEntries(names), { [A]: "Kế toán Lan", [B]: "Anh Minh kho" });
+            assert.deepEqual(Object.fromEntries(zaloNames), { [A]: "Lan", [B]: "Minh Trần" });
+        } finally {
+            resetAliasBook();
+        }
     });
 
     it("a group missing from Zalo's answer is an error, not an empty group", async () => {

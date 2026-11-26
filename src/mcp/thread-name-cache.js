@@ -2,6 +2,7 @@ import { readUserAliases, resolveCurrentUserNames } from "../core/current-user-n
 import { noteProfiles, pickName } from "../core/contact-names.js";
 import { rememberFriends } from "../core/typing.js";
 import { goneGroupMap, noteGroupInfo } from "../core/group-exit.js";
+import { recordGroupInfoMembers } from "../core/known-ids.js";
 
 /**
  * In-memory cache mapping threadId → {name, type, memberCount}.
@@ -53,6 +54,8 @@ export class ThreadNameCache {
                 const batch = groupIds.slice(i, i + batchSize);
                 try {
                     const info = await api.getGroupInfo(batch);
+                    // Every member listed is known to this account from now on (src/core/known-ids.js).
+                    recordGroupInfoMembers(ownId, info);
                     // Disbanded: the group fetch lists it in removedsGroup (Zalo's version-map rule).
                     if (ownId && info?.removedsGroup?.length) {
                         for (const e of await noteGroupInfo({ ownId, result: info, groupIds: batch }))

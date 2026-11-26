@@ -354,7 +354,7 @@ export function warnApprovalPolicy({ config, accountId, accountDir, hasWebhook, 
 }
 
 /**
- * One cached message as the staff inbox shows it: who wrote it, its text and kind, and what it quotes. No media path
+ * One cached message as the staff inbox shows it: who wrote it (alias first), its text and kind, and what it quotes. No media path
  * and no raw payload leave the daemon.
  *
  * @param {object} m - a `messages` row
@@ -365,7 +365,9 @@ export function staffInboxRow(m, ownId = null) {
     return {
         msgId: m.msgId,
         senderId: m.senderId || null,
-        senderName: m.senderName || null,
+        // Named as every history path names a sender: the alias, then the contact name, then the name the message
+        // carried (src/core/contact-names.js), with `senderAlias` and `senderZaloName` beside it.
+        ...senderNameFields(m.senderId, m.senderName),
         isSelf: Boolean(ownId && String(m.senderId) === String(ownId)),
         text: m.text ?? "",
         type: m.type ?? "text",

@@ -21,6 +21,7 @@ import {
     setConversationPinned,
 } from "../core/conversation-actions.js";
 import { confirmInput, dryRunInput, ticketInput } from "./action-tool.js";
+import { allowUnknownInput } from "./known-id-guard.js";
 import { pinFailure, pinFailureLine, withoutHidden } from "../core/hidden-chats.js";
 import { changeHiddenPin, readHidden, resetHiddenPinAndDelete } from "../core/hidden-chat-actions.js";
 import { askOnSecurePage } from "../core/secure-page.js";
@@ -576,6 +577,7 @@ export const CONVERSATION_META = {
                 .enum(["dm", "group"])
                 .optional()
                 .describe('"dm" or "group". Leave it out: the type stored for the thread is used.'),
+            allowUnknown: allowUnknownInput(),
             durationSeconds: z
                 .number()
                 .int()

@@ -5,6 +5,7 @@
 
 import { MUTE_ACTION } from "../zalo/enums.js";
 import { getApi } from "../core/zalo-client.js";
+import { recordGroupInfoMembers } from "../core/known-ids.js";
 import { success, error, info, output, warning } from "../utils/output.js";
 import { getActive } from "../core/accounts.js";
 import { getAccountDbPath } from "../core/credentials.js";
@@ -232,6 +233,8 @@ export function registerConvCommands(program, deps = {}) {
                         for (const batch of batches) {
                             try {
                                 const groupInfo = await api.getGroupInfo(batch);
+                                // The members listed are known to this account from now on (src/core/known-ids.js).
+                                recordGroupInfoMembers(api.getOwnId?.(), groupInfo);
                                 const map = groupInfo?.gridInfoMap || {};
                                 for (const [gid, g] of Object.entries(map)) {
                                     conversations.push({

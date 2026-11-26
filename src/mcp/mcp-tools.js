@@ -148,8 +148,8 @@ import { gateToolsByPresence } from "./tool-presence.js";
 import { allowUnknownInput, guardKnownIds } from "./known-id-guard.js";
 import { REMOTE_FILE_HINT, fileItemSchema, fileResolver, fileSourceSchema } from "./file-input.js";
 import { FILE_META, fileTool } from "./file-tool.js";
-import { bankDisplayName, generateQrTransferImage, qrTransferCaption, resolveBankBin } from "../utils/bank-helpers.js";
-import { resolveBank } from "../core/bank-directory.js";
+import { generateQrTransferImage, qrTransferCaption } from "../utils/bank-helpers.js";
+import { bankName, resolveBank } from "../core/bank-directory.js";
 import { CONVERSATION_ACTIONS, CONVERSATION_META } from "./actions-conversation.js";
 import { PROFILE_ACTIONS, PROFILE_META } from "./actions-profile.js";
 import {
@@ -1350,8 +1350,9 @@ export function registerTools(
                     }
                     if (bankCard || qrTransfer) {
                         const spec = bankCard || qrTransfer;
-                        // A QR resolves its bank with VietQR's list too (live, kept a day; src/core/bank-directory.js).
-                        const bin = bankCard ? resolveBankBin(spec.bank) : (await resolveBank(spec.bank))?.bin;
+                        // A card and a QR resolve the bank with VietQR's list (live, kept a day), the alias table or the
+                        // committed snapshot (src/core/bank-directory.js), as every bank task does.
+                        const bin = (await resolveBank(spec.bank))?.bin;
                         if (!bin)
                             return err(
                                 `Unknown bank: '${spec.bank}'. zalo_bank 'banks' lists the banks Zalo supports.`,
@@ -1360,7 +1361,7 @@ export function registerTools(
                             const payload = { binBank: bin, numAccBank: bankCard.accountNumber };
                             if (bankCard.holderName) payload.nameAccBank = bankCard.holderName;
                             const result = await api.sendBankCard(payload, threadId, Number(threadType));
-                            return sentReply("bank_card", result, { bank: bankDisplayName(bin) });
+                            return sentReply("bank_card", result, { bank: bankName(bin) });
                         }
                         const qrPath = await generateQrTransferImage(
                             bin,
@@ -1371,7 +1372,9 @@ export function registerTools(
                         );
                         if (!qrPath) return err("Could not generate the VietQR image; nothing was sent.");
                         try {
-                            const caption = marked(text || qrTransferCaption(bin, qrTransfer));
+                            const caption = marked(
+                                text || qrTransferCaption(bin, { ...qrTransfer, bankName: bankName(bin) }),
+                            );
                             const result = await api.sendMessage(
                                 { msg: caption, attachments: [qrPath] },
                                 threadId,
@@ -1379,7 +1382,7 @@ export function registerTools(
                             );
                             const att = Array.isArray(result?.attachment) ? result.attachment[0] : result?.attachment;
                             return sentReply("qr_transfer", result?.message ?? att ?? result, {
-                                bank: bankDisplayName(bin),
+                                bank: bankName(bin),
                             });
                         } finally {
                             try {
@@ -2005,6 +2008,7 @@ export function registerTools(
                         "msgId of a message that has a photo, sticker, voice message, video or file (from zalo_get_messages, zalo_wait_for_message or zalo_get_history).",
                     ),
                 threadId: z.string().optional().describe("Only look in this conversation. Omit to search all of them."),
+                allowUnknown: allowUnknownInput(),
                 deliver: z
                     .enum(["inline", "link", "tempfile"])
                     .optional()
@@ -2403,7 +2407,7 @@ export function registerTools(
                 // The cache first, as a mention is named; one batched lookup
                 // (the one `msg send` uses) for the members it cannot name.
                 // Nothing is written back: zalo.db has three writers.
-                // `names` holds the name each member goes by on Zalo; the owner's alias is applied below.
+                // `names` holds each member's own Zalo name; the alias and the contact name are applied below.
                 const names = new Map();
                 const unnamed = [];
                 for (const uid of group.uids) {
@@ -2414,7 +2418,9 @@ export function registerTools(
                 const warnings = [];
                 if (unnamed.length > 0) {
                     const fetched = await fetchMemberNames(api, unnamed, { batchSize: MEMBER_NAME_BATCH });
-                    for (const [uid, name] of fetched.names) names.set(uid, name);
+                    // The member's own name; the lookup also taught the contact book the name this account knows
+                    // them by (src/core/group-members.js).
+                    for (const [uid, name] of fetched.zaloNames) names.set(uid, name);
                     const still = unnamed.filter((uid) => !names.has(uid)).length;
                     if (fetched.errors.length > 0 && still > 0) {
                         warnings.push(`Zalo did not name ${still} member(s): ${fetched.errors[0]}`);
@@ -2422,12 +2428,11 @@ export function registerTools(
                 }
                 for (const w of warnings) console.error("[mcp-tools] zalo_get_group_members warning:", w);
 
-                // `displayName` alias first, then the contact name, as Zalo's member list shows them; `alias` and
-                // `zaloName` beside it.
+                // `displayName` alias first, then the contact name, then the Zalo name (the one resolver,
+                // src/core/contact-names.js); `alias` and `zaloName` beside it.
                 const members = group.uids.map((uid) => {
-                    const alias = aliasFor(uid);
                     const zaloName = names.get(uid) ?? null;
-                    return { userId: uid, displayName: preferredNameFor(uid) ?? zaloName, alias, zaloName };
+                    return { userId: uid, ...personNameFields(uid, { zaloName }) };
                 });
                 return ok({
                     groupId,
@@ -2715,6 +2720,7 @@ export function registerTools(
                     .min(1)
                     .optional()
                     .describe("Only messages from this user (the `senderId` of a message)"),
+                allowUnknown: allowUnknownInput(),
                 since: z
                     .number()
                     .int()
@@ -4348,6 +4354,7 @@ export function registerTools(
                             "Only for 'leave' by the group's owner: leave and let Zalo give ownership to a random member",
                         ),
                     ...GROUP_EXTRA_INPUTS,
+                    allowUnknown: allowUnknownInput(),
                     confirm: confirmInput("the actions asked about first (listed above)"),
                     ticket: ticketInput(),
                     dryRun: dryRunInput("the actions asked about first (listed above)"),

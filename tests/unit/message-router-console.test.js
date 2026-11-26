@@ -11,6 +11,7 @@ import { createSentByStore, resolveRouting } from "../../src/mcp/agents.js";
 import { staffInboxRow } from "../../src/commands/mcp.js";
 import { createAccessApi } from "../../src/core/access-api.js";
 import { mkdirSync } from "node:fs";
+import { noteAliasSnapshot, noteProfiles, resetAliasBook } from "../../src/core/contact-names.js";
 
 before(() => assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR));
 
@@ -136,6 +137,25 @@ describe("the claims card", () => {
 });
 
 describe("the staff inbox (option A)", () => {
+    it("names a sender as every history path does: the alias, then the contact name, then the stored name", () => {
+        resetAliasBook();
+        try {
+            noteAliasSnapshot(new Map([["5011", "Chị Lan kế toán"]]));
+            noteProfiles(new Map([["5012", { displayName: "Anh Minh kho", zaloName: "Minh" }]]));
+            const row = (senderId, senderName) =>
+                staffInboxRow({ msgId: "m9", senderId, senderName, text: "x", timestamp: 1 }, "1001");
+            // Red if the inbox shows the name the message carried while the owner set an alias or a contact name.
+            assert.deepEqual(
+                [row("5011", "Lan").senderName, row("5011", "Lan").senderAlias, row("5011", "Lan").senderZaloName],
+                ["Chị Lan kế toán", "Chị Lan kế toán", "Lan"],
+            );
+            assert.equal(row("5012", "Minh").senderName, "Anh Minh kho");
+            assert.equal(row("5013", "Bích").senderName, "Bích");
+        } finally {
+            resetAliasBook();
+        }
+    });
+
     it("shows a staff member his routed conversations only; he reads, claims and answers with his mark", async () => {
         const { runtime, sent, sentBy } = rig();
         await runtime.onIncoming(msg({ text: "#ticket my order", msgId: "m1" }));

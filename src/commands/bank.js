@@ -10,26 +10,27 @@ import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output, warning } from "../utils/output.js";
 import { allBankAccounts } from "../core/list-all.js";
 import { parseIntOption, parseIntAtLeast } from "../utils/parse-options.js";
-import { resolveBankBin, BIN_TO_DISPLAY } from "../utils/bank-helpers.js";
+import { bankName, resolveBank } from "../core/bank-directory.js";
 import { findBankAccount, filterBanks } from "../core/bank-accounts.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
 
 /**
- * A bank name or BIN as the BIN Zalo wants.
+ * A bank name or BIN as the BIN Zalo wants, from VietQR's bank list (live, kept a day), the alias table or the
+ * committed snapshot (src/core/bank-directory.js), as every bank task resolves it.
  *
  * @param {string} input
- * @returns {number}
+ * @returns {Promise<number>}
  * @throws {Error} for an unknown bank
  */
-function binOrThrow(input) {
-    const bin = resolveBankBin(String(input));
-    if (!bin) throw new Error(`Unknown bank: '${input}'. "bank list" shows the banks Zalo supports.`);
-    return bin;
+async function binOrThrow(input) {
+    const bank = await resolveBank(String(input));
+    if (!bank) throw new Error(`Unknown bank: '${input}'. "bank list" shows the banks Zalo supports.`);
+    return bank.bin;
 }
 
 /** One saved account as a line of text. */
 function accountLine(a) {
-    const bank = BIN_TO_DISPLAY[a.bin] || a.bin;
+    const bank = a.bin ? bankName(a.bin) : "?";
     return `  ${a.account_id}  ${bank}  ${a.bank_number}  ${a.holder_name}${a.default ? "  (default)" : ""}`;
 }
 
@@ -91,14 +92,14 @@ export function registerBankCommands(program) {
         .requiredOption("-n, --name <holder>", "Account holder name")
         .action(async (accountNumber, opts) => {
             try {
-                const bin = binOrThrow(opts.bank);
+                const bin = await binOrThrow(opts.bank);
                 const result = await getApi().createBankAccount({
                     binBank: bin,
                     numAccBank: accountNumber,
                     nameAccBank: opts.name,
                 });
                 output(result, program.opts().json, () =>
-                    success(`Bank account saved: ${BIN_TO_DISPLAY[bin] || bin} / ${accountNumber}`),
+                    success(`Bank account saved: ${bankName(bin)} / ${accountNumber}`),
                 );
             } catch (e) {
                 error(`Add bank account failed: ${e.message}`);
@@ -113,7 +114,7 @@ export function registerBankCommands(program) {
             try {
                 const result = await getApi().updateBankAccount({
                     accountId: parseIntOption(accountId),
-                    binBank: binOrThrow(opts.bank),
+                    binBank: await binOrThrow(opts.bank),
                     numAccBank: accountNumber,
                     nameAccBank: opts.name,
                 });

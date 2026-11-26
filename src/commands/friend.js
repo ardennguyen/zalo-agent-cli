@@ -390,6 +390,8 @@ export function registerFriendCommands(program) {
             try {
                 // Zalo's "none sent" (112) arrives as `{}`.
                 const sent = await readSentRequests(getApi());
+                // This account's ids for the people asked: `undo-request` and the like that follow are not refused.
+                recordCliKnownIds(Object.keys(sent || {}));
                 if (Object.keys(sent || {}).length) await ensureAliases(getApi());
                 const result = Object.fromEntries(
                     Object.entries(sent || {}).map(([uid, r]) => [uid, aliasFirst(r, uid)]),

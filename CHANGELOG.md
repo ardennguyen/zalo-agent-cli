@@ -9,6 +9,8 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+## [3.4.1] — 2026-11-26
+
 #### Changed
 
 - **A webhook backlog leaves within half a minute of the receiver coming back.** The outbox's retry wait still starts at 1 s and doubles, but now stops at 30 s instead of 5 minutes (+/-20% jitter, never above 30 s). After a long receiver outage (a reboot, a deploy) queued events used to sit through the rest of a wait of up to 5 minutes, and every short blip afterwards (a 502 during a rolling restart) sent the queue back into multi-minute waits; now a receiver that is down sees one small POST per account about every 30 s, and the queue drains on the first try after it answers. Order, at-least-once, dedupe, dead-lettering and leased mode are unchanged.
@@ -1073,7 +1075,9 @@ npm install -g @ardennguyen/zalo-agent-cli@2.0.0
 
 Commands, flags and defaults: `skill/references/command-reference.md`. Operating it on a server: `docs/deployment.md`.
 
-[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.3.3...v3.0-dev
+[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.4.1...v3.0-dev
+[3.4.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.4.1
+[3.4.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.4.0
 [3.3.3]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.3.3
 [3.3.2]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.3.2
 [3.3.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.3.1

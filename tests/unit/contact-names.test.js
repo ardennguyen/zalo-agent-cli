@@ -10,7 +10,11 @@ import { CONFIG_DIR } from "../../src/core/credentials.js";
 import {
     aliasFirst,
     aliasFor,
+    contactNameFor,
+    dmTitle,
     groupEventNames,
+    noteProfiles,
+    preferredNameFor,
     nameFor,
     personLabel,
     personNameFields,
@@ -77,15 +81,25 @@ const until = async (check, ms = 2000) => {
 };
 
 describe("pickName", () => {
-    it("is alias, then Zalo name, then display name, then uid", () => {
+    it("is alias, then contact name, then Zalo name, then display name, then uid", () => {
         assert.deepEqual(pickName("1", { alias: "A", zaloName: "Z", displayName: "D" }), {
             name: "A",
             alias: "A",
+            contactName: "D",
             zaloName: "Z",
             displayName: "D",
             source: "alias",
         });
-        assert.equal(pickName("1", { alias: null, zaloName: "Z", displayName: "D" }).name, "Z");
+        // A display name that differs from the Zalo name is the name the account knows the person by: Zalo shows it.
+        assert.deepEqual(pickName("1", { alias: null, zaloName: "Z", displayName: "D" }), {
+            name: "D",
+            alias: null,
+            contactName: "D",
+            zaloName: "Z",
+            displayName: "D",
+            source: "contact",
+        });
+        assert.equal(pickName("1", { alias: null, zaloName: "Z", displayName: "Z" }).source, "zalo");
         assert.equal(pickName("1", { alias: null, displayName: "D" }).source, "display");
         assert.equal(pickName("1", { alias: null, dName: "Group Member" }).name, "Group Member");
         assert.deepEqual(pickName("1", { alias: null }).source, "uid");
@@ -114,6 +128,92 @@ describe("pickName", () => {
             zaloName: "Raw",
             alias: "Minh Sales",
         });
+    });
+});
+
+describe("the contact name (a profile name that differs from the Zalo name)", () => {
+    // A friend the owner set no alias for, whose friend-list entry carries the name Zalo shows the owner.
+    const friendEntry = { userId: OTHER, displayName: "Chi Lan Ke Toan", zaloName: "Lan Nguyen" };
+
+    it("names the person everywhere once a friend list gave it, the alias still first", () => {
+        assert.deepEqual(noteProfiles([friendEntry]), [OTHER]);
+        assert.equal(contactNameFor(OTHER), "Chi Lan Ke Toan");
+        assert.equal(preferredNameFor(OTHER), "Chi Lan Ke Toan");
+        // A message carries the sender's own name: the name shown is the contact name, the carried one beside it.
+        assert.deepEqual(senderNameFields(OTHER, "Lan Nguyen"), {
+            senderName: "Chi Lan Ke Toan",
+            senderAlias: null,
+            senderZaloName: "Lan Nguyen",
+        });
+        assert.equal(nameFor(OTHER, "Lan Nguyen"), "Chi Lan Ke Toan");
+        assert.equal(dmTitle(OTHER, "Lan Nguyen"), "Chi Lan Ke Toan");
+        assert.equal(personLabel(OTHER), `Chi Lan Ke Toan (${OTHER})`);
+        assert.equal(
+            groupEventNames({ updateMembers: [{ id: OTHER, dName: "Lan Nguyen" }] }).updateMembers[0].dName,
+            "Chi Lan Ke Toan",
+        );
+        // A group member object carries only the Zalo name: the contact book names it.
+        assert.equal(aliasFirst({ userId: OTHER, dName: "Lan Nguyen" }).dName, "Chi Lan Ke Toan");
+        assert.deepEqual(personNameFields(OTHER, { zaloName: "Lan Nguyen" }), {
+            displayName: "Chi Lan Ke Toan",
+            alias: null,
+            zaloName: "Lan Nguyen",
+        });
+        // A friend-list entry keeps its own contact name, and the zaloName beside it.
+        assert.deepEqual(aliasFirst(friendEntry), { ...friendEntry, alias: null });
+
+        noteAliasSnapshot(new Map([[OTHER, "Lan (alias)"]]));
+        assert.equal(senderNameFields(OTHER, "Lan Nguyen").senderName, "Lan (alias)");
+        assert.equal(pickName(OTHER, { zaloName: "Lan Nguyen", displayName: "Chi Lan Ke Toan" }).name, "Lan (alias)");
+    });
+
+    it("is cleared by a profile read whose names agree, and never taken from a name equal to the alias", () => {
+        noteProfiles([friendEntry]);
+        assert.deepEqual(noteProfiles([{ userId: OTHER, displayName: "Lan Nguyen", zaloName: "Lan Nguyen" }]), [OTHER]);
+        assert.equal(contactNameFor(OTHER), null);
+        assert.equal(senderNameFields(OTHER, "Lan Nguyen").senderName, "Lan Nguyen");
+        // A profile with only one of the names says nothing.
+        noteProfiles([friendEntry]);
+        assert.deepEqual(noteProfiles([{ userId: OTHER, zaloName: "Lan Nguyen" }]), []);
+        assert.equal(contactNameFor(OTHER), "Chi Lan Ke Toan");
+
+        noteAliasSnapshot(new Map([[FRIEND, "Minh Sales"]]));
+        assert.deepEqual(noteProfiles([{ userId: FRIEND, displayName: "Minh Sales", zaloName: "Minh" }]), []);
+        assert.equal(contactNameFor(FRIEND), null);
+        // Read before the alias list: dropped once the alias list shows it was the alias.
+        noteProfiles([{ userId: OTHER, displayName: "New Alias", zaloName: "Lan Nguyen" }]);
+        noteAliasSnapshot(
+            new Map([
+                [FRIEND, "Minh Sales"],
+                [OTHER, "New Alias"],
+            ]),
+        );
+        assert.equal(contactNameFor(OTHER), null);
+    });
+
+    it("is kept by a daemon in the db, read back by a one-shot command, and retitles the stored 1-1", async () => {
+        const path = join(SANDBOX_CONFIG_DIR, `contact-names-cn-${process.pid}-${seq++}.sqlite`);
+        initDb(path);
+        upsertThread({ threadId: OTHER, type: "dm", name: "Lan Nguyen", lastUpdate: 2 });
+        const titles = [];
+        const daemon = startDaemonAliases({
+            getApi: () => null,
+            intervalMs: 0,
+            onRetitled: (t) => titles.push(...t),
+        });
+        noteProfiles([friendEntry]);
+        daemon.stop();
+        assert.deepEqual(titles, [[OTHER, "Chi Lan Ke Toan"]]);
+        assert.equal(getRecentThreads().find((t) => t.threadId === OTHER).name, "Chi Lan Ke Toan");
+
+        // A new process: nothing in memory, the stored book names the person (mentions read getDisplayName).
+        resetAliasBook();
+        closeDb();
+        initDb(path);
+        assert.equal(getDisplayName(OTHER), "Chi Lan Ke Toan");
+        assert.equal(senderNameFields(OTHER, "Lan Nguyen").senderName, "Chi Lan Ke Toan");
+        assert.equal(getThreadNames().get(OTHER).name, "Chi Lan Ke Toan");
+        closeDb();
     });
 });
 

@@ -9,6 +9,14 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+#### Changed
+
+- **A person is named as Zalo shows them to the account: the alias, then the contact name, then the Zalo name.** A friend the owner set no alias for often has a profile `displayName` that differs from their own `zaloName` (the name the account knows them by, typically from the owner's phone contacts), and that is the name Zalo shows. It came after the Zalo name, so outputs used the person's own name instead. Now every output takes it after the alias: CLI lines and `--json`, MCP replies (`zalo_lookup_user`, `zalo_friend list`, `zalo_search_threads`, `zalo_get_group_members`, history and buffered messages), webhook payloads, `listen` lines, mentions and stored 1-1 titles. Friend lists and profile reads keep these names in a contact book that daemons store in `zalo.db` (`user_contact_names`), so a message from that friend (`senderName`), a mention or a member list names them the same way without a request, and a stored 1-1 title follows a name that changed. `senderDisplayNameSource` has a new value, `contact`; `senderZaloName`/`zaloName` keep the person's own name.
+
+#### Fixed
+
+- **`zalo_list_conversations` no longer names a person by their bare id.** When a DM peer's profile could not be read (a deleted account, a lookup that failed) the reply's `name` was the user id itself. It is now the name last stored for them (the conversation's title, then the name their messages carried), else `null`, so a caller can label it; a group the account left still carries `gone`, `leftAt` and `goneReason`.
+
 ## [3.4.1] — 2026-11-26
 
 #### Changed

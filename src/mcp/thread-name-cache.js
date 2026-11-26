@@ -1,4 +1,5 @@
 import { readUserAliases, resolveCurrentUserNames } from "../core/current-user-names.js";
+import { noteProfiles, pickName } from "../core/contact-names.js";
 import { rememberFriends } from "../core/typing.js";
 import { goneGroupMap, noteGroupInfo } from "../core/group-exit.js";
 
@@ -82,11 +83,12 @@ export class ThreadNameCache {
             const list = Array.isArray(friends) ? friends : [];
             // The friend list zalo_conversation `typing` checks a DM against (src/core/typing.js).
             if (Array.isArray(friends)) rememberFriends(list);
+            noteProfiles(list);
             for (const f of list) {
                 if (f.userId) {
                     friendProfiles.set(String(f.userId), f);
                     this._cache.set(f.userId, {
-                        name: f.displayName || f.zaloName || "?",
+                        name: pickName(f.userId, f).name || "?",
                         type: "dm",
                     });
                     friendCount++;

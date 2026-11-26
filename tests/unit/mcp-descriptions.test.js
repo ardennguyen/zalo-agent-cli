@@ -172,11 +172,14 @@ describe("the read and wait tools describe what the buffer really carries", () =
             if (source === "uid") break;
             delete fields[{ alias: "alias", phonebook: "pbName", zalo: "zaloName", display: "displayName" }[source]];
             if (source === "alias") fields.alias = null;
+            // The contact name is the display name differing from the Zalo name: taken away, the two stay.
+            if (source === "contact") fields.contactName = null;
         }
-        assert.deepEqual(order, ["alias", "phonebook", "zalo", "display", "uid"]);
+        assert.deepEqual(order, ["alias", "phonebook", "contact", "zalo", "display", "uid"]);
         const words = {
             alias: "alias",
             phonebook: "phonebook name",
+            contact: "contact name",
             zalo: "Zalo name",
             display: "display name",
             uid: "uid",

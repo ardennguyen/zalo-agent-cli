@@ -131,7 +131,18 @@ import { markFor } from "../core/routing-policy.js";
 export { readThreadIds } from "../core/hidden-chats.js";
 import { resolveHiddenChats, resolveMediaDelivery } from "../core/deploy-policy.js";
 import { resolveCurrentUserNames, withCurrentSenderNames } from "../core/current-user-names.js";
-import { aliasFor, noteAliasSet, personNameFields, senderNameFields } from "../core/contact-names.js";
+import {
+    aliasFor,
+    aliasSnapshot,
+    contactNameFor,
+    contactNameOf,
+    noteAliasSet,
+    noteProfiles,
+    personNameFields,
+    pickName,
+    preferredNameFor,
+    senderNameFields,
+} from "../core/contact-names.js";
 import { actionTool, confirmInput, dryRunInput, ticketInput } from "./action-tool.js";
 import { gateToolsByPresence } from "./tool-presence.js";
 import { REMOTE_FILE_HINT, fileItemSchema, fileResolver, fileSourceSchema } from "./file-input.js";
@@ -368,6 +379,29 @@ function rememberContactName(uid, name) {
     } catch {
         /* no db open in this process */
     }
+}
+
+/**
+ * The name fields of a user a phone or username lookup found, as this account shows them: alias, then the contact
+ * name, then the Zalo name. A phone or username answer may carry only the person's own names, so the account's own
+ * profile read for that id (one paced `getUserInfo`, which fills the contact book) supplies the contact name. A failed
+ * read leaves what the lookup answer and the book already say.
+ * @param {object} api
+ * @param {string|null} uid - the id this account sees the person as
+ * @param {object|null} user - the lookup answer
+ * @returns {Promise<{displayName: string|null, alias: string|null, zaloName: string|null}>}
+ */
+async function foundUserNames(api, uid, user) {
+    if (!uid) return personNameFields(null, user);
+    try {
+        await resolveCurrentUserNames(api, [String(uid)], { aliases: aliasSnapshot() ?? undefined });
+    } catch {
+        /* the lookup answer and the stored book still name the person */
+    }
+    const own = personNameFields(uid, user);
+    if (own.alias || contactNameOf(user)) return own;
+    const contact = contactNameFor(uid);
+    return contact ? { ...own, displayName: contact } : own;
 }
 
 function cachedDisplayName(uid) {
@@ -923,7 +957,7 @@ export function registerTools(
             description:
                 "Read the new incoming Zalo messages (DMs and groups) from the live buffer, in order. It returns the messages this consumer has not yet marked read; when you have handled them, call zalo_mark_read with the reply's `cursor`. " +
                 "To continue exactly after the last reply, pass its `cursor` as `since`. To wait for the next message instead of polling, use zalo_wait_for_message. " +
-                "Each message has `msgId` (pass it as `msgId` or `quoteMsgId` to other tools), `threadId`, `threadType` (dm or group), `senderId`, `senderName` (the name to show: your alias for the sender when you set one, else the name the message carried), `senderAlias` (your alias, or null), `senderZaloName` (the name the message carried), `senderDisplayName` (the current name: your alias, else the phonebook name, else the Zalo name, else the display name, else the uid; `senderDisplayNameSource` says which: alias, phonebook, zalo, display or uid), `text`, `timestamp` (epoch ms), `type`, `threadName` and `readOnZalo`. " +
+                "Each message has `msgId` (pass it as `msgId` or `quoteMsgId` to other tools), `threadId`, `threadType` (dm or group), `senderId`, `senderName` (the name to show: your alias for the sender when you set one, else the name your contacts give them when it differs from their Zalo name, else the name the message carried), `senderAlias` (your alias, or null), `senderZaloName` (the name the message carried), `senderDisplayName` (the current name: your alias, else the phonebook name, else the contact name (the profile name when it differs from the Zalo name), else the Zalo name, else the display name, else the uid; `senderDisplayNameSource` says which: alias, phonebook, contact, zalo, display or uid), `text`, `timestamp` (epoch ms), `type`, `threadName` and `readOnZalo`. " +
                 "`readOnZalo` is true or false when the account owner has or has not read the message on Zalo (on the phone or another Zalo app), and null when that is unknown; zalo_mark_read does not change it. " +
                 'A recall arrives in the same list with `type` "undo": its `msgId` is the recalled message (null when only its `cliMsgId` is known), its `text` is empty, and the earlier message is gone from the cache. An entry with `isSelf: true` is the owner writing in their own My Documents (only when the deployment passes those on); nothing else the account sends itself arrives. ' +
                 SYSTEM_EVENTS_NOTE +
@@ -1724,7 +1758,7 @@ export function registerTools(
             description:
                 "Get the stored messages of one conversation (DM or group), for context older than the live buffer. It reads the local cache first (everything the listener and `zalo-agent sync` have saved, which can be the full history) and asks the Zalo server only when the cache has nothing for the thread: a group's message store, paged back until it has nothing older. A DM has no server history (Zalo's own apps show 1-1 history from the device's own store), so for a DM only `scan` asks Zalo, by scanning the socket's old-message stream. " +
                 "Without `limit` the reply holds every message (all cached ones, or everything the group's store serves); pass `limit` to page, then page back with `before` (epoch ms: the `cursor` of the previous reply) or, on the server path, `lastMsgId` (the previous reply's `cursor`). Zalo's server serves only messages since this login: `filtered: true` in the reply means older ones exist that only `zalo-agent sync` can restore, and that needs the owner's phone. " +
-                "Each message has `msgId`, `senderId`, `senderName` (your alias for the sender when you set one, else the name the message carried), `senderAlias`, `senderZaloName` (the name the message carried), `senderDisplayName` (the current name: your alias, else the phonebook name, else the Zalo name, else the display name, else the uid; `senderDisplayNameSource` says which), `text`, `timestamp` and `type`. Reply: `{ threadId, threadType, count, messages, cursor, hasMore }`. " +
+                "Each message has `msgId`, `senderId`, `senderName` (your alias for the sender when you set one, else the name your contacts give them, else the name the message carried), `senderAlias`, `senderZaloName` (the name the message carried), `senderDisplayName` (the current name: your alias, else the phonebook name, else the contact name, else the Zalo name, else the display name, else the uid; `senderDisplayNameSource` says which), `text`, `timestamp` and `type`. Reply: `{ threadId, threadType, count, messages, cursor, hasMore }`. " +
                 "For one period, pass `since` and/or `until` (epoch ms) or `last` (7d, 2w, 3m, 1y): the cached messages in it come oldest first, all of them, or `limit` per page with `hasMore` and `nextSince` (pass it back as `since`, same `until`) for the rest. Reply: `{ threadId, since, until, count, messages, hasMore, nextSince }`. It reads only the cache. " +
                 "A long conversation is a large reply; pass `limit` to page through it. To find messages by their text, use zalo_search_messages.",
             inputSchema: z.object({
@@ -2347,7 +2381,7 @@ export function registerTools(
                 for (const uid of group.uids) {
                     const name = cachedStoredName(uid);
                     if (name) names.set(uid, name);
-                    else if (!aliasFor(uid)) unnamed.push(uid);
+                    else if (!preferredNameFor(uid)) unnamed.push(uid);
                 }
                 const warnings = [];
                 if (unnamed.length > 0) {
@@ -2360,11 +2394,12 @@ export function registerTools(
                 }
                 for (const w of warnings) console.error("[mcp-tools] zalo_get_group_members warning:", w);
 
-                // `displayName` alias first, as Zalo's member list shows them; `alias` and `zaloName` beside it.
+                // `displayName` alias first, then the contact name, as Zalo's member list shows them; `alias` and
+                // `zaloName` beside it.
                 const members = group.uids.map((uid) => {
                     const alias = aliasFor(uid);
                     const zaloName = names.get(uid) ?? null;
-                    return { userId: uid, displayName: alias ?? zaloName, alias, zaloName };
+                    return { userId: uid, displayName: preferredNameFor(uid) ?? zaloName, alias, zaloName };
                 });
                 return ok({
                     groupId,
@@ -2388,7 +2423,7 @@ export function registerTools(
             title: "List Recent Zalo Conversations",
             description:
                 "List the conversations this account was most recently active in, newest first, from the local cache, to get a `threadId` or to see what is current. Unlike zalo_list_threads it is not limited to messages that arrived since this server started. " +
-                "Each has its `threadId`, `threadType`, `name` and last activity, plus `readState`: how far the account owner has read it on Zalo (on any device), meaning the newest message read, how many cached messages from others came after it, and whether it is marked unread (null when unknown). Every cached conversation is returned unless you pass `limit`, which is per type: with `type` 'all' that is up to `limit` DMs and `limit` groups.",
+                "Each has its `threadId`, `threadType`, `name` (the name this account shows; for a person whose profile can no longer be read, such as a deleted account, the last name stored for them, else null) and last activity, plus `readState`: how far the account owner has read it on Zalo (on any device), meaning the newest message read, how many cached messages from others came after it, and whether it is marked unread (null when unknown). A group this account left or lost carries `gone`, `leftAt` and `goneReason`. Every cached conversation is returned unless you pass `limit`, which is per type: with `type` 'all' that is up to `limit` DMs and `limit` groups.",
             inputSchema: z.object({
                 type: z
                     .enum(["group", "dm", "all"])
@@ -2411,13 +2446,18 @@ export function registerTools(
                 const conversations = threads.map((t) => {
                     const isGroup = t.type === "group";
                     const ts = Number(t.lastUpdate) || null;
+                    const id = String(t.threadId);
+                    // A profile that could not be read (a deleted account) names the person by their id: that is no
+                    // name, so the stored one (the title, `contacts`, the last name their messages carried) comes next.
+                    const current = dmNames.get(id);
                     return {
-                        threadId: String(t.threadId),
+                        threadId: id,
                         threadType: isGroup ? "group" : "dm",
                         name:
-                            dmNames.get(String(t.threadId))?.name ||
+                            (current && current.source !== "uid" ? current.name : null) ||
                             t.name ||
-                            nameCache?.get(String(t.threadId))?.name ||
+                            (nameCache?.get(id)?.name !== "?" ? nameCache?.get(id)?.name : null) ||
+                            (isGroup ? null : cachedStoredName(id)) ||
                             null,
                         lastActivity: ts,
                         lastActivityAt: ts ? new Date(ts).toISOString() : null,
@@ -2822,7 +2862,7 @@ export function registerTools(
                         query: phoneNumber,
                         userId: user?.uid || user?.userId || null,
                         // Alias first, as Zalo shows the person to this account (src/core/contact-names.js).
-                        ...personNameFields(user?.uid || user?.userId, user),
+                        ...(await foundUserNames(api, found, user)),
                         avatar: user?.avatar || null,
                         mutualGroups: await shared(found),
                         user: user || null,
@@ -2836,7 +2876,7 @@ export function registerTools(
                         query: username,
                         userId: user?.uid || user?.userId || null,
                         // Alias first, as Zalo shows the person to this account (src/core/contact-names.js).
-                        ...personNameFields(user?.uid || user?.userId, user),
+                        ...(await foundUserNames(api, found, user)),
                         avatar: user?.avatar || null,
                         mutualGroups: await shared(found),
                         user: user || null,
@@ -2844,6 +2884,7 @@ export function registerTools(
                 }
                 const info = await api.getUserInfo(userId);
                 const changed = info?.changed_profiles?.[userId] || info?.unchanged_profiles?.[userId] || null;
+                if (changed) noteProfiles(new Map([[String(userId), changed]]));
                 return ok({
                     mode: "userId",
                     userId,
@@ -4112,7 +4153,9 @@ export function registerTools(
                         await api.undoFriendRequest(target);
                         return ok({ action, success: true, userId: target });
                     case "list": {
-                        const { total, friends } = friendsFrom(await api.getAllFriends(), limit);
+                        const all = await api.getAllFriends();
+                        if (Array.isArray(all)) noteProfiles(all);
+                        const { total, friends } = friendsFrom(all, limit);
                         return ok({ action, total, count: friends.length, truncated: friends.length < total, friends });
                     }
                     case "alias": {
@@ -4133,7 +4176,8 @@ export function registerTools(
                         try {
                             const info = await api.getUserInfo(target);
                             const p = info?.changed_profiles?.[target] || info?.unchanged_profiles?.[target] || null;
-                            const shown = p?.displayName || p?.zaloName || null;
+                            if (p) noteProfiles(new Map([[String(target), p]]));
+                            const shown = pickName(target, { ...p, alias: null }).name || null;
                             if (shown) rememberContactName(target, shown);
                         } catch (e) {
                             console.error(`[mcp-tools] zalo_friend alias: profile name not refreshed: ${e.message}`);

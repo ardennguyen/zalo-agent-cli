@@ -125,6 +125,19 @@ describe("friendStatusFrom and friendsFrom", () => {
         );
         assert.deepEqual(friendsFrom(undefined, 5), { total: 0, friends: [] });
     });
+
+    it("names a friend with no alias by the name the account knows them by, their Zalo name beside it", () => {
+        const out = friendsFrom([{ userId: "41", displayName: "Chi Lan Ke Toan", zaloName: "Lan Nguyen" }]);
+        assert.deepEqual(out.friends, [
+            {
+                userId: "41",
+                displayName: "Chi Lan Ke Toan",
+                alias: null,
+                zaloName: "Lan Nguyen",
+                lastActionTime: null,
+            },
+        ]);
+    });
 });
 
 describe("error wording shared with `friend add`", () => {

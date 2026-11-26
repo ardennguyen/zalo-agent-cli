@@ -29,11 +29,11 @@ function apiNames() {
         getAliasList: async () => ({ items: state.alias ? [{ userId: "101", alias: state.alias }] : [] }),
         getUserInfo: async (ids) => ({
             changed_profiles: Object.fromEntries(
-                ids.map((id) => [id, { zaloName: state.zaloName, displayName: "Server Display" }]),
+                ids.map((id) => [id, { zaloName: state.zaloName, displayName: state.zaloName }]),
             ),
         }),
         getAllFriends: async () => [
-            { userId: "101", globalId: NOISED, zaloName: state.zaloName, displayName: "Server Display" },
+            { userId: "101", globalId: NOISED, zaloName: state.zaloName, displayName: state.zaloName },
         ],
         getAllGroups: async () => ({ gridVerMap: {} }),
     };
@@ -132,6 +132,28 @@ describe("current user labels", () => {
             ["101"],
         );
         assert.deepEqual(names.get("101"), { name: "Possibly An Old Alias", source: "display" });
+    });
+
+    it("names a sender with no alias by the profile's contact name, over the name the message carried", async () => {
+        const api = {
+            getAliasList: async () => ({ items: [] }),
+            getUserInfo: async (ids) => ({
+                changed_profiles: Object.fromEntries(
+                    ids.map((id) => [id, { displayName: "Chi Lan Ke Toan", zaloName: "Lan Nguyen" }]),
+                ),
+            }),
+        };
+        const [row] = await withCurrentSenderNames(
+            api,
+            [{ senderId: "105", senderName: "Lan Nguyen", threadId: "105" }],
+            ["105"],
+        );
+        assert.equal(row.senderName, "Chi Lan Ke Toan");
+        assert.equal(row.senderAlias, null);
+        assert.equal(row.senderZaloName, "Lan Nguyen");
+        assert.equal(row.senderDisplayName, "Chi Lan Ke Toan");
+        assert.equal(row.senderDisplayNameSource, "contact");
+        assert.equal(row.threadName, "Chi Lan Ke Toan");
     });
 
     it("reads alias pages and deduplicates profile requests in batches of 100", async () => {

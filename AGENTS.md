@@ -73,7 +73,7 @@ This section is byte-identical in the `AGENTS.md` of all four repos; change it i
 - **Grep the staged diff before every commit** with the repo's leak check.
 
 **Product rules**
-- **Names are alias-first**: the owner's alias for a contact, else the Zalo name.
+- **Names are alias-first**: the owner's alias for a contact, else the name Zalo shows for them on that account (a profile `displayName` that differs from the Zalo name, often his phone-contact name), else the Zalo name. User ids are per account: look a person up on the account in question, never with an id from another.
 - **Visible defaults**: a default in effect is shown as the effective value, labelled; no hidden built-in values. A new config key goes into every sample and doc that lists keys.
 - **Never delete what you did not create**: host-wide installs, paid subscription lines, other sessions' worktrees or uncommitted work.
 

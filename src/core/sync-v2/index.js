@@ -47,6 +47,7 @@ import { resolveNonFriendDms } from "../../zalo/custom/gid.js";
 import { createSenderResolver } from "./senders.js";
 import { fillDeferredNames, queueDeferredNames } from "./deferred-names.js";
 import { readUserAliases, currentUserName, resolveCurrentUserNames } from "../current-user-names.js";
+import { noteProfiles } from "../contact-names.js";
 import { refreshProfiles } from "../name-refresh.js";
 import { startKeepAlive } from "../../zalo/listener/keepalive.js";
 import { DEVICE_LABEL } from "../../zalo/profile.js";
@@ -505,6 +506,7 @@ export class SyncV2 {
         try {
             const friends = await this.api.getAllFriends();
             const arr = Array.isArray(friends) ? friends : friends?.data || [];
+            noteProfiles(arr);
             for (const f of arr)
                 if (f.globalId)
                     map.set(f.globalId, {

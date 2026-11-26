@@ -241,11 +241,27 @@ describe("zalo_list_conversations", () => {
         );
     });
 
-    it("a DM with no current profile falls back to its UID, not an old thread label", async () => {
+    it("a DM whose profile cannot be read (a deleted account) keeps the last name known, never its bare id", async () => {
         upsertThread({ threadId: "d9", type: "dm", name: null, lastUpdate: 1700000009000 });
-        const index = { ready: true, get: (id) => (id === "d9" ? { name: "Chú Tư" } : null), search: () => [] };
-        const out = payloadOf(await call("zalo_list_conversations", { type: "all", limit: 20 }, {}, index));
-        assert.equal(out.conversations[0].name, "d9");
+        upsertThread({ threadId: "d8", type: "dm", name: null, lastUpdate: 1700000008000 });
+        upsertThread({ threadId: "d7", type: "dm", name: null, lastUpdate: 1700000007000 });
+        insertMessage({
+            msgId: "m_d8",
+            threadId: "d8",
+            senderId: "d8",
+            senderName: "Co Ba",
+            text: "chao",
+            timestamp: 1700000008000,
+            type: "text",
+            raw_data: "{}",
+            has_attachment: 0,
+        });
+        const index = { ready: true, get: (id) => (id === "d9" ? { name: "Chu Tu" } : null), search: () => [] };
+        const out = payloadOf(await call("zalo_list_conversations", { type: "dm" }, {}, index));
+        const named = Object.fromEntries(out.conversations.map((c) => [c.threadId, c.name]));
+        assert.equal(named.d9, "Chu Tu", "the name the server last held for the thread");
+        assert.equal(named.d8, "Co Ba", "the name their messages carried");
+        assert.equal(named.d7, null, "no name known: null, for the caller to label, not the id");
     });
 
     it("an empty cache answers with no conversations and says why, without asking Zalo", async () => {

@@ -1478,6 +1478,29 @@ describe("Tier 1 & Tier 2 MCP tools", () => {
         assert.equal(idOut.displayName, "Profile Name");
     });
 
+    it("zalo_lookup_user names a person found by phone as the account shows them, not by their own name", async () => {
+        // The phone answer carries only the person's own name; this account's profile read carries its name for them.
+        const { server } = register({
+            api: {
+                findUser: async () => ({ uid: "4100001", zalo_name: "Lan Nguyen", display_name: "Lan Nguyen" }),
+                getUserInfo: async (ids) => ({
+                    changed_profiles: Object.fromEntries(
+                        [ids].flat().map((id) => [id, { displayName: "Chi Lan Ke Toan", zaloName: "Lan Nguyen" }]),
+                    ),
+                }),
+                getAliasList: async () => ({ items: [], hasMore: false }),
+            },
+        });
+        const out = payloadOf(await server.call("zalo_lookup_user", { phone: "0901234567" }));
+        assert.equal(out.userId, "4100001");
+        assert.equal(out.displayName, "Chi Lan Ke Toan");
+        assert.equal(out.alias, null);
+        assert.equal(out.zaloName, "Lan Nguyen");
+        // A lookup by id reads the same name.
+        const byId = payloadOf(await server.call("zalo_lookup_user", { userId: "4100001" }));
+        assert.equal(byId.displayName, "Chi Lan Ke Toan");
+    });
+
     it("zalo_delete_message resolves cliMsgId and uidFrom from local cache and passes onlyMe=!everyone", async () => {
         insertMessage({
             msgId: "m_del",

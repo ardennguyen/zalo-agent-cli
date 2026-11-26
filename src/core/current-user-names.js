@@ -1,6 +1,6 @@
 import { runPacedBatches, userInfoLog } from "../zalo/custom/user-info.js";
 import { readAllAliases } from "../zalo/api/people.js";
-import { noteAliasSnapshot, pickName } from "./contact-names.js";
+import { noteAliasSnapshot, noteProfiles, pickName } from "./contact-names.js";
 
 /** Aliases asked per page. */
 const ALIAS_PAGE_SIZE = 100;
@@ -66,12 +66,13 @@ export async function readUserAliasSnapshot(api) {
 }
 
 /**
- * Select a current label independently of any per-message historical name: the owner's alias, then the profile's
- * Zalo name, then its display name, then the UID (./contact-names.js `pickName`, the one precedence every output uses).
+ * Select a current label independently of any per-message historical name: the owner's alias, then the contact
+ * name (a display name that differs from the Zalo name), then the Zalo name, then the display name, then the UID
+ * (./contact-names.js `pickName`, the one precedence every output uses).
  * @param {string} uid - canonical user ID
  * @param {object} [profile] - fresh Zalo profile
  * @param {Map<string, string>} [aliases] - account-owned aliases
- * @returns {{name: string, source: string}} label and provenance (`alias`, `display`, `zalo` or `uid`)
+ * @returns {{name: string, source: string}} label and provenance (`alias`, `phonebook`, `contact`, `zalo`, `display` or `uid`)
  */
 export function currentUserName(uid, profile, aliases = new Map()) {
     const id = String(uid || "");
@@ -123,14 +124,17 @@ export async function resolveCurrentUserNames(api, uids, { aliases, profiles = n
         }
     }
     const ownedAliases = await aliasRequest;
+    // What the profiles say about contact names goes into the contact book, so later outputs name them the same way.
+    noteProfiles(fresh);
     return new Map(ids.map((id) => [id, currentUserName(id, fresh.get(id), ownedAliases)]));
 }
 
 /**
  * Decorate copied messages with current labels. `senderName` is the name to show, alias first: the owner's alias
- * when one is set, else the name the message carried, else the current profile name. `senderZaloName` keeps the
+ * when one is set, else the contact name, else the name the message carried, else the current profile name. `senderZaloName` keeps the
  * name the message carried (the stored snapshot, never rewritten), `senderAlias` the alias or null, and
- * `senderDisplayName`/`senderDisplayNameSource` the current label (alias, phonebook name, Zalo name, display name or UID).
+ * `senderDisplayName`/`senderDisplayNameSource` the current label (alias, phonebook name, contact name, Zalo name,
+ * display name or UID).
  * DM titles use the peer's UID, including for an outgoing message from self.
  * @param {object} api - current authenticated API
  * @param {object[]} messages - cached or live rows
@@ -145,9 +149,10 @@ export async function withCurrentSenderNames(api, messages, dmThreadIds = []) {
         const peer = peers.has(String(m.threadId)) && names.get(String(m.threadId));
         const raw = "senderZaloName" in m ? m.senderZaloName || null : m.senderName || null;
         const alias = sender.source === "alias" ? sender.name : null;
+        const contact = sender.source === "contact" ? sender.name : null;
         return {
             ...m,
-            senderName: alias ?? raw ?? (sender.source !== "uid" ? sender.name : null),
+            senderName: alias ?? contact ?? raw ?? (sender.source !== "uid" ? sender.name : null),
             senderAlias: alias,
             senderZaloName: raw,
             senderDisplayName: sender.name,

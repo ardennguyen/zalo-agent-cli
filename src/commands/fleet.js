@@ -49,6 +49,7 @@ import {
     writablePaths,
 } from "../core/fleet-templates.js";
 import { createFleetController } from "../core/fleet-controller.js";
+import { accountsDirOf } from "../core/fleet-account-data.js";
 import {
     LEASE_STATE_FILE_ENV,
     createLeaseReconciler,
@@ -727,6 +728,10 @@ export function registerFleetCommands(program) {
             "--env-dir <dir>",
             "Per-account env files (<dir>/<ownId>.env): daemon environment, and where a QR add writes",
         )
+        .option(
+            "--accounts-dir <dir>",
+            "The host's accounts mount: a QR-added account's data goes to <dir>/<ownId> (the config dir links to it, its env file names it); or ZALO_FLEET_ACCOUNTS_DIR",
+        )
         .option("--listen", "Spawned daemons are `listen` (webhook only) instead of `mcp start --http`")
         .option(
             "--public-url <url>",
@@ -745,6 +750,7 @@ export function registerFleetCommands(program) {
             );
             const host = opts.host || "127.0.0.1";
             const envDir = opts.envDir ?? null;
+            const accountsDir = accountsDirOf(opts.accountsDir);
             const config = loadMCPConfig();
             const kind = detectSupervisor();
             const driver =
@@ -809,7 +815,17 @@ export function registerFleetCommands(program) {
             // The QR add (src/core/fleet-qr.js): one child login per flow, at most ZALO_FLEET_QR_FLOWS at once.
             const qr = createQrFlows({
                 spawnLogin: spawnLoginChild,
-                finish: (o) => finishQrAdd({ ...o, envDir, domain, trustProxy, driver, leased: Boolean(leaseFile) }),
+                finish: (o) =>
+                    finishQrAdd({
+                        ...o,
+                        envDir,
+                        domain,
+                        trustProxy,
+                        driver,
+                        leased: Boolean(leaseFile),
+                        accountsDir,
+                        log,
+                    }),
                 isRunning: (id) => getDaemonStatus(getAccountDir(id)).running,
                 // Refused before the login starts: an unknown user, a user at limits.accountsPerUser, a full cap.
                 precheck: (o) => checkQrAdd(o),
@@ -888,6 +904,7 @@ export function registerFleetCommands(program) {
             });
             const server = app.listen(port, host, () => {
                 info(`Fleet controller on http://${host}:${port}/zalo/admin (supervisor: ${driver.kind})`);
+                if (accountsDir) info(`A QR-added account's data goes to ${accountsDir}/<ownId>`);
             });
             server.on("error", (e) => {
                 error(`Cannot listen on ${host}:${port}: ${e.message}`);

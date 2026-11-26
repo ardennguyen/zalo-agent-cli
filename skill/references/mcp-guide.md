@@ -610,6 +610,16 @@ Tra cứu thông tin người dùng Zalo theo số điện thoại (`phone`), us
 
 Khi tìm thấy người dùng (theo `phone`, `username` hoặc `userId`), kết quả có thêm `mutualGroups`: `{count, groups: [{groupId, name}], hiddenLeftOut}` — các nhóm chung giữa bạn và người đó, như mục "Nhóm chung (N)" trên trang cá nhân của Zalo (bạn bè hay người lạ đều được; nhóm nằm trong hội thoại ẩn bị bỏ ra trừ khi cấu hình cho hiện hội thoại ẩn), hoặc `{error}` nếu không đọc được.
 
+`userId` tìm được theo `phone` hoặc `username` được ghi nhận là của tài khoản này (dạng băm, trong `known-ids.json` của thư mục tài khoản), nên gửi tin cho người lạ vừa tìm thấy không bị từ chối.
+
+#### ID theo từng tài khoản: `UNKNOWN_TO_ACCOUNT`
+
+Zalo cấp cho cùng một người một userId khác trên mỗi tài khoản. Vì vậy các tool nhận một người hoặc một hội thoại kiểm tra ID với chính tài khoản này trước khi gửi bất kỳ yêu cầu nào: `zalo_send_message` (`threadId`, `cardUserId`, mention `@[userId]`), `zalo_forward_message`, `zalo_react`, `zalo_get_history`, `zalo_get_messages` và `zalo_wait_for_message` khi có `threadId`, `zalo_lookup_user` với `userId`, `zalo_get_group_members`, và `zalo_friend` `status`, `send`, `undo`, `alias`, `remove`, `block`, `unblock`, `last_online`, `biz`, `block_feed`, `qr`, `common_groups` (`accept`, `reject` trả lời lời mời Zalo đã gửi tới tài khoản này nên không kiểm tra).
+
+Một ID được coi là của tài khoản này khi: là bạn bè, là một hội thoại đã lưu, có tin nhắn trong hội thoại đó hoặc từ người gửi đó, có trong danh bạ / biệt danh của chủ tài khoản, có trong danh sách nhóm, hoặc vừa được tài khoản này trả về (tra theo SĐT/username, danh sách thành viên nhóm, danh sách lời mời kết bạn). Khi không khớp, danh sách bạn bè và nhóm được đọc lại (tối đa 5 phút một lần); nếu không đọc được danh sách thì không từ chối.
+
+ID lạ bị từ chối bằng lỗi có JSON `{success: false, code: "UNKNOWN_TO_ACCOUNT", error, unknownIds: [{id, as, field}]}`: hãy tìm người đó trên chính tài khoản này bằng `zalo_lookup_user` (`phone`, `username`) hoặc theo tên bằng `zalo_search_threads`, rồi dùng ID nhận được. Chỉ khi chắc chắn ID là của tài khoản này mới gọi lại với `allowUnknown: true`.
+
 ---
 
 ### `zalo_forward_message`

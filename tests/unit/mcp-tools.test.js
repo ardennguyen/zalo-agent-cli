@@ -28,6 +28,7 @@ import { createStageLock } from "../../src/core/daemon-channel.js";
 import { hiddenChatsFor } from "../../src/core/hidden-chats.js";
 import { MessageBuffer } from "../../src/mcp/message-buffer.js";
 import { initDb, insertMessage, upsertThread, upsertContact } from "../../src/core/db.js";
+import { rememberFriends } from "../../src/core/typing.js";
 
 // The local read `voice-transcript` reaches credentials.js, so this file must not touch the real home.
 // Every test in this file runs in the sandbox: a failing hook fails them all.
@@ -1919,6 +1920,8 @@ describe("Tier 1 & Tier 2 MCP tools", () => {
 
 describe("zalo_friend", () => {
     const U = "9100000000000000001";
+    // U is this account's friend: src/core/known-ids.js refuses an id the account never saw, before any request.
+    beforeEach(() => rememberFriends([U]));
     /** A fake api that records every friend call, with per-test answers. */
     function friendApi(answers = {}) {
         const calls = [];
@@ -2151,6 +2154,8 @@ describe("zalo_friend", () => {
 
 describe("zalo_friend alias (bug-reports #7)", () => {
     const U = "9100000000000000001";
+    // U is this account's friend: src/core/known-ids.js refuses an id the account never saw, before any request.
+    beforeEach(() => rememberFriends([U]));
     function aliasApi(answers = {}) {
         const calls = [];
         const rec =

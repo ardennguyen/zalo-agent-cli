@@ -3105,3 +3105,41 @@ export function getStoredName(userId) {
         .get(id);
     return seen?.senderName || null;
 }
+
+/**
+ * Where this account's cache has seen an id, or null when it has not (src/core/known-ids.js): a conversation of its own
+ * (`threads`, `conv_state`), a message in that conversation or from that sender, or, for a person, the contact book, the
+ * owner's aliases or a presence push. Every check is a primary-key or index lookup, stopped at the first row.
+ *
+ * @param {string|number} id
+ * @param {"user"|"group"|"thread"} [kind] - a person, a group, or a conversation of either kind
+ * @returns {string|null} the table the id was found in
+ */
+export function knownIdSource(id, kind = "thread") {
+    if (!db) throw new Error("Database not initialized");
+    if (id === undefined || id === null || id === "") return null;
+    const key = String(id);
+    const person = kind !== "group";
+    const checks = [
+        ["threads", "SELECT 1 FROM threads WHERE threadId = ?"],
+        ["conversation", "SELECT 1 FROM conv_state WHERE threadId = ?"],
+        ["messages", "SELECT 1 FROM messages WHERE threadId = ? LIMIT 1"],
+        ...(person
+            ? [
+                  ["sender", "SELECT 1 FROM messages WHERE senderId = ? LIMIT 1"],
+                  ["contacts", "SELECT 1 FROM contacts WHERE userId = ?"],
+                  ["contact names", "SELECT 1 FROM user_contact_names WHERE userId = ?"],
+                  ["aliases", "SELECT 1 FROM user_aliases WHERE userId = ?"],
+                  ["presence", "SELECT 1 FROM last_online WHERE userId = ?"],
+              ]
+            : []),
+    ];
+    for (const [source, sql] of checks) {
+        try {
+            if (db.prepare(sql).get(key)) return source;
+        } catch {
+            /* an older database without this table yet: the next source */
+        }
+    }
+    return null;
+}

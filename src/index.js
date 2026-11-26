@@ -63,6 +63,7 @@ import { applyCachedThreadType } from "./utils/thread-type.js";
 import { attachDaemonLogIfChild } from "./core/daemon-channel.js";
 import { success, error, warning, setReplyContext } from "./utils/output.js";
 import { enforceCliGuard } from "./core/confirm-guard.js";
+import { enforceKnownIds, installKnownIdGuards } from "./commands/known-id-guards.js";
 import { TEST_FAKE_API_REFUSED } from "./core/test-fake-session.js";
 
 attachDaemonLogIfChild();
@@ -167,6 +168,9 @@ program
         // Every command taking `--type` defaults it to 0 (1-1), which is wrong
         // for every group and silently so. The cache knows which is which.
         applyCachedThreadType(actionCommand);
+        // An id this account has never seen is refused before anything is sent: user ids differ per account
+        // (src/core/known-ids.js; `--allow-unknown` skips it).
+        if (!(await enforceKnownIds(actionCommand, { json: Boolean(globalOpts.json) }))) process.exit(1);
     });
 
 // Self-update command
@@ -209,6 +213,8 @@ registerDbCommands(program);
 registerPolicyCommands(program);
 registerPresenceCommands(program);
 registerSessionCommands(program);
+// The commands that take a person or a conversation check the id against this account (src/core/known-ids.js).
+installKnownIdGuards(program);
 
 // parseAsync, so a registry that exists but cannot be read (src/core/accounts.js) reaches the user as a
 // message, not as a stack trace from inside a command; so does a refused test-only fake session

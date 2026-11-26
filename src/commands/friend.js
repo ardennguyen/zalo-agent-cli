@@ -19,6 +19,7 @@ import { getAccountDbPath } from "../core/credentials.js";
 import { initDb } from "../core/db.js";
 import { groupNames, mutualGroupsLine, mutualGroupsOrError } from "../core/mutual-groups.js";
 import { hiddenSetForCli } from "../utils/hidden-access.js";
+import { recordCliKnownIds } from "./known-id-guards.js";
 
 /**
  * The groups shared with one user for a CLI reply (src/core/mutual-groups.js), groups in hidden chats left out as
@@ -144,6 +145,8 @@ export function registerFriendCommands(program) {
                 await ensureAliases(getApi());
                 const result = found?.uid ? aliasFirst(found) : { ...found, data: aliasFirst(found.data) };
                 const u0 = result?.uid ? result : result?.data || result;
+                // This account's id for the person: the commands that follow with it are not refused (known-ids.js).
+                recordCliKnownIds([u0?.uid]);
                 const mutualGroups = await cliMutualGroups(getApi(), u0?.uid);
                 output({ ...result, mutualGroups }, program.opts().json, () => {
                     const u = u0;
@@ -287,6 +290,7 @@ export function registerFriendCommands(program) {
                 const found = await getApi().findUserByUsername(username);
                 if (found) await ensureAliases(getApi());
                 const result = found ? aliasFirst(found) : found;
+                if (result) recordCliKnownIds([result.uid || result.userId]);
                 output(result, program.opts().json, () => {
                     if (!result) {
                         error(`No user found for username "${username}"`);
@@ -486,6 +490,7 @@ export function registerFriendCommands(program) {
                 const result = Object.fromEntries(
                     Object.entries(raw || {}).map(([phone, u]) => [phone, aliasFirst(u)]),
                 );
+                recordCliKnownIds(Object.values(result).map((u) => u?.uid));
                 output(result, program.opts().json, () => {
                     const entries = Object.entries(result || {});
                     info(`${entries.length} user(s) found`);

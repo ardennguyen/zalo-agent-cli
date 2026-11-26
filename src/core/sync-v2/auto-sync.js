@@ -260,19 +260,32 @@ export async function autoSyncAfterLogin(
     };
     tap.on(601, collect);
     tap.on(603, collect);
+    let onConnected = () => {};
+    let onError = () => {};
     const connected = await new Promise((resolve) => {
         const timer = setTimeout(() => resolve({ ok: false, reason: "timeout" }), connectTimeoutMs);
-        api.listener.once("connected", () => {
+        onConnected = () => {
             clearTimeout(timer);
             resolve({ ok: true });
-        });
-        api.listener.once("error", (e) => {
+        };
+        onError = (e) => {
             clearTimeout(timer);
             resolve({ ok: false, reason: e?.message || "socket error" });
-        });
+        };
+        api.listener.once("connected", onConnected);
+        api.listener.once("error", onError);
         api.listener.start({ retryOnClose: false });
     });
+    api.listener.removeListener?.("connected", onConnected);
+    api.listener.removeListener?.("error", onError);
     if (!connected.ok) {
+        // A socket that did not open in time may still be opening: closed here, or a late open keeps the login's
+        // process alive with the account's one web session (and a daemon started after it is kicked by it).
+        try {
+            api.listener.stop();
+        } catch {
+            /* already closed */
+        }
         return { offered: false, status: "no-socket", reason: `could not open the socket (${connected.reason})` };
     }
     const pulls = [];

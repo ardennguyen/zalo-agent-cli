@@ -216,14 +216,17 @@ function freePort() {
 }
 
 /**
- * One QR login as a child process (`zalo-agent --json login`), for ./fleet-qr.js: its JSON lines, a kill, its exit.
- * The child is the same `login` a person runs (credentials saved, account registered); a QR login is HTTP and opens no
- * chat socket.
+ * One QR login as a child process (`zalo-agent --json login --session-only`), for ./fleet-qr.js: its JSON lines, a
+ * kill, its exit. The child is the same `login` a person runs (credentials saved, account registered); a QR login is
+ * HTTP, and `--session-only` ends it once the session is saved: it neither reads the phone's "sync messages" offer
+ * nor fetches the zCloud key, which would open the account's chat socket and hold its daemon lock while the
+ * controller starts the daemon.
  *
- * @param {{proxy?: string|null}} [o]
- * @returns {{onLine: (fn: (line: string) => void) => void, kill: () => void, exited: Promise<number>}}
+ * @param {{proxy?: string|null, script?: string}} [o] - `script`: the CLI to run (this one; a stand-in in a test)
+ * @returns {{onLine: (fn: (line: string) => void) => void, kill: (signal?: NodeJS.Signals) => void,
+ *   exited: Promise<number>}}
  */
-export function spawnLoginChild({ proxy = null } = {}) {
+export function spawnLoginChild({ proxy = null, script = process.argv[1] } = {}) {
     const lines = [];
     const subscribers = [];
     let child = null;
@@ -235,9 +238,10 @@ export function spawnLoginChild({ proxy = null } = {}) {
                 child = spawn(
                     process.execPath,
                     [
-                        process.argv[1],
+                        script,
                         "--json",
                         "login",
+                        "--session-only",
                         ...(port ? ["--qr-port", String(port)] : []),
                         ...(proxy ? ["--proxy", proxy] : []),
                     ],
@@ -262,9 +266,9 @@ export function spawnLoginChild({ proxy = null } = {}) {
             subscribers.push(fn);
             for (const l of lines) fn(l);
         },
-        kill: () => {
+        kill: (signal = "SIGTERM") => {
             killed = true;
-            child?.kill();
+            child?.kill(signal);
         },
         exited,
     };

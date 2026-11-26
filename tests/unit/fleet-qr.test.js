@@ -2,20 +2,22 @@
  * The QR add flow of the fleet controller (src/core/fleet-qr.js, WP8): per-flow QR pages that share no state, the
  * flow cap, an expired code followed by a new one, `done` registering once, a running daemon restarted on purpose
  * (`restarted: "relogin"`), the finish steps (port, env file, membership, presence, start), the admin routes on a real
- * port-0 server, and a static check that a QR login opens no chat socket. The login child is a stand-in.
+ * port-0 server, and a static check that a QR login opens no chat socket. The login child is a stand-in, and once a
+ * real process: the account starts only after its login child is gone (it would hold the daemon lock), and every
+ * other end of a flow stops a child still alive.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { once } from "node:events";
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR, getAccountDir } from "../../src/core/credentials.js";
 import { QrPage } from "../../src/utils/qr-http-server.js";
 import { createQrFlows } from "../../src/core/fleet-qr.js";
 import { createFleetController } from "../../src/core/fleet-controller.js";
-import { buildControllerApp, finishQrAdd } from "../../src/core/fleet-serve.js";
+import { buildControllerApp, finishQrAdd, spawnLoginChild } from "../../src/core/fleet-serve.js";
 import { applyPolicy, effectivePolicy, getPolicy } from "../../src/core/policy-store.js";
 import { loadPortTable } from "../../src/core/fleet.js";
 import { parseEnv } from "node:util";
@@ -26,6 +28,14 @@ const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex").toString("bas
 const SRC = join(import.meta.dirname, "..", "..", "src");
 const servers = [];
 const tick = () => new Promise((r) => setImmediate(r));
+/** Wait (briefly) until `cond()` holds. */
+async function until(cond, ms = 3000) {
+    const deadline = Date.now() + ms;
+    while (!cond()) {
+        if (Date.now() > deadline) throw new Error("timed out waiting");
+        await new Promise((r) => setTimeout(r, 5));
+    }
+}
 
 before(() => assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR));
 after(() =>
@@ -35,33 +45,53 @@ after(() =>
     }),
 );
 
-/** A login child that says what the test tells it to. */
-function fakeChild() {
+/**
+ * A login child that says what the test tells it to. Like a real process it stays alive until it exits or is killed;
+ * `ignore` lists the signals it survives. What happens to it goes to `log`.
+ */
+function fakeChild({ log = [], ignore = [] } = {}) {
     const subs = [];
     let exit;
     const child = {
+        killed: false,
+        gone: false,
         onLine: (fn) => subs.push(fn),
-        kill: () => {
+        kill: (signal = "SIGTERM") => {
+            log.push(`kill ${signal}`);
+            if (ignore.includes(signal)) return;
             child.killed = true;
-            exit(143);
+            child.exit(143);
         },
         exited: new Promise((r) => (exit = r)),
         say: (obj) => subs.forEach((fn) => fn(JSON.stringify(obj))),
-        exit: (c) => exit(c),
+        exit: (c) => {
+            if (child.gone) return;
+            child.gone = true;
+            log.push("exited");
+            exit(c);
+        },
     };
     return child;
 }
 
-function flowsRig({ maxFlows = 4, isRunning = () => false } = {}) {
+function flowsRig({
+    maxFlows = 4,
+    isRunning = () => false,
+    ignore = [],
+    childExitGraceMs = 20,
+    childKillGraceMs = 20,
+} = {}) {
     const children = [];
     const finished = [];
+    const log = [];
     const flows = createQrFlows({
         spawnLogin: () => {
-            const c = fakeChild();
+            const c = fakeChild({ log, ignore });
             children.push(c);
             return c;
         },
         finish: async (o) => {
+            log.push("finish");
             finished.push(o);
             return o.wasRunning ? { restarted: "relogin" } : { started: o.start };
         },
@@ -69,8 +99,21 @@ function flowsRig({ maxFlows = 4, isRunning = () => false } = {}) {
         dir: join(CONFIG_DIR, "qr-flows-test"),
         publicUrl: "https://fleet.example.com",
         maxFlows,
+        childExitGraceMs,
+        childKillGraceMs,
     });
-    return { flows, children, finished };
+    return { flows, children, finished, log };
+}
+
+/** The SSE text a flow has sent so far. */
+async function eventsOf(flows, flowId) {
+    let text = "";
+    await flows.handle(
+        { method: "GET", on: () => {} },
+        { writeHead: () => {}, write: (t) => (text += t), end: () => {} },
+        { path: `/accounts/qr/${flowId}/events` },
+    );
+    return text;
 }
 
 describe("QrPage: one state per page", () => {
@@ -111,7 +154,7 @@ describe("QR flows", () => {
         c.say({ event: "qr_scanned", name: "Someone" });
         c.say({ event: "login_success", ownId: "1000000000000000981", name: "Someone" });
         c.say({ event: "login_success", ownId: "1000000000000000981" });
-        await tick();
+        await until(() => finished.length > 0);
         await tick();
         assert.equal(finished.length, 1, "done registers once");
         assert.deepEqual(finished[0], {
@@ -146,8 +189,7 @@ describe("QR flows", () => {
         const { flows, children, finished } = flowsRig({ isRunning: () => true });
         flows.create({ userId: "u5" });
         children[0].say({ event: "login_success", ownId: "1000000000000000982" });
-        await tick();
-        await tick();
+        await until(() => finished.length > 0);
         assert.equal(finished[0].wasRunning, true);
     });
 
@@ -164,6 +206,101 @@ describe("QR flows", () => {
         );
         assert.match(text, /event: failed/);
         assert.match(text, /"reason":"exited"/);
+    });
+});
+
+describe("the login child is gone before the account starts (it holds the daemon lock while alive)", () => {
+    it("a child still alive after login_success is stopped, and its exit awaited, before the finish runs", async () => {
+        const { flows, children, finished, log } = flowsRig();
+        const r = flows.create({ userId: "u7" });
+        children[0].say({ event: "login_success", ownId: "1000000000000000987" });
+        await until(() => finished.length > 0);
+        assert.deepEqual(log, ["kill SIGTERM", "exited", "finish"]);
+        assert.match(await eventsOf(flows, r.body.flowId), /event: done/);
+    });
+
+    it("a child that survives SIGTERM is killed with SIGKILL, still before the finish", async () => {
+        const { flows, children, finished, log } = flowsRig({ ignore: ["SIGTERM"] });
+        flows.create({ userId: "u8" });
+        children[0].say({ event: "login_success", ownId: "1000000000000000988" });
+        await until(() => finished.length > 0);
+        assert.deepEqual(log, ["kill SIGTERM", "kill SIGKILL", "exited", "finish"]);
+    });
+
+    it("a child that cannot be stopped fails the flow, and the account is not started", async () => {
+        const { flows, children, finished } = flowsRig({ ignore: ["SIGTERM", "SIGKILL"] });
+        const r = flows.create({ userId: "u9" });
+        children[0].say({ event: "login_success", ownId: "1000000000000000989" });
+        await until(() => flows.count() === 0);
+        assert.equal(finished.length, 0, "no finish beside a live login process");
+        const text = await eventsOf(flows, r.body.flowId);
+        assert.match(text, /event: failed/);
+        assert.match(text, /"code":"LOGIN_CHILD_STUCK"/);
+    });
+
+    it("a child that exits by itself is waited for, and not killed", async () => {
+        const { flows, children, finished, log } = flowsRig({ childExitGraceMs: 2000 });
+        flows.create({ userId: "u10" });
+        const c = children[0];
+        c.say({ event: "login_success", ownId: "1000000000000000990" });
+        setTimeout(() => c.exit(0), 30);
+        await until(() => finished.length > 0);
+        assert.deepEqual(log, ["exited", "finish"]);
+        assert.equal(c.killed, false);
+    });
+
+    it("a failed login, a decline, a cancel and a timeout each stop a child still alive", async () => {
+        const { flows, children } = flowsRig();
+        flows.create({ userId: "u11" });
+        children[0].say({ event: "login_error", message: "nope" });
+        flows.create({ userId: "u12" });
+        children[1].say({ event: "qr_declined" });
+        const third = flows.create({ userId: "u13" });
+        flows.cancel(third.body.flowId);
+        const fourth = flows.create({ userId: "u14" });
+        flows.cancel(fourth.body.flowId, "timeout");
+        await until(() => children.every((c) => c.gone));
+        assert.deepEqual(
+            children.map((c) => c.killed),
+            [true, true, true, true],
+        );
+        assert.equal(flows.count(), 0);
+    });
+
+    it("a real login process that stays up after login_success is gone before the finish; it runs --session-only", async () => {
+        const script = join(CONFIG_DIR, "fake-login-child.mjs");
+        mkdirSync(CONFIG_DIR, { recursive: true });
+        // Prints its arguments and a login_success, then stays up as the production child did.
+        const body = [
+            `console.log(JSON.stringify({ event: "argv", argv: process.argv.slice(2) }));`,
+            `console.log(JSON.stringify({ event: "login_success", ownId: "1000000000000000991" }));`,
+            `setInterval(() => {}, 1000);`,
+        ];
+        writeFileSync(script, body.join("\n"));
+        const order = [];
+        const lines = [];
+        const finished = [];
+        const flows = createQrFlows({
+            spawnLogin: (o) => {
+                const c = spawnLoginChild({ ...o, script });
+                c.onLine((l) => lines.push(l));
+                c.exited.then(() => order.push("exited"));
+                return c;
+            },
+            finish: async (o) => {
+                order.push("finish");
+                finished.push(o);
+                return {};
+            },
+            dir: join(CONFIG_DIR, "qr-flows-real"),
+            childExitGraceMs: 200,
+            childKillGraceMs: 2000,
+        });
+        flows.create({ userId: "u17" });
+        await until(() => finished.length > 0, 15_000);
+        assert.deepEqual(order, ["exited", "finish"]);
+        const argv = JSON.parse(lines.find((l) => l.includes(`"argv"`))).argv;
+        assert.deepEqual(argv.slice(0, 3), ["--json", "login", "--session-only"]);
     });
 });
 

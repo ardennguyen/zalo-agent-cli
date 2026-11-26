@@ -13,6 +13,15 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 - **A webhook backlog leaves within half a minute of the receiver coming back.** The outbox's retry wait still starts at 1 s and doubles, but now stops at 30 s instead of 5 minutes (+/-20% jitter, never above 30 s). After a long receiver outage (a reboot, a deploy) queued events used to sit through the rest of a wait of up to 5 minutes, and every short blip afterwards (a 502 during a rolling restart) sent the queue back into multi-minute waits; now a receiver that is down sees one small POST per account about every 30 s, and the queue drains on the first try after it answers. Order, at-least-once, dedupe, dead-lettering and leased mode are unchanged.
 
+#### Added
+
+- **`login --session-only`**: after a QR login, stop once the session is saved: the phone's "sync messages" offer is not read and the zCloud key is not fetched, so no chat socket is opened and no daemon lock is taken (later: `sync`, `cloud key setup --confirm`).
+
+#### Fixed
+
+- **An account added by QR through `fleet serve` now starts.** The flow's `login` child kept running after `login_success`: it went on to read the phone's "sync messages" offer (and to restore when it was ticked) and to fetch the zCloud key, holding the account's daemon lock and its one web session, while the controller started the account's daemon at once. That daemon exited with "Another listener ... is already running" on every restart, and `fleet status` showed the account `unresponsive`. The child now runs `login --session-only`, and the flow waits for it to exit (up to 10 s; then SIGTERM, then SIGKILL) before the account is started; a child that cannot be stopped fails the flow (`LOGIN_CHILD_STUCK`) instead of starting the daemon beside it. A failed, declined, cancelled or timed-out flow stops a child still alive as well.
+- **A login no longer stays up after it is done.** When the post-login socket (the offer check, the zCloud key) did not open or hand over its key in time, it was left opening, and its late connection kept the `login` process, and the account's web session, alive. It is closed now, and a finished QR login exits within 2 s whatever a dependency still holds.
+
 ## [3.4.0] — 2026-11-23
 
 #### Added

@@ -9,7 +9,7 @@ Three surfaces carry a version and all three must be touched, in this order:
 | Surface | Where the version lives | Lags behind when forgotten |
 |---|---|---|
 | Engine `@ardennguyen/zalo-agent-cli` | `package.json`, git tag, `CHANGELOG.md` | — |
-| Wrapper `@ardennguyen/zalo-mcp` | `package-lock.json` (resolved engine), `package.json` range | wrapper installs serve an old engine |
+| Wrapper `@ardennguyen/zalo-mcp` | `npm-shrinkwrap.json` (the pinned engine), `package.json` range | wrapper installs serve an old engine |
 | Wiki `zalo-agent-cli.wiki` | `Home.md` "engine X.Y.Z" line, `(engine X.Y.Z)` notes on feature lines | pages describe flags the install does not have, or miss ones it does |
 
 ## 1. Engine
@@ -47,16 +47,18 @@ On the active version branch (`v2.5-dev` for 2.5.x, `v3.0-dev` for 3.0):
 
 ## 2. Wrapper (`zalo-mcp`)
 
-A wrapper install serves whatever engine its lock file resolves, so the lock must move with every
-engine release even when the wrapper's own code did not change.
+A wrapper install serves the engine its lock file pins, so the lock must move with every engine
+release even when the wrapper's own code did not change. The lock is `npm-shrinkwrap.json`: npm publishes it
+(never `package-lock.json`) and installs a package's dependencies by it, so `npm install -g`, the
+scripts' `install`/`init`/`update` (`npm ci`) and a `git clone` + `npm ci` all get exactly the pinned engine.
 
-1. In `zalo-mcp/` on `v2.0-dev`: `npm install @ardennguyen/zalo-agent-cli@X.Y.Z --package-lock-only`
+1. In `zalo-mcp/` on `v2.0-dev`: `npm install @ardennguyen/zalo-agent-cli@X.Y.Z --package-lock-only` (it writes `npm-shrinkwrap.json`)
    (the `^3.0.0` range in `package.json`, set by wrapper 2.1.0, stays unless the engine's major or minor changed).
-2. `npm test`, then `git diff` — only `package-lock.json` (and `package.json` if the range moved).
+2. `npm test`, then `git diff` — only `npm-shrinkwrap.json` (and `package.json` if the range moved).
 3. Decide whether the wrapper itself needs a version: a new engine flag the launcher must forward,
    a README change, or a changed range → bump `version` in `package.json` and add a section to the
-   wrapper's `CHANGELOG.md` (from 2.1.0; earlier wrapper history is on its GitHub Releases). A lock-only move does not need a wrapper release, but the
-   lock bump must still be committed and pushed so a fresh `git clone` + `npm ci` gets the engine.
+   wrapper's `CHANGELOG.md` (from 2.1.0; earlier wrapper history is on its GitHub Releases). A lock-only move changes what installs get only
+   once it is released: `npm install -g` reads the published shrinkwrap, and `update` copies the published one.
 4. Commit `build: pin engine X.Y.Z in the lock file` (or `chore: bump version to A.B.C …`), push.
 5. If the wrapper version moved: **(user)** PR `v2.0-dev → main`, tag `vA.B.C`, GitHub Release —
    the same `publish.yml` path as the engine.

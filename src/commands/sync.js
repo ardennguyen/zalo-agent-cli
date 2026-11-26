@@ -88,7 +88,7 @@ export function registerSyncCommands(program) {
         .option("--from <date>", "Restore messages from this date onward (YYYY-MM-DD); overrides --days")
         .option(
             "-w, --wait <seconds>",
-            "How long to wait for the phone confirmation (floored at 600, as Zalo's own clients wait)",
+            "How long to wait for the phone confirmation (floored at 600, as Zalo waits)",
             parseIntOption,
             600,
         )
@@ -147,7 +147,7 @@ export function registerSyncCommands(program) {
         )
         .option(
             "-F, --force",
-            "Ask the phone even when already synced and nothing is missing. By default, once a restore has completed, the phone is asked again only for a recorded gap (the listener was down or dropped messages), an unfinished restore or a wider window — as Zalo's own apps do",
+            "Ask the phone even when already synced and nothing is missing. By default, once a restore has completed, the phone is asked again only for a recorded gap (the listener was down or dropped messages), an unfinished restore or a wider window — as Zalo does",
         )
         .option(
             "-d, --days <n>",
@@ -2212,8 +2212,8 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
         //
         // The socket is not unpinged without this -- the listener sends Zalo's
         // `cmd 2/1` ping on the interval the server hands out at login, which
-        // this account's login reports as 180000 ms, the same value Zalo's own
-        // sessions use. The problem is that 180 s is the entire width
+        // this account's login reports as 180000 ms, the same value every Zalo
+        // session uses. The problem is that 180 s is the entire width
         // of the phone wait: the restore sends nothing and receives nothing for
         // minutes, so the flow can sit silent right up against the server's own
         // liveness bound with no margin, and one late ping means six minutes of

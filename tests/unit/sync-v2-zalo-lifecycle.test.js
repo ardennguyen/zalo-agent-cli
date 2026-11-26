@@ -1,5 +1,5 @@
 /**
- * How a restore treats its socket and its sessions, as Zalo's own apps do (the evidence is in docs/agent-notes.md, "A restore in waves"):
+ * How a restore treats its socket and its sessions, as Zalo does (the evidence is in docs/agent-notes.md, "A restore in waves"):
  *
  *  - nothing is sent before the server's hello has been processed, and the first frame after it is a ping;
  *  - one ping per interval, not two;

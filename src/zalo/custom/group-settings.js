@@ -27,8 +27,8 @@
  *
  * Two fields needed a decision:
  *
- *   blocked_members — NOT sent. Zalo's own apps send `[]` or omit the key
- *   altogether, and never send a populated list. So the server accepts a
+ *   blocked_members — NOT sent. Zalo sends `[]` or omits the key
+ *   altogether, and never sends a populated list. So the server accepts a
  *   request without it. Omitting it is safe under
  *   every reading of the field under which `[]` is safe, and also under the
  *   one where `[]` means "replace the block list with nothing". Unverified live.

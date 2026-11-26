@@ -435,7 +435,7 @@ describe("the account's Zalo file limit (src/core/zalo-file-limit.js)", () => {
         assert.equal(zaloFileLimit(features(1024, 300 * MB)).bytes, 300 * MB);
     });
 
-    it("falls back as Zalo's clients do: 25 MB without a share-file limit, 1 GiB without a zCloud one", () => {
+    it("falls back as Zalo does: 25 MB without a share-file limit, 1 GiB without a zCloud one", () => {
         assert.equal(zaloFileLimit(features(undefined, 10 * GIB)).bytes, 25 * MB);
         assert.equal(zaloFileLimit(features(4096, undefined)).bytes, GIB);
         assert.equal(zaloFileLimit({}).fromSettings, false);

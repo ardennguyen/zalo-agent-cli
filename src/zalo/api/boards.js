@@ -14,7 +14,7 @@
  *   cursor can come back short while more follow, so the pagers stop at an empty page.
  * - A group id loses Zalo's conversation prefix `g` before it goes out.
  * - Reminders are created and edited in Zalo's default colour (-16777216, opaque black) and in the expected key
- *   order. The caller's emoji is kept (design 6.1 item 12; Zalo's own apps always send "⏰").
+ *   order. The caller's emoji is kept (design 6.1 item 12; Zalo always sends "⏰").
  * - `editReminder` loads the reminder first and sends its current values for every field the caller did not change
  *   (a group one through `getReminder`, a DM one from the DM list), as Zalo edits a loaded reminder. Before, an
  *   edit without a time moved the reminder to the moment of the edit, and one without a repeat reset it.

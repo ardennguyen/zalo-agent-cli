@@ -3,7 +3,7 @@
  *
  * The REST client, its sign-in and the queue's item shapes are the protocol layer's (src/zalo/zcloud.js, whose
  * header explains the handshake and why zCloud is a partial source). This module owns the writes: it applies each
- * queue page to zalo.db the way Zalo's own walker applies it to its store.
+ * queue page to zalo.db the way Zalo applies it to its own store.
  */
 import {
     backfillCloudZKeys,

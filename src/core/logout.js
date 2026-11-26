@@ -30,7 +30,7 @@ async function probeSavedLogin(saved) {
 }
 
 /**
- * Sign this device out at Zalo, the way Zalo's own app does: `serverLogout` of src/zalo/logout.js, with the
+ * Sign this device out at Zalo, the way Zalo does: `serverLogout` of src/zalo/logout.js, with the
  * saved login tried in a new login of this CLI's own making.
  *
  * @param {object} api - a logged-in session API

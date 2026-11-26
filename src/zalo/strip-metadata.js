@@ -1,5 +1,5 @@
 /**
- * Strip embedded metadata from a photo before it is uploaded, as Zalo's own apps do: a phone photo carries the
+ * Strip embedded metadata from a photo before it is uploaded, as Zalo does: a phone photo carries the
  * camera's GPS position, the device make and model, timestamps and a thumbnail of the uncropped original, and none
  * of that belongs in a chat. Pure JS, no codec: the pixels are never decoded or re-encoded, only the containers'
  * metadata blocks are dropped.

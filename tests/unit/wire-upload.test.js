@@ -651,7 +651,7 @@ describe("wire: attachments", () => {
         assert.deepEqual([renewVideo.params.toId, renewVideo.params.isGroup], [GROUP, 1]);
         assert.equal(JSON.parse(renewVideo.params.msgInfo).thumbUrl, photoUrlsOf("image-64x48.png").normalUrl);
         assert.deepEqual([forward.params.grid, forward.params.visibility, forward.params.imei], [GROUP, 0, undefined]);
-        // No duration given: Zalo's own send never puts 0 there.
+        // No duration given: Zalo never puts 0 there.
         assert.equal(JSON.parse(forward.params.msgInfo).duration, 1);
     });
 

@@ -102,7 +102,7 @@ describe("the status table", () => {
         assert.equal(firstFatalStatus(undefined), null);
     });
 
-    it("the wait for a confirmation is ten minutes, as Zalo's own clients wait", () => {
+    it("the wait for a confirmation is ten minutes, as Zalo waits", () => {
         assert.equal(CONFIRM_WAIT_MS, 600_000);
         assert.equal(IDLE_TIMEOUT_MS, 600_000);
     });

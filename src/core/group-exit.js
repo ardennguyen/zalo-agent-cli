@@ -1,7 +1,7 @@
 /**
  * A group stops being ours: the account LEFT it, was REMOVED or BLOCKED from it, or it was DISBANDED.
  *
- * Zalo's own apps delete the group's local history at once in all four cases: messages, media, pin and preview,
+ * Zalo deletes the group's local history at once in all four cases: messages, media, pin and preview,
  * with a delete tombstone so a later restore or fetch cannot bring the old messages back. This module is that, for this
  * cache:
  *

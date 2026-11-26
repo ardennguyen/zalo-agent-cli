@@ -693,7 +693,7 @@ export function startDaemonAliases({ getApi, log = () => {}, onRetitled, onOwnPr
             listener?.on?.("profile_change", (change) => {
                 if (change?.act === "update") readProfile("profile control");
             });
-            // Once per daemon, at start, as Zalo's own clients read the signed-in profile: an account that logged in
+            // Once per daemon, at start, as Zalo reads the signed-in profile: an account that logged in
             // before the phone was kept has none stored yet, and a rename made while the daemon was down is caught.
             if (!profileRead) {
                 profileRead = true;

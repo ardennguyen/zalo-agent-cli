@@ -22,7 +22,7 @@
  *   (src/zalo/api/upload.js `sendVideoFile`);
  * - the receipts (`seen`, `delivered` legacy forms, reaction receipts, `subtab/seen`): they change what other people
  *   see, and the v2 forms are already sent;
- * - `closefr/update` and `profile/mode`: Zalo answers 404, and Zalo's own toggle for them does nothing;
+ * - `closefr/update` and `profile/mode`: Zalo answers 404, and Zalo's setting for them does nothing;
  * - `mediastore/remove` and `media/oneone/remove` (they need ids only the media store's own list gives),
  *   `sticker/personalized/update` (an ordering of the sticker packs), the v1 variants Zalo has replaced
  *   (`pin`, `topic/create`, `group/create`, `group/invite`), `action/query` (an analytics hook): no use for them here;
@@ -489,7 +489,7 @@ export const WRITES = {
         args: [
             arg("text", "string", "the label's name (1 to 30 characters)", true),
             arg("color", "string", "colour, a palette hex such as #0068FF", true),
-            arg("emoji", "string", "emoji (Zalo's own apps never send one)"),
+            arg("emoji", "string", "emoji (Zalo never sends one)"),
             arg("conversations", "json", "conversation ids to tag (a group's id as Zalo names it, `g` + id)"),
         ],
         body: (a) => ({

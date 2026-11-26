@@ -327,7 +327,7 @@ export function initDb(dbPath) {
     // checked) MEASURED 1.8 s and 2.5 s on 436,000 rows: an event-loop stall the socket felt. Built once (about 2 s on
     // that database, here at the start, before any socket is open).
     db.exec("CREATE INDEX IF NOT EXISTS idx_messages_localpath ON messages(timestamp) WHERE localPath IS NOT NULL");
-    // The text a search matches: `text` folded the way Zalo's own clients fold it (lowercase, Vietnamese vowels to
+    // The text a search matches: `text` folded the way Zalo folds it (lowercase, Vietnamese vowels to
     // bare letters, đ to d; src/utils/vn-text.js). Kept by the message writers below. Rows written before the column
     // existed are filled in, and the indexes a search wants are built, the first time a search runs
     // ({@link ensureSearchIndex}): adding a column is instant, building an index on 400,000 messages is not, and no
@@ -2704,7 +2704,7 @@ export function markMessageRecalled(msgId, at = Date.now(), opts = {}) {
     // so replacing raw_data wholesale made a recalled message undeletable.
     // `originalType` mirrors what the phone itself preserves for a removed
     // message (params.original_type), so our tombstone is no poorer than
-    // Zalo's own.
+    // the phone's.
     let cliMsgId;
     try {
         cliMsgId = JSON.parse(row.raw_data)?.cliMsgId;

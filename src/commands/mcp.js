@@ -516,7 +516,7 @@ export function registerMCPCommands(program) {
         )
         .option(
             "--no-delivered-receipts",
-            "Do not acknowledge received messages as delivered (every Zalo client does; seen receipts are never sent)",
+            "Do not acknowledge received messages as delivered (as Zalo does; seen receipts are never sent)",
         )
         .option(
             "--no-self-heal",
@@ -972,7 +972,7 @@ export function registerMCPCommands(program) {
                 },
             });
             // The account's Zalo file limit (src/core/zalo-file-limit.js), read from the session's settings, and its
-            // zCloud plan for the report (a read Zalo's clients make at start; a failure leaves the tier unknown).
+            // zCloud plan for the report (a read Zalo makes at start; a failure leaves the tier unknown).
             readAccountFileLimit(getApi(), accountDir);
             getCloudUsage(getApi())
                 .then((u) => readAccountFileLimit(getApi(), accountDir, { plan: u?.plan ?? null }))

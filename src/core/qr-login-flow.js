@@ -2,7 +2,7 @@
  * One QR login, as `login` and `account login` both run it: the QR in the terminal and on the local page, who scanned
  * it, a decline, and what happens when a code expires.
  *
- * An expired code is not replaced on its own while someone is there to ask for one, as in Zalo's own QR login: the page
+ * An expired code is not replaced on its own while someone is there to ask for one, as in Zalo's QR login: the page
  * shows "QR code expired" with a button, and the terminal waits for Enter. Nobody asking within `ASK_WINDOW_MS` ends
  * the login. With no one to ask (--json, or no terminal: an agent, a background `login --qr-url &`) the code is
  * replaced at once, up to `MAX_CODES` codes, and then the login ends. Either way it never waits forever.
@@ -196,7 +196,7 @@ export async function runQrLogin({
             return;
         }
 
-        // As in Zalo's own QR login: wait for someone to ask, from the page or the terminal, and only for so long.
+        // As in Zalo's QR login: wait for someone to ask, from the page or the terminal, and only for so long.
         let used = false;
         const once = () => {
             if (used) return;

@@ -76,7 +76,7 @@ describe("SyncManager sync-freshness debounce", () => {
         assert.equal(r.ageMs, 60_000);
     });
 
-    it("as Zalo's own apps do, the age of the last restore does not matter: a week later, no gap, still skipped", () => {
+    it("as Zalo does, the age of the last restore does not matter: a week later, no gap, still skipped", () => {
         manager.markSyncSuccess("transfer");
         const last = manager.getLastSuccessfulSyncAt();
         const r = manager.checkSyncFreshness({ now: last + 7 * 24 * 60 * 60 * 1000 });

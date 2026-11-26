@@ -142,8 +142,8 @@ mount). `ZALO_MCP_ADMIN_TOKEN` is for development.
 
 ### Leaving a group (`groups.onLeave`)
 
-When the account **leaves** a group, is **removed** or **blocked** from it, or the group is **disbanded**, Zalo's own
-apps delete that group's local history at once. So does this engine by default:
+When the account **leaves** a group, is **removed** or **blocked** from it, or the group is **disbanded**, Zalo
+deletes that group's local history at once. So does this engine by default:
 
 | Value | What happens |
 |---|---|

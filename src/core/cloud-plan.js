@@ -1,7 +1,7 @@
 /**
  * What is in the zCloud index, what a cleanup would touch (decision D27, 2026-10-28), and what deleting it sends.
  *
- * Zalo has no endpoint that deletes a zCloud item. Zalo's own "Delete" in its cloud view deletes the chat MESSAGE
+ * Zalo has no endpoint that deletes a zCloud item. Deleting an item in Zalo's cloud deletes the chat MESSAGE
  * each item belongs to, for this account only (`onlyMe`, the delete-for-me sync), one message at a time, conversation
  * by conversation, and waits for the cloud queue to drop the items. That has no undo. The planning half reads the local
  * index (`cloud_items`, filled by `sync-cloud`) and the local message cache and sends nothing; {@link
@@ -20,7 +20,7 @@ const KIND_OF = {
 };
 
 /**
- * Items per page of Zalo's cloud manager: fixed at 60. Its "select all" selects the loaded page, and a delete works
+ * Items per page of a Zalo cloud delete: fixed at 60. Its "select all" selects the loaded page, and a delete works
  * through that page; `cloud apply` works through every match the same way, a page of 60 after another.
  */
 export const CLOUD_PAGE_SIZE = 60;
@@ -81,7 +81,7 @@ export function cloudDeleteTarget(item, ownId) {
 }
 
 /**
- * Delete the messages behind planned items for this account, as Zalo's cloud manager does: a page of
+ * Delete the messages behind planned items for this account, as Zalo does: a page of
  * {@link CLOUD_PAGE_SIZE} items at a time, and within a page conversation by conversation, one delete-for-me per
  * message, sequentially, with no pause. A conversation stops at its first failure: the rest of
  * its items, in this page and every later one, are not tried, and the other conversations go on. The local index is
@@ -286,6 +286,6 @@ export function planCloudCleanup({
  * The words that go with every plan: what applying one would mean at Zalo. Printed, and stored in the plan file.
  */
 export const CLEANUP_WARNING =
-    "Zalo has no endpoint that deletes a zCloud item. The only removal, the one Zalo's own cloud view uses, is " +
+    "Zalo has no endpoint that deletes a zCloud item. The only removal, the one Zalo itself uses, is " +
     "deleting the chat message the item belongs to, for this account on every device, and that cannot be undone. This is a " +
     "report: nothing was sent to Zalo and nothing was deleted (`cloud apply --yes` with the same filters does it).";

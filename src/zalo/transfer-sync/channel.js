@@ -2,7 +2,7 @@
  * The request side of a phone-backed transfer sync: sending the `590` request and the `591` release, reading
  * their acknowledgements, and keeping track of which sessions are open (plan items Y4a, Y6a, Y6b, Y7).
  *
- * What Zalo's own app does, and this module now does:
+ * What Zalo does, and this module now does:
  *
  *  - **Every request is acknowledged**, with `{reqId, err, ts}` on the same command. The ack is awaited for 10 s;
  *    a refused request (`err` not 0) is sent again after 1 s and 2 s, up to three attempts. A timeout is not

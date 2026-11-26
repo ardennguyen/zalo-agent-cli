@@ -1,7 +1,7 @@
 /**
  * Reading every page of a paged list, one request at a time.
  *
- * A list the caller did not bound is read to its end, the way Zalo's own apps read the same lists (blocked
+ * A list the caller did not bound is read to its end, the way Zalo reads the same lists (blocked
  * members, catalogs, products, boards): page after page while the server says there is more. The walk
  * ends on whichever comes first:
  *

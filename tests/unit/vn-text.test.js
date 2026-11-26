@@ -1,5 +1,5 @@
 /**
- * The Vietnamese fold used by search (src/utils/vn-text.js): the same as Zalo's own `simpleStripVietnamese`
+ * The Vietnamese fold used by search (src/utils/vn-text.js): the same fold Zalo uses
  * (lowercase, Vietnamese vowels to bare letters, `đ` to `d`), for composed and decomposed spellings alike.
  */
 import { describe, it } from "node:test";
@@ -54,7 +54,7 @@ describe("stripVietnamese", () => {
         assert.equal(stripVietnamese(nfd("Việt")), "viet");
     });
 
-    it("leaves what is not Vietnamese alone, as the official function does", () => {
+    it("leaves what is not Vietnamese alone, as Zalo's fold does", () => {
         assert.equal(stripVietnamese("ñ"), nfd("ñ"), "n with a tilde keeps its tilde");
         assert.equal(stripVietnamese("ç"), nfd("ç"));
         assert.equal(
@@ -104,7 +104,7 @@ describe("normalizeKeyword", () => {
         assert.deepEqual(normalizeKeyword("  Được  "), { keyword: "Được", norm: "duoc", truncated: false });
     });
 
-    it("cuts a keyword to 100 characters, as Zalo's own app does, and says so", () => {
+    it("cuts a keyword to 100 characters, as Zalo does, and says so", () => {
         const long = "a".repeat(MAX_KEYWORD_LENGTH + 20);
         const out = normalizeKeyword(long);
         assert.equal(out.keyword.length, MAX_KEYWORD_LENGTH);

@@ -441,7 +441,7 @@ export function registerLoginCommands(program) {
     program
         .command("logout")
         .description(
-            "Log out: sign this device out at Zalo (as Zalo's own apps do) and delete its saved credentials, so the next command needs a new QR login. Chat history is kept unless --delete-history or --purge.",
+            "Log out: sign this device out at Zalo (as Zalo does) and delete its saved credentials, so the next command needs a new QR login. Chat history is kept unless --delete-history or --purge.",
         )
         .option(
             "--keep-session",

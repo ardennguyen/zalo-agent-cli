@@ -2,7 +2,7 @@
  * Every page of the server-paged lists, for a command or an MCP action that was not asked for one page.
  *
  * Nothing the CLI or the MCP tools return is cut short by default: with no page asked, these read the list to its
- * end, one request at a time, the way Zalo's own clients page the same lists (each reader names the client loop it
+ * end, one request at a time, the way Zalo pages the same lists (each reader names the loop it
  * follows). The walk itself, and when it stops, is src/zalo/paging.js: an empty page, the server saying there is no
  * more, a cursor that stops advancing (said in `note`), or Zalo's 221 (too many requests), which keeps what was
  * read and says so in `note`.

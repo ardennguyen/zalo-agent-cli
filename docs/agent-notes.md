@@ -1105,7 +1105,7 @@ draw bold, bullets and sizes only from those, and `zalo_send_message` sent plain
 existed, but it was a Markdown-ish syntax of its own (`__x__` is underline there, bold in Markdown) with no
 bullets or headings, and the tool had no pass at all.
 
-- **The target shape was read from real messages**, not guessed: Zalo's own clients send a bullet as the
+- **The target shape was read from real messages**, not guessed: Zalo sends a bullet as the
   line's text with no marker, covered whole by `lst_1` (start at the line start, length of the line without
   its newline), a heading as a bold line, and bold inside an item as a second overlapping range. The cached
   `raw_data` of such a message is `action: "rtf"` with `params.styles`; a message we send with `styles`
@@ -1704,7 +1704,7 @@ the settings at once.
 ## Search: what Zalo does, what we do, and what it cost (v3.0, 2026-10-26)
 
 **What Zalo does:**
-search is local, in the client's own store. The keyword and the text are folded alike by `simpleStripVietnamese`
+search is local, in the client's own store. The keyword and the text are folded alike
 (lowercase, every Vietnamese vowel with its marks to the bare letter, `d` for `đ`), then matched as a substring; the
 keyword is at most 100 characters; a hit is shown as 70 characters before the match and 30 after; results come in
 pages and the footer says how far back the local data reaches. No ranking exists in the code (F10): results are in time
@@ -1794,7 +1794,7 @@ cloudUrl}`. `mediaInfo.mediaExtInfo {data, encryptInfo {encryptKey, encryptVer}}
 metadata under a different key; it stays in `raw_data` and is never taken for the blob's key. Nothing is decrypted.
 
 **The key is out of scope (decision D8), and this is why it is a decision.** Reading names, thumbnails or blobs needs the
-account's RSA private key, which Zalo's own apps get from the phone: `GET req_cloud_key` opens a pending transfer, the phone
+account's RSA private key, which a Zalo device gets from the phone: `GET req_cloud_key` opens a pending transfer, the phone
 user approves, and the key arrives on the chat socket as a `personal_cloud` control, wrapped in a Signal-style message
 addressed to the account's own E2EE session. Taking part needs a registered E2EE device identity, a state-changing step on
 the account whose effect on other devices is unknown, plus secure storage, key-version and `correct_cloud_key` handling and
@@ -2029,7 +2029,7 @@ stay unverified here; another account may have the flag.
 | `aifeatures/voice2text` | built (`voice-to-text`): the answer is only a request id; the text arrives as a `601` control `voice2text/convert_finish {req_id, err, text, url, has_more}` (the first real unknown action `unknown-acts.json` ever caught). `src/core/voice-text.js` keeps it in `voice-text.json` (both daemons, identically), and the local read `voice-transcript` returns it. Seen end to end |
 | `conv/blocksharing/{getConvers,updateConvers}` | the list read answers; the write answers 829 "zBusiness accounts only" on this account |
 | `recommendsv2/remove`, `read-requests` | alive, need a real suggestion or request (the `src` and `type` of a suggestion are the server's own `recommSrc` and `recommType` of the list item; `type` 1 is a suggestion, 2 an incoming request) |
-| `oa/block`, `oa/unblock` | answered error 0 for a real Official Account (block, then unblock, on one the owner named); no profile, block-list or mini-profile read showed the flip, polled for three minutes (a friend block shows at once in the same read), so the effect could not be seen from the CLI. Tried on Skyline VMAC and Zalo Video (error 0, no flip) and on the system Zalo OA (error 112); only the account's own user id is accepted as `oaid` (the global id and username answer 114). The account ended as it began. Zalo for Developers was tried again after the owner marked it "Quan tam" (interest) on the phone: the profile still showed `isFr` 0 and the block still changed nothing, so the profile reads do not carry the follow state, or it had not reached them. **Settled the same day in Zalo's own app:** a block made there on Zalo for Developers persists (after a reload the chat bar reads "unblock to send messages to this OA"); the CLI's `oa-block` does the same (the app, logged in afterwards, showed that bar and the line "cannot send, you blocked this OA" for a message sent after it), and the CLI's `oa-unblock` lifted a block made in the app (the next message went through). The request is `{"oaid":"<19-digit user id>"}`, params only. The profile read is blind to it, and the send call still answers success, so only Zalo's own app shows the state. The OA was left unblocked |
+| `oa/block`, `oa/unblock` | answered error 0 for a real Official Account (block, then unblock, on one the owner named); no profile, block-list or mini-profile read showed the flip, polled for three minutes (a friend block shows at once in the same read), so the effect could not be seen from the CLI. Tried on Skyline VMAC and Zalo Video (error 0, no flip) and on the system Zalo OA (error 112); only the account's own user id is accepted as `oaid` (the global id and username answer 114). The account ended as it began. Zalo for Developers was tried again after the owner marked it "Quan tam" (interest) on the phone: the profile still showed `isFr` 0 and the block still changed nothing, so the profile reads do not carry the follow state, or it had not reached them. **Settled the same day in Zalo:** a block made on Zalo for Developers persists (after a reload the chat bar reads "unblock to send messages to this OA"); the CLI's `oa-block` does the same (Zalo, opened afterwards, showed that bar and the line "cannot send, you blocked this OA" for a message sent after it), and the CLI's `oa-unblock` lifted a block made in Zalo (the next message went through). The request is `{"oaid":"<19-digit user id>"}`, params only. The profile read is blind to it, and the send call still answers success, so only Zalo itself shows the state. The OA was left unblocked |
 | `sync_action/media` | each list item is `{fromUid, destId, isGroup, cmi}`, sent when a photo or video is opened or a file downloaded; its effect is unobserved |
 | `closefr/update`, `profile/mode` | no replacement exists; the feature flag is off |
 

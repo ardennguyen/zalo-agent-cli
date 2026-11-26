@@ -1,7 +1,7 @@
 /**
  * storeHistoryMessage -- the one writer msg history's fetches go through.
  *
- * Insert-if-absent, as Zalo's own apps store the history they fetch
+ * Insert-if-absent, as Zalo stores the history it fetches
  * (never replacing a stored row): a msgId already in zalo.db is
  * left exactly as it is, every column; a new one is written with the
  * listener's normalization, so the two are indistinguishable but for the

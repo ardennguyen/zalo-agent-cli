@@ -626,7 +626,7 @@ media hàng loạt, board, cloud và trạng thái hội thoại vẫn dùng CLI
 
 **Expected reasoning:**
 1. `group leave` (or `zalo_group` `leave`) is guarded: ask the user first
-2. Say before confirming: by default (`groups.onLeave: "purge"`) the group's history on this machine (messages, media, pins, reminders) is deleted at once, as Zalo's own apps do, and cannot come back; `groups.onLeave: "keep"` keeps it, flagged gone
+2. Say before confirming: by default (`groups.onLeave: "purge"`) the group's history on this machine (messages, media, pins, reminders) is deleted at once, as Zalo does, and cannot come back; `groups.onLeave: "keep"` keeps it, flagged gone
 3. After the user agrees: `zalo-agent group leave <groupId> --yes` (or `confirm: true`)
 4. A `group_gone` event (also sent when the account is removed or blocked, or the group is disbanded) reports the reason and what was purged
 
@@ -668,7 +668,7 @@ media hàng loạt, board, cloud và trạng thái hội thoại vẫn dùng CLI
 **Prompt:** "Search all my chats, including hidden ones, for 'invoice'"
 
 **Expected reasoning:**
-1. Hidden chats are left out of every list, search and history, as Zalo's own apps leave them out: `msg search` and `zalo_search_messages` never search them
+1. Hidden chats are left out of every list, search and history, as Zalo leaves them out: `msg search` and `zalo_search_messages` never search them
 2. Search what is visible (`zalo-agent --json msg search invoice`) and say hidden chats were left out
 3. For a hidden chat the user names, its history opens with the hidden-chat PIN: `msg history <threadId> --include-hidden` (or `db query ... --include-hidden`), the PIN typed by the user at the prompt or given on standard input (`--pin-stdin`); over MCP the server's `hiddenChats` policy and its secure PIN page decide
 4. The PIN is never a command-line argument; never ask the user to paste it into the chat with the agent, never log or repeat it

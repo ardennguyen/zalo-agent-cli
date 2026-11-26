@@ -17,7 +17,7 @@
  *  6. `GET id.zalo.me/account?continue=...`: the login page the browser lands on.
  *
  * The same six steps run whether local data is kept or deleted: that choice is local. The production
- * `GET logOut` is not part of them; Zalo's own app never sends it.
+ * `GET logOut` is not part of them; Zalo never sends it.
  *
  * A step that fails does not stop the ones that can still run (the key can be ended without the token, and
  * the token is useless without the key). Steps 4 and 5 need what step 1 and 4 return. What each step did is

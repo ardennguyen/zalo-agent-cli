@@ -82,7 +82,7 @@ describe("expandMentions — uid handling", () => {
     it("expands @[-1] to @All", () => {
         const { text, mentions } = expandMentions(`@[${ALL_MENTION_UID}] họp lúc 3h`, resolve);
         assert.equal(text, "@All họp lúc 3h");
-        // Matches what Zalo's own clients write: uid "-1", len 4.
+        // Matches what Zalo writes: uid "-1", len 4.
         assert.deepEqual(mentions, [{ pos: 0, uid: "-1", len: 4 }]);
         assert.equal(ALL_MENTION_LABEL, "All");
     });

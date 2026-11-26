@@ -18,7 +18,7 @@
  * answered right after a proven logout on 2026-09-19. Anything else is reported
  * as what it is.
  *
- * v3.0 (plan items L13a-c, X1): the default logout is now Zalo's own app's six steps
+ * v3.0 (plan items L13a-c, X1): the default logout is now Zalo's six steps
  * (./official-logout.js), which sign the DEVICE out: afterwards the saved cookie is rejected
  * and the phone stops listing it. What is described above is the `keepSession` path
  * (`logout --keep-session`): it ends the session key and nothing more, as before.
@@ -119,7 +119,7 @@ async function probeSessionKey(api) {
 }
 
 /**
- * Sign this device out at Zalo, the way Zalo's own app does (plan items L13a-c, X1).
+ * Sign this device out at Zalo, the way Zalo does (plan items L13a-c, X1).
  *
  * Runs the six steps of src/zalo/official-logout.js, then looks: the session key is probed with
  * `fetchAccountInfo`, and, when the saved login is given, it is tried in a new login. "Signed out" is claimed

@@ -3,7 +3,7 @@
  *
  * Zalo draws bold and bullets only from style ranges; typed `**bold**` and `- item` show as typed. The shapes
  * asserted here (a bullet is the line's text covered by `lst_1`, a heading is a bold line) are those of real
- * rich-text messages from Zalo's own clients, read from a local cache.
+ * rich-text messages Zalo sent, read from a local cache.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
@@ -128,7 +128,7 @@ describe("escapes, code spans, link text and list numbers: the text and the rang
             ],
             ["bold link text stays bold", "[**go**](https://x.io)", "go (https://x.io)", [["b", "go"]]],
             [
-                "an ordered list keeps its numbers as typed, as Zalo's own clients do",
+                "an ordered list keeps its numbers as typed, as Zalo does",
                 "1. first\n2) second **bold**\n10. tenth",
                 "1. first\n2) second bold\n10. tenth",
                 [["b", "bold"]],

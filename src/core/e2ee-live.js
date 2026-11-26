@@ -366,7 +366,8 @@ export async function registerDeviceLive({
 
 /**
  * Run `fn({ send, tap })` over a one-off live socket for a logged-in account, then close it. LIVE; it
- * starts the listener, waits for the handshake's cipher key, attaches a socket tap, and tears everything down after.
+ * starts the listener, waits for the handshake's cipher key, attaches a socket tap, and tears everything down after,
+ * also when the handshake fails or times out.
  * The caller must have confirmed no daemon holds the socket (one WebSocket per account).
  *
  * @param {object} api - a logged-in api (has `.listener`)
@@ -381,7 +382,14 @@ export async function withLiveSocket(api, fn, { handshakeTimeoutMs = 20_000, log
     if (!listener) throw new SignalCommandError("no live socket is available (log in first)");
     const tap = createSocketTap({ log });
     tap.attach(listener);
-    await new Promise((resolve, reject) => {
+    const stop = () => {
+        try {
+            listener.stop();
+        } catch {
+            /* closing a socket that is already going away */
+        }
+    };
+    const opened = new Promise((resolve, reject) => {
         let done = false;
         const settle = (fnx, v) => {
             if (done) return;
@@ -400,15 +408,18 @@ export async function withLiveSocket(api, fn, { handshakeTimeoutMs = 20_000, log
         listener.on("cipher_key", onHello);
         listener.on("error", onErr);
         // The tap re-attaches on every new socket the listener opens (its `connected` event).
-        listener.start({ retryOnClose: false });
+        try {
+            listener.start({ retryOnClose: false });
+        } catch (e) {
+            onErr(e);
+        }
     });
     try {
+        // A socket that did not hand over its key may still be open (or opening): it is closed here as well, or it
+        // keeps the process alive with the account's one web session.
+        await opened;
         return await fn({ send: (payload) => listener.sendWs(payload), tap });
     } finally {
-        try {
-            listener.stop();
-        } catch {
-            /* closing a socket that is already going away */
-        }
+        stop();
     }
 }

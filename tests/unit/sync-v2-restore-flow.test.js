@@ -20,7 +20,7 @@ import {
     markSyncRangesPending,
     setSyncRangeStatus,
 } from "../../src/core/db.js";
-import { SyncV2 } from "../../src/core/sync-v2/index.js";
+import { STORE_SLICE, SyncV2 } from "../../src/core/sync-v2/index.js";
 import { isSealed, readSealedJson, scopeOfDir } from "../../src/core/keystore/index.js";
 import { FAKE, installQueuePulls, startFakeZalo } from "../helpers/fake-zalo/index.js";
 import { fakeCodecs, installFakePhone } from "../helpers/fake-zalo/phone.js";
@@ -294,6 +294,26 @@ describe("a restore against the fake phone", () => {
             assert.ok(asksAfter > 0, "it was released while the run still had more to ask for, not at the very end");
             assert.equal(new Set(phone.releases.map((r) => r.syncId)).size, phone.requests.length, "each once");
         });
+    });
+
+    it("stores a conversation larger than one transaction slice whole", async () => {
+        const count = STORE_SLICE * 2 + 37;
+        const big = [
+            {
+                id: "CONVBIG",
+                kind: "oneone",
+                lastTs: T + count,
+                messages: Array.from({ length: count }, (_, i) => ({
+                    id: String(500000 + i),
+                    text: `m${i}`,
+                    ts: T + i + 1,
+                })),
+            },
+        ];
+        const { result, error } = await run({ conversations: big });
+        assert.equal(error, null);
+        assert.equal(result.messagesSaved, count);
+        assert.ok(getMessageById(String(500000 + count - 1)), "the last row of the last slice is stored");
     });
 
     describe("Ctrl+C (an AbortSignal)", () => {

@@ -69,7 +69,9 @@ function socketAlive(api) {
  * @param {(message: string) => void} [args.log]
  * @param {(ms: number) => Promise<void>} [args.sleep] - test seam
  * @param {() => number} [args.now] - test seam
- * @returns {Promise<{api: object}|null>} the api to continue on, or null when none came back in time
+ * @param {AbortSignal} [args.signal] - the stage's cancel: the wait ends at once, with null
+ * @returns {Promise<{api: object}|null>} the api to continue on, or null when none came back in time (or the stage
+ *   was cancelled)
  */
 export async function waitForDaemonSocket({
     getApi,
@@ -80,6 +82,7 @@ export async function waitForDaemonSocket({
     log = () => {},
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now = Date.now,
+    signal,
 }) {
     const startedAt = now();
     log(`the socket was lost mid-stage; waiting up to ${Math.round(timeoutMs / 1000)}s for the daemon to reconnect`);
@@ -94,6 +97,10 @@ export async function waitForDaemonSocket({
         if (ws && ws.readyState === 1 && (api !== lostApi || ws !== lostWs)) {
             log(`the daemon reconnected after ${((now() - startedAt) / 1000).toFixed(1)}s; resuming the stage`);
             return { api };
+        }
+        if (signal?.aborted) {
+            log("the stage was cancelled while it waited for the daemon to reconnect");
+            return null;
         }
         if (now() - startedAt >= timeoutMs) {
             log(
@@ -122,7 +129,7 @@ function traceRunners(runners, { log, monitor }) {
     return Object.fromEntries(
         Object.entries(runners).map(([stage, run]) => [
             stage,
-            async (params = {}, onEvent = () => {}, signal) => {
+            async (params = {}, onEvent = () => {}, signal, internal) => {
                 const trace = createStageLogger({ stage, log, monitor });
                 trace.start(params);
                 try {
@@ -137,6 +144,7 @@ function traceRunners(runners, { log, monitor }) {
                             onEvent(event);
                         },
                         signal,
+                        internal,
                     );
                     trace.finish(result);
                     return result;
@@ -189,16 +197,22 @@ export function createSyncRunners({
          * Still prompts the owner's phone exactly once — routing through the
          * daemon removes the second WebSocket, not the confirmation. The
          * daemon never calls this on its own; an explicit CLI sync or MCP
-         * sync request authorized by the owner reaches it.
+         * sync request authorized by the owner reaches it. The one exception
+         * is a login's ticked "sync messages" offer that a `login
+         * --session-only` left to this daemon (src/core/after-login.js): the
+         * tick is the owner's consent at the login, and its key means the
+         * phone does not ask; a key too old to spare the tap starts nothing.
          *
          * @param {{days?: number|null, from?: string|number, waitMs?: number,
          *   shardSize?: number, waveSize?: number, fullResync?: boolean}} params
          * @param {(e: {phase: string, detail?: string}) => void} onEvent
          * @param {AbortSignal} [signal] - aborted by `POST /sync/cancel`: the restore keeps what arrived, releases
          *   its sessions on the phone and returns `reason: "cancelled"`
+         * @param {{tempKey?: string}} [internal] - from this daemon itself, never from the channel: the key of a
+         *   ticked login offer (src/core/after-login.js)
          * @returns {Promise<object>} SyncV2.restore() result, as-is
          */
-        async messages(params = {}, onEvent = () => {}, signal) {
+        async messages(params = {}, onEvent = () => {}, signal, internal = {}) {
             const api = liveApi("restore");
             // The api and socket the stage is on, kept current across reconnects.
             let current = { api, ws: api.listener?.ws ?? null };
@@ -209,6 +223,10 @@ export function createSyncRunners({
                 shardSize: Number(params.shardSize) || undefined,
                 waveSize: Number(params.waveSize) || undefined,
                 fullResync: params.fullResync === true,
+                // The phone's key from a login's ticked "sync messages" offer (src/core/after-login.js): the phone
+                // does not ask again. Only this daemon's own after-login step hands one over, as `internal` (never
+                // a channel parameter, and never in the stage's logged parameters).
+                tempKey: typeof internal?.tempKey === "string" ? internal.tempKey : undefined,
                 signal,
                 // See rule 1 in this file's header: the daemon is the tap.
                 liveStore: false,
@@ -238,6 +256,7 @@ export function createSyncRunners({
                         lostWs: current.ws,
                         lostApi: current.api,
                         timeoutMs: Number(params.reconnectWaitMs) || undefined,
+                        signal,
                         log: (m) => log(`[sync:messages] ${m}`),
                     });
                     if (back) current = { api: back.api, ws: back.api.listener?.ws ?? null };

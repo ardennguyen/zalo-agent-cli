@@ -146,7 +146,9 @@ describe("the caller", () => {
         const checker = createApiKeyChecker(dir);
         assert.deepEqual(checker.identify(made.key), { keyId: made.keyId, label: "laptop" });
         assert.equal(checker.verify(made.key), true);
-        assert.equal(checker.identify(`${made.key.slice(0, -1)}A`), null);
+        // A changed last character (never the one it already has: a key ending in "A" made this a no-op, 1 run in 64).
+        const tampered = `${made.key.slice(0, -1)}${made.key.endsWith("A") ? "B" : "A"}`;
+        assert.equal(checker.identify(tampered), null);
         assert.equal(checker.verify("zak_nothing"), false);
     });
 

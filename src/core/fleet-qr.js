@@ -7,10 +7,18 @@
  *     GET    /zalo/admin/accounts/qr/<flowId>/image    the current PNG (admin credential, no-store)
  *     DELETE /zalo/admin/accounts/qr/<flowId>          cancel
  *
- * - **One login per flow, in its own process** (`zalo-agent --json login --qr-port 0`): a login sets its process's
- *   session, so two flows in one process would share it. The child is the same `login` a person runs: it saves the
- *   credentials and registers the account, and it opens **no chat socket** (a QR login is HTTP; the session it makes
- *   is saved, never listened on). Its loopback page takes a free port and is never offered.
+ * - **One login per flow, in its own process** (`zalo-agent --json login --session-only --qr-port <free port>`): a
+ *   login sets its process's session, so two flows in one process would share it. The child is the same `login` a
+ *   person runs: it saves the credentials and registers the account, and with `--session-only` it opens **no chat
+ *   socket** and takes no daemon lock (a QR login is HTTP; it skips the phone's "sync messages" check and the zCloud
+ *   key fetch, which would). Its loopback page takes a free port and is never offered.
+ * - **The child is gone before the account starts.** After `login_success` the flow waits up to
+ *   `CHILD_EXIT_GRACE_MS` for the child to exit on its own, then stops it (SIGTERM, then SIGKILL after
+ *   `CHILD_KILL_GRACE_MS`) and waits for its exit; only then does the finish run. A child left alive would hold the
+ *   account's daemon lock or its one web session, and the daemon started for it would exit at once ("Another
+ *   listener ... is already running"). A child that cannot be stopped fails the flow (`LOGIN_CHILD_STUCK`) and the
+ *   account is not started. Every other end (failed, cancelled, timeout, the controller stopping) stops a child that
+ *   is still alive too.
  * - **Per-flow page.** Each flow has its own `QrPage` (its own token, state and image file), served by the controller
  *   at `/zalo/qr/<token>` under `publicUrl`, so a CRM can hand the link to the person who scans.
  * - **At most `ZALO_FLEET_QR_FLOWS` (4) flows at once**: 429 above.
@@ -34,11 +42,17 @@ export const DEFAULT_QR_FLOWS = 4;
 /** A flow that never ends is cancelled after this. */
 export const FLOW_MAX_MS = 15 * 60_000;
 
+/** How long a login child is given to exit by itself after `login_success` before it is stopped. */
+export const CHILD_EXIT_GRACE_MS = 10_000;
+
+/** How long a stopped child is given to exit before it is killed outright, and again before the flow gives up. */
+export const CHILD_KILL_GRACE_MS = 5_000;
+
 const USER_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
 /**
  * @param {object} args
- * @param {(o: {proxy?: string|null}) => {lines: AsyncIterable<string>|null, onLine: Function, kill: () => void,
+ * @param {(o: {proxy?: string|null}) => {onLine: Function, kill: (signal?: string) => void,
  *   exited: Promise<number>}} args.spawnLogin - one child login; `onLine(fn)` subscribes to its stdout lines
  * @param {(o: {ownId: string, userId: string, presence: string|null, start: boolean, wasRunning: boolean}) =>
  *   Promise<object>} args.finish - the finish steps; returns what `done` carries (port, restarted, ...)
@@ -52,6 +66,8 @@ const USER_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
  * @param {(event: object) => void} [args.webhook] - the admin webhook mirror
  * @param {(line: string) => void} [args.log]
  * @param {() => number} [args.now]
+ * @param {number} [args.childExitGraceMs] - CHILD_EXIT_GRACE_MS
+ * @param {number} [args.childKillGraceMs] - CHILD_KILL_GRACE_MS
  * @returns {object}
  */
 export function createQrFlows({
@@ -66,8 +82,42 @@ export function createQrFlows({
     webhook = () => {},
     log = () => {},
     now = Date.now,
+    childExitGraceMs = CHILD_EXIT_GRACE_MS,
+    childKillGraceMs = CHILD_KILL_GRACE_MS,
 }) {
     const flows = new Map(); // flowId -> flow
+
+    /** Whether `p` settles within `ms`. */
+    const within = (p, ms) =>
+        new Promise((resolve) => {
+            const t = setTimeout(() => resolve(false), ms);
+            const settled = () => {
+                clearTimeout(t);
+                resolve(true);
+            };
+            p.then(settled, settled);
+        });
+
+    /**
+     * Make sure the flow's login child is gone: `graceMs` for it to exit on its own, then SIGTERM, then SIGKILL.
+     * @returns {Promise<boolean>} true once it has exited
+     */
+    async function stopChild(flow, graceMs) {
+        const child = flow.child;
+        if (!child || flow.childExited) return true;
+        if (graceMs > 0 && (await within(child.exited, graceMs))) return true;
+        log(`[fleet] QR flow ${flow.id}: the login process is still running; stopping it`);
+        for (const signal of ["SIGTERM", "SIGKILL"]) {
+            try {
+                child.kill(signal);
+            } catch {
+                /* gone */
+            }
+            if (await within(child.exited, childKillGraceMs)) return true;
+        }
+        log(`[fleet] QR flow ${flow.id}: the login process did not exit`);
+        return false;
+    }
 
     const send = (res, code, body) => {
         res.status(code).set({ "Cache-Control": "no-store" }).json(body);
@@ -110,6 +160,8 @@ export function createQrFlows({
             }
         }
         flow.clients.clear();
+        // A login child still alive would hold the account (its lock, its web session): it goes with the flow.
+        void stopChild(flow, 0);
         // Keep the record a little for a late reader of the events; then forget it.
         const t = setTimeout(() => flows.delete(flow.id), 60_000);
         t.unref?.();
@@ -145,6 +197,14 @@ export function createQrFlows({
             flow.finishing = true;
             const ownId = String(m.ownId);
             try {
+                // The account starts only once its login process is gone: alive, it holds the daemon lock or the
+                // account's one web session, and the daemon started beside it exits at once.
+                if (!(await stopChild(flow, childExitGraceMs))) {
+                    throw Object.assign(new Error("the login process did not exit, so the account was not started"), {
+                        code: "LOGIN_CHILD_STUCK",
+                    });
+                }
+                if (flow.ended) return; // cancelled while the child was being waited for
                 const wasRunning = Boolean(await isRunning(ownId));
                 const result = await finish({
                     ownId,
@@ -196,6 +256,8 @@ export function createQrFlows({
             clients: new Set(),
             ended: false,
             finishing: false,
+            child: null,
+            childExited: false,
             createdAt: now(),
         };
         // The link is issued now so the CRM has it at once; it shows "waiting" until the first code.
@@ -205,6 +267,7 @@ export function createQrFlows({
         flow.child = child;
         child.onLine((l) => void onLine(flow, l));
         child.exited.then((code) => {
+            flow.childExited = true;
             if (!flow.ended && !flow.finishing) end(flow, "failed", { reason: "exited", exitCode: code });
         });
         flow.timer = setTimeout(() => cancel(id, "timeout"), FLOW_MAX_MS);
@@ -225,12 +288,7 @@ export function createQrFlows({
     function cancel(id, why = "cancelled") {
         const flow = flows.get(id);
         if (!flow || flow.ended) return false;
-        try {
-            flow.child?.kill();
-        } catch {
-            /* gone */
-        }
-        end(flow, "failed", { reason: why });
+        end(flow, "failed", { reason: why }); // it stops the login child
         return true;
     }
 

@@ -13,7 +13,12 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { describeLookupError, isRateLimitError } from "../zalo/custom/user-info.js";
+import {
+    describeLookupError,
+    isRateLimitError,
+    lookupsCoolingDown,
+    noteLookupRateLimit,
+} from "../zalo/custom/user-info.js";
 
 /** Uids per `getprofiles/v2` request. */
 export const PROFILE_CHUNK_SIZE = 500;
@@ -104,6 +109,12 @@ export async function refreshProfiles(api, uids, opts = {}) {
     for (let i = 0; i < todo.length; i += PROFILE_CHUNK_SIZE) {
         const chunk = todo.slice(i, i + PROFILE_CHUNK_SIZE);
         if (i > 0 && gapMs > 0) await sleep(gapMs);
+        // Resting after a rate limit any lookup of this process met (src/zalo/custom/user-info.js): ask nothing.
+        if (lookupsCoolingDown()) {
+            out.stoppedBy = "rate-limit";
+            out.left = todo.length - i;
+            break;
+        }
         out.requests++;
         try {
             const reply = await api.getUserInfo(chunk);
@@ -118,6 +129,7 @@ export async function refreshProfiles(api, uids, opts = {}) {
                 out.stoppedBy = "rate-limit";
                 out.parkedUntil = parkUntil(e, now());
                 for (const id of chunk) parked.set(id, out.parkedUntil);
+                noteLookupRateLimit(`profile refresh: ${out.error}`, log);
                 log(
                     `profile refresh: Zalo is limiting lookups (${out.error}); stopped with ${out.left} peer(s) left, ` +
                         `${chunk.length} parked until ${new Date(out.parkedUntil).toISOString()}`,

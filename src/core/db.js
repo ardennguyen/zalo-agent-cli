@@ -866,6 +866,49 @@ export function runInTransaction(fn) {
     return db.transaction(fn)();
 }
 
+/** insertMessage's statement, and the database generation it was compiled for. */
+let insertStmt = null;
+let insertStmtGen = -1;
+
+/**
+ * The fill-in for a sender a restore could not look up (src/core/sync-v2/deferred-names.js): every row still under
+ * the opaque id takes the user id, and the name where the row has none. Only an opaque id is replaced, as a replay
+ * would (insertMessage's `canResolveSender`); a name is only ever filled, never replaced.
+ *
+ * @param {string} opaqueId
+ * @param {string} uid - numeric
+ * @param {string} name
+ * @returns {number} rows changed
+ */
+export function fillOpaqueSender(opaqueId, uid, name) {
+    if (!db) throw new Error("Database not initialized");
+    if (!/^[1-9][0-9]*$/.test(String(uid)) || !/[^0-9]/.test(String(opaqueId))) return 0;
+    assertLeaseCurrent();
+    return db
+        .prepare(
+            `UPDATE messages SET senderId = @uid,
+               senderName = CASE WHEN COALESCE(senderName, '') = '' THEN @name ELSE senderName END
+             WHERE senderId = @opaque`,
+        )
+        .run({ uid: String(uid), name: String(name || ""), opaque: String(opaqueId) }).changes;
+}
+
+/**
+ * The fill-in for a sender whose name a restore could not look up: rows of that sender with no name take it.
+ *
+ * @param {string} uid
+ * @param {string} name
+ * @returns {number} rows changed
+ */
+export function fillBlankSenderName(uid, name) {
+    if (!db) throw new Error("Database not initialized");
+    if (!name) return 0;
+    assertLeaseCurrent();
+    return db
+        .prepare("UPDATE messages SET senderName = @name WHERE senderId = @uid AND COALESCE(senderName, '') = ''")
+        .run({ uid: String(uid), name: String(name) }).changes;
+}
+
 export function insertMessage(msg) {
     if (!db) throw new Error("Database not initialized");
     // Leased mode (src/core/fleet-lease.js): a holder whose pool lease ended stores nothing more.
@@ -884,7 +927,13 @@ export function insertMessage(msg) {
        excluded.senderId <> '' AND excluded.senderId <> '0' AND
        excluded.senderId NOT GLOB '*[^0-9]*')
     )`;
-    const stmt = db.prepare(`
+    // Compiled once per open database, not per row: a restore stores tens of thousands of rows in a few
+    // transactions, and compiling this statement for each one adds up on the event loop.
+    if (insertStmtGen !== dbGeneration) {
+        insertStmt = null;
+        insertStmtGen = dbGeneration;
+    }
+    const stmt = (insertStmt ??= db.prepare(`
     INSERT INTO messages (msgId, threadId, senderId, senderName, text, text_norm, timestamp, type, raw_data, localPath, has_attachment, msgStatus)
     VALUES (@msgId, @threadId, @senderId, @senderName, @text, @text_norm, @timestamp, @type, @raw_data, @localPath, @has_attachment, @msgStatus)
     ON CONFLICT(msgId) DO UPDATE SET
@@ -914,7 +963,7 @@ export function insertMessage(msg) {
       msgStatus = CASE
         WHEN excluded.msgStatus IS NULL AND messages.msgStatus IS NULL THEN NULL
         ELSE MAX(COALESCE(excluded.msgStatus, 0), COALESCE(messages.msgStatus, 0)) END
-  `);
+  `));
 
     const rawObj =
         typeof msg.raw_data === "object" && msg.raw_data !== null

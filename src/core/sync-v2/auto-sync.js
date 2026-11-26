@@ -203,6 +203,85 @@ export function describeLoginControls(entries, now) {
 }
 
 /**
+ * Collect the controls of every 601 push and 603 page the tap sees, for {@link readLoginOffer}.
+ *
+ * @param {{on: Function}} tap
+ * @returns {{entries: Array<{queue: string, control: object}>, stop: () => void}}
+ */
+export function collectControls(tap) {
+    const entries = [];
+    const collect = (frame) => {
+        const queue = `${frame.cmd}_${frame.subCmd}`;
+        for (const control of frame.data?.controls ?? []) entries.push({ queue, control });
+    };
+    const offs = [tap.on(601, collect), tap.on(603, collect)];
+    return { entries, stop: () => offs.forEach((off) => off?.()) };
+}
+
+/**
+ * Read the account's control queues, on a socket that is already open, until the phone's "sync messages" offer is
+ * found or every queue is read: each queue the handshake names from its saved cursor, then from its start (see
+ * {@link autoSyncAfterLogin} for why both). The pages reach `entries` through the tap ({@link collectControls}).
+ * Used by the login itself, and by a daemon that does the check for a login that ended at the saved session
+ * (`login --session-only`, src/core/after-login.js).
+ *
+ * @param {object} p
+ * @param {object} p.listener - its socket open
+ * @param {object} p.tap - a socket tap on that listener
+ * @param {Array<{queue: string, control: object}>} p.entries - what the tap collected
+ * @param {(queueName: string) => (string|{id: string}|null)} [p.cursorOf]
+ * @param {number} [p.authWaitMs]
+ * @param {number} [p.pageTimeoutMs]
+ * @param {number} [p.pullWaitMs]
+ * @param {() => number} [p.now]
+ * @returns {Promise<{offer: ReturnType<typeof classifyLoginOffer>, pulls: Array<{queue: string, from: string,
+ *   pages: number, reason: string}>}>}
+ */
+export async function readLoginOffer({
+    listener,
+    tap,
+    entries,
+    cursorOf = () => null,
+    authWaitMs = 5000,
+    pageTimeoutMs = 15_000,
+    pullWaitMs = 1500,
+    now = () => Date.now(),
+}) {
+    const pulls = [];
+    const read = () =>
+        classifyLoginOffer(
+            entries.map((e) => e.control),
+            { now: now() },
+        );
+    const ticked = () => read().status === "ticked";
+    // The handshake names the control queues (`ctrl_qCmds`); a request sent before it waits for it anyway.
+    for (let waited = 0; !tap.auth?.() && waited < authWaitMs; waited += 50) {
+        await new Promise((r) => setTimeout(r, 50));
+    }
+    const named = controlQueuesFrom(tap.auth?.()?.ctrl_qCmds);
+    const queues = named.length ? named : DEFAULT_CONTROL_QUEUES;
+    for (const queue of queues) {
+        if (ticked()) break;
+        let saved = null;
+        try {
+            const c = cursorOf(queue.queueName);
+            saved = typeof c === "string" ? c : (c?.id ?? null);
+        } catch {
+            saved = null;
+        }
+        const plan = [["start", null, START_PAGES]];
+        if (saved) plan.unshift(["cursor", saved, CURSOR_PAGES]);
+        for (const [from, lastId, maxPages] of plan) {
+            if (ticked()) break;
+            const r = await readControlQueue({ listener, tap, queue, lastId, maxPages, pageTimeoutMs, found: ticked });
+            pulls.push({ queue: queue.queueName, from, pages: r.pages, reason: r.reason });
+        }
+    }
+    if (!ticked()) await new Promise((r) => setTimeout(r, pullWaitMs));
+    return { offer: read(), pulls };
+}
+
+/**
  * Open the socket of a fresh login, read the key the phone offered, and restore with it.
  *
  * Where the offer is: the phone puts it in the control queues at the QR confirmation, before this socket exists, so
@@ -253,69 +332,46 @@ export async function autoSyncAfterLogin(
 ) {
     const tap = createSocketTap();
     tap.attach(api.listener);
-    const entries = [];
-    const collect = (frame) => {
-        const queue = `${frame.cmd}_${frame.subCmd}`;
-        for (const control of frame.data?.controls ?? []) entries.push({ queue, control });
-    };
-    tap.on(601, collect);
-    tap.on(603, collect);
+    const { entries } = collectControls(tap);
+    let onConnected = () => {};
+    let onError = () => {};
     const connected = await new Promise((resolve) => {
         const timer = setTimeout(() => resolve({ ok: false, reason: "timeout" }), connectTimeoutMs);
-        api.listener.once("connected", () => {
+        onConnected = () => {
             clearTimeout(timer);
             resolve({ ok: true });
-        });
-        api.listener.once("error", (e) => {
+        };
+        onError = (e) => {
             clearTimeout(timer);
             resolve({ ok: false, reason: e?.message || "socket error" });
-        });
+        };
+        api.listener.once("connected", onConnected);
+        api.listener.once("error", onError);
         api.listener.start({ retryOnClose: false });
     });
+    api.listener.removeListener?.("connected", onConnected);
+    api.listener.removeListener?.("error", onError);
     if (!connected.ok) {
+        // A socket that did not open in time may still be opening: closed here, or a late open keeps the login's
+        // process alive with the account's one web session (and a daemon started after it is kicked by it).
+        try {
+            api.listener.stop();
+        } catch {
+            /* already closed */
+        }
         return { offered: false, status: "no-socket", reason: `could not open the socket (${connected.reason})` };
     }
-    const pulls = [];
     try {
-        const read = () =>
-            classifyLoginOffer(
-                entries.map((e) => e.control),
-                { now: now() },
-            );
-        const ticked = () => read().status === "ticked";
-        // The handshake names the control queues (`ctrl_qCmds`); a request sent before it waits for it anyway.
-        for (let waited = 0; !tap.auth() && waited < authWaitMs; waited += 50) {
-            await new Promise((r) => setTimeout(r, 50));
-        }
-        const named = controlQueuesFrom(tap.auth()?.ctrl_qCmds);
-        const queues = named.length ? named : DEFAULT_CONTROL_QUEUES;
-        for (const queue of queues) {
-            if (ticked()) break;
-            let saved = null;
-            try {
-                const c = cursorOf(queue.queueName);
-                saved = typeof c === "string" ? c : (c?.id ?? null);
-            } catch {
-                saved = null;
-            }
-            const plan = [["start", null, START_PAGES]];
-            if (saved) plan.unshift(["cursor", saved, CURSOR_PAGES]);
-            for (const [from, lastId, maxPages] of plan) {
-                if (ticked()) break;
-                const r = await readControlQueue({
-                    listener: api.listener,
-                    tap,
-                    queue,
-                    lastId,
-                    maxPages,
-                    pageTimeoutMs,
-                    found: ticked,
-                });
-                pulls.push({ queue: queue.queueName, from, pages: r.pages, reason: r.reason });
-            }
-        }
-        if (!ticked()) await new Promise((r) => setTimeout(r, pullWaitMs));
-        const offer = read();
+        const { offer, pulls } = await readLoginOffer({
+            listener: api.listener,
+            tap,
+            entries,
+            cursorOf,
+            authWaitMs,
+            pageTimeoutMs,
+            pullWaitMs,
+            now,
+        });
         const diag = { controls: describeLoginControls(entries, now()), pulls };
         if (offer.status !== "ticked") {
             const reason = {

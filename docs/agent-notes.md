@@ -1,9 +1,11 @@
 # Agent notes — the background behind `AGENTS.md`
 
-`AGENTS.md` is capped at 24,000 bytes, because Google Antigravity silently truncates any single
-rule file past that limit — no warning, no marker; the tail simply never reaches the model. So
 `AGENTS.md` carries **rules**, and this file carries everything a rule points at: the annotated
 tree, the lookup tables, the command sequences, and the incidents that produced each rule.
+`AGENTS.md` (and its copy `CLAUDE.md`) stays under 40,000 characters, where Claude Code starts to
+warn about a long `CLAUDE.md`. Until 2026-11-25 the cap was 24,000 bytes, because Google Antigravity
+silently truncated a longer rule file; the owner no longer uses Antigravity, so that cap was
+dropped. The split stays: a rule is read on every session, its background only when needed.
 
 This file has no size limit. When a rule in `AGENTS.md` needs a paragraph of justification, the
 rule stays there and the paragraph comes here.
@@ -115,7 +117,7 @@ Each of these reports success, or names the wrong cause. They were all learned t
 | Command groups | **42** containers — 25 top-level + 11 OA subgroups + 3 ZBS subgroups + `mcp webhook` + `account security` + `cloud key` | the live commander tree | walk it. The number of `register*` calls in `src/index.js` is neither number: `oa` registers 11 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **38** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA/ZBS/Social commands | **94** (70 `oa` + 18 `zbs` + 6 `social`) | `src/commands/oa.js` + `src/commands/oa/*.js`, `src/commands/zbs.js`, `src/commands/social.js` | `node scripts/count-surface.mjs`. `zbs` counts with `oa`: both are the official API on the OA's OAuth token, so "personal" stays the unofficial surface |
-| Offline tests | **5900** as of 2026-11-23 (5895 pass, 5 skipped, 0 todo, 0 fail; Linux) | `npm test` | the run's own summary line |
+| Offline tests | **5932** as of 2026-11-26 (5928 pass, 4 skipped, 0 todo, 0 fail; Linux) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -191,6 +193,13 @@ editing a denylist can silently weaken it; it is cheap to prove it did not.
 Any other occurrence of that name outside those three files is still worth a
 second look: the exception is for the license notice, not a general permission.
 
+### Public files name no Zalo client (2026-11-13)
+
+Which Zalo app a behavior was read from, its build numbers, module names and capture files are
+private research and stay in `agent/`. Public text says what Zalo does, or "as Zalo does"; the
+user's own other session is "another Zalo session". `tests/unit/no-client-references.test.js`
+scans tracked and unignored files. Commit messages are not scanned: check them by hand.
+
 ### Why the wiki check flags 12 digits and the test flags 15
 
 They do different jobs, so they are not meant to be equal.
@@ -226,8 +235,12 @@ exited 0 (it exits 1 since), and an assertion that only checks the process did
 not crash still cannot tell a working command from one answering wrongly. Assert the success the command
 claims, not the absence of a stack trace.
 
----
+Never scrape human-mode output for a value you will write back: the auto-login banner is the first
+`●` line, and the tier-3 bio restore once wrote that banner over a real bio. Read with `--json`, and
+refuse the write when the read failed.
 
+
+---
 ## Release: how a version reaches npm (§8)
 
 Since 2.5.x a release is a pull request, not a reset. Work lands on the version branch
@@ -264,8 +277,23 @@ which Node 22 does not ship, so the workflow upgrades npm before anything else. 
 credential). If a publish ever fails the same way now, check the trusted-publisher entry on
 npmjs.com (repository, workflow filename, environment left empty) before suspecting the code.
 
----
+### Things the checklist does not say (as of 2026-11)
 
+- A release PR into `main` merges only with the owner's admin bypass (`gh pr merge --admin`), and
+  only after he approved the release: the `main` ruleset's history rule and its allowed merge method
+  do not let an ordinary merge through.
+- `publish.yml` runs as it stands **at the tag**. Fixing the workflow means moving the tag (safe only
+  before anything was published from it) and recreating the Release.
+- A publish can take about 10 minutes to show: poll `npm view <pkg> version --prefer-online` and look
+  for `+ <pkg>@<version>` in the job log before deciding it failed.
+- Pass `-R ardennguyen/zalo-agent-cli` to `gh` where the default repo matters.
+- **The package is a bundle (from 3.1.0).** npm ships `dist/` built by `scripts/build.mjs`
+  (`prepack`), not `src/`. A new read of a file next to the code (`__dirname`, `import.meta.url`) or a
+  spawn by path breaks only in the published package: add it to the build's defines and asset copy,
+  or avoid it.
+
+
+---
 ## The protocol layer is ours (§13)
 
 From 3.0.0 the engine speaks Zalo's protocol with its own code. No third-party Zalo client is installed,
@@ -333,11 +361,13 @@ unknown frame, not as a crash. When it changes:
 
 ---
 
-## Why the rule files are four byte-identical copies
+## Why the rule files are two byte-identical copies
 
-`AGENTS.md`, `CLAUDE.md`, `.clinerules` and `.cursor/rules/project.mdc` hold the same bytes because
-each tool looks only for its own filename and none of them reads the others. A pointer file was
-tried first and rejected: a rule an agent has to follow a link to read is a rule it will skip.
+`AGENTS.md` and `CLAUDE.md` hold the same bytes because Claude Code reads only `CLAUDE.md` and the
+other agent tools read `AGENTS.md`. A pointer file was tried first and rejected: a rule an agent has
+to follow a link to read is a rule it will skip. Until 2026-11-25 there were four copies, with
+`.clinerules` (Cline) and `.cursor/rules/project.mdc` (Cursor); the owner decided to keep only the
+two files, so those two were deleted and `tests/unit/rule-files.test.js` now checks the two that remain.
 
 Until 2026-09-29, `.gitignore` listed `AGENTS.md`, `CLAUDE.md` and `.agents/`, so the ruleset's own
 opening claim — "this file is committed and is the canonical ruleset" — was false. Every rule an
@@ -346,9 +376,19 @@ CI and no reviewer. Two sessions updated the test-count invariant on the same da
 were local-only. The files are tracked now; write them as if a stranger will read them, because one
 can.
 
+### The shared section (2026-11-25)
+
+The section "Owner's standing rules (shared across repos)" is the same text in the `AGENTS.md` of
+the engine, the wrapper and the owner's two private product repos. It is the owner's working rules
+(test placement, agent budget, acting while he is away, relayed approvals, secrets, identities,
+git with several sessions). Before it existed those rules lived partly in one agent's memory folder,
+which only sessions started in one folder ever loaded, and partly in one repo's rule file; agents
+working in another repo never saw them. A public repo carries each rule without private detail:
+"the owner's test server" stands for the host, whose commands are in the gitignored
+`agent/docs/test-server.md`.
+
 `.agents/` is still ignored on purpose: it holds machine-local overrides and absolute paths, which
-must not follow the repo to another machine. Antigravity also reads `.agents/AGENTS.md`
-cumulatively with the root file, so a copy there would be redundant context, not extra coverage.
+must not follow the repo to another machine. A copy there would be redundant context, not extra coverage.
 
 ---
 
@@ -413,8 +453,8 @@ Two consequences that are not obvious:
   `git rebase --abort` first if an earlier attempt died.
 
 Because `eol=lf` overrides `core.autocrlf`, the working tree is LF on Windows too — so a file's
-on-disk byte count equals its blob byte count, which is what makes the 24,000-byte budget on
-`AGENTS.md` measurable with a plain `wc -c`.
+on-disk byte count equals its blob byte count, which is what makes the size of
+`AGENTS.md` measurable with a plain `wc`.
 
 ### One WebSocket per account
 
@@ -444,6 +484,12 @@ Routing a sync through the daemon removes the second WebSocket, not the phone co
 daemon must never start a phone-backed stage on its own — see the "How the daemon self-heals"
 note in `src/commands/listen.js`: its own catch-up reads only Zalo's offline message queue, which
 needs no phone, and it never starts `transfer-sync-v2`, which does.
+
+A sync shares the daemon's live socket while messages keep arriving: the protocol carries the sync
+commands in the same command table as the live pushes. The only limits are the phone's tap and our
+own rule of one stage at a time (`daemon-channel.js`); running the restore and the reaction drain
+together once lost the socket (1006). That is our limit, not the protocol's. A comment saying sync
+cannot share the socket is a defect.
 
 ### A stage that loses its socket inside a daemon (2026-10-20)
 
@@ -552,6 +598,16 @@ Six sessions shared this checkout with no isolation. What it cost:
 Giving each new session its own git worktree costs minutes to merge afterwards. Recovering work from
 a shared tree costs hours and depends on someone noticing.
 
+### The wiki checkout holds several sessions' work
+
+Sessions leave wiki pages uncommitted, so `git status` cannot tell whose work a page holds. Before
+staging, list each dirty file's mtime and group them: the groups are the authorship waves. Commit
+only files in your own window that were clean when you started, by path, EN/VN pairs together.
+Before pushing, re-check every page against the source it documents: read the action handler, not
+only `.option()`, because defaults are set there. A 2026-09-30 pass over nine pairs written nine days
+earlier found six that needed fixes, including a backwards security claim and a remedy for a file
+that no longer existed. Fix the harmful ones even when told "commit as is".
+
 ### Windows shell traps (§5)
 
 All hit on 2026-09-28; each reports success, or reports an error that names the wrong cause.
@@ -573,6 +629,15 @@ All hit on 2026-09-28; each reports success, or reports an error that names the 
   account" because `USERPROFILE` had not carried over. For a long-running daemon, `nohup … &` from
   Bash survived where `Start-Process` did not.
 
+- **A Python heredoc that writes JS collapses escapes**, even when quoted: an escaped `\\n` arrives as a
+  real newline and `\\b` as a backspace. Build backslashes (`B = chr(92)`) and run `node --check` on the
+  result.
+- **The Bash tool can reject a long heredoc** mixing apostrophes, backticks and `${…}` ("unexpected
+  EOF"). Write the script to a scratch file and run it.
+- **An override of `HOME`/`USERPROFILE` must be a literal absolute path.** `USERPROFILE=$(cygpath -w
+  $HOME)` expands the *old* `$HOME`; on 2026-11-14 that ran two commands on the real home and logged
+  an account in there. Briefs to other agents give the literal path.
+
 ### `zalo-mcp`: pass-through launcher and published engine dependency
 
 Starting in `zalo-mcp` `2.0.0` (`2.0.1` adds leading `--account <id>` CLI pass-through), `mcp-server.js`
@@ -588,9 +653,17 @@ version is installed in a deployed wrapper's `node_modules/` is what it actually
 or flag added here is not reachable through `zalo-mcp` until the engine is published to npm and the
 deployment runs `zalo-mcp.ps1 update` / `./zalo-mcp.sh update`.
 
+### Where the official API docs come from
+
+The developer docs site is a client-rendered shell. Its full text comes from
+`https://docs.zaloplatforms.com/llms.txt`, which lists the products; each product has
+`<P>/llms.txt` (index) and `<P>/llms-full.txt` (full Vietnamese text), single pages are at
+`/docs/<P>/<path>.md`. Snapshots go in `agent/work/oa-docs-YYYY-MM-DD/`. Some appendix values (the
+domain verification file and meta tag) appear only as images: never invent them. The ZBS bank BIN
+list must stay fully covered by the personal `bank` alias table (`bank-helpers.test.js`).
+
 
 ---
-
 ## Four commands that had never once worked (2026-09-29)
 
 Found in a single day, all by the same mechanism, none by reading code:
@@ -980,6 +1053,15 @@ Rules for whoever adds or changes an MCP tool:
 replies, no old names, `threadType` as the same two words everywhere); `tests/unit/mcp-descriptions.test.js` enforces the
 descriptions and the server `instructions` (`src/mcp/instructions.js`, sent to every client on connect). The rules an
 agent that *uses* the tools needs are in those instructions and in the "Using the MCP tools" section of `skill/SKILL.md`.
+
+## Defaults follow what Zalo does, and no hidden limit (2026-11-09)
+
+Page sizes, batch sizes, pacing, how far back history goes and what is shown follow what Zalo
+itself does; how that was established is private (`agent/docs/`). No command or tool returns a
+cut-down result unless the caller asked for paging: no page asked for means the full answer.
+Example: zCloud lists 60 items a page and deletes a page at a time, with no page-size option.
+
+---
 
 ## Long messages: what Zalo refuses, and how a long text is split (2026-10-29)
 
@@ -1380,6 +1462,19 @@ returns, so sending them blind could lose items. A controlled live session is th
 only, in `sync_state` like the message queues') and a control this client has no handler for is named once in the log.
 Nothing acknowledges a control: they are acted on in memory, not stored. (Since the closing sweep the cursors are also used:
 see "Connect-time pulls" at the end of this file.)
+
+## Backfills over `messages` are one-way (2026-09-29)
+
+`raw_data` cannot rebuild a row's text: a sync row keeps only parsed `attachments[]`, not the
+original `content` or attachment list. Re-rendering every row turned good sentences into markers
+(`[poll_event]`, `[event]`). A backfill may only replace a marker, a blank or a `%N$s` template with a
+real sentence; it skips and prints everything else, and the skips show where the reconstruction is
+lossy. Use `extractSyncText(msg, type, attachments)` (`src/zalo/transfer-sync/message-types.js`) with
+the row's own stored `type`, because the numeric and string type maps do not round-trip. Before
+writing: stop the daemon (one db writer), back up `zalo.db` with its `-wal` and `-shm` together, keep
+a before/after JSON in `agent/work/`, and do all writes in one stop.
+
+---
 
 ## A restore remembers what it settled, and a partial run is not a success (v3.0, 2026-10-25)
 

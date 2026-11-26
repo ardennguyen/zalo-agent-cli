@@ -5,6 +5,7 @@
 import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import {
     AUTO_SYNC_MAX_AGE_MS,
@@ -386,5 +387,62 @@ describe("login --verbose: the lines that say what the offer check saw", () => {
             "  603_1 #9: act_type=transfer_sync2 act=transfer_after_login pc=0 key=yes age=4 s",
         ]);
         assert.deepEqual(describeOfferCheck({}), ["Control queues read: none", "Controls seen: 0"]);
+    });
+});
+
+/**
+ * A listener whose socket opens only when told to (or never): `ws` is the open (or opening) socket, which holds the
+ * process up and the account's one web session until `stop()` closes it.
+ */
+function slowListener() {
+    const l = new EventEmitter();
+    l.ws = null;
+    l.cipherKey = undefined;
+    l.stops = 0;
+    l.start = () => {
+        l.ws = new EventEmitter();
+    };
+    l.stop = () => {
+        l.stops++;
+        l.ws = null;
+    };
+    return l;
+}
+
+describe("a login's post-login socket is closed when it does not open in time (the login process must exit)", () => {
+    it("autoSyncAfterLogin: a socket still opening at the connect timeout is stopped, not left behind", async () => {
+        const listener = slowListener();
+        const out = await autoSyncAfterLogin({ listener }, "1000000000000000992", { connectTimeoutMs: 20 });
+        assert.equal(out.status, "no-socket");
+        assert.equal(listener.stops, 1, "the socket the login started is closed");
+        assert.equal(listener.ws, null);
+        // A late open finds nobody waiting for it.
+        assert.equal(listener.listenerCount("error"), 0);
+    });
+
+    it("autoSyncAfterLogin: a socket error before the open stops the listener too", async () => {
+        const listener = slowListener();
+        listener.start = () => {
+            listener.ws = new EventEmitter();
+            setImmediate(() => listener.emit("error", new Error("refused")));
+        };
+        const out = await autoSyncAfterLogin({ listener }, "1000000000000000993", { connectTimeoutMs: 5000 });
+        assert.equal(out.status, "no-socket");
+        assert.match(out.reason, /refused/);
+        assert.equal(listener.ws, null);
+    });
+
+    it("the login stops after the saved session with --session-only: neither socket step runs", async () => {
+        const { afterQrLogin } = await import("../../src/commands/login.js");
+        const ran = [];
+        const steps = {
+            watchLoginOffer: async () => ran.push("offer"),
+            fetchCloudKeyAfterLogin: async () => ran.push("cloud-key"),
+        };
+        const ctx = { newDevice: false, jsonMode: true };
+        await afterQrLogin("1000000000000000994", { sessionOnly: true }, ctx, steps);
+        assert.deepEqual(ran, []);
+        await afterQrLogin("1000000000000000994", {}, ctx, steps);
+        assert.deepEqual(ran, ["offer", "cloud-key"], "a person's login still checks the offer and the key");
     });
 });

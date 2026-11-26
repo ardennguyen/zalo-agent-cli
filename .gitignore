@@ -16,6 +16,8 @@ history_dump.json
 .DS_Store
 
 agent/
+# Agent worktrees: <repo>/.tmp/<branch> (2026-11-25).
+.tmp/
 # Decision records are kept locally, not in git (2026-11-06).
 docs/decisions/
 

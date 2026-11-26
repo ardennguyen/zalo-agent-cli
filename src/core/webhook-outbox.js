@@ -38,7 +38,12 @@ import { Database, dbFileState, migratePlaintextDatabase, openDatabase, shredFil
 export const OUTBOX_FILE = "webhook-outbox.db";
 const DAY_MS = 24 * 60 * 60 * 1000;
 const BACKOFF_BASE_MS = 1000;
-const BACKOFF_CAP_MS = 5 * 60 * 1000;
+/**
+ * The longest wait between two tries at a receiver that is down. It bounds how late a backlog starts draining once
+ * the receiver is back, so it stays short: one small POST per account every half minute is nothing to a receiver, and
+ * a 5 minute cap held a backlog for up to 5 more minutes after every restart of the receiver.
+ */
+export const BACKOFF_CAP_MS = 30 * 1000;
 /** A receiver saying "this payload is malformed" will say it again; retrying only blocks the queue. */
 const PAYLOAD_REJECTED = new Set([400, 413, 422]);
 
@@ -323,7 +328,8 @@ export function openOutbox(accountDir, { now = Date.now, readonly = false, log }
 }
 
 /**
- * Backoff for the Nth consecutive failed attempt: 1 s, 2 s, 4 s ... capped at 5 minutes, +/-20%.
+ * Backoff for the Nth consecutive failed attempt: 1 s, 2 s, 4 s ... +/-20%, never more than 30 s
+ * (`BACKOFF_CAP_MS`; at the cap the jitter only shortens the wait, 24-30 s).
  *
  * @param {number} attempts - Attempts so far (>= 1)
  * @param {() => number} [random]
@@ -331,7 +337,7 @@ export function openOutbox(accountDir, { now = Date.now, readonly = false, log }
  */
 export function backoffMs(attempts, random = Math.random) {
     const base = Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** Math.max(0, attempts - 1));
-    return Math.round(base * (0.8 + random() * 0.4));
+    return Math.min(BACKOFF_CAP_MS, Math.round(base * (0.8 + random() * 0.4)));
 }
 
 /**

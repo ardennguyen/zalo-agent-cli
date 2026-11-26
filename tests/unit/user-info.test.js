@@ -4,16 +4,20 @@
  * A restore of a busy account asks Zalo for thousands of profiles in batches
  * of 100. The old loops swallowed every error with a fixed sentence and went
  * on to the next batch, so a "limit reached" answer was repeated for all of
- * them, and the real text was never written anywhere. These pin the new
- * behavior: pace, retry a rate limit, stop when it persists, and log what Zalo
- * said -- with every wait injected, so nothing here sleeps.
+ * them, and the real text was never written anywhere. These pin the
+ * behavior: pace, never retry a rate limit but rest every lookup for a while
+ * (said once), and log what Zalo said -- with every wait injected, so nothing
+ * here sleeps.
  */
 import "../helpers/sandbox.js"; // first: the name helpers now reach the account db (src/core/contact-names.js)
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
+    LOOKUP_COOL_DOWN_MS,
     MAX_CONSECUTIVE_FAILURES,
     configureUserInfo,
+    lookupsCoolingDown,
+    resetLookupCoolDown,
     describeLookupError,
     isRateLimitError,
     runPacedBatches,
@@ -34,6 +38,7 @@ function fakeSleep() {
 afterEach(() => {
     configureUserInfo();
     setUserInfoLogger(null);
+    resetLookupCoolDown();
 });
 
 describe("describeLookupError / isRateLimitError", () => {
@@ -83,57 +88,77 @@ describe("runPacedBatches", () => {
         assert.deepEqual([r.results, r.batches, r.failed], [[], 0, 0]);
     });
 
-    it("retries a rate-limited batch with growing waits and carries on when the retry works", async () => {
+    it("does not retry a rate limit: it stops, starts the cool-down and says so once (the 2/5/15 s retries cost ~22 s a batch)", async () => {
         const { waits, sleep } = fakeSleep();
-        const logs = [];
-        let attempts = 0;
-        const r = await runPacedBatches(ids(150), {
-            batchSize: 100,
-            gapMs: 0,
-            backoffMs: [2000, 5000, 15000],
-            sleep,
-            log: (m) => logs.push(m),
-            call: async (batch) => {
-                if (batch.length === 100 && attempts++ < 2) throw zaloError(221, "Quá giới hạn");
-                return batch.length;
-            },
-        });
-        assert.deepEqual(r.results, [100, 50]);
-        assert.deepEqual(waits, [2000, 5000], "waited the first two back-offs, then the third attempt succeeded");
-        assert.equal(r.retries, 2);
-        assert.equal(r.stoppedBy, null);
-        assert.ok(
-            logs.some((m) => /code 221: Quá giới hạn.*\[looks like a rate limit\]/.test(m)),
-            "the real error is logged",
-        );
-    });
-
-    it("stops the whole lookup when a rate limit persists, saying how many ids were skipped", async () => {
-        const { sleep } = fakeSleep();
         const logs = [];
         let calls = 0;
         const r = await runPacedBatches(ids(450), {
             batchSize: 100,
             gapMs: 0,
-            backoffMs: [1, 1],
             sleep,
             log: (m) => logs.push(m),
             call: async () => {
                 calls++;
-                if (calls > 1) throw zaloError(221, "Quá giới hạn");
+                if (calls > 1) throw zaloError(221, "Vượt quá số request cho phép");
                 return "ok";
             },
         });
-        // batch 1 ok; batch 2 fails 3 times (1 try + 2 retries) and ends the lookup: 3 batches never asked.
-        assert.equal(calls, 4);
+        // batch 1 ok; batch 2 refused once, not retried; 3 batches never asked.
+        assert.equal(calls, 2);
+        assert.deepEqual(waits, [], "no back-off waits");
         assert.equal(r.stoppedBy, "rate-limit");
+        assert.equal(r.retries, 0);
         assert.equal(r.skippedIds, 250);
-        assert.equal(r.results.length, 1);
-        // Red if the rate limit is merely logged and the loop carries on: that is what hammered Zalo before.
+        assert.equal(lookupsCoolingDown(), true);
+        assert.equal(logs.filter((m) => m.startsWith("names deferred: Zalo is limiting lookups")).length, 1);
         assert.ok(
-            logs.some((m) => /stopped after batch 2\/5 \(Zalo is limiting these lookups\); 250 id/.test(m)),
-            logs.join("\n"),
+            logs.some((m) => m.includes("code 221: Vượt quá số request cho phép")),
+            logs.join(" | "),
         );
+    });
+
+    it("while the cool-down lasts, a lookup asks nothing and logs nothing; after it, lookups run again", async () => {
+        let clock = 1_000_000;
+        configureUserInfo({ gapMs: 0, now: () => clock });
+        const logs = [];
+        const limited = async () => {
+            throw zaloError(221, "Vượt quá số request cho phép");
+        };
+        await runPacedBatches(ids(100), { batchSize: 100, log: (m) => logs.push(m), call: limited });
+        let calls = 0;
+        for (let k = 0; k < 5; k++) {
+            const r = await runPacedBatches(ids(300), {
+                batchSize: 100,
+                log: (m) => logs.push(m),
+                call: async () => (calls++, "ok"),
+            });
+            assert.equal(r.stoppedBy, "cooling-down");
+            assert.equal(r.skippedIds, 300);
+        }
+        assert.equal(calls, 0, "nothing asked while Zalo is limiting lookups");
+        assert.equal(logs.length, 1, "said once, not per batch: " + logs.join(" | "));
+        clock += LOOKUP_COOL_DOWN_MS + 1;
+        const r = await runPacedBatches(ids(100), { batchSize: 100, call: async () => (calls++, "ok") });
+        assert.equal(r.stoppedBy, null);
+        assert.equal(calls, 1);
+    });
+
+    it("an aborted signal stops a lookup between requests", async () => {
+        const ctl = new AbortController();
+        let calls = 0;
+        const r = await runPacedBatches(ids(500), {
+            batchSize: 100,
+            gapMs: 0,
+            signal: ctl.signal,
+            call: async () => {
+                calls++;
+                if (calls === 2) ctl.abort();
+                return "ok";
+            },
+        });
+        assert.equal(calls, 2);
+        assert.equal(r.stoppedBy, "cancelled");
+        assert.equal(r.skippedIds, 300);
     });
 
     it("continues past an ordinary failure, but stops after several in a row whatever the text", async () => {
@@ -183,7 +208,7 @@ describe("runPacedBatches", () => {
 describe("resolveCurrentUserNames under a rate limit", () => {
     it("falls back to ids, asks for far fewer batches than it has, and writes Zalo's own words to the sink", async () => {
         const { sleep } = fakeSleep();
-        configureUserInfo({ gapMs: 0, backoffMs: [1], sleep });
+        configureUserInfo({ gapMs: 0, sleep });
         const sunk = [];
         setUserInfoLogger((m) => sunk.push(m));
         let calls = 0;
@@ -198,13 +223,13 @@ describe("resolveCurrentUserNames under a rate limit", () => {
         const names = await resolveCurrentUserNames(api, uids);
         assert.equal(names.size, 1000);
         assert.deepEqual(names.get("500000"), { name: "500000", source: "uid" });
-        // 10 batches existed. One retry, then the lookup stopped: 2 requests, not 10.
-        assert.equal(calls, 2);
+        // 10 batches existed. No retry: the lookup stopped at the first refusal, 1 request, not 10.
+        assert.equal(calls, 1);
         assert.ok(
             sunk.some((m) => m.includes("code 221: Quá giới hạn")),
             sunk.join("\n"),
         );
-        assert.ok(sunk.some((m) => /Zalo is limiting these lookups/.test(m)));
+        assert.ok(sunk.some((m) => /names deferred: Zalo is limiting lookups/.test(m)));
     });
 
     it("still resolves everything when Zalo answers", async () => {

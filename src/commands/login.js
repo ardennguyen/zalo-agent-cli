@@ -252,6 +252,60 @@ async function fetchCloudKeyAfterLogin(ownId, opts, { jsonMode }) {
     }
 }
 
+/** How long a finished QR login waits for its last handles to close before it exits anyway. */
+export const LOGIN_EXIT_GRACE_MS = 2000;
+
+/**
+ * What a QR login does once the session is saved: read the phone's "sync messages" offer (and restore when it was
+ * ticked), then fetch the zCloud key. Both open the account's chat socket, and the offer check holds its daemon lock
+ * for as long as it (and a restore) runs.
+ *
+ * `--session-only` opens no socket and takes no lock: the process ends with the session saved, and what the person
+ * chose (`--no-sync`, `--sync-days`, `--no-cloud-key`) is left in the account folder for the account's daemon, which
+ * does both steps on its own socket when it connects (src/core/after-login.js). `fleet serve`'s QR add runs its login
+ * that way, because it starts the account's daemon right after. A login without it does both steps here, and removes
+ * anything an earlier `--session-only` login left.
+ *
+ * @param {string} ownId
+ * @param {{sessionOnly?: boolean, sync?: boolean, syncDays?: number, verbose?: boolean, cloudKey?: boolean}} opts
+ * @param {{newDevice: boolean, jsonMode: boolean, loginAt?: number}} ctx
+ * @param {{watchLoginOffer: Function, fetchCloudKeyAfterLogin: Function}} [steps] - replaceable in a test
+ * @returns {Promise<void>}
+ */
+export async function afterQrLogin(ownId, opts, ctx, steps = { watchLoginOffer, fetchCloudKeyAfterLogin }) {
+    const { clearAfterLogin, writeAfterLogin } = await import("../core/after-login.js");
+    const accountDir = getAccountDir(ownId);
+    if (opts.sessionOnly) {
+        const left = writeAfterLogin(accountDir, {
+            at: ctx.loginAt ?? Date.now(),
+            newDevice: ctx.newDevice,
+            restore: opts.sync !== false,
+            days: opts.syncDays ?? null,
+            cloudKey: opts.cloudKey !== false,
+        });
+        if (ctx.jsonMode) {
+            console.log(
+                JSON.stringify({
+                    event: "login_deferred",
+                    offer: true,
+                    restore: left.offer.restore,
+                    cloudKey: !!left.cloudKey,
+                }),
+            );
+        } else {
+            info(
+                "Session saved (--session-only): the account's daemon reads the phone's 'sync messages' offer" +
+                    (left.cloudKey ? " and fetches the zCloud key" : "") +
+                    " when it connects.",
+            );
+        }
+        return;
+    }
+    clearAfterLogin(accountDir);
+    await steps.watchLoginOffer(ownId, opts, ctx);
+    await steps.fetchCloudKeyAfterLogin(ownId, opts, ctx);
+}
+
 export function registerLoginCommands(program) {
     program
         .command("login")
@@ -281,6 +335,10 @@ export function registerLoginCommands(program) {
         .option(
             "--no-cloud-key",
             "Do not fetch the zCloud key after the QR login (by default it is fetched, with no phone prompt, when the account keeps files in zCloud)",
+        )
+        .option(
+            "--session-only",
+            "After the QR login, stop once the session is saved: the phone's 'sync messages' offer and the zCloud key are left to the account's daemon, which does both when it connects (no chat socket and no daemon lock here; for a daemon started right after, as `fleet serve` does)",
         )
         .action(async (opts) => {
             // Credential-based login (headless/CI)
@@ -365,8 +423,10 @@ export function registerLoginCommands(program) {
                 }
                 // The QR page says so too, and closes once it has.
                 await login.finish("done");
-                await watchLoginOffer(ownId, opts, { newDevice: device.newDevice, jsonMode });
-                await fetchCloudKeyAfterLogin(ownId, opts, { jsonMode });
+                await afterQrLogin(ownId, opts, { newDevice: device.newDevice, jsonMode, loginAt });
+                // Everything the login opened is closed by now. Whatever a dependency may still hold must not keep
+                // the process, and with it the account's web session, alive: an unref'd timer fires only then.
+                setTimeout(() => process.exit(), LOGIN_EXIT_GRACE_MS).unref();
             } catch (e) {
                 if (jsonMode) {
                     console.log(JSON.stringify({ event: "login_error", message: e.message }));

@@ -78,4 +78,4 @@ engine release even when the wrapper's own code did not change.
 - `agent/docs/release-notes_vX.Y.Z.md` is no longer needed: `CHANGELOG.md` is the record. If a
   draft was written there, delete it once its content is in the CHANGELOG.
 - Update the project-wide handoff notes if the release changed a rule
-  (`docs/agent-notes.md`, and `AGENTS.md` only if a *rule* changed — mind the 24,000-byte cap).
+  (`docs/agent-notes.md`, and `AGENTS.md` only if a *rule* changed — keep it under 40,000 characters).

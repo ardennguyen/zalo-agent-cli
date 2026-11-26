@@ -5,6 +5,7 @@
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import {
     SignalCommandError,
     getKeyIdLive,
@@ -13,6 +14,7 @@ import {
     registerDeviceLive,
     sendSignalCommand,
     subscribeCloudControls,
+    withLiveSocket,
     CMD_PUSH_CONTROLS,
 } from "../../src/core/e2ee-live.js";
 import { bundleFromStore, generateDeviceIdentity } from "../../src/zalo/e2ee/index.js";
@@ -314,5 +316,47 @@ describe("subscribeCloudControls", () => {
         assert.equal(seen[0].actType, "personal_cloud");
         assert.equal(seen[0].act, "pcloud_info");
         assert.equal(seen[0].data.session_id, "s");
+    });
+});
+
+describe("withLiveSocket closes its socket also when the handshake fails", () => {
+    /** A listener whose socket opens but never hands over its key. */
+    function silentListener() {
+        const l = new EventEmitter();
+        l.ws = null;
+        l.stops = 0;
+        l.start = () => {
+            l.ws = new EventEmitter();
+        };
+        l.stop = () => {
+            l.stops++;
+            l.ws = null;
+        };
+        return l;
+    }
+
+    it("no key in time: the call fails and the socket is stopped, so it cannot keep the process alive", async () => {
+        const listener = silentListener();
+        let ran = false;
+        await assert.rejects(
+            withLiveSocket({ listener }, async () => (ran = true), { handshakeTimeoutMs: 20 }),
+            /did not hand over its key/,
+        );
+        assert.equal(ran, false);
+        assert.equal(listener.stops, 1);
+        assert.equal(listener.ws, null);
+    });
+
+    it("a socket error before the key: the socket is stopped too", async () => {
+        const listener = silentListener();
+        listener.start = () => {
+            listener.ws = new EventEmitter();
+            setImmediate(() => listener.emit("error", new Error("closed by peer")));
+        };
+        await assert.rejects(
+            withLiveSocket({ listener }, async () => {}, { handshakeTimeoutMs: 5000 }),
+            /closed by peer/,
+        );
+        assert.equal(listener.ws, null);
     });
 });

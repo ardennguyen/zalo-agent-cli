@@ -6,7 +6,7 @@
 //   1. Verify the signature over the RAW body (not over re-serialized JSON).
 //   2. Answer 2xx immediately and do the real work afterwards. A POST has 10
 //      seconds; past that, or on anything but 2xx, the sender retries it (1 s
-//      doubling to 5 min) and holds every later event behind it.
+//      doubling to 30 s) and holds every later event behind it.
 //   3. De-duplicate on the message id: a message can reach you twice (a retry
 //      after your reply was lost, or a later catch-up through `/events/wait`).
 //   4. A body with `event: "batch"` carries several events in `events`

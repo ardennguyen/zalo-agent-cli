@@ -18,6 +18,7 @@ import { rekeyAccount } from "../../src/core/keystore/index.js";
 import { storesStatus } from "../../src/core/keystore/stores.js";
 import {
     startWebhookDelivery,
+    BACKOFF_CAP_MS,
     backoffMs,
     createWebhookDispatcher,
     describeWebhookUrl,
@@ -218,8 +219,56 @@ describe("delivery", () => {
             [1, 2, 3, 4].map((n) => backoffMs(n, mid)),
             [1000, 2000, 4000, 8000],
         );
-        assert.equal(backoffMs(40, mid), 300_000, "capped at 5 minutes");
+        assert.equal(BACKOFF_CAP_MS, 30_000);
+        assert.equal(backoffMs(40, mid), 30_000, "capped at 30 seconds");
         assert.ok(backoffMs(3, () => 0) >= 3200 && backoffMs(3, () => 1) <= 4800, "+/-20% jitter");
+        for (let n = 1; n <= 200; n++) {
+            for (const r of [0, 0.25, 0.5, 0.75, 0.999999]) {
+                const ms = backoffMs(n, () => r);
+                assert.ok(ms > 0 && ms <= 30_000, `attempt ${n}, random ${r}: ${ms} ms exceeds the 30 s cap`);
+            }
+        }
+        assert.ok(backoffMs(10, () => 0) >= 24_000, "at the cap the jitter only shortens the wait (24-30 s)");
+    });
+
+    it("after a long outage the backlog leaves within the cap of the receiver coming back", async () => {
+        for (let i = 1; i <= 25; i++) queue(i);
+        let healthy = false;
+        const f = fakeFetch(() => (healthy ? 200 : 502));
+        // The top of the jitter range: the slowest a retry can be.
+        const d = dispatcher(f, { random: () => 0.999999 });
+        const outageEnd = clock + 85 * 60_000;
+        const waits = [];
+        await d.drain();
+        while (clock < outageEnd) {
+            const next = d.status().nextAttemptAt;
+            waits.push(next - clock);
+            clock = next;
+            healthy = clock >= outageEnd;
+            await d.drain();
+        }
+        assert.ok(waits.length > 100, `an 85 minute outage is retried every half minute, got ${waits.length} tries`);
+        assert.ok(Math.max(...waits) <= 30_000, `no wait exceeds the 30 s cap, longest ${Math.max(...waits)} ms`);
+        assert.equal(outbox.stats().pending, 0, "the whole backlog left on the first try after the receiver returned");
+        assert.ok(clock - outageEnd <= 30_000, `delivered ${clock - outageEnd} ms after the receiver came back`);
+        assert.deepEqual(
+            ids(f.calls.slice(-25)),
+            Array.from({ length: 25 }, (_, i) => `m${i + 1}`),
+            "in order",
+        );
+        assert.ok(logs.some((l) => /receiver is back: 1 delivered, 24 still queued/.test(l)));
+
+        // A short blip afterwards (a rolling deploy): the next event is retried within seconds, not minutes.
+        queue(26);
+        healthy = false;
+        await d.drain();
+        assert.equal(outbox.stats().pending, 1);
+        const blipWait = d.status().nextAttemptAt - clock;
+        assert.ok(blipWait <= 1200, `a fresh failure waits about 1 s, waited ${blipWait} ms`);
+        clock += blipWait;
+        healthy = true;
+        await d.drain();
+        assert.equal(outbox.stats().pending, 0);
     });
 
     it("a receiver that hangs is cut at the timeout and counted as a failure", async () => {

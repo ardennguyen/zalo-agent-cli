@@ -9,6 +9,24 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+## [3.4.1] — 2026-11-26
+
+#### Changed
+
+- **A webhook backlog leaves within half a minute of the receiver coming back.** The outbox's retry wait still starts at 1 s and doubles, but now stops at 30 s instead of 5 minutes (+/-20% jitter, never above 30 s). After a long receiver outage (a reboot, a deploy) queued events used to sit through the rest of a wait of up to 5 minutes, and every short blip afterwards (a 502 during a rolling restart) sent the queue back into multi-minute waits; now a receiver that is down sees one small POST per account about every 30 s, and the queue drains on the first try after it answers. Order, at-least-once, dedupe, dead-lettering and leased mode are unchanged.
+
+#### Added
+
+- **`login --session-only`**: after a QR login, stop once the session is saved, with no chat socket and no daemon lock, and leave the rest to the account's daemon. What the person chose (`--no-sync`, `--sync-days`, `--no-cloud-key`) goes to `accounts/<ownId>/after-login.json` (0600, no key in it); the next `listen` or `mcp start` reads the phone's "sync messages" offer on its own socket at its first handshake and, only when the box was ticked, restores through its `messages` stage with the offer's key, so the phone does not ask again (a key too old to spare the tap starts nothing, and the daemon logs the `sync` to run). It also fetches the zCloud key, so zCloud files open at once. Each step is cleared once done, retried at the next start when it failed, never run twice. `--json` prints `login_deferred`. A login without the flag works as before and removes the file.
+
+#### Fixed
+
+- **An account added by QR through `fleet serve` now starts.** The flow's `login` child kept running after `login_success`: it went on to read the phone's "sync messages" offer (and to restore when it was ticked) and to fetch the zCloud key, holding the account's daemon lock and its one web session, while the controller started the account's daemon at once. That daemon exited with "Another listener ... is already running" on every restart, and `fleet status` showed the account `unresponsive`. The child now runs `login --session-only` (the daemon then honors the "sync messages" tick and fetches the zCloud key, see Added), and the flow waits for it to exit (up to 10 s; then SIGTERM, then SIGKILL) before the account is started; a child that cannot be stopped fails the flow (`LOGIN_CHILD_STUCK`) instead of starting the daemon beside it. A failed, declined, cancelled or timed-out flow stops a child still alive as well.
+- **A restore no longer loses ~22 s per batch to Zalo's lookup limit.** When Zalo answered a name lookup with code 221 ("too many requests"), every arriving batch retried its lookup after 2, 5 and 15 s (some 25 minutes over a 67-batch restore) and kept the limit hot. A 221 is no longer retried: every lookup of the process rests for 10 minutes, a restore asks no more for the rest of its run, and the names it did not get are queued (`accounts/<ownId>/sync/names-deferred.json`) and filled in at the end of the restore or the next one, once lookups rest no more. The log says it once: `names deferred: Zalo is limiting lookups`.
+- **Cancelling a sync stage takes effect at once.** A cancel (`zalo-agent sync` Ctrl+C, the fleet's job cancel) was not honored while the `messages` stage waited on name lookups, and no new sync could start until the daemon restarted. The lookups, their retry pauses, the batch downloads and stores, and the wait for the daemon to reconnect now stop within a second of a cancel; the stage ends `cancelled` and frees the account for the next job.
+- **A large restore batch no longer holds the event loop.** A batch's rows were stored in one transaction, tens of thousands of rows at once; they are now stored 500 per transaction, the loop handed back between, with the insert statement compiled once per database instead of per row.
+- **A login no longer stays up after it is done.** When the post-login socket (the offer check, the zCloud key) did not open or hand over its key in time, it was left opening, and its late connection kept the `login` process, and the account's web session, alive. It is closed now, and a finished QR login exits within 2 s whatever a dependency still holds.
+
 ## [3.4.0] — 2026-11-23
 
 #### Added
@@ -1057,7 +1075,9 @@ npm install -g @ardennguyen/zalo-agent-cli@2.0.0
 
 Commands, flags and defaults: `skill/references/command-reference.md`. Operating it on a server: `docs/deployment.md`.
 
-[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.3.3...v3.0-dev
+[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.4.1...v3.0-dev
+[3.4.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.4.1
+[3.4.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.4.0
 [3.3.3]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.3.3
 [3.3.2]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.3.2
 [3.3.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.3.1

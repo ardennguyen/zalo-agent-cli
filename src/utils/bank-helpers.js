@@ -1,10 +1,14 @@
 /**
- * Vietnamese bank BIN mapping + VietQR image generation via qr.sepay.vn.
+ * Vietnamese bank BIN mapping + VietQR image generation: qr.sepay.vn for the banks it knows, else the QR built here.
+ * The bank list a QR task resolves with (live from VietQR, cached, with this table and the committed snapshot) is
+ * src/core/bank-directory.js.
  */
 
 import { mkdtempSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
+import { VIETQR_BANKS } from "./vietqr-banks.js";
+import { vietQrPng } from "./vietqr.js";
 // Node >=22 (see engines in package.json) has a native, global `fetch` —
 // no need for the `node-fetch` package, which drags in a deprecated
 // node-domexception polyfill via formdata-polyfill/fetch-blob.
@@ -219,51 +223,85 @@ const BIN_TO_SEPAY = {
     970446: "COOPBANK",
 };
 
+/** A name as the tables compare it: lower case, no spaces, underscores, dots or dashes. */
+const nameKey = (s) =>
+    String(s)
+        .toLowerCase()
+        .replace(/[\s_.-]/g, "");
+
 /**
- * Resolve bank name or BIN string to numeric BIN code.
+ * Resolve bank name or BIN string to numeric BIN code, from the alias table above or the committed VietQR snapshot
+ * (src/utils/vietqr-banks.js; a bank QR task also consults the live list: src/core/bank-directory.js).
  * @param {string} input - Bank name alias or BIN number
  * @returns {number|null}
  */
 export function resolveBankBin(input) {
     if (/^\d+$/.test(input)) {
         const n = Number(input);
-        return BIN_TO_DISPLAY[n] ? n : null;
+        return BIN_TO_DISPLAY[n] || VIETQR_BANKS.some((b) => b.bin === n) ? n : null;
     }
-    return BANK_NAME_TO_BIN[input.toLowerCase().replace(/[\s_]/g, "")] || null;
+    const key = nameKey(input);
+    return (
+        BANK_NAME_TO_BIN[key] ||
+        VIETQR_BANKS.find((b) => nameKey(b.code) === key || nameKey(b.shortName) === key)?.bin ||
+        null
+    );
 }
 
 /**
- * Download VietQR transfer image from qr.sepay.vn.
+ * A BIN's display name: the table above, else the committed VietQR snapshot's short name, else the BIN.
+ * @param {number} bin
+ * @returns {string}
+ */
+export function bankDisplayName(bin) {
+    return BIN_TO_DISPLAY[bin] || VIETQR_BANKS.find((b) => b.bin === Number(bin))?.shortName || String(bin);
+}
+
+/**
+ * The VietQR transfer image: qr.sepay.vn's (with its bank logo and frame) for a bank it knows; for any other bank, or
+ * when SePay does not answer with an image, the QR is built here from the same transfer (plain, no frame).
  * @param {number} bin
  * @param {string} accountNumber
  * @param {number|null} amount
  * @param {string|null} content - Max 50 chars, SePay param name is "des"
  * @param {string} template - compact | print | qronly
- * @returns {Promise<string|null>} Temp file path or null on failure
+ * @param {{fetchImpl?: typeof fetch}} [opts]
+ * @returns {Promise<string|null>} Temp file path, or null when no QR can be made (an account number that is not
+ *     1-19 letters or digits, a BIN that is not six digits)
  */
-export async function generateQrTransferImage(bin, accountNumber, amount = null, content = null, template = "compact") {
-    const sepayShort = BIN_TO_SEPAY[bin];
-    if (!sepayShort) return null;
-
-    const params = new URLSearchParams({ bank: sepayShort, acc: accountNumber, template });
-    if (amount !== null && amount !== undefined) params.set("amount", String(amount));
-    if (content) params.set("des", content);
-
-    const url = `https://qr.sepay.vn/img?${params}`;
+export async function generateQrTransferImage(
+    bin,
+    accountNumber,
+    amount = null,
+    content = null,
+    template = "compact",
+    { fetchImpl = globalThis.fetch } = {},
+) {
     const tmpDir = mkdtempSync(join(tmpdir(), "qr_transfer_"));
     const outPath = join(tmpDir, "qr.png");
 
+    const sepayShort = BIN_TO_SEPAY[bin];
+    if (sepayShort) {
+        const params = new URLSearchParams({ bank: sepayShort, acc: accountNumber, template });
+        if (amount !== null && amount !== undefined) params.set("amount", String(amount));
+        if (content) params.set("des", content);
+        try {
+            const resp = await fetchImpl(`https://qr.sepay.vn/img?${params}`, {
+                headers: { "User-Agent": "Mozilla/5.0" },
+                signal: AbortSignal.timeout(15000),
+            });
+            // SePay answers 200 with an HTML page for a bank or account it cannot draw: only an image counts.
+            if (resp.ok && String(resp.headers.get("content-type") ?? "").startsWith("image/")) {
+                writeFileSync(outPath, Buffer.from(await resp.arrayBuffer()));
+                return outPath;
+            }
+        } catch {
+            /* SePay unreachable: the QR is built here */
+        }
+    }
+
     try {
-        // node-fetch's `timeout` option isn't a thing on native fetch —
-        // use AbortSignal.timeout() instead (same pattern already used for
-        // the webhook POST in commands/listen.js).
-        const resp = await fetch(url, {
-            headers: { "User-Agent": "Mozilla/5.0" },
-            signal: AbortSignal.timeout(15000),
-        });
-        if (!resp.ok) return null;
-        const buffer = Buffer.from(await resp.arrayBuffer());
-        writeFileSync(outPath, buffer);
+        writeFileSync(outPath, vietQrPng({ bin, accountNumber, amount, content }));
         return outPath;
     } catch {
         return null;
@@ -280,7 +318,7 @@ export async function generateQrTransferImage(bin, accountNumber, amount = null,
  */
 export function qrTransferCaption(bin, { accountNumber, amount = null, content = null }) {
     return [
-        `QR chuyển khoản ${BIN_TO_DISPLAY[bin]} - ${accountNumber}`,
+        `QR chuyển khoản ${bankDisplayName(bin)} - ${accountNumber}`,
         amount ? `${amount.toLocaleString()}đ` : null,
         content || null,
     ]

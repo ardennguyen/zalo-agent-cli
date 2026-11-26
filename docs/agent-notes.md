@@ -2369,3 +2369,23 @@ Every saved-login path (`loginWithCredentials`, `probeSavedLogin`, the daemon's 
 account is allowed (the control plane placed it on that engine) but not started by the QR flow: the controller starts
 it when the lease arrives. `scripts/lease-stub.mjs` drives the real reconcile and the real daemon start with stand-in
 daemons that never log in, for rehearsals on throwaway machines.
+
+## Bank list (VietQR) and its committed copy
+
+A bank QR task (`msg send-qr-transfer`, `zalo_send_message`'s `qrTransfer`) resolves its bank through
+`src/core/bank-directory.js`: VietQR's live list (`https://api.vietqr.io/v2/banks`, 3 s timeout), kept 24 h in memory
+and in `<config dir>/vietqr-banks.json`, so the request happens at most once a day per machine and never on a fresh
+copy. The answer is checked before use (`parseVietQrBanks`: code `00`, 20-1000 banks, six-digit BINs, none twice,
+names present). A failed fetch is retried after 15 minutes; meanwhile the last list fetched applies, else the committed
+copy `src/utils/vietqr-banks.js`. The alias table in `src/utils/bank-helpers.js` stays: it carries Zalo's own BIN
+appendix, including banks VietQR does not list. In the offline test sandbox (`ZALO_SANDBOX_ACTIVE=1`) the list is never
+fetched unless a test hands in its own `fetchImpl`.
+
+**Keeping the committed copy current**: the release work refreshes it before each version bump
+(`node scripts/update-vietqr-banks.mjs`, then `npm run format`, review the diff, the gate), and anyone who finds a bank
+missing refreshes it at once. The script checks the answer the same way and writes today's date into
+`VIETQR_BANKS_AS_OF`.
+
+The QR image: qr.sepay.vn draws the banks in `BIN_TO_SEPAY` (with logo and frame); any other bank, or a SePay answer
+that is not an image, gets the VietQR payload built locally (`src/utils/vietqr.js`, EMVCo/NAPAS 247, CRC-16/CCITT-FALSE)
+and drawn by `qrPng`.

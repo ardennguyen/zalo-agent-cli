@@ -141,7 +141,11 @@ describe("zalo_send_message: the other kinds of content", () => {
         const fetched = [];
         globalThis.fetch = async (url) => {
             fetched.push(String(url));
-            return { ok: true, arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer };
+            return {
+                ok: true,
+                headers: new Headers({ "content-type": "image/png" }),
+                arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+            };
         };
         const fa = fakeApi();
         const r = await send(fa, { qrTransfer: { bank: "vcb", accountNumber: "0123456789", amount: 50000 } });

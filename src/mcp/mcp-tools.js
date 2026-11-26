@@ -148,7 +148,8 @@ import { gateToolsByPresence } from "./tool-presence.js";
 import { allowUnknownInput, guardKnownIds } from "./known-id-guard.js";
 import { REMOTE_FILE_HINT, fileItemSchema, fileResolver, fileSourceSchema } from "./file-input.js";
 import { FILE_META, fileTool } from "./file-tool.js";
-import { BIN_TO_DISPLAY, generateQrTransferImage, qrTransferCaption, resolveBankBin } from "../utils/bank-helpers.js";
+import { bankDisplayName, generateQrTransferImage, qrTransferCaption, resolveBankBin } from "../utils/bank-helpers.js";
+import { resolveBank } from "../core/bank-directory.js";
 import { CONVERSATION_ACTIONS, CONVERSATION_META } from "./actions-conversation.js";
 import { PROFILE_ACTIONS, PROFILE_META } from "./actions-profile.js";
 import {
@@ -1349,7 +1350,8 @@ export function registerTools(
                     }
                     if (bankCard || qrTransfer) {
                         const spec = bankCard || qrTransfer;
-                        const bin = resolveBankBin(spec.bank);
+                        // A QR resolves its bank with VietQR's list too (live, kept a day; src/core/bank-directory.js).
+                        const bin = bankCard ? resolveBankBin(spec.bank) : (await resolveBank(spec.bank))?.bin;
                         if (!bin)
                             return err(
                                 `Unknown bank: '${spec.bank}'. zalo_bank 'banks' lists the banks Zalo supports.`,
@@ -1358,7 +1360,7 @@ export function registerTools(
                             const payload = { binBank: bin, numAccBank: bankCard.accountNumber };
                             if (bankCard.holderName) payload.nameAccBank = bankCard.holderName;
                             const result = await api.sendBankCard(payload, threadId, Number(threadType));
-                            return sentReply("bank_card", result, { bank: BIN_TO_DISPLAY[bin] || String(bin) });
+                            return sentReply("bank_card", result, { bank: bankDisplayName(bin) });
                         }
                         const qrPath = await generateQrTransferImage(
                             bin,
@@ -1377,7 +1379,7 @@ export function registerTools(
                             );
                             const att = Array.isArray(result?.attachment) ? result.attachment[0] : result?.attachment;
                             return sentReply("qr_transfer", result?.message ?? att ?? result, {
-                                bank: BIN_TO_DISPLAY[bin] || String(bin),
+                                bank: bankDisplayName(bin),
                             });
                         } finally {
                             try {

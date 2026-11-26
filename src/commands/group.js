@@ -19,6 +19,7 @@ import { getGroupInfoWatched, recordOwnExit, describeGroupGone } from "../core/g
 import { initDb } from "../core/db.js";
 import { getActive } from "../core/accounts.js";
 import { getAccountDbPath } from "../core/credentials.js";
+import { recordCliKnownIds } from "./known-id-guards.js";
 
 /**
  * Open the active account's cache, for a group exit to be recorded in (src/core/group-exit.js). The account id, or
@@ -252,6 +253,8 @@ export function registerGroupCommands(program) {
                 // the uids come out of memVerList, since memberIds is always [].
                 openActiveCache(); // a disbanded group found here is recorded (src/core/group-exit.js)
                 const { uids: memberUids, totalMember } = await groupMemberUids(getApi(), groupId);
+                // This account's ids for its members: the commands that follow with one are not refused (known-ids.js).
+                recordCliKnownIds(memberUids);
                 output(memberUids, program.opts().json, () => {
                     if (memberUids.length === 0) {
                         info(`0 members`);

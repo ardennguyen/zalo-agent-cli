@@ -14,7 +14,7 @@
  *    touched and the message says what to do.
  */
 
-import { readFileSync, existsSync, mkdirSync, rmSync, renameSync } from "fs";
+import { readFileSync, existsSync, lstatSync, mkdirSync, realpathSync, rmSync, renameSync } from "fs";
 import { join } from "path";
 import { CONFIG_DIR, getAccountDir, deleteCredentials } from "./credentials.js";
 import { checkLock } from "./lock.js";
@@ -260,6 +260,19 @@ export function wipeAccountDir(ownId) {
         return { wiped: false, skippedLocked: { pid: lockStatus.pid } };
     }
 
+    // A folder on the host's accounts mount (`fleet serve --accounts-dir`) is reached through a link: the data goes
+    // with the link, never the link alone.
+    if (lstatSync(accountDir).isSymbolicLink()) {
+        let real = null;
+        try {
+            real = realpathSync(accountDir);
+        } catch {
+            /* a dangling link: nothing behind it */
+        }
+        if (real) rmSync(real, { recursive: true, force: true });
+        rmSync(accountDir, { force: true });
+        return { wiped: true };
+    }
     rmSync(accountDir, { recursive: true, force: true });
     return { wiped: true };
 }

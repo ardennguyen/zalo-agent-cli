@@ -10,7 +10,7 @@ export const SERVER_INSTRUCTIONS = [
     "IDS",
     "- threadId is the conversation: the other person's user id for a DM, the group id for a group. Find one by name with zalo_search_threads, among recent ones with zalo_list_conversations, or from a phone number or username with zalo_lookup_user. `me` is the owner's My Documents.",
     "- msgId is one message, and it is called `msgId` in every input and reply.",
-    "- userId is a Zalo user. A message's author is its `senderId` (a userId); group members have a `userId`. `@[userId]` mentions someone.",
+    "- userId is a Zalo user. A message's author is its `senderId` (a userId); group members have a `userId`. `@[userId]` mentions someone. User ids differ per account: one from another account is refused (UNKNOWN_TO_ACCOUNT).",
     "- cliMsgId is the sender's own id for a message. zalo_send_message returns it, and zalo_react and zalo_undo need it (they read it from the cache when you leave it out).",
     "- threadType is `dm` or `group`, in inputs and in replies. Leave it out: the type stored for the thread is used.",
     "",

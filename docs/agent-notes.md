@@ -117,7 +117,7 @@ Each of these reports success, or names the wrong cause. They were all learned t
 | Command groups | **42** containers — 25 top-level + 11 OA subgroups + 3 ZBS subgroups + `mcp webhook` + `account security` + `cloud key` | the live commander tree | walk it. The number of `register*` calls in `src/index.js` is neither number: `oa` registers 11 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **38** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA/ZBS/Social commands | **94** (70 `oa` + 18 `zbs` + 6 `social`) | `src/commands/oa.js` + `src/commands/oa/*.js`, `src/commands/zbs.js`, `src/commands/social.js` | `node scripts/count-surface.mjs`. `zbs` counts with `oa`: both are the official API on the OA's OAuth token, so "personal" stays the unofficial surface |
-| Offline tests | **5939** as of 2026-11-26 (5935 pass, 4 skipped, 0 todo, 0 fail; Linux) | `npm test` | the run's own summary line |
+| Offline tests | **5979** as of 2026-11-26 (5974 pass, 5 skipped, 0 todo, 0 fail; Linux) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -2369,3 +2369,23 @@ Every saved-login path (`loginWithCredentials`, `probeSavedLogin`, the daemon's 
 account is allowed (the control plane placed it on that engine) but not started by the QR flow: the controller starts
 it when the lease arrives. `scripts/lease-stub.mjs` drives the real reconcile and the real daemon start with stand-in
 daemons that never log in, for rehearsals on throwaway machines.
+
+## Bank list (VietQR) and its committed copy
+
+A bank QR task (`msg send-qr-transfer`, `zalo_send_message`'s `qrTransfer`) resolves its bank through
+`src/core/bank-directory.js`: VietQR's live list (`https://api.vietqr.io/v2/banks`, 3 s timeout), kept 24 h in memory
+and in `<config dir>/vietqr-banks.json`, so the request happens at most once a day per machine and never on a fresh
+copy. The answer is checked before use (`parseVietQrBanks`: code `00`, 20-1000 banks, six-digit BINs, none twice,
+names present). A failed fetch is retried after 15 minutes; meanwhile the last list fetched applies, else the committed
+copy `src/utils/vietqr-banks.js`. The alias table in `src/utils/bank-helpers.js` stays: it carries Zalo's own BIN
+appendix, including banks VietQR does not list. In the offline test sandbox (`ZALO_SANDBOX_ACTIVE=1`) the list is never
+fetched unless a test hands in its own `fetchImpl`.
+
+**Keeping the committed copy current**: the release work refreshes it before each version bump
+(`node scripts/update-vietqr-banks.mjs`, then `npm run format`, review the diff, the gate), and anyone who finds a bank
+missing refreshes it at once. The script checks the answer the same way and writes today's date into
+`VIETQR_BANKS_AS_OF`.
+
+The QR image: qr.sepay.vn draws the banks in `BIN_TO_SEPAY` (with logo and frame); any other bank, or a SePay answer
+that is not an image, gets the VietQR payload built locally (`src/utils/vietqr.js`, EMVCo/NAPAS 247, CRC-16/CCITT-FALSE)
+and drawn by `qrPng`.

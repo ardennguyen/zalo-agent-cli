@@ -10,6 +10,8 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync, rmSync } from "node:fs";
+import { dirname } from "node:path";
 import {
     resolveBankBin,
     BANK_NAME_TO_BIN,
@@ -74,8 +76,41 @@ describe("resolveBankBin", () => {
 });
 
 describe("generateQrTransferImage", () => {
-    it("returns null for a BIN with no SePay mapping, without hitting the network", async () => {
-        assert.equal(await generateQrTransferImage(999999, "123456789"), null);
+    const noNetwork = async () => {
+        throw new Error("no network call expected");
+    };
+
+    it("builds the QR here for a bank SePay does not draw, without the network", async () => {
+        // MoMo (971025) is in VietQR's list only: no SePay name, so the PNG is drawn locally.
+        const path = await generateQrTransferImage(971025, "0123456789", 50000, "Don 12", "compact", {
+            fetchImpl: noNetwork,
+        });
+        assert.ok(path, "a QR image path");
+        assert.deepEqual([...readFileSync(path).subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+        rmSync(dirname(path), { recursive: true, force: true });
+    });
+
+    it("falls back to the local QR when SePay answers with a page instead of an image", async () => {
+        const seen = [];
+        const html = async (url) => {
+            seen.push(String(url));
+            return new Response("<html>unsupported</html>", { headers: { "content-type": "text/html" } });
+        };
+        const path = await generateQrTransferImage(970436, "0123456789", null, null, "compact", { fetchImpl: html });
+        assert.match(seen[0], /^https:\/\/qr\.sepay\.vn\/img\?bank=Vietcombank&acc=0123456789/);
+        assert.equal(readFileSync(path).subarray(1, 4).toString("ascii"), "PNG");
+        rmSync(dirname(path), { recursive: true, force: true });
+    });
+
+    it("returns null when no QR can be made (a BIN that is not six digits, a bad account number)", async () => {
+        assert.equal(
+            await generateQrTransferImage(9704261, "123", null, null, "compact", { fetchImpl: noNetwork }),
+            null,
+        );
+        assert.equal(
+            await generateQrTransferImage(971025, "12-34", null, null, "compact", { fetchImpl: noNetwork }),
+            null,
+        );
     });
 });
 

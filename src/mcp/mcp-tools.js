@@ -145,9 +145,11 @@ import {
 } from "../core/contact-names.js";
 import { actionTool, confirmInput, dryRunInput, ticketInput } from "./action-tool.js";
 import { gateToolsByPresence } from "./tool-presence.js";
+import { allowUnknownInput, guardKnownIds } from "./known-id-guard.js";
 import { REMOTE_FILE_HINT, fileItemSchema, fileResolver, fileSourceSchema } from "./file-input.js";
 import { FILE_META, fileTool } from "./file-tool.js";
-import { BIN_TO_DISPLAY, generateQrTransferImage, qrTransferCaption, resolveBankBin } from "../utils/bank-helpers.js";
+import { bankDisplayName, generateQrTransferImage, qrTransferCaption, resolveBankBin } from "../utils/bank-helpers.js";
+import { resolveBank } from "../core/bank-directory.js";
 import { CONVERSATION_ACTIONS, CONVERSATION_META } from "./actions-conversation.js";
 import { PROFILE_ACTIONS, PROFILE_META } from "./actions-profile.js";
 import {
@@ -949,6 +951,26 @@ export function registerTools(
     const friendExtra = actionTool("zalo_friend", FRIEND_EXTRA_ACTIONS, toolCtx);
     const groupExtra = actionTool("zalo_group", GROUP_EXTRA_ACTIONS, toolCtx);
 
+    // Ids per account (src/core/known-ids.js): the tools that take a person or a conversation refuse an id this
+    // account has never seen (UNKNOWN_TO_ACCOUNT), and the lookups that hand out its ids record them.
+    guardKnownIds(server, {
+        api,
+        ownId: () => ownIdOf(api) || null,
+        selfIds: () => {
+            try {
+                const id = api.getContext?.()?.loginInfo?.send2me_id;
+                return id ? [String(id)] : [];
+            } catch {
+                return [];
+            }
+        },
+        accountDir: () => accountDir ?? (ownIdOf(api) ? getAccountDir(ownIdOf(api)) : null),
+        extraKnown: (id, as) => {
+            const t = nameCache?.get?.(String(id))?.type;
+            return Boolean(t) && (as === "thread" || (as === "group" ? t === "group" : t !== "group"));
+        },
+    });
+
     // --- zalo_get_messages ---
     server.registerTool(
         "zalo_get_messages",
@@ -963,6 +985,7 @@ export function registerTools(
                 SYSTEM_EVENTS_NOTE +
                 "Returns `{ messages, cursor, hasMore }`.",
             inputSchema: z.object({
+                allowUnknown: allowUnknownInput(),
                 threadId: z
                     .string()
                     .optional()
@@ -1053,6 +1076,7 @@ export function registerTools(
                 "Returns `{ success, msgId, cliMsgId, threadType }` and, when they apply, `parts` and `warnings`. Keep `msgId` and `cliMsgId` if you may need to react to or recall this message (zalo_react, zalo_undo).",
             inputSchema: z
                 .object({
+                    allowUnknown: allowUnknownInput(),
                     threadId: z
                         .string()
                         .describe(
@@ -1326,7 +1350,8 @@ export function registerTools(
                     }
                     if (bankCard || qrTransfer) {
                         const spec = bankCard || qrTransfer;
-                        const bin = resolveBankBin(spec.bank);
+                        // A QR resolves its bank with VietQR's list too (live, kept a day; src/core/bank-directory.js).
+                        const bin = bankCard ? resolveBankBin(spec.bank) : (await resolveBank(spec.bank))?.bin;
                         if (!bin)
                             return err(
                                 `Unknown bank: '${spec.bank}'. zalo_bank 'banks' lists the banks Zalo supports.`,
@@ -1335,7 +1360,7 @@ export function registerTools(
                             const payload = { binBank: bin, numAccBank: bankCard.accountNumber };
                             if (bankCard.holderName) payload.nameAccBank = bankCard.holderName;
                             const result = await api.sendBankCard(payload, threadId, Number(threadType));
-                            return sentReply("bank_card", result, { bank: BIN_TO_DISPLAY[bin] || String(bin) });
+                            return sentReply("bank_card", result, { bank: bankDisplayName(bin) });
                         }
                         const qrPath = await generateQrTransferImage(
                             bin,
@@ -1354,7 +1379,7 @@ export function registerTools(
                             );
                             const att = Array.isArray(result?.attachment) ? result.attachment[0] : result?.attachment;
                             return sentReply("qr_transfer", result?.message ?? att ?? result, {
-                                bank: BIN_TO_DISPLAY[bin] || String(bin),
+                                bank: bankDisplayName(bin),
                             });
                         } finally {
                             try {
@@ -1762,6 +1787,7 @@ export function registerTools(
                 "For one period, pass `since` and/or `until` (epoch ms) or `last` (7d, 2w, 3m, 1y): the cached messages in it come oldest first, all of them, or `limit` per page with `hasMore` and `nextSince` (pass it back as `since`, same `until`) for the rest. Reply: `{ threadId, since, until, count, messages, hasMore, nextSince }`. It reads only the cache. " +
                 "A long conversation is a large reply; pass `limit` to page through it. To find messages by their text, use zalo_search_messages.",
             inputSchema: z.object({
+                allowUnknown: allowUnknownInput(),
                 threadId: z
                     .string()
                     .describe("The conversation: the other person's user id for a DM, the group id for a group."),
@@ -2217,6 +2243,7 @@ export function registerTools(
                 "Give the message's `msgId` (the `msgId` of a message from zalo_get_messages, zalo_wait_for_message, zalo_get_history or zalo_search_messages, or of a zalo_send_message reply). Zalo also keys a reaction on the message's `cliMsgId`, which is read from the local cache unless you pass it (zalo_send_message returns it for your own messages); when neither has it the call is refused and nothing is sent, because Zalo accepts a reaction without it and never shows it. " +
                 "`threadId` may be `me` for My Documents. Returns `{ success, reaction, msgId, cliMsgId, threadId, threadType }`.",
             inputSchema: z.object({
+                allowUnknown: allowUnknownInput(),
                 msgId: z
                     .string()
                     .min(1)
@@ -2356,6 +2383,7 @@ export function registerTools(
             description:
                 "List the members of a group: each member's `userId`, `displayName` (your alias for them when you set one, else their name from the cache, or from Zalo for members the cache cannot name), `alias` and `zaloName`, and `totalMember`, Zalo's own count (it can be larger than the members listed). Use a `userId` as `@[userId]` in zalo_send_message to mention that member.",
             inputSchema: z.object({
+                allowUnknown: allowUnknownInput(),
                 groupId: z
                     .string()
                     .min(1)
@@ -2810,6 +2838,7 @@ export function registerTools(
                 "A found user's reply also has `mutualGroups`: `{count, groups: [{groupId, name}]}`, the groups you share with them as Zalo shows on a profile (friends and strangers alike; groups in hidden chats are left out unless hidden chats are included), or `{error}` when that read failed.",
             inputSchema: z
                 .object({
+                    allowUnknown: allowUnknownInput(),
                     self: z
                         .boolean()
                         .optional()
@@ -2910,6 +2939,7 @@ export function registerTools(
             description:
                 "Forward a message from the local cache (`msgId`) to another conversation (`threadId`). Text goes through Zalo's forward API with the 'forwarded' badge; cards, stickers, links, videos, voice messages and downloaded media are re-sent as a message of their own kind, as `msg forward` does.",
             inputSchema: z.object({
+                allowUnknown: allowUnknownInput(),
                 msgId: z
                     .string()
                     .min(1)
@@ -3744,6 +3774,7 @@ export function registerTools(
                 "An entry with `isSelf: true` is the owner writing in their own My Documents (only when the deployment passes those on). " +
                 "Mirrors GET /events/wait for remote HTTPS/OAuth2 MCP clients.",
             inputSchema: z.object({
+                allowUnknown: allowUnknownInput(),
                 threadId: z
                     .string()
                     .min(1)
@@ -4059,6 +4090,7 @@ export function registerTools(
                 "Zalo restricts accounts that send many friend requests, so send sparingly.",
             inputSchema: z
                 .object({
+                    allowUnknown: allowUnknownInput(),
                     action: z
                         .enum([
                             "status",

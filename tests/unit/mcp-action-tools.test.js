@@ -54,6 +54,8 @@ before(() => {
     db = initDb(join(ROOT, "zalo.sqlite"));
     // One incoming message the listener cached, for 'read' to anchor its seen receipt on.
     upsertThread({ threadId: "779", type: "dm", name: "Lan", lastUpdate: 1 });
+    // The peer the friend actions act on is this account's (src/core/known-ids.js refuses an id it never saw).
+    upsertThread({ threadId: PEER, type: "dm", name: "Peer", lastUpdate: 1 });
     insertMessage({
         msgId: "9001",
         threadId: "779",
@@ -538,6 +540,8 @@ describe("confirmMode human over the stateless HTTP transport", () => {
         // The page is mounted on an HTTP server in production; here only its tickets matter, so nothing listens.
         page = new SecurePage().configure({ accountId: OWN, localBaseUrl: "http://127.0.0.1:9" });
         setSecurePage(page);
+        // The peers are this account's (a test above may have forgotten a conversation): known-ids.js.
+        for (const id of [PEER, "778"]) upsertThread({ threadId: id, type: "dm", name: "Peer", lastUpdate: 1 });
     });
     after(() => setSecurePage(null));
 

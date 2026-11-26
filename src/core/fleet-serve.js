@@ -19,6 +19,8 @@ import { assignPorts } from "./fleet.js";
 import { JOB_PROGRESS_MARK } from "./fleet-jobs.js";
 import { LOCAL_PROXY, accountPublicUrl, renderAccountEnv } from "./fleet-templates.js";
 import { applyPolicy, getPolicy } from "./policy-store.js";
+import { DATA_DIR } from "./credentials.js";
+import { placeAccountData } from "./fleet-account-data.js";
 import { writeFileAtomic } from "../zalo/kernel/atomic-file.js";
 
 /** The default port of the controller. */
@@ -292,6 +294,10 @@ export function spawnLoginChild({ proxy = null, script = process.argv[1] } = {})
  * @param {boolean} [o.leased] - leased mode (./fleet-lease.js): nothing is started here; the controller starts the
  *   account once its lease arrives
  * @param {() => string} [o.makeToken]
+ * @param {string|null} [o.accountsDir] - the host's accounts mount (`--accounts-dir`, ./fleet-account-data.js): a new
+ *   account's data folder is put there, `<DATA_DIR>/<ownId>` links to it, and its env file names it (ZALO_DATA_DIR)
+ * @param {string} [o.dataDir] - DATA_DIR (a test passes its own)
+ * @param {(line: string) => void} [o.log]
  * @returns {Promise<object>} what the `done` event carries
  */
 export async function finishQrAdd({
@@ -306,18 +312,44 @@ export async function finishQrAdd({
     driver,
     leased = false,
     makeToken = () => randomBytes(32).toString("hex"),
+    accountsDir = null,
+    dataDir = DATA_DIR,
+    log = () => {},
 }) {
     const port = assignPorts([ownId]).ports[ownId];
     const publicUrl = domain ? accountPublicUrl(domain, ownId) : null;
     let envWritten = false;
+    let data = null;
     if (envDir) {
         const file = join(envDir, `${ownId}.env`);
         if (!existsSync(file)) {
+            // A new account on this host: its data goes to its own folder under the accounts mount, as for an account
+            // the fleet placed here, before its env file names that folder. An account seen here before (its env file
+            // exists, or its daemon ran) keeps its data where it is.
+            let placed = null;
+            if (accountsDir && !wasRunning) {
+                placed = placeAccountData({ ownId, accountsDir, dataDir });
+                data = placed.placed ? "accounts-dir" : `config-dir (${placed.reason})`;
+                if (!placed.placed) {
+                    log(
+                        `qr add: the account's data stays in the config dir (${placed.reason}); accounts dir ${accountsDir}`,
+                    );
+                }
+            }
             mkdirSync(envDir, { recursive: true });
             const trustedProxies = publicUrl && trustProxy ? LOCAL_PROXY : null;
-            writeFileAtomic(file, renderAccountEnv({ ownId, port, token: makeToken(), publicUrl, trustedProxies }), {
-                mode: 0o600,
-            });
+            writeFileAtomic(
+                file,
+                renderAccountEnv({
+                    ownId,
+                    port,
+                    token: makeToken(),
+                    publicUrl,
+                    trustedProxies,
+                    dataDir: placed?.placed ? placed.dataDir : null,
+                }),
+                { mode: 0o600 },
+            );
             envWritten = true;
         }
     }
@@ -343,6 +375,7 @@ export async function finishQrAdd({
     const out = {
         port,
         envWritten,
+        ...(data ? { data } : {}),
         userId,
         ...(envWritten && publicUrl ? { publicUrl } : {}),
         ...(demoted.length ? { demoted } : {}),

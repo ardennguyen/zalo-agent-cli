@@ -1060,19 +1060,19 @@ export function registerMsgCommands(program) {
         .option("-n, --name <holder>", "Account holder name")
         .action(async (threadId, accountNumber, opts) => {
             try {
-                const { resolveBankBin, BIN_TO_DISPLAY } = await import("../utils/bank-helpers.js");
+                const { resolveBankBin, bankDisplayName } = await import("../utils/bank-helpers.js");
                 const bin = resolveBankBin(opts.bank);
                 if (!bin) {
                     error(`Unknown bank: '${opts.bank}'`);
                     return;
                 }
-                info(`Bank: ${BIN_TO_DISPLAY[bin] || bin} (BIN ${bin})`);
+                info(`Bank: ${bankDisplayName(bin)} (BIN ${bin})`);
 
                 const payload = { binBank: bin, numAccBank: accountNumber };
                 if (opts.name) payload.nameAccBank = opts.name;
                 const result = await getApi().sendBankCard(payload, threadId, Number(opts.type));
                 output(result, program.opts().json, () =>
-                    success(`Bank card sent: ${BIN_TO_DISPLAY[bin]} / ${accountNumber}`),
+                    success(`Bank card sent: ${bankDisplayName(bin)} / ${accountNumber}`),
                 );
             } catch (e) {
                 error(withUserIdHint(e, threadId, opts.type));
@@ -1088,19 +1088,21 @@ export function registerMsgCommands(program) {
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .action(async (threadId, accountNumber, opts) => {
             try {
-                const { resolveBankBin, BIN_TO_DISPLAY, generateQrTransferImage } =
-                    await import("../utils/bank-helpers.js");
-                const bin = resolveBankBin(opts.bank);
-                if (!bin) {
+                const { generateQrTransferImage, qrTransferCaption } = await import("../utils/bank-helpers.js");
+                // The bank from VietQR's list (live, kept a day), the alias table or the committed snapshot.
+                const { resolveBank } = await import("../core/bank-directory.js");
+                const bank = await resolveBank(opts.bank);
+                if (!bank) {
                     error(`Unknown bank: '${opts.bank}'`);
                     return;
                 }
+                const { bin } = bank;
                 if (opts.content && opts.content.length > 50) {
                     error(`Content too long (${opts.content.length} chars). VietQR max is 50.`);
                     return;
                 }
                 info(
-                    `Generating QR: ${BIN_TO_DISPLAY[bin]} / ${accountNumber}${opts.amount ? ` / ${opts.amount.toLocaleString()}đ` : ""}`,
+                    `Generating QR: ${bank.name} / ${accountNumber}${opts.amount ? ` / ${opts.amount.toLocaleString()}đ` : ""}`,
                 );
 
                 const qrPath = await generateQrTransferImage(
@@ -1115,13 +1117,7 @@ export function registerMsgCommands(program) {
                     return;
                 }
 
-                const caption = [
-                    `QR chuyển khoản ${BIN_TO_DISPLAY[bin]} - ${accountNumber}`,
-                    opts.amount ? `${opts.amount.toLocaleString()}đ` : null,
-                    opts.content || null,
-                ]
-                    .filter(Boolean)
-                    .join(" - ");
+                const caption = qrTransferCaption(bin, { accountNumber, amount: opts.amount, content: opts.content });
 
                 const result = await getApi().sendMessage(
                     { msg: caption, attachments: [qrPath] },

@@ -111,7 +111,6 @@ export const EXCLUDED = {
  * shape (rule 3) in every mode, instead of rule 4. Each needs something no fake session provides.
  */
 export const FAILS_OFFLINE = {
-    "msg send-qr-transfer": "fetches the VietQR image from qr.sepay.vn",
     "cloud get": "needs an item in the local zCloud index, its signed download URL and the account's viewer key",
     "msg media": "needs a downloaded, encrypted media file in the cache (tests/cli/msg-media.test.js has one)",
     "mcp wait": "asks a running `mcp start` server",

@@ -9,6 +9,10 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+#### Changed
+
+- **A webhook backlog leaves within half a minute of the receiver coming back.** The outbox's retry wait still starts at 1 s and doubles, but now stops at 30 s instead of 5 minutes (+/-20% jitter, never above 30 s). After a long receiver outage (a reboot, a deploy) queued events used to sit through the rest of a wait of up to 5 minutes, and every short blip afterwards (a 502 during a rolling restart) sent the queue back into multi-minute waits; now a receiver that is down sees one small POST per account about every 30 s, and the queue drains on the first try after it answers. Order, at-least-once, dedupe, dead-lettering and leased mode are unchanged.
+
 ## [3.4.0] — 2026-11-23
 
 #### Added

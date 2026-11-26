@@ -9,6 +9,8 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+## [3.4.2] — 2026-11-26
+
 #### Changed
 
 - **A person is named as Zalo shows them to the account: the alias, then the contact name, then the Zalo name.** A friend the owner set no alias for often has a profile `displayName` that differs from their own `zaloName` (the name the account knows them by, typically from the owner's phone contacts), and that is the name Zalo shows. It came after the Zalo name, so outputs used the person's own name instead. Now every output takes it after the alias: CLI lines and `--json`, MCP replies (`zalo_lookup_user`, `zalo_friend list`, `zalo_search_threads`, `zalo_get_group_members`, history and buffered messages), webhook payloads, `listen` lines, mentions and stored 1-1 titles. Friend lists and profile reads keep these names in a contact book that daemons store in `zalo.db` (`user_contact_names`), so a message from that friend (`senderName`), a mention or a member list names them the same way without a request, and a stored 1-1 title follows a name that changed. `senderDisplayNameSource` has a new value, `contact`; `senderZaloName`/`zaloName` keep the person's own name.
@@ -1083,7 +1085,8 @@ npm install -g @ardennguyen/zalo-agent-cli@2.0.0
 
 Commands, flags and defaults: `skill/references/command-reference.md`. Operating it on a server: `docs/deployment.md`.
 
-[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.4.1...v3.0-dev
+[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.4.2...v3.0-dev
+[3.4.2]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.4.2
 [3.4.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.4.1
 [3.4.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.4.0
 [3.3.3]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.3.3

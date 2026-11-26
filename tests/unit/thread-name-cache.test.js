@@ -54,6 +54,22 @@ describe("ThreadNameCache", () => {
         assert.equal(cache.getName("u2"), "Bob");
     });
 
+    it("titles a friend with no alias by the name Zalo shows the owner, not their own Zalo name", async () => {
+        // The friend list carries the account's name for the friend (`displayName`) beside their own (`zaloName`).
+        const api = createMockApi({}, [{ userId: "u3", displayName: "Chi Lan Ke Toan", zaloName: "Lan Nguyen" }], []);
+        api.getUserInfo = async (ids) => ({
+            changed_profiles: Object.fromEntries(
+                ids.map((id) => [id, { displayName: "Chi Lan Ke Toan", zaloName: "Lan Nguyen" }]),
+            ),
+        });
+        await cache.init(api);
+        assert.deepEqual(cache.get("u3"), { name: "Chi Lan Ke Toan", type: "dm" });
+        assert.deepEqual(
+            cache.search("chi lan").map((r) => r.threadId),
+            ["u3"],
+        );
+    });
+
     it("handles API failures gracefully", async () => {
         const api = {
             getAllGroups: async () => {

@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import { openDatabase } from "./sqlite.js";
 import { assertLeaseCurrent } from "./fleet-lease.js";
 import { stripVietnamese } from "../utils/vn-text.js";
-import { aliasFor, dmTitle } from "./contact-names.js";
+import { dmTitle, preferredNameFor } from "./contact-names.js";
 import { deriveDataKey, readKeyring, scopeOfDir } from "./keystore/keyring.js";
 import { readStorageFile } from "./keystore/config.js";
 import {
@@ -486,6 +486,12 @@ export function initDb(dbPath) {
     // (./contact-names.js). A snapshot: a row absent from it means no alias. Read by every command that names a person.
     db.exec(
         "CREATE TABLE IF NOT EXISTS user_aliases (userId TEXT PRIMARY KEY, alias TEXT NOT NULL, updatedAt INTEGER)",
+    );
+    // The name this account's profile reads give a user when it differs from the user's own Zalo name (the name the
+    // owner's contacts give them, as Zalo shows it after the alias) (./contact-names.js). Kept by daemons, read by every
+    // command that names a person.
+    db.exec(
+        "CREATE TABLE IF NOT EXISTS user_contact_names (userId TEXT PRIMARY KEY, name TEXT NOT NULL, updatedAt INTEGER)",
     );
     // Last, after the repairs above: the MAC table and triggers, and (once per database) the MACs of the rows written
     // before they existed.
@@ -2885,6 +2891,40 @@ export function getUserAliases() {
     return map;
 }
 
+/**
+ * Write changes to the stored contact names (./contact-names.js): a name sets the row, null removes it.
+ *
+ * @param {Map<string, string|null>} changes - userId -> the contact name, or null when the user has none now
+ */
+export function writeUserContactNames(changes) {
+    if (!db) throw new Error("Database not initialized");
+    if (!changes?.size) return;
+    const now = Date.now();
+    const upsert = db.prepare(
+        `INSERT INTO user_contact_names (userId, name, updatedAt) VALUES (?, ?, ?)
+         ON CONFLICT(userId) DO UPDATE SET name = excluded.name, updatedAt = excluded.updatedAt`,
+    );
+    const drop = db.prepare("DELETE FROM user_contact_names WHERE userId = ?");
+    db.transaction(() => {
+        for (const [id, name] of changes) {
+            if (name) upsert.run(String(id), String(name), now);
+            else drop.run(String(id));
+        }
+    })();
+}
+
+/**
+ * The stored contact names: one row per user whose profile name differs from their Zalo name.
+ *
+ * @returns {Map<string, string>} userId -> the contact name
+ */
+export function getUserContactNames() {
+    if (!db) throw new Error("Database not initialized");
+    const map = new Map();
+    for (const r of db.prepare("SELECT userId, name FROM user_contact_names").all()) map.set(String(r.userId), r.name);
+    return map;
+}
+
 /** Whether a database is open in this process (for display code that also runs before one is). */
 export function isDbOpen() {
     return Boolean(db?.open);
@@ -3037,8 +3077,9 @@ export function getDisplayName(userId) {
     if (!db) throw new Error("Database not initialized");
     if (userId === undefined || userId === null || userId === "") return null;
     const id = String(userId);
-    // The owner's alias first, as Zalo shows the person everywhere (./contact-names.js).
-    return aliasFor(id) ?? getStoredName(id);
+    // The owner's alias first, then the name the account's contacts give the person, as Zalo shows them everywhere
+    // (./contact-names.js).
+    return preferredNameFor(id) ?? getStoredName(id);
 }
 
 /**

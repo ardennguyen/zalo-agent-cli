@@ -6,18 +6,23 @@ How this client names a person in every output. Where this page and [the command
 
 ## How names work in 3.0: alias first, everywhere
 
-Every output names a person the way Zalo's own apps do: **the alias the account owner set for them**, then their
-phonebook name (only when a caller supplies one: this client reads no phonebook), then their Zalo name, then their
-display name, then the uid (`src/core/contact-names.js`). This covers `listen` lines, JSONL and webhooks, the MCP
+Every output names a person the way Zalo does: **the alias the account owner set for them**, then their phonebook
+name (only when a caller supplies one: this client reads no phonebook list), then **their contact name**, then their
+Zalo name, then their display name, then the uid (`src/core/contact-names.js`). The contact name is the profile's
+`displayName` when it differs from its `zaloName`: Zalo's friend list and profile reads give the name the account
+knows the person by there (with no alias, typically the name the owner's phone contacts give them), and that is the
+name Zalo shows the owner. Daemons keep the contact names the profile reads gave in `zalo.db` (`user_contact_names`),
+so a message, a mention or a member list names the person the same way without a request, and a stored 1-1 title
+follows a contact name that changed. This covers `listen` lines, JSONL and webhooks, the MCP
 buffer, notifier and wait results, every `zalo_*` reply, `msg history` / `msg search`, `conv` lists, `friend`
 and `group` commands, mentions, quoted messages (`replyTo`), reactions, typing and group events.
 
 | Field | On a message | Meaning |
 |---|---|---|
-| `senderName` | yes | the name to show: the owner's alias when one is set, else the name the message carried, else the current profile name. **Changed in 3.0:** in 2.x it was the name the message carried |
+| `senderName` | yes | the name to show: the owner's alias when one is set, else the contact name, else the name the message carried, else the current profile name. **Changed in 3.0:** in 2.x it was the name the message carried |
 | `senderAlias` | yes | the alias, or `null` |
 | `senderZaloName` | yes | the name the message carried (the stored snapshot, never rewritten) |
-| `senderDisplayName`, `senderDisplayNameSource` | yes | the current label and where it came from: `alias`, `phonebook`, `zalo`, `display` or `uid` |
+| `senderDisplayName`, `senderDisplayNameSource` | yes | the current label and where it came from: `alias`, `phonebook`, `contact`, `zalo`, `display` or `uid` |
 | `displayName` / `dName` / `dpn` / `inviterName` | a person, a `listen` event, a pending member, an invitation | the same alias-first value in the field that already existed |
 | `alias`, `zaloName` | a person | the raw values beside it |
 

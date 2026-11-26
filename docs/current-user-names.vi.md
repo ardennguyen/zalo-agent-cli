@@ -6,18 +6,22 @@ Trang này nói cách client gọi tên một người trong mọi đầu ra. Kh
 
 ## Cách gọi tên trong 3.0: alias trước tiên, ở mọi nơi
 
-Mọi đầu ra gọi tên một người giống ứng dụng Zalo: **alias mà chủ tài khoản đặt cho họ**, rồi tên trong danh bạ (chỉ
-khi nơi gọi truyền vào: client này không đọc danh bạ), rồi tên Zalo, rồi tên hiển thị, rồi UID
-(`src/core/contact-names.js`). Quy tắc này áp dụng cho các dòng của `listen`, JSONL và webhook, bộ đệm MCP, notifier và
+Mọi đầu ra gọi tên một người giống Zalo: **alias mà chủ tài khoản đặt cho họ**, rồi tên trong danh bạ (chỉ khi nơi
+gọi truyền vào: client này không đọc danh sách danh bạ), rồi **tên liên hệ**, rồi tên Zalo, rồi tên hiển thị, rồi UID
+(`src/core/contact-names.js`). Tên liên hệ là `displayName` của profile khi nó khác `zaloName`: danh sách bạn bè và các
+lần đọc profile của Zalo trả về tên mà tài khoản biết người đó (khi không có alias, thường là tên trong danh bạ điện
+thoại của chủ tài khoản), và đó là tên Zalo hiển thị cho chủ tài khoản. Daemon giữ các tên liên hệ này trong `zalo.db`
+(`user_contact_names`), để tin nhắn, mention hay danh sách thành viên gọi tên người đó giống vậy mà không cần gọi Zalo,
+và tiêu đề chat 1-1 đã lưu đổi theo khi tên liên hệ đổi. Quy tắc này áp dụng cho các dòng của `listen`, JSONL và webhook, bộ đệm MCP, notifier và
 kết quả chờ, mọi phản hồi `zalo_*`, `msg history` / `msg search`, danh sách `conv`, các lệnh `friend` và
 `group`, mention, tin được trích dẫn (`replyTo`), reaction, đang gõ và sự kiện nhóm.
 
 | Trường | Có trên tin nhắn | Ý nghĩa |
 |---|---|---|
-| `senderName` | có | tên để hiển thị: alias của chủ tài khoản nếu có, không thì tên mà tin mang theo, không nữa thì tên profile hiện tại. **Đổi nghĩa trong 3.0:** trước đây là tên mà tin mang theo |
+| `senderName` | có | tên để hiển thị: alias của chủ tài khoản nếu có, không thì tên liên hệ, không thì tên mà tin mang theo, không nữa thì tên profile hiện tại. **Đổi nghĩa trong 3.0:** trước đây là tên mà tin mang theo |
 | `senderAlias` | có | alias, hoặc `null` |
 | `senderZaloName` | có | tên mà tin mang theo (bản lưu, không bao giờ bị ghi đè) |
-| `senderDisplayName`, `senderDisplayNameSource` | có | tên hiện tại và nguồn của nó: `alias`, `phonebook`, `zalo`, `display` hoặc `uid` |
+| `senderDisplayName`, `senderDisplayNameSource` | có | tên hiện tại và nguồn của nó: `alias`, `phonebook`, `contact`, `zalo`, `display` hoặc `uid` |
 | `displayName` / `dName` / `dpn` / `inviterName` | một người, sự kiện `listen`, thành viên chờ duyệt, lời mời | cùng giá trị ưu tiên alias, nằm trong trường vốn có |
 | `alias`, `zaloName` | một người | các giá trị gốc đặt bên cạnh |
 

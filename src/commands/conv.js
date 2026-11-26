@@ -22,6 +22,7 @@ import {
     setConversationPinned,
 } from "../core/conversation-actions.js";
 import { readUserAliases, currentUserName } from "../core/current-user-names.js";
+import { noteProfiles } from "../core/contact-names.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
 import { setBlockSharing } from "../core/block-sharing.js";
 import { parseOnOff } from "../utils/cli-args.js";
@@ -198,6 +199,7 @@ export function registerConvCommands(program, deps = {}) {
                         list.filter((f) => f.lastActionTime > 0).sort((a, b) => b.lastActionTime - a.lastActionTime),
                     );
                     const aliases = sorted.length > 0 ? await readUserAliases(api) : new Map();
+                    noteProfiles(list);
                     for (const f of sorted) {
                         const resolved = currentUserName(f.userId, f, aliases);
                         conversations.push({

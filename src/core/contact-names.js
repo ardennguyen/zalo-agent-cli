@@ -1,30 +1,53 @@
 /**
  * The one way this client names a person: the account owner's alias first, as Zalo shows it.
  *
- * Zalo keeps one record per user (`dName`): the owner's alias when one is set, else the phonebook name, else the
- * user's own name (`zaloName || dName`: the Zalo name, then the display name); a friend the owner saved as "Minh Sales" is "Minh Sales" in the chat header, the group member
- * list, a group message's sender line, a mention, a reaction and a quote alike. The alias list is read again when the
- * server sends an `alias` control (cmd 601), when polling is warned, and when the server's alias version is newer
- * than the one held. This module is that record for the CLI, `listen` and `mcp start`:
+ * Zalo keeps one record per user (`dName`): the owner's alias when one is set, else the name the owner's contacts give
+ * the person, else the user's own name (`zaloName`); a friend the owner saved as "Minh Sales" is "Minh Sales" in the
+ * chat header, the group member list, a group message's sender line, a mention, a reaction and a quote alike. The
+ * alias list is read again when the server sends an `alias` control (cmd 601), when polling is warned, and when the
+ * server's alias version is newer than the one held. This module is that record for the CLI, `listen` and `mcp start`:
  *
- *  - {@link pickName} is the precedence, `alias ?? phonebook name ?? zaloName ?? displayName ?? uid` (Zalo's order: a
- *    profile's `displayName` can itself be a stale alias, so the Zalo name comes before it), used by every output;
+ *  - {@link pickName} is the precedence, `alias ?? phonebook name ?? contact name ?? zaloName ?? displayName ?? uid`,
+ *    used by every output. The contact name is a profile's `displayName` when it differs from its `zaloName`: Zalo's
+ *    profile reads give the name this account knows the person by (with no alias set, the name the owner's contacts
+ *    give them), which is what Zalo shows; a `displayName` equal to the Zalo name adds nothing;
  *  - the alias book is the account's alias snapshot, held in memory (a Map lookup on the hot path, never a scan or a
  *    request), loaded once from the account's database (`user_aliases`) and replaced by every complete alias-list
- *    read, {@link startAliasRefresh} keeps it current in a daemon (an `alias` control, then a bounded periodic read).
+ *    read, {@link startAliasRefresh} keeps it current in a daemon (an `alias` control, then a bounded periodic read);
+ *  - the contact book holds the contact names profile reads gave ({@link noteProfiles}: friend lists, profile
+ *    lookups, searches), so a message, a mention or a member list names the person the same way without a request;
+ *    daemons keep it in the account's database (`user_contact_names`).
  *
  * Stored message rows keep the name the message carried (`senderName`, for audit); the alias is applied when a row is
  * shown or returned, never written over it.
  */
-import { getDbGeneration, getThreadType, getUserAliases, isDbOpen, replaceUserAliases, upsertThread } from "./db.js";
+import {
+    getDbGeneration,
+    getThreadType,
+    getUserAliases,
+    getUserContactNames,
+    isDbOpen,
+    replaceUserAliases,
+    upsertThread,
+    writeUserContactNames,
+} from "./db.js";
 
 /** The periodic alias refresh a daemon runs, besides the one an `alias` control triggers. */
 export const ALIAS_REFRESH_MS = 30 * 60 * 1000;
 /** An `alias` control is followed by one read after this delay; a burst of controls costs one read. */
 export const ALIAS_CONTROL_DEBOUNCE_MS = 1500;
 
-const book = { generation: -1, aliases: new Map(), loaded: false, fresh: false, persist: false };
+const book = {
+    generation: -1,
+    aliases: new Map(),
+    loaded: false,
+    fresh: false,
+    persist: false,
+    contacts: new Map(),
+    contactsLoaded: false,
+};
 const listeners = new Set();
+const contactListeners = new Set();
 
 const str = (v) => (typeof v === "string" && v.trim() ? v : null);
 
@@ -36,6 +59,16 @@ function current() {
         book.aliases = new Map();
         book.loaded = false;
         book.fresh = false;
+        book.contacts = new Map();
+        book.contactsLoaded = false;
+    }
+    if (!book.contactsLoaded && isDbOpen()) {
+        try {
+            book.contacts = getUserContactNames();
+            book.contactsLoaded = true;
+        } catch {
+            /* an older database without the table yet: no contact names until the next profile read */
+        }
     }
     if (!book.loaded && isDbOpen()) {
         try {
@@ -53,13 +86,16 @@ function current() {
  *
  * Accepts the field spellings Zalo uses for a profile (`displayName`/`display_name`/`dName`/`dpn`,
  * `zaloName`/`zalo_name`) and a phonebook name (`pbName`/`phonebookName`: the name the owner's phone contacts give
- * the person, which Zalo puts after the alias). This client reads no phonebook today, so it is used only when a
+ * the person, which Zalo puts after the alias). This client reads no phonebook list, so it is used only when a
  * caller passes one.
+ *
+ * The contact name ({@link contactNameOf}) comes from the fields when they carry both a display name and a Zalo
+ * name, else from the contact book; `contactName` in the fields overrides both (null: none).
  *
  * @param {string|number|null} uid
  * @param {object} [fields] - `{alias?, displayName?, zaloName?, ...}`; `alias` undefined means "look it up"
- * @returns {{name: string|null, alias: string|null, zaloName: string|null, displayName: string|null,
- *   source: "alias"|"phonebook"|"zalo"|"display"|"uid"|"none"}}
+ * @returns {{name: string|null, alias: string|null, contactName: string|null, zaloName: string|null,
+ *   displayName: string|null, source: "alias"|"phonebook"|"contact"|"zalo"|"display"|"uid"|"none"}}
  */
 export function pickName(uid, fields = {}) {
     const id = uid === undefined || uid === null || uid === "" ? null : String(uid);
@@ -68,9 +104,20 @@ export function pickName(uid, fields = {}) {
     const displayName = str(f.displayName) ?? str(f.display_name) ?? str(f.dName) ?? str(f.dpn);
     const zaloName = str(f.zaloName) ?? str(f.zalo_name);
     const phonebookName = str(f.pbName) ?? str(f.phonebookName);
-    const base = { alias, zaloName: zaloName ?? displayName ?? null, displayName: displayName ?? null };
+    let contactName;
+    if (f.contactName !== undefined) contactName = str(f.contactName);
+    else if (displayName && zaloName) contactName = contactNameOf(f);
+    else contactName = contactNameFor(id);
+    if (contactName && contactName === zaloName) contactName = null;
+    const base = {
+        alias,
+        contactName: contactName ?? null,
+        zaloName: zaloName ?? displayName ?? null,
+        displayName: displayName ?? null,
+    };
     if (alias) return { name: alias, ...base, source: "alias" };
     if (phonebookName) return { name: phonebookName, ...base, source: "phonebook" };
+    if (contactName) return { name: contactName, ...base, source: "contact" };
     if (zaloName) return { name: zaloName, ...base, source: "zalo" };
     if (displayName) return { name: displayName, ...base, source: "display" };
     return id ? { name: id, ...base, source: "uid" } : { name: null, ...base, source: "none" };
@@ -88,26 +135,123 @@ export function aliasFor(uid) {
 }
 
 /**
+ * The contact name a profile object carries: its display name (any spelling) when it also carries a Zalo name and
+ * the two differ, else null. Pure.
+ *
+ * @param {object} profile
+ * @returns {string|null}
+ */
+export function contactNameOf(profile) {
+    if (!profile || typeof profile !== "object") return null;
+    const displayName = str(profile.displayName) ?? str(profile.display_name) ?? str(profile.dName) ?? str(profile.dpn);
+    const zaloName = str(profile.zaloName) ?? str(profile.zalo_name);
+    return displayName && zaloName && displayName.trim() !== zaloName.trim() ? displayName : null;
+}
+
+/**
+ * The contact name the last profile read gave a user (the contact book), or null. A Map lookup: safe on the hot path.
+ *
+ * @param {string|number|null} uid
+ * @returns {string|null}
+ */
+export function contactNameFor(uid) {
+    if (uid === undefined || uid === null || uid === "") return null;
+    return current().contacts.get(String(uid)) ?? null;
+}
+
+/**
+ * The name this account knows a user by, as Zalo shows it: the owner's alias, else the contact name, else null (the
+ * caller then uses the user's own name).
+ *
+ * @param {string|number|null} uid
+ * @returns {string|null}
+ */
+export function preferredNameFor(uid) {
+    return aliasFor(uid) ?? contactNameFor(uid);
+}
+
+/**
+ * Take what profile reads said about users' names into the contact book. A profile carrying both a display name and
+ * a Zalo name sets the user's contact name (the display name, when it differs from the Zalo name and is not the
+ * owner's alias) or clears it (the two are the same); a profile without both names says nothing. Daemons persist the
+ * changes; listeners are told which users changed.
+ *
+ * @param {Map<string, object>|Iterable<object>} profiles - uid -> profile, or profile objects (`userId`/`uid`/`id`)
+ * @returns {string[]} the user ids whose contact name changed
+ */
+export function noteProfiles(profiles) {
+    if (!profiles || typeof profiles[Symbol.iterator] !== "function") return [];
+    const b = current();
+    const entries =
+        profiles instanceof Map ? [...profiles] : [...profiles].map((p) => [p?.userId ?? p?.uid ?? p?.id, p]);
+    const changes = new Map();
+    const shown = new Map();
+    for (const [uid, p] of entries) {
+        if (uid === undefined || uid === null || uid === "" || !p || typeof p !== "object") continue;
+        const id = String(uid);
+        const displayName = str(p.displayName) ?? str(p.display_name) ?? str(p.dName) ?? str(p.dpn);
+        const zaloName = str(p.zaloName) ?? str(p.zalo_name);
+        if (!displayName || !zaloName) continue;
+        const name = contactNameOf(p);
+        // A display name equal to the owner's alias is the alias itself: it says nothing about a contact name.
+        if (name && name === b.aliases.get(id)) continue;
+        if ((b.contacts.get(id) ?? null) !== name) {
+            changes.set(id, name);
+            shown.set(id, name ?? zaloName);
+        }
+    }
+    if (!changes.size) return [];
+    const next = new Map(b.contacts);
+    for (const [id, name] of changes) {
+        if (name) next.set(id, name);
+        else next.delete(id);
+    }
+    b.contacts = next;
+    if (b.persist && isDbOpen()) {
+        try {
+            writeUserContactNames(changes);
+        } catch {
+            /* the in-memory book still serves this process */
+        }
+    }
+    const changed = [...changes.keys()];
+    for (const fn of contactListeners) safe(() => fn(changed, shown));
+    return changed;
+}
+
+/**
+ * Be told when contact names change (stored DM titles, thread-name caches): the ids, and for each the name the
+ * profile read gives without the alias (the contact name, else the Zalo name).
+ *
+ * @param {(changedIds: string[], names: Map<string, string>) => void} fn
+ * @returns {() => void} unsubscribe
+ */
+export function onContactNameChange(fn) {
+    contactListeners.add(fn);
+    return () => contactListeners.delete(fn);
+}
+
+/**
  * The name to show for a user who arrived with a raw name (a message's `dName`, a stored `senderName`): the alias
- * when the owner set one, else that raw name, else null.
+ * when the owner set one, else the contact name, else that raw name, else null.
  *
  * @param {string|number|null} uid
  * @param {string|null} [rawName]
  * @returns {string|null}
  */
 export function nameFor(uid, rawName = null) {
-    return aliasFor(uid) ?? str(rawName) ?? null;
+    return preferredNameFor(uid) ?? str(rawName) ?? null;
 }
 
 /**
- * A 1-1 conversation's title: the owner's alias for the peer, else the stored title.
+ * A 1-1 conversation's title: the owner's alias for the peer, else the contact name, else the stored title.
  *
  * @param {string|number} threadId - the peer's user id
  * @param {string|null} [storedName]
  * @returns {string|null}
  */
 export function dmTitle(threadId, storedName = null) {
-    return aliasFor(threadId) ?? (storedName || null);
+    return preferredNameFor(threadId) ?? (storedName || null);
 }
 
 /**
@@ -157,8 +301,8 @@ export async function retitleDmThreads(api, changedIds, log = () => {}) {
     });
     const removed = [];
     for (const id of dms) {
-        const alias = aliasFor(id);
-        if (alias) written.set(id, alias);
+        const preferred = preferredNameFor(id);
+        if (preferred) written.set(id, preferred);
         else removed.push(id);
     }
     if (removed.length && api) {
@@ -181,7 +325,33 @@ export async function retitleDmThreads(api, changedIds, log = () => {}) {
 }
 
 /**
- * The sender fields of a message as every output returns them: `senderName` alias-first, plus the raw values.
+ * Retitle the stored 1-1 conversations of users whose contact name changed: the alias when set, else the name the
+ * profile read gave. No request; group titles are never touched.
+ *
+ * @param {string[]} ids
+ * @param {Map<string, string>} names - userId -> the contact name, else the Zalo name
+ * @returns {Map<string, string>} userId -> the title written
+ */
+export function retitleDmTitles(ids, names) {
+    const written = new Map();
+    if (!isDbOpen() || !ids?.length) return written;
+    for (const id of ids.map(String)) {
+        const title = aliasFor(id) ?? names?.get(id) ?? null;
+        if (!title) continue;
+        try {
+            if (getThreadType(id) !== "dm") continue;
+            upsertThread({ threadId: id, type: "dm", name: title, lastUpdate: 0 });
+            written.set(id, title);
+        } catch {
+            /* a title that fails to store keeps the display-time name */
+        }
+    }
+    return written;
+}
+
+/**
+ * The sender fields of a message as every output returns them: `senderName` alias-first (then the contact name, then
+ * the name the message carried), plus the raw values.
  *
  * @param {string|number|null} senderId
  * @param {string|null} rawName - the name the message carried (stored as `senderName`)
@@ -190,7 +360,7 @@ export async function retitleDmThreads(api, changedIds, log = () => {}) {
 export function senderNameFields(senderId, rawName) {
     const alias = aliasFor(senderId);
     const raw = str(rawName);
-    return { senderName: alias ?? raw ?? null, senderAlias: alias, senderZaloName: raw };
+    return { senderName: alias ?? contactNameFor(senderId) ?? raw ?? null, senderAlias: alias, senderZaloName: raw };
 }
 
 /**
@@ -222,7 +392,7 @@ export function groupEventNames(data) {
             if (!m || typeof m !== "object") return m;
             const alias = aliasFor(m.id);
             const raw = str(m.dName);
-            return { ...m, dName: alias ?? raw, alias, zaloName: raw };
+            return { ...m, dName: alias ?? contactNameFor(m.id) ?? raw, alias, zaloName: raw };
         });
     }
     if (data.sourceId !== undefined && data.sourceId !== null) out.sourceName = nameFor(data.sourceId);
@@ -246,7 +416,8 @@ export function personNameFields(uid, profile) {
 /**
  * A copy of a raw Zalo person object (a friend, a profile, a group member, a search result) as a `--json` reply
  * returns it: whichever name fields it has (`displayName`, `dName`, `display_name`) carry the owner's alias when
- * one is set, `alias` is added, and `zaloName` is added when the object had none (the name before the alias).
+ * one is set, else the contact name (the object's own when it carries both names, else the contact book's), `alias`
+ * is added, and `zaloName` is added when the object had none (the name before the alias).
  *
  * @param {object} p
  * @param {string|number} [uid] - defaults to the object's `userId`, `uid` or `id`
@@ -259,15 +430,17 @@ export function aliasFirst(p, uid = p?.userId ?? p?.uid ?? p?.id) {
     if (out.zaloName === undefined) {
         out.zaloName = str(p.zalo_name) ?? str(p.displayName) ?? str(p.dName) ?? str(p.display_name) ?? null;
     }
-    if (alias) {
+    const own = (str(p.displayName) ?? str(p.display_name) ?? str(p.dName)) && (str(p.zaloName) ?? str(p.zalo_name));
+    const shown = alias ?? (own ? contactNameOf(p) : contactNameFor(uid));
+    if (shown) {
         let named = false;
         for (const k of ["displayName", "dName", "display_name"]) {
             if (k in p) {
-                out[k] = alias;
+                out[k] = shown;
                 named = true;
             }
         }
-        if (!named) out.displayName = alias;
+        if (!named) out.displayName = shown;
     }
     return out;
 }
@@ -302,6 +475,19 @@ export function noteAliasSnapshot(aliases) {
     b.aliases = new Map(aliases);
     b.loaded = true;
     b.fresh = true;
+    // A contact name equal to a new alias was the alias itself (read before the alias list was): drop it.
+    const stale = new Map();
+    for (const id of changed) if (b.aliases.has(id) && b.contacts.get(id) === b.aliases.get(id)) stale.set(id, null);
+    if (stale.size) {
+        b.contacts = new Map([...b.contacts].filter(([id]) => !stale.has(id)));
+        if (b.persist && isDbOpen()) {
+            try {
+                writeUserContactNames(stale);
+            } catch {
+                /* the in-memory book still serves this process */
+            }
+        }
+    }
     if (b.persist && isDbOpen()) {
         try {
             replaceUserAliases(b.aliases);
@@ -442,7 +628,10 @@ export function resetAliasBook() {
     book.loaded = false;
     book.fresh = false;
     book.persist = false;
+    book.contacts = new Map();
+    book.contactsLoaded = false;
     listeners.clear();
+    contactListeners.clear();
 }
 
 function safe(fn) {
@@ -491,6 +680,11 @@ export function startDaemonAliases({ getApi, log = () => {}, onRetitled, onOwnPr
             .then((titles) => titles.size && onRetitled?.(titles))
             .catch(() => {});
     });
+    // A contact name a profile read changed: the stored 1-1 titles follow it (the alias still wins), as Zalo's do.
+    const offContacts = onContactNameChange((ids, names) => {
+        const titles = retitleDmTitles(ids, names);
+        if (titles.size) safe(() => onRetitled?.(titles));
+    });
     return {
         attach(listener) {
             listener?.on?.("alias_change", () => refresher.trigger("alias control"));
@@ -510,6 +704,7 @@ export function startDaemonAliases({ getApi, log = () => {}, onRetitled, onOwnPr
         trigger: refresher.trigger,
         stop() {
             off();
+            offContacts();
             refresher.stop();
         },
     };

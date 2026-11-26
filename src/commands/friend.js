@@ -10,7 +10,7 @@ import { describeFriendUndoError, friendAddFailure, readSentRequests } from "../
 import { errorCodeOf } from "../zalo/errors.js";
 import { readUserAliases } from "../core/current-user-names.js";
 import { allAliases } from "../core/list-all.js";
-import { aliasFirst, ensureAliases } from "../core/contact-names.js";
+import { aliasFirst, ensureAliases, noteProfiles } from "../core/contact-names.js";
 import { searchFriends } from "../core/friend-search.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
 import { lastOnlineStatus } from "../core/last-online.js";
@@ -50,6 +50,7 @@ export function registerFriendCommands(program) {
                 // Names alias first, as Zalo shows them (src/core/contact-names.js): one alias-list read.
                 const raw = await getApi().getAllFriends();
                 await ensureAliases(getApi());
+                if (Array.isArray(raw)) noteProfiles(raw);
                 const result = Array.isArray(raw) ? raw.map((f) => aliasFirst(f)) : raw;
                 output(result, program.opts().json, () => {
                     const friends = Array.isArray(result) ? result : [];
@@ -103,6 +104,7 @@ export function registerFriendCommands(program) {
                 const friends = Array.isArray(result) ? result : [];
                 // The alias you set for a friend is not in the friend list; it comes from the alias list.
                 const aliases = await readUserAliases(getApi(), (m) => info(`${m}; matching names only`));
+                noteProfiles(friends);
                 const matches = searchFriends(friends, aliases, name).map((f) => aliasFirst(f));
                 output(matches, program.opts().json, () => {
                     if (matches.length === 0) {

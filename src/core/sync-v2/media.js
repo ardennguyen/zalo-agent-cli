@@ -39,6 +39,7 @@ import {
     clearMessageLocalPath,
     getThreadNames,
     markMediaGone,
+    clearMediaGone,
 } from "../db.js";
 import { lookupCloudBackup, messageZKey } from "./zcloud.js";
 import { pastCdnWindow } from "./media-age.js";
@@ -170,6 +171,14 @@ function guessExt(att, url, contentType, sniffed) {
  */
 /** What an old link answers when its server no longer serves it (see "old-unavailable"). */
 const OLD_UNAVAILABLE = new Set(["server-error", "network", "timeout"]);
+/** No answer at all: a reset or refused connection, a DNS failure, the other side closing, the deadline. */
+const NO_ANSWER = new Set(["network", "timeout"]);
+/**
+ * An old file zCloud does not list that got no answer at all is asked again before it is left, each time on a
+ * connection of its own: after these waits, in multiples of the run's `backoffBaseMs` (1 s by default: 1 s, then 4 s).
+ * No answer is not an answer: it is never remembered as dead, only left pending for the next run ("old-no-answer").
+ */
+export const OLD_NO_ANSWER_RETRY_WAITS = [1, 4];
 
 export const DOWNLOAD_REASONS = {
     "not-found": { verdict: "expired", label: "HTTP 404/410" },
@@ -189,7 +198,11 @@ export const DOWNLOAD_REASONS = {
     "old-gone": { verdict: "old", label: "past the CDN's window, not in zCloud" },
     "old-unavailable": {
         verdict: "old",
-        label: "past the CDN's window, not in zCloud, and no longer served (HTTP 5xx or no response)",
+        label: "past the CDN's window, not in zCloud, and no longer served (HTTP 5xx)",
+    },
+    "old-no-answer": {
+        verdict: "old",
+        label: "past the CDN's window, not in zCloud, and no answer after the retries (left pending for the next run)",
     },
     // The zCloud source (opt-in, with the account's cloud key).
     "cloud-no-key": { verdict: "cloud", label: "in zCloud, but no cloud key was given" },
@@ -382,11 +395,18 @@ export const THROTTLE_GIVE_UP = 25;
  * @param {number} timeoutMs - hard deadline covering the whole exchange: DNS, connect, headers AND body
  * @param {typeof fetch} [fetchImpl]
  * @param {AbortSignal} [runSignal] - the run's stop signal: aborting it ends the exchange at once
+ * @param {object} [extraInit] - more fetch options (`freshConnection: true`: a connection of its own)
  * @returns {Promise<{ok: boolean, buf?: Buffer, contentType?: string|null,
  *   retryable?: boolean, expired?: boolean, aborted?: boolean, verdict?: string, code?: string,
  *   status?: number, reason?: string}>}
  */
-async function fetchBytes(url, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, fetchImpl = (...a) => fetch(...a), runSignal) {
+async function fetchBytes(
+    url,
+    timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+    fetchImpl = (...a) => fetch(...a),
+    runSignal,
+    extraInit = {},
+) {
     if (runSignal?.aborted) return { ok: false, aborted: true, reason: "stopped" };
     let res;
     let buf;
@@ -408,7 +428,7 @@ async function fetchBytes(url, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, fetchImpl
     deadline.catch(() => {});
     try {
         const exchange = (async () => {
-            res = await fetchImpl(url, { signal: ctl.signal, redirect: "follow" });
+            res = await fetchImpl(url, { ...extraInit, signal: ctl.signal, redirect: "follow" });
             // Reading the body must be guarded too, not just the request. A
             // connection dropped mid-body throws here ("terminated" from undici),
             // and with this outside the try it escaped the worker and aborted an
@@ -816,6 +836,8 @@ export async function downloadSyncedMedia(opts = {}) {
         // Past the CDN's window by the clock, sorted with no request: listed in the zCloud index, or not (gone).
         oldInCloud: 0,
         oldGone: 0,
+        // Past the window, not in zCloud, and no answer at all even after the retries: not gone, left pending.
+        oldNoAnswer: 0,
         // Saved from zCloud (the opt-in source), and zCloud attempts that failed.
         fromCloud: 0,
         cloudFailed: 0,
@@ -960,6 +982,7 @@ export async function downloadSyncedMedia(opts = {}) {
                 dead: stats.dead,
                 oldInCloud: stats.oldInCloud,
                 oldGone: stats.oldGone,
+                oldNoAnswer: stats.oldNoAnswer,
                 bytes: stats.bytes,
             });
         }
@@ -1030,6 +1053,17 @@ export async function downloadSyncedMedia(opts = {}) {
                 got = await fetchBytes(url, timeoutMs, download, signal);
                 // Stopped mid-request: not a failure, and the row stays pending.
                 if (got.aborted) return "stopped";
+                // Past the window, not in zCloud, and no answer at all: a dropped or stale connection says nothing
+                // about the file. Asked again after a short wait, each time on a connection of its own.
+                if (!got.ok && pastWindow && !item && NO_ANSWER.has(got.code)) {
+                    for (const step of OLD_NO_ANSWER_RETRY_WAITS) {
+                        await pause(backoffBaseMs * step, signal);
+                        if (signal?.aborted) return "stopped";
+                        got = await fetchBytes(url, timeoutMs, download, signal, { freshConnection: true });
+                        if (got.aborted) return "stopped";
+                        if (!NO_ANSWER.has(got.code)) break;
+                    }
+                }
                 // Only a status that says the object no longer exists is remembered; a lapsed-signature body, a
                 // timeout or a 5xx says nothing that lasts.
                 if (got.code === "not-found") deadLinks.add(url);
@@ -1057,14 +1091,29 @@ export async function downloadSyncedMedia(opts = {}) {
                 }
                 // Past the window, gone from the CDN and not openable from zCloud: counted for the summary; a file
                 // that zCloud keeps but this run has no key for says so.
-                // Past the window and not in zCloud: a 5xx or no response is how Zalo's servers answer a link they no
-                // longer serve, not load. Remembered like a 404 (`retryDead` asks again) and never counted as
-                // throttling, so a queue of old links cannot stop the run.
+                // Past the window and not in zCloud: a 5xx is how Zalo's servers answer a link they no longer serve,
+                // not load. Remembered like a 404 (`retryDead` asks again) and never counted as throttling, so a
+                // queue of old links cannot stop the run. No answer at all, even after the retries above, is not an
+                // answer: never remembered, never marked gone, and the row stays pending for the next run.
                 if (!got.ok && pastWindow && item && !cloudSource && OLD_UNAVAILABLE.has(got.code)) {
                     // Kept in zCloud, and this run has no key for it: said so, and left for a run with the key.
                     stats.oldInCloud++;
                     stats.skipped++;
                     tally("old-in-zcloud");
+                    return;
+                }
+                if (!got.ok && pastWindow && !item && NO_ANSWER.has(got.code)) {
+                    stats.oldNoAnswer++;
+                    stats.skipped++;
+                    tally("old-no-answer");
+                    if (primary) {
+                        try {
+                            clearMediaGone(row.msgId);
+                        } catch {
+                            /* a missing row is not worth failing the run over */
+                        }
+                    }
+                    onProgress({ phase: "fail", msgId: row.msgId, kind: att.kind, detail: `${got.reason} (pending)` });
                     return;
                 }
                 if (!got.ok && pastWindow && !item && OLD_UNAVAILABLE.has(got.code)) {

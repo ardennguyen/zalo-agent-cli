@@ -2127,6 +2127,12 @@ export function registerTools(
                                 "stores it too), then call zalo_view_media again.",
                         );
                     }
+                    if (!localPath && stats.oldNoAnswer) {
+                        return err(
+                            `Zalo's servers gave no answer for the media of ${msgId} (an old file, not in zCloud), ` +
+                                "even after retries. It is not marked gone: call zalo_view_media again later.",
+                        );
+                    }
                     if (!localPath && stats.oldGone) {
                         return err(
                             `The media of ${msgId} is no longer on Zalo's servers (it answered 404) and not in zCloud. ` +

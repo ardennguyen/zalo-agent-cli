@@ -1706,7 +1706,8 @@ export function mediaProgressPrinter({
         const dead =
             (p.dead ? `, ${p.dead} known dead` : "") +
             (p.oldInCloud ? `, ${p.oldInCloud} old in zCloud` : "") +
-            (p.oldGone ? `, ${p.oldGone} old gone` : "");
+            (p.oldGone ? `, ${p.oldGone} old gone` : "") +
+            (p.oldNoAnswer ? `, ${p.oldNoAnswer} old no answer` : "");
         print(
             `  ${p.attempted}/${p.total} files — ${p.downloaded} saved, ${p.failed} failed${dead} (${formatBytes(p.bytes)})`,
         );
@@ -1725,6 +1726,12 @@ function reportAgeAndCloud(stats, ownId) {
         info(
             `${stats.oldGone} old file(s) are no longer on Zalo's servers (they answered 404) and not in zCloud. ` +
                 "Later runs do not ask again (`--retry-dead` does).",
+        );
+    }
+    if (stats.oldNoAnswer) {
+        info(
+            `${stats.oldNoAnswer} old file(s) not in zCloud got no answer from Zalo's servers, even after retries. ` +
+                "They are not marked gone: the next run asks again.",
         );
     }
     if (stats.oldInCloud) {

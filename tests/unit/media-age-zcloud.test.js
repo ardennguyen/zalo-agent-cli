@@ -28,7 +28,7 @@ import {
     upsertCloudItem,
     upsertThread,
 } from "../../src/core/db.js";
-import { downloadSyncedMedia } from "../../src/core/sync-v2/media.js";
+import { OLD_NO_ANSWER_RETRY_WAITS, downloadSyncedMedia } from "../../src/core/sync-v2/media.js";
 import {
     BIG_FILE_BYTES,
     BIG_FILE_KEEP_MS,
@@ -90,6 +90,8 @@ function encryptBlocks(plain, publicKey) {
 let server;
 let base;
 let hits;
+/** Per request URL (path and query), the `connection` header of each request that reached the server. */
+let asked;
 /** noiseId -> encrypted blob served at /cloud/<noiseId>. */
 const blobs = new Map();
 
@@ -102,6 +104,8 @@ before(async () => {
         res.setHeader("connection", "close");
         const path = req.url.split("?")[0];
         hits[path] = (hits[path] || 0) + 1;
+        (asked[req.url] ??= []).push(req.headers.connection ?? null);
+        const nth = asked[req.url].length;
         if (path.startsWith("/cdn/ok")) {
             res.writeHead(200, { "content-type": "image/jpeg" });
             return res.end(Buffer.from("cdn-bytes"));
@@ -109,6 +113,17 @@ before(async () => {
         if (path.startsWith("/cdn/bad-gateway")) {
             res.writeHead(502);
             return res.end("");
+        }
+        // No answer on the first request for a link, then a real one: the file, or a 404.
+        if (path.startsWith("/cdn/flaky")) {
+            if (nth === 1) return req.socket.destroy();
+            res.writeHead(200, { "content-type": "image/jpeg" });
+            return res.end(Buffer.from("cdn-bytes"));
+        }
+        if (path.startsWith("/cdn/drop-then-gone")) {
+            if (nth === 1) return req.socket.destroy();
+            res.writeHead(404);
+            return res.end("gone");
         }
         if (path.startsWith("/cdn/drop")) {
             return req.socket.destroy();
@@ -146,6 +161,7 @@ let dir;
 let n = 0;
 beforeEach(() => {
     hits = {};
+    asked = {};
     blobs.clear();
     dir = join(ROOT, `acct${n++}`);
     initDb(join(ROOT, `db${n}.sqlite`));
@@ -268,8 +284,8 @@ describe("a file past the window: no file is written off by the clock", () => {
         assert.equal(retried.downloaded, 0);
     });
 
-    it("an old link its server no longer serves (5xx, no response) is gone, not throttling: the run goes on", async () => {
-        for (let i = 0; i < 12; i++) row({ daysAgo: 800, path: i % 2 ? "/cdn/bad-gateway.jpg" : "/cdn/drop.jpg" });
+    it("an old link its server no longer serves (5xx) is gone, not throttling: the run goes on", async () => {
+        for (let i = 0; i < 12; i++) row({ daysAgo: 800, path: "/cdn/bad-gateway.jpg" });
         const fresh = row({ daysAgo: 1 });
         const first = await run({ concurrency: 1 });
         assert.equal(first.abortedEarly, false, "a queue of dead old links must not stop the run");
@@ -281,7 +297,79 @@ describe("a file past the window: no file is written off by the clock", () => {
         await run({ concurrency: 1, retryDead: false });
         assert.equal(hits["/cdn/bad-gateway.jpg"], before, "remembered: not asked again");
     });
+});
 
+describe("an old file zCloud does not list, and no answer at all (reset, refused, timeout)", () => {
+    const tries = 1 + OLD_NO_ANSWER_RETRY_WAITS.length;
+
+    it("is asked again on a connection of its own, and saved when the retry is answered", async () => {
+        const id = row({ daysAgo: 20, path: "/cdn/flaky.jpg" });
+        const stats = await run();
+        assert.equal(stats.downloaded, 1, "one dropped connection does not write the file off");
+        assert.equal(hits["/cdn/flaky.jpg"], 2);
+        assert.deepEqual(Object.values(asked)[0].slice(1), ["close"], "the retry asks for a connection of its own");
+        assert.ok(getMessages("t1").find((m) => m.msgId === id).localPath);
+        assert.equal(stats.oldGone, 0);
+        assert.equal(countGoneAttachments(), 0);
+    });
+
+    it("no answer after the retries: left pending, not gone, and the next run asks again", async () => {
+        const id = row({ daysAgo: 800, path: "/cdn/drop.jpg" });
+        const first = await run();
+        assert.equal(hits["/cdn/drop.jpg"], tries, "the first request and each retry");
+        assert.equal(first.downloaded, 0);
+        assert.equal(first.oldGone, 0, "no answer is not gone");
+        assert.equal(first.oldNoAnswer, 1);
+        assert.equal(first.reasons["old-no-answer"], 1);
+        assert.equal(first.reasons["old-unavailable"], undefined);
+        assert.equal(countGoneAttachments(), 0);
+        assert.equal(countPendingAttachments(), 1, "still pending");
+        assert.equal(getMessages("t1").find((m) => m.msgId === id).localPath, null);
+        const second = await run();
+        assert.equal(hits["/cdn/drop.jpg"], 2 * tries, "not remembered as dead: asked again");
+        assert.equal(second.dead, 0);
+    });
+
+    it("a row an earlier run marked gone is pending again", async () => {
+        const id = row({ daysAgo: 800, path: "/cdn/drop.jpg" });
+        markMediaGone(id, NOW);
+        assert.equal(countGoneAttachments(), 1);
+        await run();
+        assert.equal(countGoneAttachments(), 0);
+        assert.equal(countPendingAttachments(), 1);
+    });
+
+    it("a 404 to the retry is a real answer: gone, and never asked again", async () => {
+        row({ daysAgo: 20, path: "/cdn/drop-then-gone.jpg" });
+        const first = await run();
+        assert.equal(hits["/cdn/drop-then-gone.jpg"], 2);
+        assert.equal(first.oldGone, 1);
+        assert.equal(countGoneAttachments(), 1);
+        const second = await run();
+        assert.equal(hits["/cdn/drop-then-gone.jpg"], 2, "the dead link is not asked again");
+        assert.equal(second.dead, 1);
+    });
+
+    it("a stop during the wait leaves the row pending, not gone", async () => {
+        row({ daysAgo: 20, path: "/cdn/drop.jpg" });
+        const stop = new AbortController();
+        const stats = await run({
+            backoffBaseMs: 60_000,
+            signal: stop.signal,
+            onProgress: () => {},
+            fetchImpl: async (url, init) => {
+                setTimeout(() => stop.abort(), 10);
+                return fetch(url, init);
+            },
+        });
+        assert.equal(stats.interrupted, true);
+        assert.equal(stats.oldGone, 0);
+        assert.equal(countGoneAttachments(), 0);
+        assert.equal(countPendingAttachments(), 1);
+    });
+});
+
+describe("a file past the window: the rest of the clock rule", () => {
     it("gives a row sorted gone by the old clock rule its one request", async () => {
         const id = row({ daysAgo: 20 });
         markMediaGone(id, NOW);

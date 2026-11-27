@@ -362,6 +362,9 @@ describe("the renewal page", () => {
         // As the daemon wires it: the renewal's link first, then the process's own QR page (no link open: 404).
         fallback = new QrPage();
         server = http.createServer(async (req, res) => {
+            // One connection per request (see media-age-zcloud.test.js): a kept-alive socket closed by
+            // the keep-alive timer while a slowed client reuses it fails the request ("other side closed").
+            res.setHeader("connection", "close");
             for (const r of live) if (await r.handle(req, res)) return;
             if (await fallback.handle(req, res)) return;
             res.writeHead(404);

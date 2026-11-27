@@ -15,6 +15,7 @@ import { ProxyAgent, fetch as undiciFetch } from "undici";
 import { API_TYPE, resolveApiVersion } from "./profile.js";
 import { qrLogin } from "./qr-login.js";
 import { loginWithSession } from "./login.js";
+import { fetchOnFreshConnection } from "./download-fetch.js";
 
 /**
  * Read image dimensions for the session's `imageMetadataGetter`.
@@ -86,12 +87,18 @@ export async function readImageMetadata(filePath) {
  * here is another (8.x), and a dispatcher from one handed to the fetch of the other fails every request with
  * "invalid onRequestStart method". A proxied account could not log in at all.
  *
+ * A request whose init carries `freshConnection: true` goes out on a new proxy connection, closed after it.
+ *
  * @param {string} proxyUrl
  * @returns {typeof fetch}
  */
 export function createProxyFetch(proxyUrl) {
     const dispatcher = new ProxyAgent(proxyUrl);
-    return (url, init = {}) => undiciFetch(url, { ...init, dispatcher });
+    return (url, init = {}) => {
+        // A request marked `freshConnection` gets a proxy connection of its own (./download-fetch.js).
+        if (init.freshConnection) return fetchOnFreshConnection(url, init, proxyUrl);
+        return undiciFetch(url, { ...init, dispatcher });
+    };
 }
 
 /**

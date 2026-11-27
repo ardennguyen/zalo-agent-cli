@@ -3,7 +3,8 @@
  * User-Agent and Referer, instead of the global fetch with none of them.
  */
 import "../helpers/sandbox.js";
-import { describe, it } from "node:test";
+import { describe, it, before, after } from "node:test";
+import { createServer } from "node:http";
 import assert from "node:assert/strict";
 import { WEB_REFERER, createDownloadFetch } from "../../src/zalo/download-fetch.js";
 
@@ -74,5 +75,68 @@ describe("createDownloadFetch", () => {
             },
         };
         assert.equal(createDownloadFetch(throwing, marker), marker);
+    });
+});
+
+describe("createDownloadFetch: a request on a connection of its own (freshConnection)", () => {
+    let server;
+    let base;
+    const seen = [];
+    before(async () => {
+        server = createServer((req, res) => {
+            seen.push({
+                port: req.socket.remotePort,
+                connection: req.headers.connection,
+                ua: req.headers["user-agent"],
+            });
+            res.end("ok");
+        });
+        // Kept alive on purpose, for longer than the test: the pool must be there to show the marked request skips it.
+        server.keepAliveTimeout = 60_000;
+        await new Promise((r) => server.listen(0, "127.0.0.1", r));
+        base = `http://127.0.0.1:${server.address().port}`;
+    });
+    after(() => {
+        server.closeAllConnections();
+        server.close();
+    });
+
+    /** The ports every unmarked request of this suite came from (the pool), across all its tests. */
+    const pooled = [];
+
+    /** Three requests, the middle one marked; what the server saw of each. */
+    async function three(f) {
+        seen.length = 0;
+        for (const init of [{}, { freshConnection: true }, {}]) assert.equal(await (await f(base, init)).text(), "ok");
+        pooled.push(seen[0].port, seen[2].port);
+        return [...seen];
+    }
+
+    // Which pooled socket an unmarked request takes is the pool's choice; what is asserted is that the marked one never
+    // takes any of them, and that the unmarked ones do share (so there is a pool to skip).
+    it("with no session: a new connection, closed after it, never one of the pool's", async () => {
+        const [, b] = await three(createDownloadFetch(null));
+        assert.ok(!pooled.includes(b.port), "the marked request opened its own");
+        assert.equal(b.connection, "close");
+    });
+
+    it("a session with no proxy: the same, still in the account's identity", async () => {
+        const [, b] = await three(createDownloadFetch(apiWith((u, i) => fetch(u, i))));
+        assert.ok(!pooled.includes(b.port), "the marked request opened its own");
+        assert.equal(b.connection, "close");
+        assert.equal(b.ua, CHROME, "the session's User-Agent on the fresh connection too");
+        assert.ok(new Set(pooled).size < pooled.length, "the unmarked requests reused pooled connections");
+    });
+
+    it("a proxied session: the flag goes to the account's proxy fetch, which opens the connection", async () => {
+        const got = [];
+        const proxyFetch = async (url, init) => {
+            got.push(init.freshConnection);
+            return new Response("ok");
+        };
+        const api = { getContext: () => ({ userAgent: CHROME, options: { polyfill: proxyFetch, agent: {} } }) };
+        const f = createDownloadFetch(api, () => assert.fail("the global fetch was used"));
+        await f(base, { freshConnection: true });
+        assert.deepEqual(got, [true]);
     });
 });

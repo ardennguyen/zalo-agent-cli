@@ -125,6 +125,9 @@ describe("QrPage: one state per page", () => {
         a.noteScanned("x");
         a.noteOutcome("done");
         const server = http.createServer(async (req, res) => {
+            // One connection per request (see media-age-zcloud.test.js): a kept-alive socket closed by
+            // the keep-alive timer while a slowed client reuses it fails the request ("other side closed").
+            res.setHeader("connection", "close");
             for (const p of [a, b]) if (p.owns(req.url)) return void (await p.handle(req, res));
             res.writeHead(404).end();
         });

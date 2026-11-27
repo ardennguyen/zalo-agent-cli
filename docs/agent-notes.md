@@ -117,7 +117,7 @@ Each of these reports success, or names the wrong cause. They were all learned t
 | Command groups | **42** containers — 25 top-level + 11 OA subgroups + 3 ZBS subgroups + `mcp webhook` + `account security` + `cloud key` | the live commander tree | walk it. The number of `register*` calls in `src/index.js` is neither number: `oa` registers 11 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **38** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA/ZBS/Social commands | **94** (70 `oa` + 18 `zbs` + 6 `social`) | `src/commands/oa.js` + `src/commands/oa/*.js`, `src/commands/zbs.js`, `src/commands/social.js` | `node scripts/count-surface.mjs`. `zbs` counts with `oa`: both are the official API on the OA's OAuth token, so "personal" stays the unofficial surface |
-| Offline tests | **6059** as of 2026-11-27 (6054 pass, 5 skipped, 0 todo; Linux) | `npm test` | the run's own summary line |
+| Offline tests | **6068** as of 2026-11-27 (6063 pass, 5 skipped, 0 todo; Linux) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that

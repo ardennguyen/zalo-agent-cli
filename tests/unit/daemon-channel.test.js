@@ -98,6 +98,9 @@ function deferred() {
  */
 async function rawChannel(dirPath, respond) {
     const server = http.createServer((req, res) => {
+        // One connection per request (see media-age-zcloud.test.js): a kept-alive socket closed by
+        // the keep-alive timer while a slowed client reuses it fails the request ("other side closed").
+        res.setHeader("connection", "close");
         req.resume();
         req.on("end", () => respond(res));
     });

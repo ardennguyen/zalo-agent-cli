@@ -9,6 +9,8 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+## [3.5.1] — 2026-11-27
+
 #### Fixed
 
 - **A group member who never wrote is no longer refused as `UNKNOWN_TO_ACCOUNT`.** 3.5.0 recorded the members only of a member list asked for (`group members`, `zalo_get_group_members`), so a silent member of one of the account's own groups was refused until someone listed that group. Now every group read records the members it lists (`group members`, `group info`, `group list`, `conv recent`, the MCP server's group index at start, a sync's group pass, `zalo_group` `info`), every group event records the people it names (a member added, joined or removed, who did it), and a group action naming a member (`remove_member`, `transfer_owner`, `add_admin`, `remove_admin`, `block_member`, `leave` with `newOwner`; CLI `group remove-member`, `transfer-owner`, `add-admin`, `remove-admin`, `block-member`, `leave --new-owner`) reads that group's member list on a miss. Members are kept hashed in `known-members.json` in the account folder (up to 50,000, the ones seen longest ago dropped first). A member list Zalo answers short of its own count refuses nothing. `friend sent-requests` now records the people it lists, as `zalo_friend` `sent_requests` did.
@@ -1105,7 +1107,8 @@ npm install -g @ardennguyen/zalo-agent-cli@2.0.0
 
 Commands, flags and defaults: `skill/references/command-reference.md`. Operating it on a server: `docs/deployment.md`.
 
-[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.5.0...v3.0-dev
+[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.5.1...v3.0-dev
+[3.5.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.5.1
 [3.5.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.5.0
 [3.4.2]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.4.2
 [3.4.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.4.1

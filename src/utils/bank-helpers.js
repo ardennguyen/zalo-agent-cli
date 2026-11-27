@@ -314,11 +314,12 @@ export async function generateQrTransferImage(
  *
  * @param {number} bin
  * @param {{accountNumber: string, amount?: number|null, content?: string|null}} transfer
+ * @param {string|null} [transfer.bankName] - the bank's name from the list in effect (else the tables')
  * @returns {string}
  */
-export function qrTransferCaption(bin, { accountNumber, amount = null, content = null }) {
+export function qrTransferCaption(bin, { accountNumber, amount = null, content = null, bankName = null }) {
     return [
-        `QR chuyển khoản ${bankDisplayName(bin)} - ${accountNumber}`,
+        `QR chuyển khoản ${bankName || bankDisplayName(bin)} - ${accountNumber}`,
         amount ? `${amount.toLocaleString()}đ` : null,
         content || null,
     ]

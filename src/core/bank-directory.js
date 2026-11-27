@@ -1,5 +1,6 @@
 /**
- * The bank list a bank QR task resolves its bank with: VietQR's live list (https://api.vietqr.io/v2/banks), fetched with
+ * The bank list every bank task resolves its bank with (`bank add`, `bank update`, `msg send-bank`,
+ * `msg send-qr-transfer`, `zalo_bank`, `zalo_send_message`'s `bankCard` and `qrTransfer`): VietQR's live list (https://api.vietqr.io/v2/banks), fetched with
  * a short timeout and kept for a day in memory and in the data dir (`vietqr-banks.json`), so a fresh list costs no
  * network call. When the fetch fails or answers something that is not the list, the last list fetched applies, else the
  * committed snapshot (src/utils/vietqr-banks.js). The engine's own alias table (src/utils/bank-helpers.js) still
@@ -143,6 +144,19 @@ export async function bankList(opts = {}) {
         lastFailureAt = now;
         return fallback(e?.name === "TimeoutError" ? "VietQR did not answer in time" : String(e?.message ?? e));
     }
+}
+
+/**
+ * A BIN's display name, without a request: the short name in the list this process holds (fetched or read from the
+ * data dir), else the engine's alias table, else the committed snapshot, else the BIN.
+ *
+ * @param {number|string} bin
+ * @returns {string}
+ */
+export function bankName(bin) {
+    const n = Number(bin);
+    const held = memory?.banks.find((b) => b.bin === n)?.shortName;
+    return held || BIN_TO_DISPLAY[n] || VIETQR_BANKS.find((b) => b.bin === n)?.shortName || String(bin ?? "");
 }
 
 /** Forget the list held in memory and an earlier failure (tests; a new process starts this way). */

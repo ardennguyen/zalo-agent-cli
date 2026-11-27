@@ -20,7 +20,7 @@
  * - Limits from the login's `settings.features.sharefile`, all checked before the first request (the caption
  *   included): `max_file` (count), `max_size_share_file_v3` (MB), `restricted_ext_file` (denied extensions).
  * - A photo's embedded metadata (EXIF with its GPS position, camera and times, XMP, comments, text chunks) is
- *   removed before upload, as Zalo's own apps do (`stripImageMetadata`, src/zalo/strip-metadata.js); the photo is
+ *   removed before upload, as Zalo does (`stripImageMetadata`, src/zalo/strip-metadata.js); the photo is
  *   held in memory and the stripped bytes are what goes up, `totalSize` included. A GIF and a file go up untouched.
  * - Upload: `POST {file}/api/{message|group}/{photo_original|asyncfile}/upload?zpw_ver&zpw_type&params&type`, `type`
  *   2 for a user and 11 for a group, a multipart body with one part `chunkContent` (the chunk's bytes, named after

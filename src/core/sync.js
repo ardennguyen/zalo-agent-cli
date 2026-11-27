@@ -147,7 +147,7 @@ export class SyncManager {
     }
 
     /**
-     * Decide whether a sync can be skipped, the way Zalo's own apps decide "no need to sync": once the account has
+     * Decide whether a sync can be skipped, the way Zalo decides "no need to sync": once the account has
      * completed a restore, the phone is asked again only when something is known to be missing. The listener records
      * every coverage gap (it was down, or dropped messages), so with none recorded the cache is complete however long
      * ago the last restore ran; the age of that restore does not matter.

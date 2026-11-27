@@ -2,20 +2,20 @@
  * The `601` controls Zalo pushes about changes made on another device, which this client used to name as
  * unhandled: a product catalog changed, a DM reminder created, edited or removed, the account's device list changed.
  *
- * What Zalo's own apps do with each, and what this does:
+ * What Zalo does with each, and what this does:
  *
  * - **`prod_catalog`** (`add_prod`, `edit_prod`, `del_prod`, `del_list_prod`, `add_catalog`, `edit_catalog`,
- *   `del_catalog`, `enable_feature`). Zalo's apps apply the control's data to their catalog store (an `item` row for an
+ *   `del_catalog`, `enable_feature`). Zalo applies the control's data to its catalog store (an `item` row for an
  *   add or an edit; `catalog_id`, `product_id` or `product_ids` for a delete) and repaint. This client keeps no
  *   catalog: `catalog` commands read it live. So nothing is stored; the change is reported.
- * - **`oneone` / `remove_reminder11`**. Zalo's apps remove the reminder (`reminderId`) from the conversation's board.
+ * - **`oneone` / `remove_reminder11`**. Zalo removes the reminder (`reminderId`) from the conversation's board.
  *   This removes the row `sync-boards` stored for it, from whichever end of the DM it was stored under, and reports it.
- * - **`oneone` / `create_reminder11`, `update_reminder11`** (seen live, key names only). Zalo's apps insert or update
+ * - **`oneone` / `create_reminder11`, `update_reminder11`** (seen live, key names only). Zalo inserts or updates
  *   the reminder on the conversation's board from the control's own reminder object (`reminderId`, `creatorUid`,
  *   `toUid`, `editorUid`, `emoji`, `params` with the title, `startTime`, `duration`, `repeat`, `color`, `createTime`,
  *   `editTime`). This writes the row `sync-boards` would write (under the other end of the DM, type `dm`) and reports
  *   it. Not verified against a live payload: the field names are Zalo's.
- * - **`my_settings` / `update`**. Zalo's apps merge the changed settings into their store. This reports them as a
+ * - **`my_settings` / `update`**. Zalo merges the changed settings into its store. This reports them as a
  *   `settings_changed` event (`listen --events settings`); nothing is stored.
  * - **`user_devices` / `update_user_devices`**. A trusted device checks the new, signed device list it
  *   carries (`devices`) against its own identity, and may sign itself out if it is no longer on it. This client does
@@ -34,12 +34,12 @@
  * - **`quick_message` / `create`, `update`, `delete`** (`{items, version}`). The items are the changed quick
  *   messages. This reports a `quick_messages_changed` event; `quick-msg list` reads them.
  * - **`conv_settings` / `update_ttl`** (`{threadId, ttl, fromId, isGroup, ts}`). The conversation's
- *   auto-delete time changed (Zalo's apps also add a local "auto-delete set" line to the conversation). This client
+ *   auto-delete time changed (Zalo also adds a local "auto-delete set" line to the conversation). This client
  *   writes no message rows of its own (AGENTS.md §13): it reports an `auto_delete_changed` event; `conv
  *   auto-delete-status` reads it.
  *
  * Only key names were ever seen for these controls (`unknown-acts.json`), never values, so an event names the fields
- * Zalo's apps read and carries the control's own data whole under `control`. The device list's signed identity material
+ * Zalo reads and carries the control's own data whole under `control`. The device list's signed identity material
  * (`encIdentity`, `encAccSign`) is removed from it first, as `account devices` never prints it.
  *
  * A control can come twice (live, then again in a replayed `603` page): one already seen (by its action id) is skipped.

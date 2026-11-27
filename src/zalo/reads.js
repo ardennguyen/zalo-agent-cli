@@ -150,7 +150,7 @@ export const READS = {
         host: "conversation",
         path: "/api/conv/cm/grOfl",
         cmd: 12300,
-        what: "Which conversations have messages waiting offline (Zalo's own startup probe; `{}`, `0`, `0` ask for all)",
+        what: "Which conversations have messages waiting offline (Zalo's startup probe; `{}`, `0`, `0` ask for all)",
         args: [
             arg("queueInfo", "json", "queue info as the client sends it", true),
             arg("lastActId", "string", "last action id"),

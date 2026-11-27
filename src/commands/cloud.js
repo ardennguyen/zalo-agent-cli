@@ -3,7 +3,7 @@
  * cleanup itself.
  *
  * `ls` and `plan` read the local index that `sync-cloud` fills and the local message cache; they send nothing to Zalo.
- * `apply` does what Zalo's own cloud view does when you delete items there: it deletes the chat
+ * `apply` does what Zalo does when you delete cloud items: it deletes the chat
  * message each item belongs to, for this account on every device, which cannot be undone. Zalo has no zCloud delete
  * endpoint. It is guarded (`--yes`, `--dry-run`, src/core/confirm-guard.js); confirmed live on a disposable item
  * (`--msg` picks exactly one).
@@ -272,7 +272,7 @@ export function registerCloudCommands(program) {
         cloud
             .command("apply")
             .description(
-                "Delete the planned items as Zalo's cloud view does: the chat message behind each, for this " +
+                "Delete the planned items as Zalo does: the chat message behind each, for this " +
                     "account on every device (no undo). Same filters as `plan`; acts on every match " +
                     "(or the first --limit), a page of 60 at a time, one delete per message",
             ),

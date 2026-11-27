@@ -2,7 +2,7 @@
  * The account's plans in one read-only report: which zBusiness package it holds, which zCloud plan, how much of the
  * quota is used, what each plan allows, and what this machine's zCloud index holds.
  *
- * Every field comes from a call Zalo's own clients make, none of it from a guess:
+ * Every field comes from a call Zalo itself makes, none of it from a guess:
  *
  *  - `me-v2` (`fetchAccountInfo`): `bizPkg` (the zBusiness package: id, names, expiry) and `isEnterpriseAccount`.
  *  - the login settings already in memory: `features.ba_config.ba_pkg_config`, the server's table of limits per package

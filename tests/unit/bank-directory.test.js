@@ -21,6 +21,9 @@ import {
 } from "../../src/core/bank-directory.js";
 import { VIETQR_BANKS, VIETQR_BANKS_AS_OF } from "../../src/utils/vietqr-banks.js";
 import { crc16Ccitt, vietQrPayload } from "../../src/utils/vietqr.js";
+import { actionTool } from "../../src/mcp/action-tool.js";
+import { BANK_ACTIONS } from "../../src/mcp/actions-business.js";
+import { resolveBankBin } from "../../src/utils/bank-helpers.js";
 
 assertSandboxed(CONFIG_DIR);
 
@@ -184,6 +187,69 @@ describe("bankList and resolveBank", () => {
         const list = await bankList({ now: T0, cacheFile });
         assert.equal(list.source, "snapshot");
         assert.equal((await resolveBank("vcb", { now: T0, cacheFile }))?.bin, 970436);
+    });
+});
+
+describe("every bank task resolves with the same list", () => {
+    beforeEach(() => resetBankListMemory());
+
+    /** zalo_bank's runner over a session recording each call. */
+    function zaloBank() {
+        const calls = [];
+        const api = new Proxy(
+            {},
+            {
+                get: (_t, prop) =>
+                    prop === "then"
+                        ? undefined
+                        : async (...args) => {
+                              calls.push({ method: prop, args });
+                              return {};
+                          },
+            },
+        );
+        const ok = (o) => ({ content: [{ type: "text", text: JSON.stringify(o) }] });
+        const err = (m) => ({ content: [{ type: "text", text: m }], isError: true });
+        return { calls, run: actionTool("zalo_bank", BANK_ACTIONS, { api, ok, err, gate: async () => null }) };
+    }
+
+    it("zalo_bank add and update take a bank only VietQR's live list has (the alias table refused it)", async () => {
+        // "Example Pay" (BIN 971200) is in no table of the engine's: only in the list fetched now.
+        assert.equal(resolveBankBin("Example Pay"), null);
+        await bankList({
+            fetchImpl: mockFetch().fn,
+            cacheFile: join(SANDBOX_CONFIG_DIR, `vietqr-banks-${++cacheN}.json`),
+        });
+        const b = zaloBank();
+        const added = await b.run({
+            action: "add",
+            bank: "Example Pay",
+            accountNumber: "0123",
+            holderName: "NGUYEN VAN A",
+        });
+        assert.equal(added.isError, undefined, added.content[0].text);
+        assert.deepEqual(b.calls.at(-1), {
+            method: "createBankAccount",
+            args: [{ binBank: 971200, numAccBank: "0123", nameAccBank: "NGUYEN VAN A" }],
+        });
+        assert.equal(JSON.parse(added.content[0].text).bank, "Example Pay");
+        const updated = await b.run({
+            action: "update",
+            bankAccountId: "7",
+            bank: "expay",
+            accountNumber: "0123",
+            holderName: "NGUYEN VAN A",
+        });
+        assert.equal(updated.isError, undefined, updated.content[0].text);
+        assert.equal(b.calls.at(-1).args[0].binBank, 971200);
+    });
+
+    it("an unknown bank is still refused before anything is sent", async () => {
+        const b = zaloBank();
+        const r = await b.run({ action: "add", bank: "no such bank", accountNumber: "0123", holderName: "A" });
+        assert.equal(r.isError, true);
+        assert.match(r.content[0].text, /Unknown bank: 'no such bank'/);
+        assert.deepEqual(b.calls, []);
     });
 });
 

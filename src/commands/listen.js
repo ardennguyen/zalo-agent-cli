@@ -143,7 +143,7 @@ export function registerListenCommand(program) {
         .option("--save <dir>", "Save messages locally as JSONL files (one file per thread, e.g. --save ./zalo-logs)")
         .option(
             "--no-delivered-receipts",
-            "Do not acknowledge received messages as delivered (every Zalo client does; seen receipts are never sent)",
+            "Do not acknowledge received messages as delivered (as Zalo does; seen receipts are never sent)",
         )
         .option(
             "--no-self-heal",
@@ -572,7 +572,7 @@ export function registerListenCommand(program) {
             let eventCount = 0;
             const enabledEvents = new Set(opts.events.split(",").map((e) => e.trim()));
 
-            // Delivered receipts (deliveredv2): what every Zalo client sends when a
+            // Delivered receipts (deliveredv2): what Zalo sends when a
             // message arrives -- for our own echoes too. Built
             // once and shared with `mcp start` through src/zalo/receipts.js, so the
             // two listeners cannot drift apart (AGENTS.md §13). `getApi`, not an

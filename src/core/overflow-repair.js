@@ -1,7 +1,7 @@
 /**
  * Queue overflow: what Zalo dropped from an offline queue, the no-tap repair for groups, and the notice.
  *
- * Zalo signals overflow with `queueStatus["<q>"].evict == 1` (or a `resetLastActionId`). Zalo's own apps answer it
+ * Zalo signals overflow with `queueStatus["<q>"].evict == 1` (or a `resetLastActionId`). Zalo answers it
  * by recording a missing range from the last time online to now and showing "Sync recent messages", which the
  * phone-backed restore fills. Groups have a second, no-tap path: their
  * messages are kept in the group cloud-message store, which Zalo reads back for the affected groups (AFMC). 1-1

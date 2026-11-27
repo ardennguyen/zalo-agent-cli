@@ -3,8 +3,8 @@
  * settings (never copied): the upload store's caps (`uploads.maxBytes`, `uploads.urlMaxBytes`) default to it, and a
  * deployment may only lower them.
  *
- * - `features.sharefile.max_size_share_file_v3` (MB): the file-send limit, 25 MB when the settings lack it, as Zalo's
- *   own clients assume.
+ * - `features.sharefile.max_size_share_file_v3` (MB): the file-send limit, 25 MB when the settings lack it, as Zalo
+ *   assumes.
  * - `features.multi_site_upload.zcloud_upload_file_max_size` (bytes, 1 GiB when absent): a paid zCloud plan may send up
  *   to this, and it bounds every other plan too.
  * - The zCloud plan (`usage.plan`): paid unless it is free (-1), free after the grace period (69) or in it (100).
@@ -22,9 +22,9 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const MIB = 1024 * 1024;
-/** What Zalo's clients assume when the settings name no share-file limit (MB). */
+/** What Zalo assumes when the settings name no share-file limit (MB). */
 export const SHARE_FILE_FALLBACK_MB = 25;
-/** What Zalo's clients assume when the settings name no zCloud upload limit. */
+/** What Zalo assumes when the settings name no zCloud upload limit. */
 export const ZCLOUD_UPLOAD_FALLBACK_BYTES = 1024 * MIB;
 /** zCloud plans that are not paid. */
 const UNPAID_PLANS = new Set([-1, 69, 100]);

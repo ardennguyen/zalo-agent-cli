@@ -25,7 +25,7 @@ export const ALL_MENTION_UID = "-1";
 /**
  * Label used for `@[-1]` when no name is supplied.
  *
- * Zalo's own clients write the literal "@All" (confirmed on real @All rows
+ * Zalo writes the literal "@All" (confirmed on real @All rows
  * in the cache: `{ uid: "-1", pos: 0, len: 4, type: 1 }`), including in
  * Vietnamese groups. Do not localize this.
  */

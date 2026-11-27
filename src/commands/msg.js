@@ -113,7 +113,7 @@ function mentionName(uid, cacheOpen) {
  * in one call, and only runs when there is something missing, so the common
  * case still costs no network at all.
  *
- * Nothing is written back. `msg send` writes nothing to zalo.db (Arden,
+ * Nothing is written back. `msg send` writes nothing to zalo.db (the maintainer,
  * 2026-09-30: "the msg send should not write anything, the data will come
  * from live listener or sync"), so a member the cache cannot name costs this
  * one lookup on every send until the listener or a sync learns their name.
@@ -1060,20 +1060,20 @@ export function registerMsgCommands(program) {
         .option("-n, --name <holder>", "Account holder name")
         .action(async (threadId, accountNumber, opts) => {
             try {
-                const { resolveBankBin, bankDisplayName } = await import("../utils/bank-helpers.js");
-                const bin = resolveBankBin(opts.bank);
-                if (!bin) {
+                // The bank from VietQR's list (live, kept a day), the alias table or the committed snapshot.
+                const { resolveBank } = await import("../core/bank-directory.js");
+                const bank = await resolveBank(opts.bank);
+                if (!bank) {
                     error(`Unknown bank: '${opts.bank}'`);
                     return;
                 }
-                info(`Bank: ${bankDisplayName(bin)} (BIN ${bin})`);
+                const { bin } = bank;
+                info(`Bank: ${bank.name} (BIN ${bin})`);
 
                 const payload = { binBank: bin, numAccBank: accountNumber };
                 if (opts.name) payload.nameAccBank = opts.name;
                 const result = await getApi().sendBankCard(payload, threadId, Number(opts.type));
-                output(result, program.opts().json, () =>
-                    success(`Bank card sent: ${bankDisplayName(bin)} / ${accountNumber}`),
-                );
+                output(result, program.opts().json, () => success(`Bank card sent: ${bank.name} / ${accountNumber}`));
             } catch (e) {
                 error(withUserIdHint(e, threadId, opts.type));
             }
@@ -1117,7 +1117,12 @@ export function registerMsgCommands(program) {
                     return;
                 }
 
-                const caption = qrTransferCaption(bin, { accountNumber, amount: opts.amount, content: opts.content });
+                const caption = qrTransferCaption(bin, {
+                    accountNumber,
+                    amount: opts.amount,
+                    content: opts.content,
+                    bankName: bank.name,
+                });
 
                 const result = await getApi().sendMessage(
                     { msg: caption, attachments: [qrPath] },

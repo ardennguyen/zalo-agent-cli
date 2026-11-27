@@ -8,22 +8,26 @@ import { z } from "zod";
 import { activeWindow, AUTO_REPLY_SCOPES } from "../core/auto-reply.js";
 import { findBankAccount, filterBanks } from "../core/bank-accounts.js";
 import { setQuickMessageStatus } from "../core/profile-settings.js";
-import { resolveBankBin, BIN_TO_DISPLAY } from "../utils/bank-helpers.js";
+import { bankName, resolveBank } from "../core/bank-directory.js";
 import { confirmInput, dryRunInput, ticketInput } from "./action-tool.js";
 import { fileInput, singleFileCheck, withSingleFile } from "./file-input.js";
 import { allBankAccounts, allCatalogs, allProducts } from "../core/list-all.js";
 
-/** A bank name or BIN as the BIN Zalo wants, or the refusal (as `bank add` words it). */
-function bankBin(input) {
-    const bin = resolveBankBin(String(input));
-    return bin ? { bin } : { error: `Unknown bank: '${input}'. zalo_bank 'banks' lists the banks Zalo supports.` };
+/**
+ * A bank name or BIN as the BIN Zalo wants (`prepare`: VietQR's list, live and kept a day, the alias table or the
+ * committed snapshot, src/core/bank-directory.js), or the refusal (as `bank add` words it).
+ */
+async function bankBin(a) {
+    const bank = await resolveBank(String(a.bank));
+    if (!bank) throw new Error(`Unknown bank: '${a.bank}'. zalo_bank 'banks' lists the banks Zalo supports.`);
+    return { bin: bank.bin };
 }
 
 /** One saved bank account, without Zalo's snake_case. */
 function savedAccount(b) {
     return {
         bankAccountId: String(b.account_id),
-        bank: BIN_TO_DISPLAY[b.bin] || String(b.bin ?? ""),
+        bank: b.bin ? bankName(b.bin) : "",
         bin: b.bin ?? null,
         accountNumber: b.bank_number ?? null,
         holderName: b.holder_name ?? null,
@@ -411,20 +415,20 @@ export const BANK_ACTIONS = {
     },
     add: {
         needs: ["bank", "accountNumber", "holderName"],
-        check: (a) => bankBin(a.bank).error,
+        prepare: bankBin,
         async run(a, { api }) {
-            const { bin } = bankBin(a.bank);
+            const { bin } = a;
             await api.createBankAccount({ binBank: bin, numAccBank: a.accountNumber, nameAccBank: a.holderName });
-            return { success: true, bank: BIN_TO_DISPLAY[bin] || String(bin), accountNumber: a.accountNumber };
+            return { success: true, bank: bankName(bin), accountNumber: a.accountNumber };
         },
     },
     update: {
         needs: ["bankAccountId", "bank", "accountNumber", "holderName"],
-        check: (a) => bankBin(a.bank).error,
+        prepare: bankBin,
         async run(a, { api }) {
             await api.updateBankAccount({
                 accountId: Number(a.bankAccountId),
-                binBank: bankBin(a.bank).bin,
+                binBank: a.bin,
                 numAccBank: a.accountNumber,
                 nameAccBank: a.holderName,
             });

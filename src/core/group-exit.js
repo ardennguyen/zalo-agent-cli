@@ -1,7 +1,7 @@
 /**
  * A group stops being ours: the account LEFT it, was REMOVED or BLOCKED from it, or it was DISBANDED.
  *
- * Zalo's own apps delete the group's local history at once in all four cases: messages, media, pin and preview,
+ * Zalo deletes the group's local history at once in all four cases: messages, media, pin and preview,
  * with a delete tombstone so a later restore or fetch cannot bring the old messages back. This module is that, for this
  * cache:
  *
@@ -37,6 +37,7 @@ import {
     raiseDeleteMarker,
     referencedMediaPaths,
 } from "./db.js";
+import { recordGroupInfoMembers } from "./known-ids.js";
 import { readStorageFile } from "./keystore/config.js";
 import { getMediaLinks } from "./media-deliver.js";
 import { policyFor } from "./policy-layer.js";
@@ -583,7 +584,8 @@ export function rejoinGroup(threadId) {
 /**
  * `api.getGroupInfo(groupIds)`, watching the answer for gone groups ({@link noteGroupInfo}): a group listed in
  * `removedsGroup`, or one group asked alone and answered 161 or not-a-member, is exited (disbanded / removed) when
- * the cache is open. The answer or the error is passed on unchanged.
+ * the cache is open; the members it lists are recorded as known to the account (src/core/known-ids.js). The answer
+ * or the error is passed on unchanged.
  *
  * @param {object} api
  * @param {string|null} ownId - null: watch nothing
@@ -600,6 +602,8 @@ export async function getGroupInfoWatched(api, ownId, groupIds) {
         throw error;
     }
     if (ownId && result?.removedsGroup?.length) await noteGroupInfo({ ownId, result, groupIds: ids });
+    // The members it lists are this account's to name from now on (src/core/known-ids.js).
+    if (ownId) recordGroupInfoMembers(ownId, result);
     return result;
 }
 

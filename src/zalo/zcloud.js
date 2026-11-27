@@ -621,7 +621,7 @@ const finiteOrNull = (v) =>
 /**
  * Reduce the usage and settings replies to what the CLI reports.
  *
- * The two `...PerFileLimitRaw` values are the settings' numbers as sent: Zalo's own apps do not read them, so their
+ * The two `...PerFileLimitRaw` values are the settings' numbers as sent: Zalo does not read them, so their
  * unit is not defined anywhere (live: 100 on a free account, probably megabytes; 2147483640 on a paid one, a
  * "no practical limit" number). They are not bytes.
  *

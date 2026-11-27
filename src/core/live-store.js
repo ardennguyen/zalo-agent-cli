@@ -35,6 +35,7 @@ import { classifyLiveMessage } from "../zalo/transfer-sync/message-types.js";
 import { resolveCurrentUserNames } from "./current-user-names.js";
 import { aliasSnapshot } from "./contact-names.js";
 import { exitReasonOf } from "./group-exit.js";
+import { recordGroupEventMembers } from "./known-ids.js";
 
 /** THREAD_TYPE.User */
 const THREAD_USER = 0;
@@ -649,6 +650,8 @@ export function storeGroupEvent(event, opts = {}) {
     const threadId = event?.threadId;
     if (threadId === undefined || threadId === null) return { gone: false, back: false };
     const id = String(threadId);
+    // The people it names are members of this account's group: known to it from now on (src/core/known-ids.js).
+    recordGroupEventMembers(opts.ownId, event);
     const departure = departureOf(event, opts.ownId);
     const at = groupEventTime(event);
     try {

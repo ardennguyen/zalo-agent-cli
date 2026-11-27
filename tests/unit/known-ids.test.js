@@ -11,7 +11,7 @@ import { describe, it, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { CONFIG_DIR } from "../../src/core/credentials.js";
+import { CONFIG_DIR, getAccountDir } from "../../src/core/credentials.js";
 import { registerTools } from "../../src/mcp/mcp-tools.js";
 import { initDb, insertMessage, upsertThread, upsertContact } from "../../src/core/db.js";
 import {
@@ -19,6 +19,7 @@ import {
     LIST_REFRESH_MS,
     UNKNOWN_TO_ACCOUNT,
     _resetKnownIdLists,
+    KNOWN_MEMBERS_FILE,
     findUnknownIds,
     isRecordedKnown,
     mentionUids,
@@ -28,6 +29,8 @@ import {
 import { rememberFriends } from "../../src/core/typing.js";
 import { CLI_ID_GUARDS, enforceKnownIds, installKnownIdGuards } from "../../src/commands/known-id-guards.js";
 import { ID_GUARDS } from "../../src/mcp/known-id-guard.js";
+import { getGroupInfoWatched } from "../../src/core/group-exit.js";
+import { storeGroupEvent } from "../../src/core/live-store.js";
 
 /** Made-up ids. None of them belongs to anyone. */
 const OWN = "7000000000000000001";
@@ -259,6 +262,18 @@ describe("MCP tools refuse an id unknown to the account, before any request", ()
         ["zalo_friend", { action: "alias", userId: FOREIGN, alias: "X" }],
         ["zalo_friend", { action: "last_online", userId: FOREIGN }],
         ["zalo_friend", { action: "qr", userIds: [FRIEND, FOREIGN] }],
+        ["zalo_search_messages", { query: "hi", threadId: FOREIGN }],
+        ["zalo_search_messages", { query: "hi", senderId: FOREIGN }],
+        ["zalo_view_media", { msgId: "7100000000001", threadId: FOREIGN }],
+        ["zalo_conversation", { action: "pin", threadId: FOREIGN }],
+        ["zalo_conversation", { action: "typing", threadId: FOREIGN_GROUP, threadType: "group" }],
+        ["zalo_conversation", { action: "hide", threadIds: [FRIEND, FOREIGN] }],
+        ["zalo_conversation", { action: "delete", threadId: FOREIGN, confirm: true }],
+        ["zalo_group", { action: "rename", groupId: FOREIGN_GROUP, name: "X" }],
+        ["zalo_group", { action: "info", groupId: FOREIGN_GROUP }],
+        ["zalo_group", { action: "add_members", groupId: GROUP, userIds: [FOREIGN] }],
+        ["zalo_group", { action: "invite_to", userId: FRIEND, groupIds: [FOREIGN_GROUP] }],
+        ["zalo_group", { action: "create", name: "X", userIds: [FRIEND, FOREIGN] }],
     ];
     for (const [tool, args] of CASES) {
         it(`${tool} ${JSON.stringify(args).replaceAll(/\d{10,}/g, "<id>")}`, async () => {
@@ -414,5 +429,160 @@ describe("CLI commands refuse an id unknown to the account", () => {
             CLI_ID_GUARDS["msg history"](command("msg history", [GROUP], { type: "1" }, "cli"), [GROUP])[0].as,
             "group",
         );
+    });
+});
+
+describe("a group's members are this account's to name, though they never wrote", () => {
+    /** A made-up member id per test: the records in an account folder outlive a test. */
+    let m = 20;
+    const nextMember = () => `70000000000000000${m++}`;
+
+    it("a member listed by any group read is known from then on (a silent member was refused before)", async () => {
+        const member = nextMember();
+        const ctx = { api: fakeApi().api, ownId: OWN, accountDir: getAccountDir(OWN) };
+        assert.equal((await findUnknownIds([{ id: member, as: "user" }], ctx)).length, 1);
+        const api = {
+            getGroupInfo: async () => ({
+                gridInfoMap: {
+                    [GROUP]: { name: "Nhóm thử", totalMember: 2, memVerList: [`${member}_3`, `${OWN}_0`] },
+                },
+            }),
+        };
+        // The read every group command, the MCP group tools and a sync's group pass make.
+        await getGroupInfoWatched(api, OWN, [GROUP]);
+        assert.deepEqual(await findUnknownIds([{ id: member, as: "user" }], ctx), []);
+        // Kept as a hash, not as the id.
+        assert.ok(!readFileSync(join(getAccountDir(OWN), KNOWN_MEMBERS_FILE), "utf8").includes(member));
+    });
+
+    it("a member a group event names (added, joined) is known from then on", async () => {
+        const member = nextMember();
+        const ctx = { api: fakeApi().api, ownId: OWN, accountDir: getAccountDir(OWN) };
+        assert.equal((await findUnknownIds([{ id: member, as: "user" }], ctx)).length, 1);
+        storeGroupEvent(
+            {
+                type: "join",
+                threadId: GROUP,
+                data: { updateMembers: [{ id: member, dName: "Mới" }], sourceId: FRIEND },
+            },
+            { ownId: OWN },
+        );
+        assert.deepEqual(await findUnknownIds([{ id: member, as: "user" }], ctx), []);
+    });
+
+    /** A session whose GROUP lists `members` of `total`. */
+    const groupApi = (members, total = members.length) =>
+        fakeApi({
+            extra: {
+                getGroupInfo: async () => ({
+                    gridInfoMap: {
+                        [GROUP]: { name: "Nhóm thử", totalMember: total, memVerList: members.map((u) => `${u}_0`) },
+                    },
+                }),
+            },
+        });
+    const removal = (userId) => ({ action: "remove_member", groupId: GROUP, userId, confirm: true });
+
+    it("a member a group action names is proved by that group's own member list", async () => {
+        const member = nextMember();
+        const { api, calls } = groupApi([member, OWN]);
+        const r = await serve(api).call("zalo_group", removal(member));
+        assert.ok(!isUnknownRefusal(r), JSON.stringify(r));
+        assert.ok(calls.includes("removeUserFromGroup"), `not removed: ${calls.join(",")}`);
+    });
+
+    it("an id missing from a complete member list is refused; a list Zalo answers short refuses nothing", async () => {
+        const full = groupApi([FRIEND, OWN]);
+        const refused = await serve(full.api).call("zalo_group", removal(FOREIGN));
+        assert.ok(isUnknownRefusal(refused), JSON.stringify(refused));
+        assert.ok(!full.calls.includes("removeUserFromGroup"));
+        _resetKnownIdLists();
+        const short = groupApi([FRIEND, OWN], 500);
+        const r = await serve(short.api).call("zalo_group", removal(FOREIGN));
+        assert.ok(!isUnknownRefusal(r), JSON.stringify(r));
+        assert.ok(short.calls.includes("removeUserFromGroup"));
+    });
+});
+
+describe("search, conversation, group and media inputs go ahead with this account's own ids", () => {
+    const passes = async (tool, args, method) => {
+        const { api, calls } = fakeApi();
+        const r = await serve(api).call(tool, args);
+        assert.ok(!isUnknownRefusal(r), `${tool}: ${JSON.stringify(r)}`);
+        if (method) assert.ok(calls.includes(method), `${tool}: no ${method} in ${calls.join(",")}`);
+        return r;
+    };
+
+    it("searches a known conversation for a known sender", async () => {
+        const r = await passes("zalo_search_messages", { query: "hi", threadId: GROUP, senderId: SENDER });
+        assert.equal(JSON.parse(r.content[0].text).messages.length, 1);
+    });
+
+    it("acts on a known conversation and a known group", async () => {
+        await passes(
+            "zalo_conversation",
+            { action: "typing", threadId: GROUP, threadType: "group" },
+            "sendTypingEvent",
+        );
+        await passes("zalo_group", { action: "rename", groupId: GROUP, name: "Mới" }, "changeGroupName");
+    });
+
+    it("lists and local-only actions are not checked, nor a join request or an invitation Zalo delivered", async () => {
+        await passes("zalo_conversation", { action: "pinned" }, "getPinConversations");
+        await passes("zalo_group", { action: "approve", groupId: GROUP, userIds: [FOREIGN] });
+        await passes("zalo_group", { action: "join_invite", groupId: FOREIGN_GROUP });
+    });
+});
+
+describe("CLI: the search, conversation and group commands name their ids", () => {
+    const command = (path, args, opts = {}) => ({
+        zaloKnownIds: CLI_ID_GUARDS[path],
+        processedArgs: args,
+        opts: () => opts,
+        getOptionValueSource: () => "default",
+    });
+    const ids = (path, args, opts) => CLI_ID_GUARDS[path](command(path, args, opts), args);
+
+    it("msg search --thread and --from, not --from me", () => {
+        assert.deepEqual(
+            ids("msg search", ["hi"], { thread: GROUP, from: SENDER }).map((t) => [t.id, t.as]),
+            [
+                [GROUP, "thread"],
+                [SENDER, "user"],
+            ],
+        );
+        assert.deepEqual(ids("msg search", ["hi"], { from: "me" }), []);
+    });
+
+    it("conv and group commands; a member a group command names carries its group", () => {
+        assert.deepEqual(
+            ids("conv hide", [[FRIEND, GROUP]]).map((t) => t.id),
+            [FRIEND, GROUP],
+        );
+        assert.deepEqual(
+            ids("group remove-member", [GROUP, [SENDER]]).map((t) => [t.id, t.as, t.group]),
+            [
+                [GROUP, "group", undefined],
+                [SENDER, "user", GROUP],
+            ],
+        );
+        assert.deepEqual(
+            ids("group leave", [GROUP], { newOwner: SENDER }).map((t) => [t.id, t.group]),
+            [
+                [GROUP, undefined],
+                [SENDER, GROUP],
+            ],
+        );
+        assert.deepEqual(
+            ids("group approve", [GROUP, [FOREIGN]]).map((t) => t.id),
+            [GROUP],
+        );
+    });
+
+    it("refuses a foreign group to conv pin and lets the account's own through", async () => {
+        const { api } = fakeApi();
+        const ctx = { api, ownId: OWN, accountDir };
+        assert.equal((await findUnknownIds(ids("conv pin", [FOREIGN_GROUP]), ctx)).length, 1);
+        assert.deepEqual(await findUnknownIds(ids("conv pin", [GROUP]), ctx), []);
     });
 });

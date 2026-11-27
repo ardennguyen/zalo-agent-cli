@@ -5,6 +5,7 @@
 
 import { resolve } from "path";
 import { getApi } from "../core/zalo-client.js";
+import { recordGroupInfoMembers } from "../core/known-ids.js";
 import { getInviteBoxInfo } from "../zalo/custom/group-invite.js";
 import { getGroupHistory } from "../zalo/custom/group-history.js";
 import { groupMemberUids } from "../core/group-members.js";
@@ -83,6 +84,8 @@ export function registerGroupCommands(program) {
                     const batch = groupIds.slice(i, i + batchSize);
                     try {
                         const groupInfo = await api.getGroupInfo(batch);
+                        // The members listed are known to this account from now on (src/core/known-ids.js).
+                        recordGroupInfoMembers(api.getOwnId?.(), groupInfo);
                         const map = groupInfo?.gridInfoMap || {};
                         for (const [gid, g] of Object.entries(map)) {
                             groups.push({

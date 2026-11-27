@@ -354,7 +354,7 @@ export function warnApprovalPolicy({ config, accountId, accountDir, hasWebhook, 
 }
 
 /**
- * One cached message as the staff inbox shows it: who wrote it, its text and kind, and what it quotes. No media path
+ * One cached message as the staff inbox shows it: who wrote it (alias first), its text and kind, and what it quotes. No media path
  * and no raw payload leave the daemon.
  *
  * @param {object} m - a `messages` row
@@ -365,7 +365,9 @@ export function staffInboxRow(m, ownId = null) {
     return {
         msgId: m.msgId,
         senderId: m.senderId || null,
-        senderName: m.senderName || null,
+        // Named as every history path names a sender: the alias, then the contact name, then the name the message
+        // carried (src/core/contact-names.js), with `senderAlias` and `senderZaloName` beside it.
+        ...senderNameFields(m.senderId, m.senderName),
         isSelf: Boolean(ownId && String(m.senderId) === String(ownId)),
         text: m.text ?? "",
         type: m.type ?? "text",
@@ -514,7 +516,7 @@ export function registerMCPCommands(program) {
         )
         .option(
             "--no-delivered-receipts",
-            "Do not acknowledge received messages as delivered (every Zalo client does; seen receipts are never sent)",
+            "Do not acknowledge received messages as delivered (as Zalo does; seen receipts are never sent)",
         )
         .option(
             "--no-self-heal",
@@ -970,7 +972,7 @@ export function registerMCPCommands(program) {
                 },
             });
             // The account's Zalo file limit (src/core/zalo-file-limit.js), read from the session's settings, and its
-            // zCloud plan for the report (a read Zalo's clients make at start; a failure leaves the tier unknown).
+            // zCloud plan for the report (a read Zalo makes at start; a failure leaves the tier unknown).
             readAccountFileLimit(getApi(), accountDir);
             getCloudUsage(getApi())
                 .then((u) => readAccountFileLimit(getApi(), accountDir, { plan: u?.plan ?? null }))

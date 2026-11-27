@@ -62,7 +62,7 @@ const KNOWN = new Map([
     // conversation labels changed (`label_convers/update`), the archived ("Other") list changed
     // (`archived_chat/update`, `{version, actionType, items}`), a quick message created, edited or deleted
     // (`quick_message`, `{items, version}`), a conversation's auto-delete time changed (`conv_settings/update_ttl`), on
-    // another device. Zalo's own apps apply each to a store of their own; this client keeps none of them (`conv muted`,
+    // another device. Zalo applies each to a store of its own; this client keeps none of them (`conv muted`,
     // `label list`, `conv archived`, `quick-msg list` and `conv auto-delete-status` read Zalo live), so each is reported
     // as an event: src/core/control-events.js.
     ["mute", { kind: "mute", handler: "control-events" }],
@@ -76,7 +76,7 @@ const KNOWN = new Map([
         {
             kind: "self-chat-media",
             ignored:
-                "Zalo's apps add or remove the item in their My Cloud media panel; the zCloud index follows the cloud queue (cmd 620/621), not this",
+                "Zalo adds or removes the item in its My Cloud media list; the zCloud index follows the cloud queue (cmd 620/621), not this",
         },
     ],
     [

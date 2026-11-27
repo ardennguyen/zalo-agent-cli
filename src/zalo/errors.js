@@ -67,7 +67,7 @@ export const CLOSE_CODE = Object.freeze({
 /**
  * The retry keys. A key is either a number (a close or error code, looked up
  * as its decimal string in the server's retry table) or a name. The numbers
- * after the names are what Zalo's own app logs them as.
+ * after the names are what Zalo logs them as.
  */
 export const RETRY_KEY = Object.freeze({
     MANUAL: "manual",
@@ -79,7 +79,7 @@ export const RETRY_KEY = Object.freeze({
     SYSTEM_RESUME: "system_resume", // 5026: the machine woke up
 });
 
-/** The numbers Zalo's own app logs the named retry keys as. */
+/** The numbers Zalo logs the named retry keys as. */
 export const RETRY_KEY_NUMBER = Object.freeze({
     internal: 5021,
     interval_check: 5022,

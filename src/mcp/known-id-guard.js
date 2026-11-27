@@ -52,6 +52,68 @@ export const FRIEND_GUARDED = new Set([
     "common_groups",
 ]);
 
+/**
+ * zalo_conversation's actions not checked: the lists (they take no conversation) and 'forget', which deletes only this
+ * machine's copy and asks Zalo nothing. Every other one acts on threadId / threadIds at Zalo.
+ */
+export const CONVERSATION_UNCHECKED = new Set([
+    "forget",
+    "pinned",
+    "archived",
+    "muted",
+    "hidden",
+    "auto_delete_status",
+    "hidden_pin",
+    "hidden_pin_reset",
+]);
+
+/**
+ * zalo_group's actions whose groupId is not one of this account's groups yet (an invite link, an invitation
+ * received, a new group) or that take none.
+ */
+export const GROUP_NOT_OURS = new Set([
+    "create",
+    "link_preview",
+    "join",
+    "invite_boxes",
+    "invite_info",
+    "join_invite",
+    "delete_invite",
+    "invite_to",
+    "members_info",
+]);
+
+/** zalo_group's actions whose userIds / userId name people already in the group (its member list also proves them). */
+export const GROUP_MEMBER_ACTIONS = new Set([
+    "remove_member",
+    "transfer_owner",
+    "add_admin",
+    "remove_admin",
+    "block_member",
+]);
+
+/**
+ * zalo_group's actions whose people are not checked: a join request Zalo delivered to this account (approve,
+ * reject_member), and a member blocked out of the group (unblock_member), whom no member list names any more.
+ */
+export const GROUP_PEOPLE_UNCHECKED = new Set(["approve", "reject_member", "unblock_member"]);
+
+/** The ids a zalo_group call names. */
+function groupIds(a) {
+    const out = [];
+    const gid = a.groupId;
+    if (gid && !GROUP_NOT_OURS.has(a.action)) out.push({ id: gid, as: "group", field: "groupId" });
+    if (a.action === "invite_to" && Array.isArray(a.groupIds))
+        for (const g of a.groupIds) out.push({ id: g, as: "group", field: "groupIds" });
+    if (GROUP_PEOPLE_UNCHECKED.has(a.action)) return out;
+    // A member the action names may be proved by the group's own member list (src/core/known-ids.js).
+    const inGroup = GROUP_MEMBER_ACTIONS.has(a.action) && gid ? { group: String(gid) } : {};
+    if (Array.isArray(a.userIds)) for (const u of a.userIds) out.push({ ...user(u, "userIds"), ...inGroup });
+    if (a.userId) out.push({ ...user(a.userId), ...inGroup });
+    if (a.action === "leave" && a.newOwner) out.push({ ...user(a.newOwner, "newOwner"), ...(gid && { group: gid }) });
+    return out;
+}
+
 /** Per guarded tool: the ids its arguments name. */
 export const ID_GUARDS = {
     zalo_send_message: (a) => [
@@ -66,6 +128,19 @@ export const ID_GUARDS = {
     zalo_wait_for_message: (a) => (a.threadId ? [thread(a.threadId)] : []),
     zalo_lookup_user: (a) => (a.userId ? [user(a.userId)] : []),
     zalo_get_group_members: (a) => [{ id: a.groupId, as: "group", field: "groupId" }],
+    zalo_search_messages: (a) => [
+        ...(a.threadId ? [thread(a.threadId)] : []),
+        ...(a.senderId ? [user(a.senderId, "senderId")] : []),
+    ],
+    zalo_view_media: (a) => (a.threadId ? [thread(a.threadId)] : []),
+    zalo_conversation: (a) =>
+        CONVERSATION_UNCHECKED.has(a.action)
+            ? []
+            : [
+                  ...(a.threadId ? [thread(a.threadId, a.threadType)] : []),
+                  ...(Array.isArray(a.threadIds) ? a.threadIds.map((t) => thread(t, a.threadType, "threadIds")) : []),
+              ],
+    zalo_group: groupIds,
     zalo_friend: (a) =>
         FRIEND_GUARDED.has(a.action)
             ? [

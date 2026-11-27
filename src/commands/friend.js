@@ -90,7 +90,7 @@ export function registerFriendCommands(program) {
             } catch (e) {
                 error(
                     /404/.test(e.message)
-                        ? `${e.message}. Zalo answered 404 for the online-friends list on every profile host of this account's service map. Zalo's own contact list asks the same thing and discards the answer. \`friend last-online <userId>\` works, and \`listen --events online\` reports presence as Zalo pushes it.`
+                        ? `${e.message}. Zalo answered 404 for the online-friends list on every profile host of this account's service map. Zalo itself asks the same thing for its contact list and discards the answer. \`friend last-online <userId>\` works, and \`listen --events online\` reports presence as Zalo pushes it.`
                         : e.message,
                 );
             }
@@ -390,6 +390,8 @@ export function registerFriendCommands(program) {
             try {
                 // Zalo's "none sent" (112) arrives as `{}`.
                 const sent = await readSentRequests(getApi());
+                // This account's ids for the people asked: `undo-request` and the like that follow are not refused.
+                recordCliKnownIds(Object.keys(sent || {}));
                 if (Object.keys(sent || {}).length) await ensureAliases(getApi());
                 const result = Object.fromEntries(
                     Object.entries(sent || {}).map(([uid, r]) => [uid, aliasFirst(r, uid)]),
@@ -445,7 +447,7 @@ export function registerFriendCommands(program) {
                 error(
                     `Get close friends failed: ${e.message}` +
                         (/404/.test(e.message)
-                            ? ". Zalo has retired close friends: Zalo's own apps have no menu for it, and the request answers 404."
+                            ? ". Zalo has retired close friends: Zalo no longer offers it, and the request answers 404."
                             : ""),
                 );
             }

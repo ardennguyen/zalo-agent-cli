@@ -32,7 +32,7 @@
  *
  * Read receipts are kept OFF on purpose, so nothing here sends seenv2 on its
  * own: `conv read` and `msg seen` are the only callers. The listener's automatic receipt is
- * deliveredv2 only -- what every Zalo client sends when a message arrives.
+ * deliveredv2 only -- what Zalo sends when a message arrives.
  */
 import { boundUtils } from "./kernel/bound.js";
 import { THREAD_TYPE } from "./enums.js";

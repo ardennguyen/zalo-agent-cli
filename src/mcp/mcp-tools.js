@@ -148,8 +148,8 @@ import { gateToolsByPresence } from "./tool-presence.js";
 import { allowUnknownInput, guardKnownIds } from "./known-id-guard.js";
 import { REMOTE_FILE_HINT, fileItemSchema, fileResolver, fileSourceSchema } from "./file-input.js";
 import { FILE_META, fileTool } from "./file-tool.js";
-import { bankDisplayName, generateQrTransferImage, qrTransferCaption, resolveBankBin } from "../utils/bank-helpers.js";
-import { resolveBank } from "../core/bank-directory.js";
+import { generateQrTransferImage, qrTransferCaption } from "../utils/bank-helpers.js";
+import { bankName, resolveBank } from "../core/bank-directory.js";
 import { CONVERSATION_ACTIONS, CONVERSATION_META } from "./actions-conversation.js";
 import { PROFILE_ACTIONS, PROFILE_META } from "./actions-profile.js";
 import {
@@ -1350,8 +1350,9 @@ export function registerTools(
                     }
                     if (bankCard || qrTransfer) {
                         const spec = bankCard || qrTransfer;
-                        // A QR resolves its bank with VietQR's list too (live, kept a day; src/core/bank-directory.js).
-                        const bin = bankCard ? resolveBankBin(spec.bank) : (await resolveBank(spec.bank))?.bin;
+                        // A card and a QR resolve the bank with VietQR's list (live, kept a day), the alias table or the
+                        // committed snapshot (src/core/bank-directory.js), as every bank task does.
+                        const bin = (await resolveBank(spec.bank))?.bin;
                         if (!bin)
                             return err(
                                 `Unknown bank: '${spec.bank}'. zalo_bank 'banks' lists the banks Zalo supports.`,
@@ -1360,7 +1361,7 @@ export function registerTools(
                             const payload = { binBank: bin, numAccBank: bankCard.accountNumber };
                             if (bankCard.holderName) payload.nameAccBank = bankCard.holderName;
                             const result = await api.sendBankCard(payload, threadId, Number(threadType));
-                            return sentReply("bank_card", result, { bank: bankDisplayName(bin) });
+                            return sentReply("bank_card", result, { bank: bankName(bin) });
                         }
                         const qrPath = await generateQrTransferImage(
                             bin,
@@ -1371,7 +1372,9 @@ export function registerTools(
                         );
                         if (!qrPath) return err("Could not generate the VietQR image; nothing was sent.");
                         try {
-                            const caption = marked(text || qrTransferCaption(bin, qrTransfer));
+                            const caption = marked(
+                                text || qrTransferCaption(bin, { ...qrTransfer, bankName: bankName(bin) }),
+                            );
                             const result = await api.sendMessage(
                                 { msg: caption, attachments: [qrPath] },
                                 threadId,
@@ -1379,7 +1382,7 @@ export function registerTools(
                             );
                             const att = Array.isArray(result?.attachment) ? result.attachment[0] : result?.attachment;
                             return sentReply("qr_transfer", result?.message ?? att ?? result, {
-                                bank: bankDisplayName(bin),
+                                bank: bankName(bin),
                             });
                         } finally {
                             try {
@@ -1781,7 +1784,7 @@ export function registerTools(
         {
             title: "Get Zalo Message History",
             description:
-                "Get the stored messages of one conversation (DM or group), for context older than the live buffer. It reads the local cache first (everything the listener and `zalo-agent sync` have saved, which can be the full history) and asks the Zalo server only when the cache has nothing for the thread: a group's message store, paged back until it has nothing older. A DM has no server history (Zalo's own apps show 1-1 history from the device's own store), so for a DM only `scan` asks Zalo, by scanning the socket's old-message stream. " +
+                "Get the stored messages of one conversation (DM or group), for context older than the live buffer. It reads the local cache first (everything the listener and `zalo-agent sync` have saved, which can be the full history) and asks the Zalo server only when the cache has nothing for the thread: a group's message store, paged back until it has nothing older. A DM has no server history (Zalo shows 1-1 history from the device's own store), so for a DM only `scan` asks Zalo, by scanning the socket's old-message stream. " +
                 "Without `limit` the reply holds every message (all cached ones, or everything the group's store serves); pass `limit` to page, then page back with `before` (epoch ms: the `cursor` of the previous reply) or, on the server path, `lastMsgId` (the previous reply's `cursor`). Zalo's server serves only messages since this login: `filtered: true` in the reply means older ones exist that only `zalo-agent sync` can restore, and that needs the owner's phone. " +
                 "Each message has `msgId`, `senderId`, `senderName` (your alias for the sender when you set one, else the name your contacts give them, else the name the message carried), `senderAlias`, `senderZaloName` (the name the message carried), `senderDisplayName` (the current name: your alias, else the phonebook name, else the contact name, else the Zalo name, else the display name, else the uid; `senderDisplayNameSource` says which), `text`, `timestamp` and `type`. Reply: `{ threadId, threadType, count, messages, cursor, hasMore }`. " +
                 "For one period, pass `since` and/or `until` (epoch ms) or `last` (7d, 2w, 3m, 1y): the cached messages in it come oldest first, all of them, or `limit` per page with `hasMore` and `nextSince` (pass it back as `since`, same `until`) for the rest. Reply: `{ threadId, since, until, count, messages, hasMore, nextSince }`. It reads only the cache. " +
@@ -2005,6 +2008,7 @@ export function registerTools(
                         "msgId of a message that has a photo, sticker, voice message, video or file (from zalo_get_messages, zalo_wait_for_message or zalo_get_history).",
                     ),
                 threadId: z.string().optional().describe("Only look in this conversation. Omit to search all of them."),
+                allowUnknown: allowUnknownInput(),
                 deliver: z
                     .enum(["inline", "link", "tempfile"])
                     .optional()
@@ -2147,7 +2151,7 @@ export function registerTools(
                 const pick = choose(info.size, info.type);
                 if (pick.error) return err(pick.error);
                 // A JPEG XL picture stays cached as Zalo keeps it; where it would go inline, the JPEG copy Zalo serves
-                // of it goes instead (fetched now, not kept), as Zalo's own readers do.
+                // of it goes instead (fetched now, not kept), as Zalo does.
                 if (
                     info.type === "image/jxl" &&
                     pick.mode === "link" &&
@@ -2403,7 +2407,7 @@ export function registerTools(
                 // The cache first, as a mention is named; one batched lookup
                 // (the one `msg send` uses) for the members it cannot name.
                 // Nothing is written back: zalo.db has three writers.
-                // `names` holds the name each member goes by on Zalo; the owner's alias is applied below.
+                // `names` holds each member's own Zalo name; the alias and the contact name are applied below.
                 const names = new Map();
                 const unnamed = [];
                 for (const uid of group.uids) {
@@ -2414,7 +2418,9 @@ export function registerTools(
                 const warnings = [];
                 if (unnamed.length > 0) {
                     const fetched = await fetchMemberNames(api, unnamed, { batchSize: MEMBER_NAME_BATCH });
-                    for (const [uid, name] of fetched.names) names.set(uid, name);
+                    // The member's own name; the lookup also taught the contact book the name this account knows
+                    // them by (src/core/group-members.js).
+                    for (const [uid, name] of fetched.zaloNames) names.set(uid, name);
                     const still = unnamed.filter((uid) => !names.has(uid)).length;
                     if (fetched.errors.length > 0 && still > 0) {
                         warnings.push(`Zalo did not name ${still} member(s): ${fetched.errors[0]}`);
@@ -2422,12 +2428,11 @@ export function registerTools(
                 }
                 for (const w of warnings) console.error("[mcp-tools] zalo_get_group_members warning:", w);
 
-                // `displayName` alias first, then the contact name, as Zalo's member list shows them; `alias` and
-                // `zaloName` beside it.
+                // `displayName` alias first, then the contact name, then the Zalo name (the one resolver,
+                // src/core/contact-names.js); `alias` and `zaloName` beside it.
                 const members = group.uids.map((uid) => {
-                    const alias = aliasFor(uid);
                     const zaloName = names.get(uid) ?? null;
-                    return { userId: uid, displayName: preferredNameFor(uid) ?? zaloName, alias, zaloName };
+                    return { userId: uid, ...personNameFields(uid, { zaloName }) };
                 });
                 return ok({
                     groupId,
@@ -2695,7 +2700,7 @@ export function registerTools(
         {
             title: "Search Zalo Messages",
             description:
-                "Search the text of messages in the local cache, across all conversations or one. No network call. Accents and case are ignored, as in Zalo's own search ('duoc' finds 'được'; set `accents` to 'exact' to require them). " +
+                "Search the text of messages in the local cache, across all conversations or one. No network call. Accents and case are ignored, as in Zalo's search ('duoc' finds 'được'; set `accents` to 'exact' to require them). " +
                 "Narrow it with `threadId`, `senderId`, `since` / `until` (epoch ms) or `last` (7d, 2w, 3m, 1y), and `types` (text, photo, video, file, link, sticker...; files and links match on their titles). Results are newest first, every hit unless you pass `limit`; with a `limit`, pass the reply's `nextCursor` back as `cursor` for the next page. " +
                 "Each message carries a `snippet` (70 characters before the match, 30 after, with its position); `context` adds that many messages around each hit. `counts` gives the matches by type, and `coverage` says how far back the cache reaches and which `sync` command extends it.",
             inputSchema: z.object({
@@ -2715,6 +2720,7 @@ export function registerTools(
                     .min(1)
                     .optional()
                     .describe("Only messages from this user (the `senderId` of a message)"),
+                allowUnknown: allowUnknownInput(),
                 since: z
                     .number()
                     .int()
@@ -4077,7 +4083,7 @@ export function registerTools(
                 "'alias' (set the nickname this account shows for userId to `alias`; an empty alias removes it; " +
                 "the nickname is what `senderDisplayName` and `@[userId]` mentions then use), " +
                 "'alias_list' (the nicknames set on this account: all of them unless limit is given), " +
-                "'online' (friends online now: dead in practice, Zalo answers 404 and Zalo's own apps discard it too), " +
+                "'online' (friends online now: dead in practice, Zalo answers 404 and discards it too), " +
                 "'close' (close friends), 'last_online' (when userId was last seen, with hiddenBy \"you\" or \"them\" " +
                 "when hidden; nothing is asked when this account hides its own status, unless `askAnyway`; " +
                 "`cached` reads the listener's presence cache instead), " +
@@ -4348,6 +4354,7 @@ export function registerTools(
                             "Only for 'leave' by the group's owner: leave and let Zalo give ownership to a random member",
                         ),
                     ...GROUP_EXTRA_INPUTS,
+                    allowUnknown: allowUnknownInput(),
                     confirm: confirmInput("the actions asked about first (listed above)"),
                     ticket: ticketInput(),
                     dryRun: dryRunInput("the actions asked about first (listed above)"),

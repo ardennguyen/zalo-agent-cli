@@ -1,7 +1,7 @@
 /**
  * The one confirmation guard for destructive actions, shared by the CLI and the MCP server.
  *
- * Which actions are guarded follows Zalo's own confirm dialogs: leaving or breaking up a group, removing a
+ * Which actions are guarded follows what Zalo asks to confirm: leaving or breaking up a group, removing a
  * member or a friend, recalling or deleting a message, removing a reminder, closing a poll, and the like. Each
  * guarded action is one entry in GUARDS, and the sentence that says what it would do is built there once, so
  * `group leave` on the command line and `zalo_group leave` over MCP refuse, preview and ask in the same words.

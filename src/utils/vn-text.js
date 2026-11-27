@@ -1,7 +1,7 @@
 /**
  * Vietnamese text folding for search (plan item F1).
  *
- * Zalo's own clients search with `simpleStripVietnamese`: lowercase, every Vietnamese vowel with its diacritics
+ * Zalo searches with a fold: lowercase, every Vietnamese vowel with its diacritics
  * to the bare letter, `đ` to `d`, on both the keyword and the text, then a plain substring match. People type
  * "duoc", not "được", so a search that does not fold finds almost nothing (measured: 0 hits against 56 for
  * "duoc"). This is that fold, built on Unicode decomposition so the composed and the decomposed spelling of a letter
@@ -9,7 +9,7 @@
  *
  * It strips exactly the Vietnamese marks (grave, acute, tilde, hook above, dot below, breve, circumflex, horn) and
  * only from the vowels a, e, i, o, u, y. Every other letter is left as it is: `ñ`, `ç` and `ü` do not lose theirs,
- * as in the official function.
+ * as in Zalo's fold.
  *
  * Both sides of a search go through the same function, so the result only has to be consistent, not canonical:
  * the output is not recomposed.

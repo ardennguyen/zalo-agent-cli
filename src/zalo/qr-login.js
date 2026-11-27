@@ -1,8 +1,8 @@
 /**
- * The QR login, as Zalo's own client does it (plan item L15).
+ * The QR login, as Zalo does it (plan item L15).
  *
  * The previous engine's `loginQR` differed from what the server expects: it announces `continue=https://zalo.me/pc`
- * to three calls, makes a `verify-client` call Zalo's own app never makes, leaves out `cliGenQR`, and
+ * to three calls, makes a `verify-client` call Zalo never makes, leaves out `cliGenQR`, and
  * ends with a request to `jr/userinfo`. This is the verified sequence instead, all on `id.zalo.me` until the
  * last hop:
  *

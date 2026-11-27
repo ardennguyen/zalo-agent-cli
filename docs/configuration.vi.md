@@ -141,7 +141,7 @@ mã bằng KMS). `ZALO_MCP_ADMIN_TOKEN` chỉ dùng khi phát triển.
 
 ### Rời nhóm (`groups.onLeave`)
 
-Khi tài khoản **rời** một nhóm, bị **xóa** hoặc bị **chặn** khỏi nhóm, hoặc nhóm bị **giải tán**, ứng dụng Zalo xóa
+Khi tài khoản **rời** một nhóm, bị **xóa** hoặc bị **chặn** khỏi nhóm, hoặc nhóm bị **giải tán**, Zalo xóa
 ngay lịch sử cục bộ của nhóm đó. Engine này cũng làm vậy theo mặc định:
 
 | Giá trị | Điều gì xảy ra |

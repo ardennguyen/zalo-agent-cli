@@ -9,7 +9,7 @@ const DAY = 24 * HOUR;
 const UNITS = Object.freeze({ h: HOUR, d: DAY, w: 7 * DAY, m: 30 * DAY, y: 365 * DAY });
 
 /**
- * The start of a period that ends now: `7d`, `2w`, `3m`, `1y`, `12h` (Zalo's own presets are 1 week, 1 month, 3 months).
+ * The start of a period that ends now: `7d`, `2w`, `3m`, `1y`, `12h` (Zalo's presets are 1 week, 1 month, 3 months).
  *
  * @param {string} text
  * @param {number} [now]

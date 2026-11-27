@@ -4,12 +4,16 @@
  * `group members` and the MCP tool `zalo_get_group_members` list members
  * through the same function, and `msg send` and that tool name uncached
  * members through the same lookup, so the CLI and an agent see one answer.
- * No name is written to zalo.db: its only writers are the listener, sync and
- * `msg history`'s fetch (AGENTS.md §13), so a name looked up here is used for
- * the call that looked it up and then forgotten. The one write is a group's
- * exit, when Zalo answers it as disbanded or not ours (src/core/group-exit.js).
+ * No message row or stored name is written: zalo.db's writers are the listener,
+ * sync and `msg history`'s fetch (AGENTS.md §13), so a Zalo name looked up here is
+ * used for the call that looked it up. Its contact name goes into the contact
+ * book, as every profile read's does (src/core/contact-names.js), and the members
+ * a group read lists are recorded as known to the account (src/core/known-ids.js).
+ * The one other write is a group's exit, when Zalo answers it as disbanded or not
+ * ours (src/core/group-exit.js).
  */
 
+import { noteProfiles, pickName } from "./contact-names.js";
 import { getGroupInfoWatched } from "./group-exit.js";
 
 /**
@@ -44,13 +48,17 @@ export async function groupMemberUids(api, groupId) {
 }
 
 /**
- * Ask Zalo for the display names of some users (`getGroupMembersInfo`).
+ * Ask Zalo for the names of some users (`getGroupMembersInfo`), named as this account shows them.
  *
  * Member profiles are fetched the way Zalo shows a member list:
  * one request at a time, a bounded number of ids per request. The ids go
  * in the request URL, so `batchSize` keeps a large group's lookup from
  * outgrowing one URL. Keys come back as the uid, sometimes with the
- * `_0` version suffix; the name is `displayName`, else `zaloName`.
+ * `_0` version suffix.
+ *
+ * Each profile goes into the contact book (src/core/contact-names.js noteProfiles): its `displayName` is the name
+ * this account knows the member by when it differs from their own `zaloName`. `names` is the name to show, alias
+ * first (the owner's alias, else that contact name, else the Zalo name); `zaloNames` is the member's own name.
  *
  * Never throws. A batch that fails leaves its uids unnamed and is reported in
  * `errors`, and the batches after it still run.
@@ -58,23 +66,29 @@ export async function groupMemberUids(api, groupId) {
  * @param {object} api - logged-in session
  * @param {string[]} uids
  * @param {{batchSize?: number}} [opts] - ids per request; all of them in one request by default
- * @returns {Promise<{names: Map<string, string>, errors: string[]}>} uid → display name, for those found
+ * @returns {Promise<{names: Map<string, string>, zaloNames: Map<string, string>, errors: string[]}>} for those found
  */
 export async function fetchMemberNames(api, uids, { batchSize = Infinity } = {}) {
     const names = new Map();
+    const zaloNames = new Map();
     const errors = [];
     const size = Number.isFinite(batchSize) && batchSize > 0 ? Math.floor(batchSize) : uids.length;
     for (let i = 0; i < uids.length; i += size) {
         try {
             const profiles = (await api.getGroupMembersInfo(uids.slice(i, i + size)))?.profiles || {};
+            const byUid = new Map();
             for (const [key, profile] of Object.entries(profiles)) {
-                const uid = String(key).replace(/_0$/, "");
-                const name = profile?.displayName || profile?.zaloName;
-                if (name) names.set(uid, name);
+                if (profile && typeof profile === "object") byUid.set(String(key).replace(/_0$/, ""), profile);
+            }
+            noteProfiles(byUid);
+            for (const [uid, profile] of byUid) {
+                const picked = pickName(uid, { ...profile, alias: undefined });
+                if (picked.zaloName) zaloNames.set(uid, picked.zaloName);
+                if (picked.name && picked.source !== "uid") names.set(uid, picked.name);
             }
         } catch (e) {
             errors.push(e?.message || String(e));
         }
     }
-    return { names, errors };
+    return { names, zaloNames, errors };
 }

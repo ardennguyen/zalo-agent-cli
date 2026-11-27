@@ -5,7 +5,7 @@
  */
 
 /** The day this list was fetched. */
-export const VIETQR_BANKS_AS_OF = "2026-11-26";
+export const VIETQR_BANKS_AS_OF = "2026-11-27";
 
 /** Each bank: its BIN (a number, as Zalo takes it), NAPAS code, short name and full Vietnamese name. */
 export const VIETQR_BANKS = [

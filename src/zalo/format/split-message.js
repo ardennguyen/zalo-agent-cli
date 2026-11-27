@@ -6,7 +6,7 @@
  * list passes roughly 3.1 to 3.5 KB. Chinese and long bulleted answers hit the second one early, because a Chinese
  * character is three bytes and each bullet carries a style entry. Measured live, 2026-10-29.
  *
- * Zalo's own apps never send such a message. They budget every message at 3000 UTF-8 bytes of the
+ * Zalo never sends such a message. It budgets every message at 3000 UTF-8 bytes of the
  * text plus, for a styled message, the JSON of its styles; cuts at a newline when it can, else at a sentence end or
  * a space; trims the pieces; and sends them one after another, 300 ms apart. This does the same.
  *

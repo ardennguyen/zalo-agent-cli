@@ -22,18 +22,18 @@
  * as an empty window that was settled: the run recorded success and closed the
  * coverage gap it was meant to repair. Only 4 and 5 are confirmation.
  *
- * Statuses 6 to 10 are fatal to Zalo's own client, and the one decline seen on the wire
+ * Statuses 6 to 10 are fatal to Zalo, and the one decline seen on the wire
  * (a request, two status frames, then an immediate release, and no downloads)
  * fits it.
  */
-/** How long the phone may take to confirm. Zalo's own app waits ten minutes. */
+/** How long the phone may take to confirm. Zalo waits ten minutes. */
 export const CONFIRM_WAIT_MS = 600_000;
 
 /** How long the phone may stay idle (status 1 or 2) while a sync runs. */
 export const IDLE_TIMEOUT_MS = 600_000;
 
 /**
- * How long a message session may stay incomplete once the phone has said it is idle. Zalo's own client waits the whole
+ * How long a message session may stay incomplete once the phone has said it is idle. Zalo waits the whole
  * {@link IDLE_TIMEOUT_MS} and then fails that one session. A phone that went idle with a batch of a session never
  * sent does not send it later (live, 2026-10-28: 29 of 30 conversations covered, the last batch seen, one index
  * missing, the phone idle for ten minutes and then some), so the session is given a minute and then treated as failed.

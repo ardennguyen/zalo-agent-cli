@@ -1,7 +1,7 @@
 /**
  * `msg send` writes nothing to zalo.db.
  *
- * Arden, 2026-09-30: "the msg send should not write anything, the data will
+ * The maintainer, 2026-09-30: "the msg send should not write anything, the data will
  * come from live listener or sync." The one write `msg send` still made was a
  * convenience: when a mention named someone the cache could not name, the name
  * `getGroupMembersInfo` returned was saved to `contacts` so the next send could

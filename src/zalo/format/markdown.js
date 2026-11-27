@@ -7,7 +7,7 @@
  * asterisks and hyphens still in them. This turns the Markdown into the text Zalo should show and the
  * ranges that make it look right.
  *
- * What Zalo's own clients send, measured on real rich-text messages in a local cache, decides the mapping:
+ * What Zalo sends, measured on real rich-text messages in a local cache, decides the mapping:
  *
  *   - a bullet is the line's text with NO marker, covered whole by `lst_1` (start at the line start, length
  *     of the line without its newline);
@@ -16,7 +16,7 @@
  *
  * Supported: `**bold**` / `__bold__`, `*italic*` / `_italic_`, `***both***`, `~~strike~~`, `# headings`
  * (bold; `#` and `##` also big), `- * +` bullet lists with nesting, ordered lists (kept as typed, numbers
- * included: Zalo's own clients type them), `> quotes` (marker dropped), `` `code` `` and fenced blocks
+ * included: Zalo keeps them as typed), `> quotes` (marker dropped), `` `code` `` and fenced blocks
  * (markers dropped, content kept as is), `[text](url)` (becomes `text (url)`), images, `---` rules (dropped),
  * backslash escapes, and Zalo's own `{red:text}` colors. Tables and anything else are left as typed.
  *

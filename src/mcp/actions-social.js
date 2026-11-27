@@ -28,9 +28,9 @@ function ownOf(api) {
 /** What Zalo answers for an endpoint it has retired, and what to use instead (as `friend online` / `close` say). */
 const RETIRED_404 = {
     online:
-        "Zalo answers 404 for the online-friends list, and Zalo's own apps discard this answer too; 'last_online' " +
+        "Zalo answers 404 for the online-friends list, and Zalo itself discards this answer too; 'last_online' " +
         "works for one user, and the listener caches Zalo's presence pushes ('last_online' with `cached`).",
-    close: "Zalo has retired close friends: Zalo's own apps no longer use it, and the request answers 404.",
+    close: "Zalo has retired close friends: Zalo no longer uses it, and the request answers 404.",
 };
 
 /** A 404 from a retired endpoint, said plainly. */

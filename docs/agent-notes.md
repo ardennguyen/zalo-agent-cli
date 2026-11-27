@@ -1539,6 +1539,20 @@ and `r.threadId != null`, a deliberate null-or-undefined test, was spelled out r
 changed. `== null` is a common idiom, which is exactly why each one wants reading before
 "fixing" — `=== null` alone would have let `undefined` through.
 
+## A stand-in HTTP server answers with `Connection: close` (2026-11-27)
+
+`tests/unit/media-age-zcloud.test.js` failed 1-4 of its cases only inside the full suite (from 3.5.0 on), never alone:
+a request to its throwaway server ended as `fetch failed` (undici `UND_ERR_SOCKET` "other side closed", or
+`ECONNRESET`) before it reached the handler, so a test read `network` where it asserted a 404, a zCloud fetch or a hit.
+The cause is HTTP keep-alive inside one process: Node's server closes a socket idle for 5 s (`keepAliveTimeout`), and
+the client's fetch pool, slowed by a loaded machine, can already be writing the next test's request to that socket. A
+gap of about 5 s between two requests (RSA work, a slow test before) is what the full suite on a busy host adds. Shown
+by a stress run on the test server (8 CPU burners, 6 copies of the file at once): 7 failing cases in 36 runs, each a
+socket reset; with the server sending `connection: close` (no socket is reused) 0 in 60.
+
+Rule for a test's own HTTP server that is asked more than once: send `connection: close`, or close idle connections
+deliberately; never leave the reuse to the two keep-alive timers.
+
 ## Real ids in the repo, and why the rule alone did not stop them (2026-09-30)
 
 AGENTS.md §0 #6 already forbade real user ids in tests and docs. On 2026-09-30 the tree still

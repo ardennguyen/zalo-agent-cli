@@ -95,6 +95,11 @@ const blobs = new Map();
 
 before(async () => {
     server = createServer((req, res) => {
+        // One connection per request. A kept-alive socket left idle between two tests is closed by this server's
+        // keep-alive timer (5 s) while the client, slowed by a loaded machine, may already be writing its next request
+        // to it: that request dies as "other side closed" / ECONNRESET before it reaches this handler, and the test
+        // reads a network failure where it asserts a 404, a zCloud fetch or a hit.
+        res.setHeader("connection", "close");
         const path = req.url.split("?")[0];
         hits[path] = (hits[path] || 0) + 1;
         if (path.startsWith("/cdn/ok")) {

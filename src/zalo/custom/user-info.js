@@ -57,15 +57,100 @@ export function userInfoLog(message) {
 }
 
 /**
- * The error as Zalo reported it: its code and its message.
+ * The error as Zalo reported it: its code and its message. A request that never got an answer (fetch's bare "fetch
+ * failed") says why, from its `cause`: the socket error and its code.
  *
  * @param {unknown} e
- * @returns {string} e.g. `code 221: Quá giới hạn`, or just the message
+ * @returns {string} e.g. `code 221: Quá giới hạn`, `fetch failed (ECONNRESET: other side closed)`, or the message
  */
 export function describeLookupError(e) {
     const message = e?.message || String(e);
+    const why = networkCause(e);
+    if (why) return `${message} (${why})`;
     const code = e?.code ?? message.match(/\((-?\d+)\)\s*$/)?.[1];
     return code !== undefined && code !== null && code !== "" ? `code ${code}: ${message}` : message;
+}
+
+/** Socket and DNS error codes of a request that may simply be sent again: nothing was answered. */
+const TRANSIENT_CODES = new Set([
+    "ECONNRESET",
+    "ECONNREFUSED",
+    "ECONNABORTED",
+    "EPIPE",
+    "ETIMEDOUT",
+    "EAI_AGAIN",
+    "ENETUNREACH",
+    "EHOSTUNREACH",
+    "UND_ERR_SOCKET",
+    "UND_ERR_CLOSED",
+    "UND_ERR_CONNECT_TIMEOUT",
+    "UND_ERR_HEADERS_TIMEOUT",
+    "UND_ERR_BODY_TIMEOUT",
+]);
+
+/**
+ * Why fetch failed, from the error's `cause` chain: `<code>: <message>`, or null when it is not a network failure.
+ *
+ * @param {unknown} e
+ * @returns {string|null}
+ */
+export function networkCause(e) {
+    if (!(e instanceof TypeError) || !/fetch failed/i.test(String(e.message))) return null;
+    let c = e.cause;
+    for (let depth = 0; c?.cause && !c.code && depth < 4; depth++) c = c.cause;
+    if (!c) return "no cause given";
+    const code = c.code ? String(c.code) : "";
+    const text = c.message ? String(c.message) : "";
+    return [code, text].filter(Boolean).join(": ") || String(c);
+}
+
+/**
+ * Whether a failed request never got an answer from Zalo (a reset or refused connection, a connect or read timeout, a
+ * DNS hiccup), so asking once more is safe and likely to work. A reply Zalo did give (an error code, a rate limit) is
+ * not.
+ *
+ * @param {unknown} e
+ * @returns {boolean}
+ */
+export function isTransientNetworkError(e) {
+    if (isRateLimitError(e)) return false;
+    if (e?.timeout === true) return true;
+    if (!(e instanceof TypeError) || !/fetch failed/i.test(String(e.message))) return false;
+    let c = e.cause;
+    for (let depth = 0; c && depth < 5; depth++, c = c.cause) {
+        if (TRANSIENT_CODES.has(String(c.code))) return true;
+        if (/other side closed|socket hang up|terminated/i.test(String(c.message))) return true;
+    }
+    // fetch failed without a cause we know: no answer came either way.
+    return true;
+}
+
+/** Pauses before a request that got no answer is sent again. */
+export const NETWORK_RETRY_DELAYS_MS = Object.freeze([1_000, 3_000]);
+
+/**
+ * Run `fn`, and again after each pause while it fails without an answer from Zalo ({@link isTransientNetworkError}).
+ * Any other failure is thrown at once.
+ *
+ * @template T
+ * @param {() => Promise<T>} fn
+ * @param {object} [o]
+ * @param {readonly number[]} [o.delays]
+ * @param {(ms: number) => Promise<void>} [o.sleep]
+ * @param {(e: unknown, attempt: number) => void} [o.onRetry]
+ * @returns {Promise<T>}
+ */
+export async function retryOnNetworkError(fn, { delays = NETWORK_RETRY_DELAYS_MS, sleep, onRetry } = {}) {
+    const wait = sleep ?? ((ms) => pacing.sleep(ms));
+    for (let attempt = 0; ; attempt++) {
+        try {
+            return await fn();
+        } catch (e) {
+            if (attempt >= delays.length || !isTransientNetworkError(e)) throw e;
+            onRetry?.(e, attempt + 1);
+            await wait(delays[attempt]);
+        }
+    }
 }
 
 /**
@@ -173,7 +258,9 @@ export async function runPacedBatches(ids, opts) {
         }
         const batch = list.slice(b * batchSize, (b + 1) * batchSize);
         try {
-            out.results.push(await call(batch));
+            // A batch that got no answer at all (a reset connection, a timeout) is sent again before it counts as
+            // failed: a lookup must not give up on a network blip.
+            out.results.push(await retryOnNetworkError(() => call(batch), { sleep }));
             consecutive = 0;
         } catch (e) {
             out.failed++;

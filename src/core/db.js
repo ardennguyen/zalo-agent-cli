@@ -2293,6 +2293,19 @@ export function markMediaGone(msgId, at = Date.now()) {
         .run(Number(at), String(msgId));
 }
 
+/**
+ * Take back a gone mark: the file is pending again (an old file whose server gave no answer at all, which says nothing
+ * about the file). Set by the media downloader only.
+ *
+ * @param {string} msgId
+ */
+export function clearMediaGone(msgId) {
+    if (!db) throw new Error("Database not initialized");
+    return db
+        .prepare("UPDATE messages SET mediaGoneAt = NULL WHERE msgId = ? AND mediaGoneAt IS NOT NULL")
+        .run(String(msgId));
+}
+
 /** How many attachment-bearing messages a download already sorted as gone. */
 export function countGoneAttachments(threadId = null) {
     if (!db) throw new Error("Database not initialized");

@@ -17,6 +17,7 @@ import {
     describeLookupError,
     isRateLimitError,
     lookupsCoolingDown,
+    retryOnNetworkError,
     noteLookupRateLimit,
 } from "../zalo/custom/user-info.js";
 
@@ -117,7 +118,8 @@ export async function refreshProfiles(api, uids, opts = {}) {
         }
         out.requests++;
         try {
-            const reply = await api.getUserInfo(chunk);
+            // A request that got no answer (a reset connection, a timeout) is sent again before the refresh stops.
+            const reply = await retryOnNetworkError(() => api.getUserInfo(chunk), { sleep });
             out.asked += chunk.length;
             for (const bag of [reply?.changed_profiles, reply?.unchanged_profiles]) {
                 for (const [uid, profile] of Object.entries(bag || {})) if (profile) out.profiles.set(uid, profile);

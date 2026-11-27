@@ -22,6 +22,7 @@
  * Nothing here knows about decryption or the database: it only moves frames. The socket is reached through
  * `getListener()` so a reconnect that replaces the listener is followed.
  */
+import { performance } from "node:perf_hooks";
 import { plainCodec } from "../kernel/secret-file.js";
 import { nextReqId as sharedNextReqId } from "../req-id.js";
 import { DISPOSE_REASON } from "./transfer.js";
@@ -127,6 +128,52 @@ export function createSessionStore(file, { codec = plainCodec, meta = {} } = {})
     };
 }
 
+/** How many times its length an awake wait may last in wall time, however busy the loop is. */
+export const AWAKE_WALL_FACTOR = 6;
+
+/**
+ * A wait of `ms` counted in time the event loop was free to hear the answer.
+ *
+ * It ticks every `tickMs` (a tenth of the wait, 5 to 100 ms). A tick that comes late counts for at most two ticks:
+ * the rest of the gap was the loop stalled (decoding, storing, a slow disk), when no frame could have been read. When
+ * the wait is spent, the expiry is still put off by one `setImmediate`, so the frames that reached the socket while
+ * the loop was busy are read first: an ack that arrived in time is never declared missing. A loop that stays busy
+ * cannot stretch the wait without end: it expires after `ms` times {@link AWAKE_WALL_FACTOR} of wall time whatever
+ * happened.
+ *
+ * @param {number} ms
+ * @param {object} p
+ * @param {() => void} [p.onTick] - every tick (the socket check)
+ * @param {() => void} p.onExpire - once, when the awake time reaches `ms`
+ * @param {() => number} [p.now] - a monotonic clock in ms
+ * @returns {() => void} stops the wait
+ */
+export function awakeWait(ms, { onTick = () => {}, onExpire, now = () => performance.now() }) {
+    const started = now();
+    const tickMs = Math.max(5, Math.min(100, Math.floor(ms / 10)));
+    const maxCredit = tickMs * 2;
+    let awake = 0;
+    let last = now();
+    let stopped = false;
+    let immediate = null;
+    const timer = setInterval(() => {
+        if (stopped) return;
+        const t = now();
+        awake += Math.min(t - last, maxCredit);
+        last = t;
+        onTick();
+        if (stopped || immediate || (awake < ms && t - started < ms * AWAKE_WALL_FACTOR)) return;
+        immediate = setImmediate(() => {
+            if (!stopped) onExpire();
+        });
+    }, tickMs);
+    return () => {
+        stopped = true;
+        clearInterval(timer);
+        if (immediate) clearImmediate(immediate);
+    };
+}
+
 /** Raised for a request that did not go through. */
 export class SyncRequestError extends Error {
     /**
@@ -194,16 +241,23 @@ export function createSyncChannel({
         return Boolean(ws) && ws.readyState === 1;
     };
 
-    /** Wait for the ack of `reqId`: resolves `{ack}` or `{timeout: true, closed}`. */
+    /**
+     * Wait for the ack of `reqId`: resolves `{ack}` or `{timeout: true, closed}`.
+     *
+     * The wait is counted in time this process was awake to hear the answer (see {@link awakeWait}): a stall of our
+     * own event loop is not Zalo's silence. A plain timer fired as the loop came back from an 18 s stall, before the
+     * socket's frames read in that same turn, and an ack already on the wire was declared missing.
+     */
     function waitAck(reqId, ms) {
         return new Promise((resolve) => {
-            const watch = setInterval(() => {
-                if (!socketOpen()) finish({ timeout: true, closed: true });
-            }, 100);
-            const timer = setTimeout(() => finish({ timeout: true, closed: !socketOpen() }), ms);
+            const stop = awakeWait(ms, {
+                onTick: () => {
+                    if (!socketOpen()) finish({ timeout: true, closed: true });
+                },
+                onExpire: () => finish({ timeout: true, closed: !socketOpen() }),
+            });
             const finish = (result) => {
-                clearInterval(watch);
-                clearTimeout(timer);
+                stop();
                 waiting.delete(reqId);
                 resolve(result);
             };

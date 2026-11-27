@@ -166,6 +166,34 @@ describe("the sync channel", () => {
             assert.equal(got.req.length, 1);
         });
 
+        it("takes an ack that arrived while our own event loop was stalled past the wait", async () => {
+            // The ack reaches the socket in time, but this process is busy (a decode, a store) for longer than the
+            // whole wait. A plain timer fired as the loop came back, before the frame was read: "no answer".
+            answer(() => null);
+            await open({ ackTimeoutMs: 300 });
+            const pending = send(channel, "sync-a");
+            const frame = await zalo.sock.waitFor((f) => f.cmd === 590);
+            zalo.sock.push(590, 0, ok({ reqId: frame.data.reqId, err: 0, ts: 7 }));
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 900);
+            const r = await pending;
+            assert.equal(r.ts, 7);
+            assert.equal(r.attempts, 1);
+        });
+
+        it("still times out a request Zalo never answers, the loop stalled or not", async () => {
+            answer(() => null);
+            await open({ ackTimeoutMs: 150 });
+            const started = Date.now();
+            const pending = send(channel, "sync-a");
+            await zalo.sock.waitFor((f) => f.cmd === 590);
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 400);
+            await assert.rejects(pending, (e) => e.failure === REQUEST_FAILURE.TIMEOUT);
+            // The stall is not counted as waiting, and the wait does not stretch without end either.
+            const took = Date.now() - started;
+            assert.ok(took >= 400 + 60, `gave up after ${took} ms`);
+            assert.ok(took < 150 * 6 + 1000, `waited ${took} ms`);
+        });
+
         it("reports a socket that closed while it waited as that, not as a timeout", async () => {
             answer(() => null);
             await open({ ackTimeoutMs: 2000 });

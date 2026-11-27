@@ -30,8 +30,9 @@ function threadsFor(opts) {
 }
 
 /**
- * Visit every cached thread (or one, or the first `limit`), the ones a live board event flagged first, and store
- * what their boards hold. A thread's "board changed" flag is cleared only once its own fetch worked. When Zalo answers
+ * Visit every cached thread (or one, or the first `limit`), the ones a live board event or a failed fetch flagged
+ * first, and store what their boards hold. A thread's "board changed" flag is cleared only once its own fetch worked,
+ * and set when it failed. When Zalo answers
  * 221 the pass stops, remembers the thread it stopped at, and the next full pass starts from there.
  *
  * @param {object} api - logged-in session
@@ -78,8 +79,12 @@ export async function runBoardPass(api, opts = {}) {
         reminders: opts.reminders !== false,
         concurrency: opts.concurrency,
         delayMs: opts.delayMs,
+        ...(opts.networkRetryDelaysMs && { networkRetryDelaysMs: opts.networkRetryDelaysMs }),
         onProgress: (p) => {
+            // A thread whose fetch failed (a network error, a refusal) stays flagged, or is flagged now: the next
+            // pass does it first, so a failed pass resumes on its own threads.
             if (p.phase === "thread" && p.ok) clearSyncState(`boardStale:${p.threadId}`);
+            else if (p.phase === "thread") setSyncState(`boardStale:${p.threadId}`, String(Date.now()));
             onProgress(p);
         },
     });

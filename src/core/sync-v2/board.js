@@ -29,6 +29,7 @@
 import { THREAD_TYPE } from "../../zalo/enums.js";
 import { boardCursor, listOneOneBoard } from "../../zalo/api/boards.js";
 import { upsertBoardItem, upsertReminder } from "../db.js";
+import { NETWORK_RETRY_DELAYS_MS, networkCause, retryOnNetworkError } from "../../zalo/custom/user-info.js";
 
 /**
  * List a 1-1 conversation's board (notes, pinned messages, reminders): `/api/board/oneone/list` with board type 0,
@@ -161,6 +162,9 @@ function asList(resp) {
 export function describeZaloError(e) {
     const msg = e?.message;
     const text = msg && msg !== "null" && msg !== "undefined" ? String(msg) : "";
+    // fetch's bare "fetch failed": say what the connection did.
+    const cause = networkCause(e);
+    if (cause) return `${text} (${cause})`;
     const code = e?.code;
     if (code !== undefined && code !== null) return text ? `${text} (code ${code})` : `code ${code}`;
     return text || String(e);
@@ -205,6 +209,7 @@ const itemKey = (item) => {
  * @param {number} [opts.delayMs=120] - pause between calls within a worker
  * @param {number} [opts.pageSize=20] - board items per page
  * @param {number} [opts.maxPages=Infinity] - opt-in board page bound per thread
+ * @param {readonly number[]} [opts.networkRetryDelaysMs] - pauses before a call that got no answer is sent again
  * @param {(p: object) => void} [opts.onProgress] - one `{phase: "thread",
  *   threadId, ok}` event per finished thread, where `ok` is false if any of
  *   that thread's own calls failed. Callers that clear per-thread state must
@@ -223,7 +228,10 @@ export async function syncBoards(opts = {}) {
         pageSize = BOARD_PAGE_SIZE,
         maxPages = Infinity,
         onProgress = () => {},
+        networkRetryDelaysMs = NETWORK_RETRY_DELAYS_MS,
     } = opts;
+    /** One board call, sent again when it got no answer (a reset connection, a timeout) before it counts as failed. */
+    const ask = (fn) => retryOnNetworkError(fn, { delays: networkRetryDelaysMs, sleep });
 
     const stats = {
         threads: 0,
@@ -282,9 +290,11 @@ export async function syncBoards(opts = {}) {
                 for (let page = 1; page <= maxPages; page++) {
                     let resp;
                     try {
-                        resp = isGroup
-                            ? await api.getListBoard({ page, count: pageSize, ...pageCursor }, t.threadId)
-                            : await listOneOneBoard(api, t.threadId, page, pageSize);
+                        resp = await ask(() =>
+                            isGroup
+                                ? api.getListBoard({ page, count: pageSize, ...pageCursor }, t.threadId)
+                                : listOneOneBoard(api, t.threadId, page, pageSize),
+                        );
                     } catch (e) {
                         if (limited(e, index)) return;
                         noteHere("board", e);
@@ -322,10 +332,12 @@ export async function syncBoards(opts = {}) {
                     let list;
                     try {
                         list = asList(
-                            await api.getListReminder(
-                                { page, count: REMINDER_PAGE_SIZE },
-                                t.threadId,
-                                isGroup ? THREAD_TYPE.GROUP : THREAD_TYPE.USER,
+                            await ask(() =>
+                                api.getListReminder(
+                                    { page, count: REMINDER_PAGE_SIZE },
+                                    t.threadId,
+                                    isGroup ? THREAD_TYPE.GROUP : THREAD_TYPE.USER,
+                                ),
                             ),
                         );
                     } catch (e) {

@@ -9,6 +9,17 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+## [3.6.1] — 2026-11-27
+
+#### Fixed
+
+- **The published package ships the decode worker.** 3.6.0 built only the CLI and the key worker into `dist/`, so an installed engine could not start its decode worker (`Cannot find module …/dist/decode-worker.js`) and every restore decrypted and decoded on the main thread, holding the event loop for seconds at a time. `dist/decode-worker.js` is built now, and a test builds the package and fails on any file the bundle loads beside itself that is not there.
+- **A stall of the engine's own event loop is no longer taken for Zalo's silence.** The wait for the acknowledgement of a sync request (10 s) or a release (3 s) counts only the time the process was free to hear the answer, and reads the frames that arrived during a stall before it gives up; a busy loop can stretch a wait to at most six times its length. Storing a decoded chunk also hands the loop back every 50 ms, not only every 500 rows.
+- **One unanswered sync request no longer fails the whole restore.** A message request Zalo leaves unanswered is asked again as a new session, after 2 s and then 5 s; the session given up on is released as failed. When all three tries go unanswered the run stops asking, consumes the sessions already taken, and ends `partial` with what was stored (`requestFailure` in the result says why); what was not asked for stays pending and the next run asks for it. The conversation-list request is not asked again (it is the one the phone prompts for), and without it nothing can be kept: it still fails the run.
+- **Name lookups and board reads ride out a dropped connection.** A profile refresh, a user-info batch, a `gid/decrypt` batch and a board or reminder page that got no answer at all (a reset or refused connection, a connect or read timeout, a DNS failure) are sent again after 1 s and 3 s before they count as failed; a refusal Zalo did give, and a rate limit, are not. When every try fails, the log says why fetch failed (for example `fetch failed (UND_ERR_SOCKET: other side closed)`) instead of the bare `fetch failed`. None of these ever block or fail the text restore.
+- **A board pass resumes on its own failures.** A thread whose notes, polls or reminders could not be read is flagged, and the next pass (`sync-boards`, `sync`'s boards stage, `zalo_sync` `boards`) reads it first.
+- **An old file is no longer written off over a dropped connection.** A file past the CDN's keeping window that zCloud does not list was remembered as dead and marked gone on its first network failure (a reset or refused connection, a DNS failure, the other side closing, a timeout), so one flaky moment lost it for good. It is now asked again after 1 s and then 4 s, each time on a connection of its own; still unanswered, it is counted `old-no-answer` and left pending, and the next run asks again. Only a real answer writes a file off: a 404/410 (or a 5xx, as before) from Zalo's servers, with zCloud not listing it. A row an earlier run marked gone this way is pending again.
+
 ## [3.6.0] — 2026-11-27
 
 #### Changed
@@ -1114,7 +1125,8 @@ npm install -g @ardennguyen/zalo-agent-cli@2.0.0
 
 Commands, flags and defaults: `skill/references/command-reference.md`. Operating it on a server: `docs/deployment.md`.
 
-[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.6.0...v3.0-dev
+[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.6.1...v3.0-dev
+[3.6.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.6.1
 [3.6.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.6.0
 [3.5.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.5.1
 [3.5.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.5.0

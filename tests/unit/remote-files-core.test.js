@@ -47,6 +47,9 @@ let base;
 const routes = {};
 before(async () => {
     server = http.createServer((req, res) => {
+        // One connection per request (see media-age-zcloud.test.js): a kept-alive socket closed by
+        // the keep-alive timer while a slowed client reuses it fails the request ("other side closed").
+        res.setHeader("connection", "close");
         const h = routes[req.url.split("?")[0]];
         if (!h) return res.writeHead(404).end("nope");
         h(req, res);

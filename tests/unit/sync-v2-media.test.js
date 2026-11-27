@@ -82,6 +82,9 @@ const CSV_BYTES = Buffer.from(
 
 before(async () => {
     server = createServer((req, res) => {
+        // One connection per request (see media-age-zcloud.test.js): a kept-alive socket closed by
+        // the keep-alive timer while a slowed client reuses it fails the request ("other side closed").
+        res.setHeader("connection", "close");
         const path = req.url.split("?")[0];
         hits[path] = (hits[path] || 0) + 1;
         heads.push(req.headers);

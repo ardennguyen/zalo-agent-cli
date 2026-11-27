@@ -25,6 +25,9 @@ after(() => {
 async function proxy(answer = "via-proxy") {
     const seen = [];
     const server = http.createServer((req, res) => {
+        // One connection per request (see media-age-zcloud.test.js): a kept-alive socket closed by
+        // the keep-alive timer while a slowed client reuses it fails the request ("other side closed").
+        res.setHeader("connection", "close");
         seen.push({ method: req.method, url: req.url, headers: req.headers });
         res.writeHead(200, { "content-type": "text/plain", "x-seen-by": "proxy" });
         res.end(answer);
@@ -56,5 +59,35 @@ describe("proxy fetch", () => {
         const res = await f("http://zalo.test/post", { method: "POST", body: "a=1&b=2" });
         assert.equal(await res.text(), "ok");
         assert.equal(p.seen[0].method, "POST");
+    });
+});
+
+describe("proxy fetch: a request on a connection of its own", () => {
+    it("a request marked freshConnection does not use the pool, and its connection is closed after it", async () => {
+        const seen = [];
+        const server = http.createServer((req, res) => {
+            seen.push({ url: req.url, port: req.socket.remotePort, connection: req.headers.connection });
+            res.end("ok");
+        });
+        // Kept alive on purpose, for longer than the test: the pool must be there to show the marked request skips it.
+        server.keepAliveTimeout = 60_000;
+        servers.push(server);
+        await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const f = createProxyFetch(`http://127.0.0.1:${server.address().port}`);
+        for (const [path, init] of [
+            ["/a", {}],
+            ["/b", { freshConnection: true }],
+            ["/c", {}],
+        ]) {
+            assert.equal(await (await f(`http://zalo.test${path}`, init)).text(), "ok");
+        }
+        assert.deepEqual(
+            seen.map((s) => s.url),
+            ["http://zalo.test/a", "http://zalo.test/b", "http://zalo.test/c"],
+            "all three through the proxy",
+        );
+        assert.equal(seen[2].port, seen[0].port, "an unmarked request reuses the pooled connection");
+        assert.notEqual(seen[1].port, seen[0].port, "the marked request opened its own");
+        assert.equal(seen[1].connection, "close");
     });
 });

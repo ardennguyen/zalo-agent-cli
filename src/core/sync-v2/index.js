@@ -19,6 +19,7 @@
  *
  * See tests/HANDOFF.md / agent/work/transfer-sync-v2 for the protocol notes.
  */
+import { performance } from "node:perf_hooks";
 import { getGroupInfoWatched } from "../group-exit.js";
 import crypto from "node:crypto";
 import { resolve } from "node:path";
@@ -108,8 +109,20 @@ const MAX_TS = 9007199254740991;
  * one-shard run.
  */
 const PER_SHARD_BUDGET_MS = 30000;
-/** Rows stored per transaction; the event loop is handed back between slices. */
+/** Rows stored per transaction, at most; the event loop is handed back between slices. */
 export const STORE_SLICE = 500;
+/**
+ * The longest one slice of rows may hold the event loop: a slice that has written for this long is committed and the
+ * loop handed back, however few rows it has (a slow disk, a busy database). A loop held for seconds misses the
+ * socket's frames and its pings.
+ */
+export const STORE_SLICE_MS = 50;
+/**
+ * When Zalo leaves a sync request (cmd 590) unanswered, it is asked again, as a new session, after each of these
+ * pauses. Only once every try went unanswered does the run stop asking, and then it keeps what it has (partial): the
+ * sessions already taken are still consumed, and the next run asks for what is left.
+ */
+export const REQUEST_RETRY_DELAYS_MS = Object.freeze([2_000, 5_000]);
 /** How long a session may be waited for before the restore says what it is still missing. */
 const STALL_NOTE_MS = 60_000;
 /**
@@ -440,6 +453,46 @@ export function createShardSchedule(shardCount, opts = {}) {
  * @param {boolean} [st.tooManyFailures] - the run was stopped because too many batches failed
  * @returns {{reason: string, error: string|null}}
  */
+/**
+ * Write `total` rows in slices: each at most `sliceRows` rows, and cut as soon as it has run for `sliceMs` (`write`
+ * stops at the deadline and returns where it stopped). Between slices the event loop is handed back with `pause`; an
+ * `aborted()` stops before the next slice. What is written stays written.
+ *
+ * @param {number} total - how many rows
+ * @param {object} p
+ * @param {(from: number, end: number, deadline: number) => number} p.write - writes rows `from`.. up to `end`
+ *   (exclusive), stopping early once `now()` passes `deadline` (after at least one row); returns the next index
+ * @param {number} [p.sliceRows]
+ * @param {number} [p.sliceMs]
+ * @param {() => number} [p.now]
+ * @param {() => Promise<void>} [p.pause]
+ * @param {() => boolean} [p.aborted]
+ * @returns {Promise<{written: number, slices: number}>}
+ */
+export async function writeInSlices(
+    total,
+    {
+        write,
+        sliceRows = STORE_SLICE,
+        sliceMs = STORE_SLICE_MS,
+        now = () => performance.now(),
+        pause = () => new Promise((r) => setImmediate(r)),
+        aborted = () => false,
+    },
+) {
+    let at = 0;
+    let slices = 0;
+    while (at < total) {
+        if (slices > 0) await pause();
+        if (aborted()) break;
+        const next = write(at, Math.min(total, at + sliceRows), now() + sliceMs);
+        // Always forward by at least one row, whatever `write` says.
+        at = Math.max(at + 1, Math.min(total, next));
+        slices++;
+    }
+    return { written: at, slices };
+}
+
 export function describeRestoreOutcome(st) {
     const resumes = st.resumes || 0;
     const secs = Number.isFinite(st.waitMs) ? Math.round(st.waitMs / 1000) : null;
@@ -807,6 +860,11 @@ export class SyncV2 {
         // Both only ever change in a test.
         const settleMs = Number.isFinite(opts.settleMs) ? opts.settleMs : 1200;
         const pollMs = Number.isFinite(opts.pollMs) ? opts.pollMs : 300;
+        // How long a request waits for Zalo's ack, and the pauses before it is asked again. Only a test changes them.
+        const requestAckMs = Number.isFinite(opts.requestAckMs) ? opts.requestAckMs : undefined;
+        const requestRetryDelaysMs = Array.isArray(opts.requestRetryDelaysMs)
+            ? opts.requestRetryDelaysMs
+            : REQUEST_RETRY_DELAYS_MS;
         const onStatus = typeof opts.onStatus === "function" ? opts.onStatus : () => {};
         const log = (m) => onStatus({ phase: "info", detail: m });
         // The key the phone offered at a QR login with auto sync ticked (a `transfer_after_login` control), when the
@@ -911,6 +969,7 @@ export class SyncV2 {
                 codec: codecForDir(this.accountDir),
             }),
             log,
+            ...(requestAckMs !== undefined && { ackTimeoutMs: requestAckMs }),
         });
         // A batch is fetched the moment the phone announces it, two at a time (Y3), not when its turn to be
         // decoded comes.
@@ -920,7 +979,9 @@ export class SyncV2 {
             channel.handleFrame(buf);
             for (const ctl of readTransferControls(buf, (parsed) => decodeFrame(parsed, L.cipherKey))) {
                 const s = sessions.get(ctl.syncId);
-                if (!s) continue;
+                // A session whose request went unanswered was given up and asked for again as a new one: whatever
+                // the phone still sends for it is not fetched.
+                if (!s || s.abandoned) continue;
                 const ev = applyControl(s, { act: ctl.act, data: ctl.data });
                 if (ev.type === "batch" && ev.batch.msgUrl) downloader.start(ev.batch.msgUrl);
                 if (ev.type === "status") {
@@ -1167,6 +1228,44 @@ export class SyncV2 {
             }
         };
 
+        /** The first request Zalo left unanswered through every try: the run stops asking and keeps what it has. */
+        let requestFailure = null;
+        /**
+         * Ask for one session; while Zalo leaves the request unanswered, ask again as a new session (a fresh id and
+         * key) after each pause of `delays`. The session given up on stays written down and is released at the end of
+         * the run (failed); what the phone may still send for it is ignored. The conversation round passes no pauses:
+         * its request is the one the phone prompts for, and asking twice could prompt twice.
+         *
+         * @returns {Promise<{socketClosed: boolean, sid: string, ek: object, unanswered?: Error}>} `unanswered`: no
+         *   try was answered; any other failure throws, as {@link sendRequest} does
+         */
+        const requestSession = async (kind, wantPartitions, req, tempKey = "", delays = requestRetryDelaysMs) => {
+            for (let attempt = 0; ; attempt++) {
+                const ek = zproto.generateKeyPair();
+                const sid = newSession(kind, wantPartitions);
+                try {
+                    const sent = await sendRequest(kind, sid, ek, req, tempKey);
+                    return { ...sent, sid, ek };
+                } catch (e) {
+                    if (e?.reason !== REQUEST_FAILURE.TIMEOUT) throw e;
+                    const s = sessions.get(sid);
+                    s.abandoned = true;
+                    s.disposeReason ??= DISPOSE_REASON.ERROR;
+                    const tries = delays.length + 1;
+                    if (attempt >= delays.length || aborted()) {
+                        return { socketClosed: false, sid, ek, unanswered: e };
+                    }
+                    const wait = delays[attempt];
+                    onStatus({
+                        phase: "warn",
+                        detail: `${e.message} — asking again in ${Math.round(wait / 100) / 10} s (try ${attempt + 2} of ${tries})`,
+                    });
+                    await new Promise((r) => setTimeout(r, wait));
+                    if (!L.ws || L.ws.readyState > 1) return { socketClosed: true, sid, ek };
+                }
+            }
+        };
+
         const ik = zproto.generateKeyPair();
         let conversations = 0,
             messagesSaved = 0,
@@ -1206,6 +1305,7 @@ export class SyncV2 {
                 rowErrors,
                 firstRowError,
                 typeCounts: { ...typeCounts },
+                ...(requestFailure && { requestFailure: requestFailure.message }),
                 // Every threadId the conversation round accounted for. Anything
                 // cached outside this list is orphaned.
                 liveThreadIds: [...mappedThreads, ...unmappedThreads],
@@ -1311,8 +1411,6 @@ export class SyncV2 {
             // `ek` is fresh per session and `ik` is stable across them (see
             // FINDINGS.md § cmd 590 request envelope), so a retried round needs
             // its OWN ek -- and the decrypt then has to use that one.
-            let ekConv = zproto.generateKeyPair();
-            let convId = newSession("conv");
             onStatus({ phase: "conversation", detail: "requesting your conversation list" });
             const convRequest = {
                 type: "conversation",
@@ -1320,7 +1418,11 @@ export class SyncV2 {
                 batchSize: 2000,
                 queries: [{ partition: "", from: win.from, to: win.to, limit: 2147483647 }],
             };
-            const convSent = await sendRequest("conv", convId, ekConv, convRequest, tempKey);
+            const convSent = await requestSession("conv", [], convRequest, tempKey, []);
+            // Without the conversation list there is nothing to keep: an unanswered request ends the run here.
+            if (convSent.unanswered) throw convSent.unanswered;
+            let ekConv = convSent.ek;
+            let convId = convSent.sid;
             let convWhy = convSent.socketClosed ? "socket-closed" : await waitDone(convId, waitMs);
             if (convWhy === "cancelled") throw cancelError();
             let convSession = sessions.get(convId);
@@ -1342,9 +1444,10 @@ export class SyncV2 {
                 // A new socket starts with the dead one's sessions released with reason 3, counting from 0.
                 await channel.releaseAbandoned();
                 channel.resetUssidx(0);
-                const retryId = newSession("conv");
-                ekConv = zproto.generateKeyPair();
-                const retrySent = await sendRequest("conv", retryId, ekConv, convRequest, tempKey);
+                const retrySent = await requestSession("conv", [], convRequest, tempKey, []);
+                if (retrySent.unanswered) throw retrySent.unanswered;
+                const retryId = retrySent.sid;
+                ekConv = retrySent.ek;
                 convWhy = retrySent.socketClosed ? "socket-closed" : await waitDone(retryId, waitMs);
                 if (convWhy === "cancelled") throw cancelError();
                 convSession = sessions.get(retryId);
@@ -1640,87 +1743,93 @@ export class SyncV2 {
                 // per chunk: a chunk can carry tens of thousands of rows, and storing them in one go held the event
                 // loop long enough for the socket to miss its pings. Between slices the loop is handed back, and a
                 // cancel stops the storing (what is stored stays).
-                for (let at = 0; at < rows.length; at += STORE_SLICE) {
-                    if (at > 0) await new Promise((r) => setImmediate(r));
-                    if (aborted()) return saved;
-                    runInTransaction(() => {
-                        for (const { part, hit, threadId, isGroup, cm, msg } of rows.slice(at, at + STORE_SLICE)) {
-                            // The payload's numeric msgType + meta decide the row;
-                            // `content` is always a string, so it cannot.
-                            const info = classifySyncMessage(msg);
-                            const threadType = hit ? hit.type : isGroup ? "group" : "dm";
-                            try {
-                                upsertThread({
-                                    threadId,
-                                    type: threadType,
-                                    // The partition prefix is the phone's own
-                                    // classification: authoritative when the
-                                    // thread map agrees, so it can heal a 1-1 a
-                                    // pin notice once turned into a "group".
-                                    authoritative: threadType === (isGroup ? "group" : "dm"),
-                                    name: hit ? hit.name : "",
-                                    lastUpdate: Number(msg.timestamp) || 0,
-                                    sync_timestamp: Date.now(),
-                                    respondedByMe: cm.respondedByMe,
-                                    lastGlobalId: cm.lastGlobalId,
-                                    lastClientId: cm.lastClientId,
-                                });
-                                // The listener stored this system line under a
-                                // placeholder id (a group event carries no
-                                // message id); the phone's row replaces it.
-                                if (info.type === "group_event") {
-                                    replaceLiveGroupEventPlaceholder(threadId, Number(msg.timestamp) || 0);
+                await writeInSlices(rows.length, {
+                    aborted,
+                    write: (from, end, deadline) => {
+                        let at = from;
+                        runInTransaction(() => {
+                            for (; at < end; at++) {
+                                // A slice that has held the loop long enough is committed here (at least one row).
+                                if (at > from && performance.now() >= deadline) break;
+                                const { part, hit, threadId, isGroup, cm, msg } = rows[at];
+                                // The payload's numeric msgType + meta decide the row;
+                                // `content` is always a string, so it cannot.
+                                const info = classifySyncMessage(msg);
+                                const threadType = hit ? hit.type : isGroup ? "group" : "dm";
+                                try {
+                                    upsertThread({
+                                        threadId,
+                                        type: threadType,
+                                        // The partition prefix is the phone's own
+                                        // classification: authoritative when the
+                                        // thread map agrees, so it can heal a 1-1 a
+                                        // pin notice once turned into a "group".
+                                        authoritative: threadType === (isGroup ? "group" : "dm"),
+                                        name: hit ? hit.name : "",
+                                        lastUpdate: Number(msg.timestamp) || 0,
+                                        sync_timestamp: Date.now(),
+                                        respondedByMe: cm.respondedByMe,
+                                        lastGlobalId: cm.lastGlobalId,
+                                        lastClientId: cm.lastClientId,
+                                    });
+                                    // The listener stored this system line under a
+                                    // placeholder id (a group event carries no
+                                    // message id); the phone's row replaces it.
+                                    if (info.type === "group_event") {
+                                        replaceLiveGroupEventPlaceholder(threadId, Number(msg.timestamp) || 0);
+                                    }
+                                    const msgId = syncMsgId(msg, threadId);
+                                    insertMessage({
+                                        // jspb renders an unset uint64 as
+                                        // the STRING "0", which is truthy,
+                                        // so `globalId || clientId` kept it
+                                        // and every message without a
+                                        // global id collided on the primary
+                                        // key "0", overwriting each other.
+                                        // 0 means absent here, exactly as
+                                        // it does in a removal's
+                                        // globalDelMsgId and a reaction's
+                                        // gMsgID.
+                                        msgId,
+                                        threadId,
+                                        senderId: senders.get(msg.senderId).id,
+                                        senderName: senders.get(msg.senderId).name,
+                                        text: info.text,
+                                        timestamp: Number(msg.timestamp) || 0,
+                                        type: info.type,
+                                        raw_data: info.raw,
+                                        has_attachment: info.hasAttachment,
+                                        // The phone is the only source of
+                                        // delivery/read state, and this was
+                                        // parsed and then dropped on the way
+                                        // to the column: 87k rows carried a
+                                        // real status inside raw_data while
+                                        // the column stayed NULL on all of
+                                        // them.
+                                        msgStatus: info.raw?.msgStatus,
+                                    });
+                                    // A message stored twice (the recent round and a full round) is counted once.
+                                    if (recentParts.has(part.id)) {
+                                        if (countedInRecent.has(msgId)) continue;
+                                        countedInRecent.add(msgId);
+                                    }
+                                    saved++;
+                                    messagesSaved++;
+                                    if (info.hasAttachment) attachmentsSaved++;
+                                    typeCounts[info.type] = (typeCounts[info.type] || 0) + 1;
+                                } catch (e) {
+                                    // Keep going with the rest of the chunk, but never silently: a row that cannot be
+                                    // written (a full disk, a locked file) leaves a hole, so the partition is not settled
+                                    // and the run does not call itself complete.
+                                    rowErrors++;
+                                    writeFailed.add(part.id);
+                                    firstRowError ??= e?.message ?? String(e);
                                 }
-                                const msgId = syncMsgId(msg, threadId);
-                                insertMessage({
-                                    // jspb renders an unset uint64 as
-                                    // the STRING "0", which is truthy,
-                                    // so `globalId || clientId` kept it
-                                    // and every message without a
-                                    // global id collided on the primary
-                                    // key "0", overwriting each other.
-                                    // 0 means absent here, exactly as
-                                    // it does in a removal's
-                                    // globalDelMsgId and a reaction's
-                                    // gMsgID.
-                                    msgId,
-                                    threadId,
-                                    senderId: senders.get(msg.senderId).id,
-                                    senderName: senders.get(msg.senderId).name,
-                                    text: info.text,
-                                    timestamp: Number(msg.timestamp) || 0,
-                                    type: info.type,
-                                    raw_data: info.raw,
-                                    has_attachment: info.hasAttachment,
-                                    // The phone is the only source of
-                                    // delivery/read state, and this was
-                                    // parsed and then dropped on the way
-                                    // to the column: 87k rows carried a
-                                    // real status inside raw_data while
-                                    // the column stayed NULL on all of
-                                    // them.
-                                    msgStatus: info.raw?.msgStatus,
-                                });
-                                // A message stored twice (the recent round and a full round) is counted once.
-                                if (recentParts.has(part.id)) {
-                                    if (countedInRecent.has(msgId)) continue;
-                                    countedInRecent.add(msgId);
-                                }
-                                saved++;
-                                messagesSaved++;
-                                if (info.hasAttachment) attachmentsSaved++;
-                                typeCounts[info.type] = (typeCounts[info.type] || 0) + 1;
-                            } catch (e) {
-                                // Keep going with the rest of the chunk, but never silently: a row that cannot be
-                                // written (a full disk, a locked file) leaves a hole, so the partition is not settled
-                                // and the run does not call itself complete.
-                                rowErrors++;
-                                writeFailed.add(part.id);
-                                firstRowError ??= e?.message ?? String(e);
                             }
-                        }
-                    });
-                }
+                        });
+                        return at;
+                    },
+                });
                 return saved;
             };
 
@@ -1889,22 +1998,28 @@ export class SyncV2 {
                         for (const job of jobs) {
                             while (!halted() && requested.length - consumed >= waveSize) await wake.wait();
                             if (halted()) break;
-                            const ek = zproto.generateKeyPair();
-                            const sid = newSession(
+                            if (job.kind === "recent") job.sent = true;
+                            const sent = await requestSession(
                                 "msg",
                                 job.queries.map((q) => q.partition),
+                                {
+                                    type: "message",
+                                    priority: job.kind === "recent" ? 0 : 2,
+                                    batchSize: 2000,
+                                    queries: job.queries,
+                                },
                             );
-                            if (job.kind === "recent") job.sent = true;
-                            const sent = await sendRequest("msg", sid, ek, {
-                                type: "message",
-                                priority: job.kind === "recent" ? 0 : 2,
-                                batchSize: 2000,
-                                queries: job.queries,
-                            });
                             if (sent.socketClosed) {
                                 round.lost = true;
                                 break;
                             }
+                            if (sent.unanswered) {
+                                // Stop asking; the sessions already taken are still consumed (nothing is halted), and
+                                // what was not asked for stays pending for the next run.
+                                requestFailure ??= sent.unanswered;
+                                break;
+                            }
+                            const { sid, ek } = sent;
                             requested.push({ ...job, sid, ek });
                             wake.fire();
                         }
@@ -1949,7 +2064,16 @@ export class SyncV2 {
                     break;
                 }
                 const lostSocket = await runPipeline();
-                if (!lostSocket) break;
+                if (requestFailure) {
+                    onStatus({
+                        phase: "warn",
+                        detail:
+                            `Zalo did not take a sync request after ${requestRetryDelaysMs.length + 1} tries ` +
+                            `(${requestFailure.message}) — keeping the ${finished}/${shards.length} batch(es) that ` +
+                            `arrived; the next run asks for the other ${schedule.remaining()}`,
+                    });
+                }
+                if (!lostSocket || requestFailure) break;
                 socketDied = true;
                 onStatus({
                     phase: "warn",
@@ -1985,7 +2109,7 @@ export class SyncV2 {
             }
             // A range the phone could not serve is asked for once more, in sessions of its own (Y2b). One that
             // fails again stays failed for the next run: the phone may simply not have it ready.
-            if (!stop && !declined && failedRanges.size) {
+            if (!stop && !declined && !requestFailure && failedRanges.size) {
                 const again = todo.filter((q) => failedRanges.has(q.partition));
                 runDeadline = Date.now() + shardBudget(Math.ceil(again.length / shardSize));
                 onStatus({
@@ -1994,18 +2118,22 @@ export class SyncV2 {
                 });
                 for (let i = 0; i < again.length; i += shardSize) {
                     const queries = again.slice(i, i + shardSize);
-                    const ek = zproto.generateKeyPair();
-                    const sid = newSession(
+                    const sent = await requestSession(
                         "msg",
                         queries.map((q) => q.partition),
+                        {
+                            type: "message",
+                            priority: 2,
+                            batchSize: 2000,
+                            queries,
+                        },
                     );
-                    const sent = await sendRequest("msg", sid, ek, {
-                        type: "message",
-                        priority: 2,
-                        batchSize: 2000,
-                        queries,
-                    });
                     if (sent.socketClosed) break;
+                    if (sent.unanswered) {
+                        requestFailure ??= sent.unanswered;
+                        break;
+                    }
+                    const { sid, ek } = sent;
                     rangeInfo.retried += queries.length;
                     const left = runDeadline - Date.now();
                     const why = left > 0 ? await waitDone(sid, left) : "timeout";

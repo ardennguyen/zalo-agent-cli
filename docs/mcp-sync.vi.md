@@ -80,6 +80,8 @@ Dùng `requestId` riêng dài 1–64 ký tự (`A-Z a-z 0-9 . _ : -`) cho lần 
 Sau timeout phía client, thử lại cùng khóa **và tham số**: khi job còn được giữ,
 tool trả job cũ, không khởi động sync hay gửi prompt lần nữa. Đổi tham số với
 cùng khóa sẽ báo lỗi. Stage đang bận trả lỗi MCP ngay, không xếp hàng hay tự retry.
+Khóa chia theo loại dữ liệu: job `messages` chạy được trong khi job `media` hoặc `cloud`
+đang chạy (media không bao giờ chặn tin nhắn văn bản), còn hai job cùng loại vẫn chạy lần lượt.
 
 Process chỉ giữ mười job gần nhất và hai mươi sự kiện tiến độ gần nhất mỗi job
 trong RAM. Job, kết quả và chống lặp mất khi restart hoặc bị thay thế. Nếu mất
@@ -93,7 +95,8 @@ daemon ngắt công việc và có thể để lại restore dở. Mất socket 
 `mcp start` giữ một bộ theo dõi job sync dùng chung cho stdio và HTTP (HTTP tạo MCP
 server mới mỗi request nhưng giữ chung bộ theo dõi job). Hai tool chạy đúng các bước
 sync của daemon channel CLI, dùng phiên hiện tại cho mỗi lần chạy và giữ chung khóa
-stage với việc lấy lịch sử và self-heal. Không thêm login, WebSocket, kết nối database
+stage với việc lấy lịch sử và self-heal (theo loại dữ liệu: các stage dùng socket chạy
+lần lượt, `media` và `cloud` mỗi loại chạy song song với chúng). Không thêm login, WebSocket, kết nối database
 hay writer thứ hai. Mất socket giữa restore thì chờ daemon tự kết nối lại và chạy tiếp,
 tối đa ba lần, rồi mới kết thúc dở, như CLI sync qua daemon.
 

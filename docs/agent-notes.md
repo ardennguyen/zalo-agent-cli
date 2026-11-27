@@ -117,7 +117,7 @@ Each of these reports success, or names the wrong cause. They were all learned t
 | Command groups | **42** containers — 25 top-level + 11 OA subgroups + 3 ZBS subgroups + `mcp webhook` + `account security` + `cloud key` | the live commander tree | walk it. The number of `register*` calls in `src/index.js` is neither number: `oa` registers 11 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **38** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA/ZBS/Social commands | **94** (70 `oa` + 18 `zbs` + 6 `social`) | `src/commands/oa.js` + `src/commands/oa/*.js`, `src/commands/zbs.js`, `src/commands/social.js` | `node scripts/count-surface.mjs`. `zbs` counts with `oa`: both are the official API on the OA's OAuth token, so "personal" stays the unofficial surface |
-| Offline tests | **5979** as of 2026-11-26 (5974 pass, 5 skipped, 0 todo, 0 fail; Linux) | `npm test` | the run's own summary line |
+| Offline tests | **6039** as of 2026-11-27 (6034 pass, 5 skipped, 0 todo; Linux) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -2130,7 +2130,8 @@ requests (four within 87 ms is normal), too many open sessions (one socket serve
 - After a reconnect the channel releases every session it still holds with reason 3 (`releaseAbandoned`, one at a time)
   and counts `ussidx` again (0 for a repeated conversation round, 1 for a resumed message round).
 - A wave is up to 30 sessions (was 4), requested up front, held until the wave is stored, then released together; a 590
-  also waits for the releases still unanswered. **The release is one session at a time, each after the previous ack**: a
+  also waits for the releases still unanswered. *(Superseded 2026-11-27: every session is released together at the
+  end of the run, and no 590 waits on a release; see "A restore as fast as Zalo's".)* **The release is one session at a time, each after the previous ack**: a
   burst was answered only in part (two acks for thirty releases, two for each burst of four, the rest unanswered for 3 s
   and fine when sent singly).
 - A message session the phone left incomplete and idle for a minute (`STALL_IDLE_MS`) fails alone,
@@ -2153,6 +2154,64 @@ by an acknowledgement, so the risk to the account's queues that the connect-time
 the `deviceName`, the temp key in the first message request, and the handshake's `prgama` header and parameter order
 are values the server accepts (every ack was `err 0`). If a drop returns, the boot is the first thing to try, after the
 pulls that are safe (510, 511, 610, 611, 603).
+
+## A restore as fast as Zalo's (v3.5, 2026-11-27)
+
+**What was slow.** Text from the phone-backed sync took minutes where Zalo itself takes seconds: 79 sessions in 12 min
+41 s, 46 in about 3 min, the first session stored about 1 min 40 s after the start, against about 7 s of control and 11 s
+of downloads for 98 conversations when Zalo does it. The wire was the same (cmd 590 per 30 conversations, `limit`
+2147483647, `batchSize` 2000, the phone's encrypted Zstd batches); how we ran it was not:
+
+- the name lookups (the non-friend DM title refresh, then the tier-3 gid/decrypt and getUserInfo of the non-friend
+  conversations) ran **before** the first message request: 24 to 49 s in the live logs, and every stored chunk waited
+  for its senders to be looked up (0.5 and 1.5 s retries);
+- sessions were consumed one at a time: wait for session k, download, decrypt, decode and store it, then session k+1,
+  and a wave of 30 was released (each 591 after the previous ack, 3 s at worst) before the next wave was asked for;
+- decrypt and protobuf decode ran on the main thread, beside the socket;
+- there was no quick round for the most recent conversations.
+
+**What a restore does now** (`src/core/sync-v2/index.js`, `src/zalo/transfer-sync/`):
+
+- **The friend and group lists are read while the phone is asked for the conversation list**, and the message
+  requests go out as soon as the list is in. The non-friend DM refresh, the names an earlier run deferred, the own
+  name and the names of the tier-3 conversations run beside the restore, one lookup at a time (`createLookupLane`), and
+  the restore waits for them only before it reports. A chunk is stored at once with what is known: a sender not known
+  yet keeps its opaque id until the background lookup resolves it, then its rows take the user id and name
+  (`fillOpaqueSender`), and a peer's rows stored without a name take it when it comes (`fillBlankSenderName`). Only a
+  chunk holding a non-friend conversation whose thread id is still being resolved (gid/decrypt, ids only) waits, for
+  the id alone. A 221 still defers the names for the rest of the run, never retried hot.
+- **A pipeline of sessions.** Requests go out one after the other, each after the previous ack, at most `waveSize`
+  (30) ahead of the sessions consumed; `concurrency` (4, as Zalo does; 1 to 5) sessions are waited for, downloaded,
+  decoded and stored at once, in the order they were asked for. The range bookkeeping, the retry round, the stall and
+  failure rules and the resume after a dropped socket are unchanged.
+- **Decrypt, decompress and protobuf decode run in two worker threads** (`decode-worker.js`, `decode-pool.js`, the
+  shared code in `decode.js`); storing stays on the main thread (one db writer). A worker that fails hands its batch
+  back to the main thread, which decodes chunk by chunk with the event loop handed back between chunks, as before.
+- **A recent round first**: one session at priority 0 for the 10 most recent conversations, 100 messages each
+  (`recentConversations`, `recentMessages`; 0 conversations turns it off), when the run asks for more than 10. Its
+  messages come again in the full rounds, are stored once and counted once; it settles no range. Note: the server's
+  sync settings for this client type once carried a recent-round conversation count of 0; the defaults here are the
+  ones Zalo uses where it runs the round.
+- **Every session is released at the end of the run, together**: one burst of 591s (no 590 waits on a release any
+  more), then one more try, one at a time, for each release that was not acknowledged. The conversation session is no
+  longer released as soon as the list is in. A session that delivered everything is released as finished however the
+  run ended; one still waited for takes the run's reason (cancelled, failed). The release of a dead socket's sessions
+  on a new socket is unchanged (reason 3, one at a time, before any request).
+- The MCP server's `zalo_sync` stages take the stage lock by data class (`stageClass` in `src/core/daemon-channel.js`):
+  the socket stages (messages, reactions, history, boards, the self-heal catch-up) one at a time as before, a media
+  download and a cloud walk each in their own class, so a `messages` job runs while `media` or `cloud` runs.
+
+**The risk to watch live.** The phone was once seen to stop serving at about 32 sessions open together (2026-10-25,
+"What the first live full-history restore found"), and a burst of releases was once answered only in part
+(2026-10-28). Zalo itself keeps every session open until the end of its run and releases them together, which is what
+this does now; the retry of an unanswered release covers the second. A run of more than 32 sessions with the phone
+going quiet at about the 32nd is the sign that the first one still holds; the fallback is to release each wave once it
+is stored, as before.
+
+**Measured in the tests** (`tests/unit/sync-v2-speed.test.js`, fake phone): eight sessions whose batch takes 300 ms to
+decrypt are stored in about 3.0 s one at a time and about 1.1 s four at once (from the first message request to the
+last session stored, on the test server); with a getUserInfo that takes 1.5 s, the messages are stored about 0.4 s into
+the run and the first names come back after about 1.9 s, where before every store waited for them.
 
 ## The Companion checks (v3.0, 2026-10-28)
 

@@ -9,6 +9,8 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+## [3.6.0] — 2026-11-27
+
 #### Changed
 
 - **The phone-backed sync gets the text in as fast as Zalo does.** The message requests go out as soon as the conversation list is in: the friend and group lists are read while the phone answers, and the name lookups (non-friend DM titles, the conversations not in the friend list, senders the account does not know, names an earlier run deferred) run beside the restore instead of before it; a message is stored at once and its sender's id and name are filled in when the lookup answers. Up to 4 sessions are consumed at once (`concurrency`, 1 to 5), up to 30 requested ahead of them, and decrypting and decoding run in two worker threads while storing stays on the main thread. A first round at priority 0 asks for the 10 most recent conversations, 100 messages each (`recentConversations`, `recentMessages`; 0 turns it off), so recent chats are readable within seconds; the full rounds follow and nothing is stored or counted twice. Every session is released together at the end of the run (or on a cancel or a failure), with one more try for a release that was not acknowledged, and no request waits on a release. A rate limit (221) still only defers names. The daemon's `messages` stage takes `concurrency`, `recentConversations` and `recentMessages` beside `waveSize`.
@@ -1112,7 +1114,8 @@ npm install -g @ardennguyen/zalo-agent-cli@2.0.0
 
 Commands, flags and defaults: `skill/references/command-reference.md`. Operating it on a server: `docs/deployment.md`.
 
-[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.5.1...v3.0-dev
+[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.6.0...v3.0-dev
+[3.6.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.6.0
 [3.5.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.5.1
 [3.5.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.5.0
 [3.4.2]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.4.2

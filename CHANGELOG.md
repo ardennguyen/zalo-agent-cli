@@ -9,6 +9,12 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+#### Fixed
+
+- **The companion is never taken for away.** An agent record carries an explicit `type`: `service` (the companion's default: woken when a message comes, always `ready`, stopped only when turned off) or `client` (every other kind's default: an interactive client). Presence no longer moves a message, so a companion woken on demand no longer loses the owner's messages to `human` a few minutes after each run.
+- **A message for an offline client waits for it.** A client is online while one of its `zalo_wait_for_message` calls is open (and 10 s after the last one ended); its messages are routed to it with `route.queued: true` and read in order when it connects again, and no other agent answers in its place. The first one of each absence in a conversation carries `route.absence`, naming the default route's agent that tells the sender in its own words (`routing.awayNotice` is the owner's guidance; the engine sends no text of its own); that agent may send its one notice into the client's conversation.
+- **Only an agent turned off hands its message on**: down its route's own `fallback` list as the owner wrote it, to the default route's target, down the default route's list, and only then to the owner. Every fallback is logged, kept as a routing event with its `reason`, and told to the owner in My Documents, an automatic-reply step included.
+
 #### Changed
 
 - **Node 26 (the current LTS line) is the recommended runtime.** CI runs the suite on Node 26 as well as Node 22, and releases are built and tested on Node 26. `engines` still accepts Node 22.19 or later.

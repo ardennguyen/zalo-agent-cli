@@ -17,7 +17,13 @@ import {
 import { checkAgents } from "../../src/core/routing-policy.js";
 import { validatePolicy } from "../../src/core/policy-schema.js";
 import { createRouterRuntime } from "../../src/mcp/router-runtime.js";
-import { createAgentPresence, createSentByStore, resolveRouting } from "../../src/mcp/agents.js";
+import {
+    RECONNECT_GRACE_MS,
+    connectionState,
+    createAgentPresence,
+    createSentByStore,
+    resolveRouting,
+} from "../../src/mcp/agents.js";
 import { registerTools } from "../../src/mcp/mcp-tools.js";
 
 before(() => assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR));
@@ -156,34 +162,76 @@ describe("decide: one handler per message, with the reason", () => {
         assert.equal(decide(msg({}), { ...base, cfg: cfg({ claims: false }), state: claims }).to, "ai");
     });
 
-    it("falls back when the target is away past fallbackAfter: the route's chain, then the owner with a notice", () => {
-        const away = (slug) =>
-            slug === "ai"
-                ? { state: "away", since: new Date(DAY - 10 * 60_000).toISOString() }
-                : { state: "listening" };
-        const d = decide(msg({}), { ...base, cfg: cfg(), presenceOf: away });
-        assert.deepEqual([d.to, d.by, d.before], ["dev", "fallback", "ai"]);
-        const both = decide(msg({}), {
+    const longAgo = new Date(DAY - 3600_000).toISOString();
+    const awayAll = () => ({ state: "away", since: longAgo });
+    const offline = (slugs) => (slug) =>
+        slugs.includes(slug) ? { online: false, since: 0 } : { online: true, since: 0 };
+
+    it("a service (the companion) is always routed: never away, never queued, whatever its presence", () => {
+        assert.equal(AGENTS[0].type, "service");
+        const d = decide(msg({}), { ...base, cfg: cfg(), presenceOf: awayAll, connectionOf: offline(["ai"]) });
+        assert.deepEqual([d.to, d.by, d.before, d.queued, d.notice], ["ai", "rule", undefined, undefined, undefined]);
+        const def = decide(msg({ threadType: "group" }), {
             ...base,
-            cfg: cfg(),
-            presenceOf: (s) => ({
-                state: s === "night" ? "listening" : "away",
-                since: new Date(DAY - 3600_000).toISOString(),
-            }),
+            cfg: cfg({ routes: [], default: { target: "ai" } }),
+            presenceOf: awayAll,
+            connectionOf: offline(["ai"]),
         });
-        assert.deepEqual([both.to, both.notice], ["human", { owner: true }]);
-        const recent = decide(msg({}), {
+        assert.deepEqual([def.to, def.by, def.queued], ["ai", "default", undefined]);
+    });
+
+    it("an offline client keeps its message, queued for it: no other agent answers in its place", () => {
+        const c = cfg({ default: { target: "ai" } });
+        const d = decide(msg({}), { ...base, cfg: c, labelsOf: () => ["vip"], connectionOf: offline(["dev"]) });
+        assert.deepEqual([d.to, d.by, d.ruleId, d.queued, d.before], ["dev", "rule", "vip", true, undefined]);
+        assert.deepEqual(d.notice, { away: { agent: "dev", name: "Dev", since: 0 } });
+        assert.deepEqual(d.effects.claim, { holder: "dev", state: "assigned" }, "the conversation stays the client's");
+        // Its presence says nothing: a client with an open wait is there even after `status away`; one without is not,
+        // however recently it called.
+        const there = decide(msg({}), { ...base, cfg: c, labelsOf: () => ["vip"], presenceOf: awayAll });
+        assert.deepEqual([there.to, there.queued], ["dev", undefined]);
+        const polled = decide(msg({}), {
             ...base,
-            cfg: cfg(),
-            presenceOf: () => ({ state: "away", since: new Date(DAY - 60_000).toISOString() }),
+            cfg: c,
+            labelsOf: () => ["vip"],
+            presenceOf: listening,
+            connectionOf: offline(["dev"]),
         });
-        assert.equal(recent.to, "ai", "not away long enough");
-        const auto = cfg({ routes: [{ id: "d", target: "ai", match: {}, fallback: [{ autoReply: "Back soon" }] }] });
-        const old = new Date(DAY - 3600_000).toISOString();
-        const a = decide(msg({}), { ...base, cfg: auto, presenceOf: () => ({ state: "away", since: old }) });
-        assert.deepEqual(a.notice, { autoReply: "Back soon" });
-        // Never seen (a webhook receiver): its messages wait for it.
-        assert.equal(decide(msg({}), { ...base, cfg: auto, presenceOf: () => ({ state: "idle" }) }).to, "ai");
+        assert.deepEqual([polled.to, polled.queued], ["dev", true]);
+    });
+
+    it("only an agent turned off hands its message on: its route's list, the default route, then the owner", () => {
+        const off = (slugs) => AGENTS.map((a) => (slugs.includes(a.slug) ? { ...a, enabled: false } : a));
+        const d = decide(msg({}), { ...base, agents: off(["ai"]), cfg: cfg() });
+        assert.deepEqual(
+            [d.to, d.by, d.before, d.reason, d.notice],
+            ["dev", "fallback", "ai", "disabled", { owner: true }],
+        );
+        const toDefault = decide(msg({}), {
+            ...base,
+            agents: off(["dev"]),
+            cfg: cfg({ default: { target: "ai" } }),
+            labelsOf: () => ["vip"],
+        });
+        assert.deepEqual([toDefault.to, toDefault.before], ["ai", "dev"]);
+        const listed = cfg({
+            default: { target: "ai" },
+            routes: [{ id: "d", target: "dev", match: {}, fallback: ["human"] }],
+        });
+        assert.equal(
+            decide(msg({}), { ...base, agents: off(["dev"]), cfg: listed }).to,
+            "human",
+            "as the owner wrote it",
+        );
+        const none = decide(msg({}), {
+            ...base,
+            agents: off(["dev"]),
+            cfg: cfg({ routes: [{ id: "d", target: "dev", match: {} }] }),
+        });
+        assert.deepEqual([none.to, none.notice], ["human", { owner: true }]);
+        const auto = cfg({ routes: [{ id: "d", target: "dev", match: {}, fallback: [{ autoReply: "Back soon" }] }] });
+        const a = decide(msg({}), { ...base, agents: off(["dev"]), cfg: auto });
+        assert.deepEqual([a.to, a.notice], ["human", { autoReply: "Back soon", owner: true }]);
     });
 
     it("`@agents` from the owner is the system's, never an agent's", () => {
@@ -216,7 +264,7 @@ describe("the send guard", () => {
 });
 
 /** A runtime over a fake session that records every send. */
-function rig(routing = ROUTING, presenceOf = null) {
+function rig(routing = ROUTING, presenceOf = null, connectionOf = null) {
     const sent = [];
     let seq = 0;
     const api = {
@@ -230,6 +278,7 @@ function rig(routing = ROUTING, presenceOf = null) {
         getContext: () => ({ loginInfo: { send2me_id: MYDOCS } }),
     };
     const presence = createAgentPresence();
+    const logs = [];
     const sentBy = createSentByStore(null);
     const routingNow = () =>
         resolveRouting({
@@ -248,9 +297,11 @@ function rig(routing = ROUTING, presenceOf = null) {
         sentBy,
         lang: "en",
         presenceOf,
+        connectionOf,
         now: () => DAY,
+        log: (line) => logs.push(line),
     });
-    return { sent, api, runtime, presence, sentBy, routingNow };
+    return { sent, api, runtime, presence, sentBy, routingNow, logs };
 }
 
 describe("the runtime in the daemon", () => {
@@ -307,17 +358,133 @@ describe("the runtime in the daemon", () => {
         assert.equal(runtime.mayRead(dev, CUSTOMER), false);
     });
 
-    it("the auto-reply step answers the customer once, the owner's notice goes to My Documents", async () => {
-        const { runtime, sent } = rig(
-            { ...ROUTING, routes: [{ id: "d", target: "ai", match: {}, fallback: [{ autoReply: "Back soon" }] }] },
-            () => ({ state: "away", since: new Date(DAY - 3600_000).toISOString() }),
+    it("an agent turned off: the auto-reply step answers the customer once, the owner is told in My Documents", async () => {
+        const { runtime, sent, logs } = rig(
+            { ...ROUTING, routes: [{ id: "d", target: "dev", match: {}, fallback: [{ autoReply: "Back soon" }] }] },
+            (slug) => (slug === "dev" ? { state: "disabled" } : { state: "listening" }),
         );
         await runtime.onIncoming(msg({}));
         await runtime.onIncoming(msg({}));
         await new Promise((r) => setTimeout(r, 5));
         assert.deepEqual(
-            sent.map((s) => [s.threadId, s.text]),
-            [[CUSTOMER, "Back soon"]],
+            sent.map((x) => [x.threadId, x.text]),
+            [
+                [CUSTOMER, "Back soon"],
+                [MYDOCS, `⚠️ dev is turned off: a message waits for you (conversation ${CUSTOMER}).`],
+            ],
+        );
+        assert.equal(logs.filter((l) => /\[router\] fallback: dev is disabled/.test(l)).length, 2, "each one logged");
+        const ev = (await runtime.serve({ action: "events" })).events.at(-1);
+        assert.deepEqual([ev.kind, ev.to, ev.before, ev.reason], ["fallback", "human", "dev", "disabled"]);
+    });
+
+    it("an offline client: queued for it, the companion tells the sender once per conversation and absence", async () => {
+        let conn = { online: false, since: 0 };
+        const { runtime, sent, logs } = rig(
+            {
+                ...ROUTING,
+                routes: [{ id: "d", target: "dev", match: {} }],
+                default: { target: "ai" },
+                awayNotice: "Be brief.",
+            },
+            null,
+            (slug) => (slug === "dev" ? conn : { online: true, since: 0 }),
+        );
+        const m1 = await runtime.onIncoming(msg({ msgId: "m1", text: "first" }));
+        const m2 = await runtime.onIncoming(msg({ msgId: "m2", text: "second" }));
+        const other = await runtime.onIncoming(msg({ msgId: "m3", threadId: "5002", senderId: "5002" }));
+        await new Promise((r) => setTimeout(r, 5));
+        assert.deepEqual([m1.route.to, m1.route.queued], ["dev", true]);
+        assert.deepEqual(m1.route.absence, { agent: "dev", name: "Dev", notifier: "ai", guidance: "Be brief." });
+        assert.equal(m2.route.absence, undefined, "once per conversation and absence");
+        assert.equal(other.route.absence.notifier, "ai", "another conversation is told too");
+        assert.deepEqual(sent, [], "the engine sends no text of its own: the companion writes the notice");
+        const events = (await runtime.serve({ action: "events" })).events;
+        assert.deepEqual(
+            events.map((e) => [e.kind, e.to, e.notifier ?? null]),
+            [
+                ["queued", "dev", "ai"],
+                ["queued", "dev", null],
+                ["queued", "dev", "ai"],
+            ],
+        );
+        assert.match(logs[0], /dev is offline: message m1 in 5001 is queued for it; ai tells the sender/);
+        // The companion sees the message it must notice, and may send its one notice though Dev holds the conversation.
+        const ai = { agent: AGENTS[0] };
+        assert.deepEqual(
+            runtime.viewFilter([m1, m2], ai).map((x) => x.msgId),
+            ["m1"],
+        );
+        assert.equal(runtime.guard(ai, CUSTOMER, null).ok, true);
+        assert.equal(runtime.guard(ai, CUSTOMER, null).code, "CLAIMED", "one notice, then the client's again");
+        // Dev comes back: it gets what was queued, in order.
+        conn = { online: true, since: 0 };
+        const dev = { agent: AGENTS[1] };
+        assert.deepEqual(
+            runtime.viewFilter([m1, m2], dev).map((x) => [x.msgId, x.role ?? null]),
+            [
+                ["m1", null],
+                ["m2", null],
+            ],
+        );
+        const back = await runtime.onIncoming(msg({ msgId: "m4" }));
+        assert.deepEqual([back.route.to, back.route.queued, back.route.absence], ["dev", undefined, undefined]);
+        // It leaves again (a new absence): the conversation is told again, once.
+        conn = { online: false, since: DAY - 1000 };
+        const again = await runtime.onIncoming(msg({ msgId: "m5" }));
+        assert.equal(again.route.absence.notifier, "ai");
+        assert.equal((await runtime.onIncoming(msg({ msgId: "m6" }))).route.absence, undefined);
+    });
+
+    it("the companion's messages are never held back for its presence in the daemon", async () => {
+        const { runtime, presence, sent } = rig({ ...ROUTING, default: { target: "ai" } }, null, () => ({
+            online: false,
+            since: 0,
+        }));
+        presence.setStatus({ key: "ai", agent: AGENTS[0], sub: null, credential: AGENTS[0].credential }, "away", null);
+        const d = await runtime.onIncoming(msg({}));
+        assert.deepEqual([d.route.to, d.route.by, d.route.queued], ["ai", "rule", undefined]);
+        assert.equal(sent.length, 0, "no notice: nothing was held back");
+    });
+});
+
+describe("a client's connection (owner, 2026-11-27)", () => {
+    const at = 1_000_000;
+    it("is its open waits, plus the reconnect grace after the last one ended; never the time since a call", () => {
+        const e = (o) => ({ key: "dev", waits: 0, waitEndAt: null, ...o });
+        assert.deepEqual(connectionState([e({ waits: 1 })], "dev", { now: at }), { online: true, since: 0 });
+        assert.deepEqual(connectionState([e({ key: "dev/build", waits: 1 })], "dev", { now: at }).online, true);
+        assert.equal(connectionState([e({ waitEndAt: at - RECONNECT_GRACE_MS })], "dev", { now: at }).online, true);
+        assert.deepEqual(connectionState([e({ waitEndAt: at - RECONNECT_GRACE_MS - 1 })], "dev", { now: at }), {
+            online: false,
+            since: at - RECONNECT_GRACE_MS - 1,
+        });
+        // A client that only polls (calls, no wait) is offline; so is one never seen.
+        assert.deepEqual(connectionState([e({ lastSeen: at - 1 })], "dev", { now: at }), { online: false, since: 0 });
+        assert.deepEqual(connectionState([], "dev", { now: at }), { online: false, since: 0 });
+    });
+
+    it("the daemon's presence records when a client's wait closes", () => {
+        let t = at;
+        const p = createAgentPresence({ now: () => t });
+        const who = { key: "dev", agent: AGENTS[1], sub: null, credential: AGENTS[1].credential };
+        const end = p.begin(who, { waiting: true });
+        const entries = () =>
+            p.list().map((x) => ({
+                key: x.key,
+                waits: x.waiting ? 1 : 0,
+                waitEndAt: Date.parse(x.waitEndAt ?? "") || null,
+            }));
+        assert.equal(connectionState(entries(), "dev", { now: t }).online, true);
+        t += 5000;
+        end();
+        t += RECONNECT_GRACE_MS + 1;
+        assert.deepEqual(connectionState(entries(), "dev", { now: t }), { online: false, since: at + 5000 });
+        p.begin(who)();
+        assert.equal(
+            connectionState(entries(), "dev", { now: t }).online,
+            false,
+            "a call without a wait connects nothing",
         );
     });
 });

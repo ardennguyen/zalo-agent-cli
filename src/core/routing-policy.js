@@ -7,7 +7,7 @@
  *       "presenceWindow": "90s",               // seen this recently = listening
  *       "agents": [
  *         {"slug": "dev", "name": "Dev", "credential": "apikey:0123456789ab", "mark": "🤖 Dev:"},
- *         {"slug": "ai", "name": "AI", "kind": "companion", "credential": "apikey:ba9876543210",
+ *         {"slug": "ai", "name": "AI", "kind": "companion", "type": "service", "credential": "apikey:ba9876543210",
  *          "markDisplay": "everywhere"},
  *         {"slug": "claude", "name": "Claude", "credential": "oauth:claude-ai", "delivery": "onDemand"}
  *       ]
@@ -27,6 +27,12 @@ export const AGENT_KINDS = Object.freeze(["companion", "mcp-key", "mcp-oauth", "
 export const MARK_DISPLAYS = Object.freeze(["inherit", "everywhere", "owner", "none"]);
 export const ACCOUNT_MARKS = Object.freeze(["shown", "hidden"]);
 export const DELIVERIES = Object.freeze(["live", "onDemand"]);
+/**
+ * What an agent is, set on its record and never guessed from its traffic: a `service` (the companion: woken when a
+ * message comes, always ready, only turned off) or a `client` (an interactive client, such as an MCP session that can
+ * be closed: it may be away). Unset: `service` for the companion, else `client`.
+ */
+export const AGENT_TYPES = Object.freeze(["service", "client"]);
 /** The presence window when the policy sets none: seen this recently counts as listening. */
 export const DEFAULT_PRESENCE_WINDOW_MS = 90_000;
 
@@ -64,7 +70,7 @@ export function checkAgents(value) {
     for (const [i, a] of value.entries()) {
         const at = `[${i}]`;
         if (!a || typeof a !== "object" || Array.isArray(a)) return { error: `${at} is not an object` };
-        const known = ["slug", "name", "kind", "credential", "mark", "markDisplay", "delivery", "enabled"];
+        const known = ["slug", "name", "kind", "type", "credential", "mark", "markDisplay", "delivery", "enabled"];
         const extra = Object.keys(a).find((k) => !known.includes(k));
         if (extra) return { error: `${at} has an unknown field "${extra}"` };
         const slug = String(a.slug ?? "").trim();
@@ -95,11 +101,13 @@ export function checkAgents(value) {
             return { error: `${at}.markDisplay is not one of ${MARK_DISPLAYS.join(", ")}` };
         const delivery = a.delivery ?? (kind === "mcp-oauth" ? "onDemand" : "live");
         if (!DELIVERIES.includes(delivery)) return { error: `${at}.delivery is not one of ${DELIVERIES.join(", ")}` };
+        const type = a.type ?? (kind === "companion" ? "service" : "client");
+        if (!AGENT_TYPES.includes(type)) return { error: `${at}.type is not one of ${AGENT_TYPES.join(", ")}` };
         if (a.enabled !== undefined && typeof a.enabled !== "boolean")
             return { error: `${at}.enabled is not true or false` };
         slugs.add(slug);
         credentials.add(credential);
-        out.push({ slug, name, kind, credential, mark, markDisplay, delivery, enabled: a.enabled !== false });
+        out.push({ slug, name, kind, type, credential, mark, markDisplay, delivery, enabled: a.enabled !== false });
     }
     return { value: out };
 }

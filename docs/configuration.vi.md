@@ -348,6 +348,10 @@ hồi); chưa có gì được phân công hay bị từ chối, và mọi ngư�
   khi văn bản đã bắt đầu bằng nó. **`marks`** (`shown`, mặc định, hoặc `hidden`) là thiết lập của tài khoản;
   **`markDisplay`** của agent ghi đè nó: `inherit` (mặc định), `everywhere`, `owner` (chỉ trong My Documents) hoặc
   `none`.
+- **`type`**: `service` (mặc định cho loại `companion`) hoặc `client` (mặc định cho mọi loại khác). Dịch vụ được đánh
+  thức khi có tin: luôn `ready` (sẵn sàng), không bao giờ vắng, và chỉ khi tắt (`enabled: false`) thì tin của nó mới
+  không tới. Client (ứng dụng tương tác, như một phiên MCP có thể đóng) có thể ngoại tuyến (bên dưới). Đặt trên bản ghi, không bao giờ đoán
+  từ các lần gọi của agent.
 - **`delivery`**: `live` (mặc định) hoặc `onDemand` (mặc định cho connector OAuth): agent theo nhu cầu lâu không thấy
   hiện `onDemand`, không bao giờ là offline. **`enabled`**: `false` hiện agent là `disabled`.
 - **`presenceWindow`** (mặc định `90s`, tối thiểu `10s`): agent được thấy gần đây như vậy, hoặc đang mở
@@ -367,8 +371,20 @@ cuộc trò chuyện đó trong `humanPause`, mặc định 15 phút), **lệnh 
 trung** (sau một lệnh gọi sticky, các tin tiếp theo của chủ ở lại với agent đó tới `@end` hoặc `stickyTtl`), **trả lời
 theo tin đã gửi** (trả lời một tin của agent thì quay lại agent đó, `affinityTtl`), **nhận việc** đang mở, rồi bảng
 **luồng** (khớp đầu tiên: `threads`, `threadType`, `myDocuments`, `senders`, nhãn Zalo `labels`, `kinds`, khung giờ
-`window`, `mentionsAccount` cho tin nhóm nhắc tới tài khoản hoặc @All), rồi **mặc định**. Nhận việc, tạm dừng và tập trung được giữ qua khởi động lại (niêm phong trong `routing-state.json`). Agent trực tiếp vắng lâu hơn `fallbackAfter` thì chuyển theo chuỗi `fallback` của luồng (agent
-khác, `human` kèm thông báo trong My Documents, hoặc `{autoReply: text}`). Nhận việc, tạm dừng, trả lời theo tin, tập
+`window`, `mentionsAccount` cho tin nhóm nhắc tới tài khoản hoặc @All), rồi **mặc định**. Nhận việc, tạm dừng và tập trung được giữ qua khởi động lại (niêm phong trong `routing-state.json`). Trạng thái hiện diện không bao giờ làm tin
+đổi hướng. **Dịch vụ** luôn nhận tin. **Client** đang ngoại tuyến vẫn giữ tin của nó: tin được phân cho nó với
+`route.queued: true` (sự kiện `queued` và một dòng log), và client đọc chúng theo thứ tự khi kết nối lại. Client trực
+tuyến khi có một lệnh `zalo_wait_for_message` của nó đang mở, và thêm 10 giây sau khi lệnh cuối kết thúc (thời gian để
+đọc kết quả và chờ tiếp); ngoài ra là ngoại tuyến, kể cả giữa các lần gọi của client chỉ hỏi định kỳ. Thời gian từ lần
+gọi cuối không bao giờ được tính. Tin đầu tiên của mỗi lần vắng trong một cuộc trò chuyện còn mang
+`route.absence: {agent, name, notifier, guidance?}`: agent của luồng mặc định (`notifier`, thường là Trợ lý) tự viết
+thông báo cho người gửi, theo quy tắc của chính nó, rằng client đang ngoại tuyến và tin đã được xếp hàng; nó được gửi
+đúng một thông báo đó dù client đang giữ cuộc trò chuyện. Engine không tự gửi câu chữ nào cho việc này;
+**`routing.awayNotice`** (tài khoản, tối đa 500 ký tự) là gợi ý của chủ cho thông báo đó. Chỉ agent bị tắt
+(`enabled: false`, hoặc vượt hạn mức của gói) mới chuyển tin đi: theo danh sách `fallback` riêng của luồng đúng như chủ
+viết (agent khác, `human`, hoặc `{autoReply: text}`), rồi tới đích của luồng mặc định, rồi danh sách `fallback` của
+luồng mặc định, và chỉ sau cùng tới chủ (`human`); mỗi lần như vậy được ghi log, giữ thành sự kiện `fallback` kèm
+`before` và `reason`, và báo cho chủ trong My Documents. Nhận việc, tạm dừng, trả lời theo tin, tập
 trung và dự phòng cần `routing.claims: true`.
 
 - Mỗi agent đọc tin của mình: `zalo_get_messages` và `zalo_wait_for_message` nhận `view: "mine"` (mặc định khi bật phân

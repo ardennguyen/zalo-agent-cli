@@ -66,7 +66,7 @@ export function getDefaultConfig() {
             allowPrivateUrls: null, // false: a `url` may not reach a private, loopback or link-local address
         },
         // The Companion Router (src/core/routing-policy.js): {agents: [{slug, name, credential, mark?, markDisplay?,
-        // delivery?, enabled?}], marks: "shown"|"hidden", presenceWindow: "90s"}. Unset: no agents, marks shown, 90 s.
+        // type?: "service"|"client", delivery?, enabled?}], marks: "shown"|"hidden", presenceWindow: "90s"}. Unset: no agents, marks shown, 90 s.
         // The account's live policy (`routing.*`) wins over this block, read on every call.
         routing: null,
         // Reverse proxies whose X-Forwarded-For is believed (e.g. ["127.0.0.1"]). Unset (null) means

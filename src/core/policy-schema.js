@@ -305,6 +305,7 @@ export const POLICY_KEYS = Object.freeze({
     "routing.default": { check: routingPart("default"), scopes: ["account"] },
     "routing.staff": { check: routingPart("staff"), scopes: ["account"] },
     "routing.settings": { check: routingPart("settings") },
+    "routing.awayNotice": { check: routingPart("awayNotice"), scopes: ["account"] },
 });
 
 /**

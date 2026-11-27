@@ -42,14 +42,26 @@ describe("routing.agents: the agents list", () => {
         const { value, error } = checkAgents(AGENTS);
         assert.equal(error, undefined);
         assert.deepEqual(
-            value.map((a) => [a.slug, a.kind, a.delivery, a.markDisplay, a.enabled]),
+            value.map((a) => [a.slug, a.kind, a.type, a.delivery, a.markDisplay, a.enabled]),
             [
-                ["dev", "mcp-key", "live", "inherit", true],
-                ["ai", "companion", "live", "inherit", true],
-                ["claude", "mcp-oauth", "onDemand", "inherit", true],
-                ["quiet", "legacy", "live", "owner", true],
+                ["dev", "mcp-key", "client", "live", "inherit", true],
+                ["ai", "companion", "service", "live", "inherit", true],
+                ["claude", "mcp-oauth", "client", "onDemand", "inherit", true],
+                ["quiet", "legacy", "client", "live", "owner", true],
             ],
         );
+    });
+
+    it("takes the type as set: an owner's agent may be a service, a companion a client; nothing else", () => {
+        const { value } = checkAgents([
+            { ...AGENTS[0], type: "service" },
+            { ...AGENTS[1], type: "client" },
+        ]);
+        assert.deepEqual(
+            value.map((a) => a.type),
+            ["service", "client"],
+        );
+        assert.match(checkAgents([{ ...AGENTS[0], type: "robot" }]).error, /type is not one of service, client/);
     });
 
     it("refuses a slug twice, a credential bound twice, an unknown field and a credential it cannot name", () => {
@@ -95,6 +107,20 @@ describe("marks", () => {
         assert.equal(markFor({ ...dev, markDisplay: "none" }), "");
         assert.equal(markFor(quiet, { ownerChat: false }), "");
         assert.equal(markFor(quiet, { ownerChat: true }), "🤖 Quiet:");
+    });
+
+    it("the companion sending on its own key is its agent: its mark goes on in My Documents and elsewhere", () => {
+        const routing = resolveRouting({ policy: { routing: { agents: AGENTS } } });
+        const own = resolveCaller({ credential: "apikey:ba9876543210" }, routing);
+        assert.equal(own.agent?.slug, "ai");
+        assert.equal(own.agent.type, "service");
+        assert.equal(markFor(own.agent, { marks: routing.marks, ownerChat: true }), "🤖 AI:");
+        assert.equal(markFor(own.agent, { marks: routing.marks, ownerChat: false }), "🤖 AI:");
+        // The same send on a credential bound to no agent (the deploy token, once the agent moved to its key) has no mark:
+        // why SAGENT keeps the companion's agent on the key the companion signs in with.
+        const unbound = resolveCaller({ credential: "apikey:ffffffffffff" }, routing);
+        assert.equal(unbound.agent, null);
+        assert.equal(markFor(unbound.agent, { ownerChat: true }), "");
     });
 
     it("prefixMark moves styles and mentions by the mark's length, and never doubles a mark", () => {
@@ -232,6 +258,22 @@ describe("presence", () => {
             ["apikey:ffffffffffff"],
         );
         assert.doesNotMatch(readFileSync(join(dir, PRESENCE_FILE), "utf8"), /zak_/);
+    });
+
+    it("a service is ready whatever its calls say, even after `status away`; only turning it off stops it", () => {
+        let t = 9_000_000;
+        const p = createAgentPresence({ now: () => t });
+        const ai = agents[1];
+        assert.equal(ai.type, "service");
+        assert.equal(p.stateOf("ai", { agent: ai }).state, "ready", "never seen: ready");
+        p.begin(who(ai))();
+        t += 3_600_000;
+        assert.equal(p.stateOf("ai", { agent: ai }).state, "ready", "not seen for an hour: ready");
+        p.setStatus(who(ai), "away", null);
+        assert.equal(p.stateOf("ai", { agent: ai }).state, "ready", "said away: still ready");
+        assert.equal(p.stateOf("ai", { agent: { ...ai, enabled: false } }).state, "disabled");
+        // The same record as a client goes away once unseen past the window.
+        assert.equal(p.stateOf("ai", { agent: { ...ai, type: "client" } }).state, "away");
     });
 
     it("presenceState is pure over entries", () => {

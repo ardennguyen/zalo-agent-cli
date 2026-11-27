@@ -9,7 +9,7 @@ import { agentsListText, createClaims, decide, guardSend, settingOf } from "../c
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { presenceState } from "./agents.js";
+import { connectionState, presenceState } from "./agents.js";
 import { readSealedJson, scopeOfDir, writeSealedJson } from "../core/keystore/index.js";
 
 /** Claims, the human pause and sticky focus, kept across a restart (sealed, in the account folder). */
@@ -23,6 +23,8 @@ const STATE_WRITE_DELAY_MS = 2000;
 
 const LABELS_TTL_MS = 5 * 60_000;
 const NOTICE_GAP_MS = 10 * 60_000;
+/** How long the default route's agent may send its one absence notice into a conversation another agent holds. */
+const ABSENCE_PASS_MS = 30 * 60_000;
 const STAFF_HANDOFF_MS = 30 * 60_000;
 const STAFF_PREFIX = "📩";
 /** The most routing events a daemon keeps for the console's Activity view and the staff inbox (ids only, no text). */
@@ -30,6 +32,28 @@ export const ROUTING_EVENTS_MAX = 5000;
 const STAFF_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const THREAD_ID = /^[0-9]{1,30}$/;
 const MAX_STAFF_TEXT = 4000;
+
+/**
+ * The owner's notice of a fallback, in My Documents: which agent could not take a message, why, and where it went.
+ *
+ * @param {{before: string, to: string, reason?: string}} d - the router's decision
+ * @param {string} threadId
+ * @param {"vi"|"en"} [lang]
+ * @returns {string}
+ */
+export function fallbackNoticeText(d, threadId, lang = "vi") {
+    const off = d.reason === "disabled";
+    if (lang === "en") {
+        const why = off ? "is turned off" : "is away";
+        return d.to === "human"
+            ? `⚠️ ${d.before} ${why}: a message waits for you (conversation ${threadId}).`
+            : `⚠️ ${d.before} ${why}: a message went to ${d.to} (conversation ${threadId}).`;
+    }
+    const why = off ? "đang tắt" : "đang vắng";
+    return d.to === "human"
+        ? `⚠️ ${d.before} ${why}: có tin chờ bạn (cuộc trò chuyện ${threadId}).`
+        : `⚠️ ${d.before} ${why}: tin đã chuyển cho ${d.to} (cuộc trò chuyện ${threadId}).`;
+}
 
 /**
  * @param {object} deps
@@ -42,6 +66,8 @@ const MAX_STAFF_TEXT = 4000;
  * @param {() => number} [deps.now]
  * @param {"vi"|"en"} [deps.lang] - the language of the notices and the `@agents` answer
  * @param {(slug: string) => object} [deps.presenceOf] - stands in for the presence store (tests)
+ * @param {(slug: string) => {online: boolean, since: number}} [deps.connectionOf] - stands in for the clients'
+ *   connections (tests)
  * @param {string|null} [deps.accountDir] - where claims, the human pause and sticky focus are saved (null: memory only)
  * @param {(threadId: string, limit: number) => object[]} [deps.history] - a conversation's cached messages, newest
  *   first (the staff inbox reads a conversation through it)
@@ -58,6 +84,7 @@ export function createRouterRuntime({
     now = Date.now,
     lang = "vi",
     presenceOf: presenceOverride = null,
+    connectionOf: connectionOverride = null,
     accountDir = null,
     history = null,
     threadNames = null,
@@ -188,6 +215,26 @@ export function createRouterRuntime({
         );
     };
 
+    // A client's connection: its open waits only (src/mcp/agents.js connectionState). No presence store (a test
+    // runtime): every client counts as connected.
+    const connectionOf = (slug) => {
+        if (connectionOverride) return connectionOverride(slug);
+        if (!presence) return { online: true, since: 0 };
+        return connectionState(
+            presence.list().map((e) => ({
+                key: e.key,
+                waits: e.waiting ? 1 : 0,
+                waitEndAt: Date.parse(e.waitEndAt ?? "") || null,
+            })),
+            slug,
+            { now: now() },
+        );
+    };
+    // Which conversations were told of which client's absence: `${slug}\n${threadId}` -> the absence (its `since`).
+    const absenceTold = new Map();
+    // The absence notices still to be sent: notifier and conversation -> until when its one send may go out.
+    const absencePass = new Map();
+
     /** The decision for one message, with no side effect (the console's test box and `route_test`). */
     function test(
         msg,
@@ -203,6 +250,7 @@ export function createRouterRuntime({
             sentByOf: (id) => sentBy?.lookup({ msgId: id }) ?? null,
             state: claims,
             presenceOf,
+            connectionOf,
         });
     }
 
@@ -280,7 +328,21 @@ export function createRouterRuntime({
             route: { to: d.to, by: d.by, ruleId: d.ruleId, observers: d.observers, ownership: d.ownership },
         };
         if (d.before) routed.route.before = d.before;
-        emit(d.by === "fallback" ? "fallback" : "routed", {
+        if (d.queued) {
+            routed.route.queued = true;
+            const absence = absenceFor(d, n, cfg);
+            if (absence) routed.route.absence = absence;
+            log(
+                `[router] ${d.to} is offline: message ${n.msgId ?? "-"} in ${n.threadId} is queued for it` +
+                    (absence ? `; ${absence.notifier} tells the sender` : ""),
+            );
+        }
+        // A fallback is never silent: logged here, kept as a routing event (the console's Activity) and told to the owner.
+        if (d.by === "fallback")
+            log(
+                `[router] fallback: ${d.before} is ${d.reason ?? "unavailable"}; message ${n.msgId ?? "-"} in ${n.threadId} went to ${d.to}`,
+            );
+        emit(d.by === "fallback" ? "fallback" : d.queued ? "queued" : "routed", {
             threadId: String(n.threadId),
             threadType: n.threadType === "group" ? "group" : "dm",
             msgId: n.msgId ? String(n.msgId) : null,
@@ -288,6 +350,8 @@ export function createRouterRuntime({
             by: d.by,
             ruleId: d.ruleId ?? null,
             ...(d.before ? { before: d.before } : {}),
+            ...(d.reason ? { reason: d.reason } : {}),
+            ...(routed.route.absence ? { notifier: routed.route.absence.notifier } : {}),
         });
         if (d.text !== undefined && d.text !== n.text) Object.assign(routed, { rawText: n.text, text: d.text });
         if (d.to.startsWith("staff:")) {
@@ -297,6 +361,34 @@ export function createRouterRuntime({
         }
         if (d.notice) notice(d, n).catch((e) => log(`[router] notice not sent: ${e.message}`));
         return routed;
+    }
+
+    /**
+     * The absence notice for a message queued for an offline client: once per conversation and absence, the default
+     * route's agent (the companion, as a rule) tells the sender, in its own words under its own rules (owner,
+     * 2026-11-27); the engine sends no text of its own. Null when it was told already, or no agent can tell it.
+     */
+    function absenceFor(d, n, cfg) {
+        const notifier = routingNow().agents.find((a) => a.slug === cfg.default.target) ?? null;
+        if (!notifier || notifier.slug === d.to || !notifier.enabled || presenceOf(notifier.slug).state === "disabled")
+            return null;
+        const key = `${d.to}\n${n.threadId}`;
+        const since = d.notice?.away?.since ?? 0;
+        if (absenceTold.has(key) && absenceTold.get(key) === since) return null;
+        absenceTold.set(key, since);
+        if (absenceTold.size > 10_000) absenceTold.delete(absenceTold.keys().next().value);
+        absencePass.set(
+            `${notifier.slug}
+${n.threadId}`,
+            now() + ABSENCE_PASS_MS,
+        );
+        if (absencePass.size > 10_000) absencePass.delete(absencePass.keys().next().value);
+        return {
+            agent: d.to,
+            name: d.notice?.away?.name ?? d.to,
+            notifier: notifier.slug,
+            ...(cfg.awayNotice ? { guidance: cfg.awayNotice } : {}),
+        };
     }
 
     function apply(d, n, cfg) {
@@ -318,12 +410,8 @@ export function createRouterRuntime({
         const { send2meId, ownId } = ids();
         if (d.notice.autoReply && noticeOnce(`auto:${n.threadId}`))
             await send(d.notice.autoReply, n.threadId, n.threadType);
-        if (d.notice.owner && noticeOnce(`owner:${d.before}`)) {
-            const text =
-                lang === "en"
-                    ? `⚠️ ${d.before} is away: a message waits for you (conversation ${n.threadId}).`
-                    : `⚠️ ${d.before} đang vắng: có tin chờ bạn (cuộc trò chuyện ${n.threadId}).`;
-            await send(text, send2meId || ownId, "dm");
+        if (d.notice.owner && noticeOnce(`owner:${d.before}:${d.to}`)) {
+            await send(fallbackNoticeText(d, n.threadId, lang), send2meId || ownId, "dm");
         }
     }
 
@@ -371,7 +459,12 @@ export function createRouterRuntime({
     function viewFilter(messages, who, view = "mine") {
         if (!on() || !Array.isArray(messages)) return messages;
         const slug = who.agent?.slug ?? null;
-        const mine = (m) => !m.route || m.system || m.route.to === slug || (m.route.observers ?? []).includes(slug);
+        const mine = (m) =>
+            !m.route ||
+            m.system ||
+            m.route.to === slug ||
+            m.route.absence?.notifier === slug ||
+            (m.route.observers ?? []).includes(slug);
         if (view === "all" && slug && !cfgNow().isolation)
             return messages.map((m) => (m.route ? { ...m, forMe: mine(m) } : m));
         return messages
@@ -557,16 +650,27 @@ export function createRouterRuntime({
         viewFilter,
         mayRead,
         enabled: on,
-        guard: (who, threadId, quoteMsgId) =>
-            guardSend({
+        guard: (who, threadId, quoteMsgId) => {
+            const g = guardSend({
                 cfg: cfgNow(),
                 claims,
                 agent: who.agent,
                 threadId,
                 quoteMsgId,
                 ownerChat: isMyDocuments(threadId),
-            }),
+            });
+            // The agent telling a sender of a client's absence may send there once, though the client holds the
+            // conversation (or it was never routed to it); the owner answering himself still stops it.
+            const pass = `${who.agent?.slug}
+${threadId}`;
+            if (!g.ok && g.code !== "HUMAN_ACTIVE" && (absencePass.get(pass) ?? 0) > now()) {
+                absencePass.delete(pass);
+                return { ok: true };
+            }
+            return g;
+        },
         presenceOf,
+        connectionOf,
         /** Hand a claim to another agent, the owner or a staff member. */
         handoff(who, threadId, to, note = null) {
             const cfg = cfgNow();

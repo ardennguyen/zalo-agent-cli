@@ -7,7 +7,8 @@
  *   `stdio[:<ZALO_MCP_AGENT>]`). {@link resolveCaller} binds it to an agent of the account's `routing.agents`
  *   (src/core/routing-policy.js). The `consumer` input becomes the agent's sub-name, a label and not a boundary.
  * - **Presence** ({@link createAgentPresence}): every tool call counts as seen; an open zalo_wait_for_message counts as
- *   listening; `zalo_inbox status` sets away. A snapshot (`agents-presence.json` in the account folder, agent names and
+ *   listening; `zalo_inbox status` sets away. A client's **connection** ({@link connectionState}), which the router
+ *   reads, is its open waits only, never the time since its last call. A snapshot (`agents-presence.json` in the account folder, agent names and
  *   times only) is written a few seconds after a change so that the access API (the console) can read it.
  * - **sentBy** ({@link createSentByStore}): the ids of every send an agent makes, with the agent, kept sealed in
  *   `sent-by.json` in the account folder (30 days, the newest 5,000 sends). It is not a column of `zalo.db`, whose
@@ -39,6 +40,7 @@ export const ROUTING_KEYS = Object.freeze([
     "default",
     "staff",
     "settings",
+    "awayNotice",
 ]);
 
 export const PRESENCE_FILE = "agents-presence.json";
@@ -137,6 +139,7 @@ export function agentView(agent, routing) {
         slug: agent.slug,
         name: agent.name,
         kind: agent.kind,
+        type: agent.type,
         credential: agent.credential,
         mark: agent.mark ?? null,
         effectiveMark: agent.mark || defaultMark(agent),
@@ -168,8 +171,8 @@ export function prefixMark({ text, styles = [], mentions = [] }, mark) {
 }
 
 /**
- * One agent's (or credential's) presence from its entries: `disabled`, `listening` (a wait is open, or seen within the
- * window), `away` (it said so, or was seen before the window), `onDemand` (a pull-only agent not seen lately) or
+ * One agent's (or credential's) presence from its entries: `disabled`, `ready` (an agent of type `service`: woken
+ * when a message comes, never away), `listening` (a wait is open, or seen within the window), `away` (it said so, or was seen before the window), `onDemand` (a pull-only agent not seen lately) or
  * `idle` (never seen by this daemon). An agent's state is the best of its sub-names'.
  *
  * @param {Array<{key: string, lastSeen: number, waits: number, status: string|null, note?: string|null,
@@ -187,6 +190,8 @@ export function presenceState(
     const mine = entries.filter((e) => e.key === key || e.key.startsWith(`${key}/`));
     const last = Math.max(0, ...mine.map((e) => e.lastSeen || 0));
     const lastSeen = last ? new Date(last).toISOString() : null;
+    // A service (the companion) is woken when a message comes: always ready, never away, only turned off.
+    if (agent?.type === "service") return { state: "ready", lastSeen };
     if (mine.some((e) => e.waits > 0)) return { state: "listening", lastSeen };
     const away = mine.find((e) => e.status === "away");
     if (away && mine.every((e) => e.status === "away" || (e.lastSeen || 0) <= away.statusAt))
@@ -194,6 +199,31 @@ export function presenceState(
     if (last && now - last <= windowMs) return { state: "listening", lastSeen };
     if (agent?.delivery === "onDemand") return { state: "onDemand", lastSeen };
     return { state: last ? "away" : "idle", lastSeen };
+}
+
+/**
+ * How long after its last wait ended a client still counts as connected: the moment it takes to read what the wait
+ * returned and open the next one.
+ */
+export const RECONNECT_GRACE_MS = 10_000;
+
+/**
+ * A client agent's connection to this daemon, the router's only test of whether it is there (owner, 2026-11-27):
+ * online while one of its zalo_wait_for_message calls is open (an MCP client waiting for messages), and for {@link RECONNECT_GRACE_MS} after the last one ended; offline otherwise, `since` the moment that
+ * last wait ended (0: never connected). Calls without a wait (zalo_get_messages polling) do not hold a connection,
+ * and neither does the time since a call: a client that only polls is offline between its polls.
+ *
+ * @param {Array<{key: string, waits: number, waitEndAt?: number|null}>} entries - times in epoch ms
+ * @param {string} key - the agent's slug
+ * @param {{now?: number, graceMs?: number}} [opts]
+ * @returns {{online: boolean, since: number}}
+ */
+export function connectionState(entries, key, { now = Date.now(), graceMs = RECONNECT_GRACE_MS } = {}) {
+    const mine = entries.filter((e) => e.key === key || e.key.startsWith(`${key}/`));
+    if (mine.some((e) => e.waits > 0)) return { online: true, since: 0 };
+    const ended = Math.max(0, ...mine.map((e) => e.waitEndAt || 0));
+    if (ended && now - ended <= graceMs) return { online: true, since: 0 };
+    return { online: false, since: ended };
 }
 
 /**
@@ -211,6 +241,7 @@ export function snapshotEntries(snapshot) {
         credential: e.credential ?? null,
         lastSeen: ms(e.lastSeen),
         waits: e.waiting ? 1 : 0,
+        waitEndAt: ms(e.waitEndAt) || null,
         status: e.status ?? null,
         note: e.note ?? null,
         statusAt: ms(e.statusAt) || null,
@@ -255,6 +286,7 @@ export function createAgentPresence({ file = null, now = Date.now, writeDelayMs 
                 firstSeen: now(),
                 lastSeen: 0,
                 waits: 0,
+                waitEndAt: null,
                 calls: 0,
                 status: null,
                 note: null,
@@ -272,6 +304,7 @@ export function createAgentPresence({ file = null, now = Date.now, writeDelayMs 
             credential: e.credential,
             lastSeen: e.lastSeen ? new Date(e.lastSeen).toISOString() : null,
             waiting: e.waits > 0,
+            waitEndAt: e.waitEndAt ? new Date(e.waitEndAt).toISOString() : null,
             calls: e.calls,
             status: e.status,
             note: e.note,
@@ -294,7 +327,10 @@ export function createAgentPresence({ file = null, now = Date.now, writeDelayMs 
                 if (ended) return;
                 ended = true;
                 e.lastSeen = now();
-                if (waiting) e.waits = Math.max(0, e.waits - 1);
+                if (waiting) {
+                    e.waits = Math.max(0, e.waits - 1);
+                    if (e.waits === 0) e.waitEndAt = now();
+                }
                 changed();
             };
         },
@@ -309,7 +345,7 @@ export function createAgentPresence({ file = null, now = Date.now, writeDelayMs 
             return this.stateOf(who.key, { agent: who.agent });
         },
         /**
-         * One agent's (or credential's) state: `disabled`, `away`, `listening`, `onDemand` or `idle`.
+         * One agent's (or credential's) state: `disabled`, `ready`, `away`, `listening`, `onDemand` or `idle`.
          * @param {string} key - the slug, or slug/sub, or a credential
          * @param {{agent?: object|null, windowMs?: number}} [opts]
          */

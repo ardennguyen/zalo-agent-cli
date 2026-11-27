@@ -347,6 +347,10 @@ Companion Router; nothing is routed or refused yet, and every caller still sees 
 - **`mark`** (default `🤖 <name>:`) goes in front of every text and caption the agent sends with `zalo_send_message`,
   unless the text already starts with it. **`marks`** (`shown`, the default, or `hidden`) is the account's setting;
   an agent's **`markDisplay`** overrides it: `inherit` (default), `everywhere`, `owner` (My Documents only) or `none`.
+- **`type`**: `service` (default for the `companion` kind) or `client` (default for every other kind). A service is
+  woken when a message comes: it is always `ready`, never away, and only turning it off (`enabled: false`) stops its
+  messages. A client (an interactive client, such as an MCP session that can be closed) may be offline (below). Set on the record,
+  never guessed from the agent's calls.
 - **`delivery`**: `live` (default) or `onDemand` (default for OAuth connectors): an on-demand agent not seen lately
   shows `onDemand`, never offline. **`enabled`**: `false` shows the agent `disabled`.
 - **`presenceWindow`** (default `90s`, at least `10s`): an agent seen this recently, or with a
@@ -366,8 +370,20 @@ owner, at the start; a `#hashtag` anywhere, from anyone when the route allows it
 and kept in `rawText`), **sticky focus** (after a sticky trigger the owner's next messages stay with that agent until
 `@end` or `stickyTtl`), **reply affinity** (a reply to an agent's message goes back to it, `affinityTtl`), an active
 **claim**, then the **routes** table (first match: `threads`, `threadType`, `myDocuments`, `senders`, Zalo `labels`,
-`kinds`, a time `window`, `mentionsAccount` for a group message that mentions the account or @All), then the **default**. Claims, the human pause and sticky focus survive a restart (sealed in `routing-state.json`). A live agent away for longer than `fallbackAfter` hands over to its
-route's `fallback` chain (another agent, `human` with a notice in My Documents, or `{autoReply: text}`). Claims, human
+`kinds`, a time `window`, `mentionsAccount` for a group message that mentions the account or @All), then the **default**. Claims, the human pause and sticky focus survive a restart (sealed in `routing-state.json`). Presence never moves a message. A
+**service** is always routed to. A **client** that is offline keeps its message: it is routed to it with
+`route.queued: true` (a `queued` routing event, and a log line) and the client reads it, in order, when it connects
+again. A client is online while one of its `zalo_wait_for_message` calls is open, and for 10 s after the last one ended
+(the time to read what it returned and wait again); offline otherwise, including between the calls of a client that
+only polls. The time since its last call never counts. The first message of each absence in a conversation also
+carries `route.absence: {agent, name, notifier, guidance?}`: the default route's agent (`notifier`, the companion as a
+rule) tells the sender, in its own words and under its own rules, that the client is offline and the message is
+queued; it may send that one notice even though the client holds the conversation. The engine sends no text of its
+own for it; **`routing.awayNotice`** (account, up to 500 characters) is the owner's guidance for that notice. Only an
+agent turned off (`enabled: false`, or past the plan's allowance) hands its message on: down its route's own
+`fallback` list as the owner wrote it (another agent, `human`, or `{autoReply: text}`), then to the default route's
+target, down the default route's `fallback` list, and only then to the owner (`human`); each such fallback is logged,
+kept as a `fallback` event with its `before` and `reason`, and told to the owner in My Documents. Claims, human
 pause, affinity, sticky focus and fallback need `routing.claims: true`.
 
 ```json

@@ -14,6 +14,7 @@
  *     default            {target, fallback}: when no route matches
  *     staff              [{id, name, mark?, zaloUserId?, channels: ["console"|"zalo"]}]
  *     settings           claimTtl, humanPause, stickyTtl, affinityTtl, fallbackAfter (durations; unset: the defaults)
+ *     awayNotice         the owner's guidance for the absence notice the default route's agent writes (null: none)
  *
  * A target is an agent slug, `human` (the owner in the Zalo apps), `nobody`, or `staff:<id>`.
  */
@@ -180,6 +181,13 @@ export function checkRouting(value) {
             channels: channels.length ? channels : ["console"],
         });
     }
+    // The owner's guidance for the absence notice (the default route's agent writes the notice itself, in its own words).
+    let awayNotice = null;
+    if (v.awayNotice !== undefined && v.awayNotice !== null) {
+        const t = String(v.awayNotice).trim();
+        if (!t || t.length > 500) return { error: "awayNotice is not 1 to 500 characters" };
+        awayNotice = t;
+    }
     const settings = {};
     for (const k of Object.keys(ROUTING_DEFAULTS)) {
         const raw = isObj(v.settings) ? v.settings[k] : undefined;
@@ -198,6 +206,7 @@ export function checkRouting(value) {
             default: { target: defTarget, fallback: defFb.value },
             staff,
             settings,
+            awayNotice,
         },
     };
 }
@@ -259,8 +268,10 @@ export const hashtags = (text) =>
  * @param {(msgId: string) => {agent: string|null, at: string}|null} [ctx.sentByOf] - who sent a message (affinity)
  * @param {object} [ctx.state] - {humanUntil(threadId), sticky(threadId), holder(threadId, msgId)}
  * @param {(slug: string) => {state: string, lastSeen?: string|null, since?: string}} [ctx.presenceOf]
+ * @param {(slug: string) => {online: boolean, since: number}} [ctx.connectionOf] - a client agent's connection
+ *   (src/mcp/agents.js connectionState); unset: every agent counts as connected
  * @returns {{to: string, by: string, ruleId: string|null, observers: string[], ownership: string, before?: string,
- *   text?: string, effects: object, trace: string[], notice?: object}}
+ *   reason?: "disabled", queued?: boolean, text?: string, effects: object, trace: string[], notice?: object}}
  */
 export function decide(msg, ctx) {
     const { cfg, agents = [], now = Date.now(), labelsOf = () => [], sentByOf = () => null, state = {} } = ctx;
@@ -275,45 +286,57 @@ export function decide(msg, ctx) {
     const agentOf = (slug) => agents.find((a) => a.slug === slug) ?? null;
     const targetKnown = (t) => t === "human" || t === "nobody" || t.startsWith("staff:") || Boolean(agentOf(t));
 
+    // Whether an agent is turned off (by the owner, or past the plan's allowance): the only thing that stops a message
+    // reaching it. Presence never does (owner, 2026-11-27).
+    function turnedOff(agent) {
+        const p = ctx.presenceOf ? ctx.presenceOf(agent.slug) : { state: "listening" };
+        return !agent.enabled || p.state === "disabled";
+    }
+
+    // A message for an agent stays with it. A `service` (the companion) is always ready. A `client` that is offline
+    // (no open wait: ctx.connectionOf, src/mcp/agents.js connectionState) keeps it queued until it connects again, and
+    // the sender is told once per conversation and absence (`notice.away`); no other agent answers in its place. Only
+    // an agent turned off hands its message on: down the route's own fallback list as the owner wrote it, to the
+    // default route's target, down the default route's list, and only then to the owner (human), who is always told.
     function withFallback(r) {
         r.trace = trace;
         r.effects = effects;
-        if (!cfg.claims) return r;
         const a = agentOf(r.to);
         if (!a) return r;
-        const p = ctx.presenceOf ? ctx.presenceOf(a.slug) : { state: "listening" };
-        const after = settingOf(cfg, "fallbackAfter");
-        const since = Date.parse(p.since ?? p.lastSeen ?? "") || 0;
-        // Away for longer than fallbackAfter (it said so, or stopped calling). An agent this daemon has never seen (a
-        // webhook receiver, an on-demand connector) is not away: its messages wait for it.
-        const unavailable =
-            !a.enabled ||
-            p.state === "disabled" ||
-            (a.delivery === "live" && p.state === "away" && since > 0 && now - since > after);
-        if (!unavailable) return r;
-        const route = cfg.routes.find((x) => x.id === r.ruleId);
-        const chain = route?.fallback ?? cfg.default.fallback ?? ["human"];
-        trace.push(`${a.slug} is ${p.state}: fallback`);
-        for (const step of chain.length ? chain : ["human"]) {
-            if (typeof step === "object") {
-                return { ...r, before: r.to, to: "human", by: "fallback", notice: { autoReply: step.autoReply } };
+        if (!turnedOff(a)) {
+            const conn = a.type === "client" && ctx.connectionOf ? ctx.connectionOf(a.slug) : null;
+            if (conn && !conn.online) {
+                trace.push(`${a.slug} is offline: queued for it`);
+                return { ...r, queued: true, notice: { away: { agent: a.slug, name: a.name, since: conn.since } } };
             }
-            const next = agentOf(step);
-            if (next) {
-                const np = ctx.presenceOf ? ctx.presenceOf(next.slug) : { state: "listening" };
-                if (next.enabled && np.state !== "disabled" && np.state !== "away")
-                    return { ...r, before: r.to, to: step, by: "fallback" };
-                continue;
-            }
-            return {
-                ...r,
-                before: r.to,
-                to: step,
-                by: "fallback",
-                notice: step === "human" ? { owner: true } : undefined,
-            };
+            return r;
         }
-        return { ...r, before: r.to, to: "human", by: "fallback", notice: { owner: true } };
+        if (!cfg.claims) return r;
+        trace.push(`${a.slug} is turned off: fallback`);
+        const route = r.ruleId ? cfg.routes.find((x) => x.id === r.ruleId) : null;
+        const fell = (to, extra = {}) => ({
+            ...r,
+            before: r.to,
+            to,
+            by: "fallback",
+            reason: "disabled",
+            notice: { owner: true },
+            ...extra,
+        });
+        const steps = [...(route?.fallback ?? []), cfg.default.target, ...(cfg.default.fallback ?? [])];
+        const tried = new Set([a.slug]);
+        for (const step of steps) {
+            // An automatic reply answers the customer; the owner is told too.
+            if (typeof step === "object") return fell("human", { notice: { autoReply: step.autoReply, owner: true } });
+            if (step === "nobody" || tried.has(step)) continue;
+            tried.add(step);
+            const next = agentOf(step);
+            if (next && turnedOff(next)) continue;
+            trace.push(`fallback to ${step}`);
+            return fell(step);
+        }
+        trace.push("fallback to human (nothing else can take it)");
+        return fell("human");
     }
 
     // 1. The owner is answering this conversation himself.
@@ -603,8 +626,22 @@ export function guardSend({ cfg, claims, agent, threadId, quoteMsgId = null, own
  */
 export function agentsListText(agents, lang = "vi") {
     const state = {
-        vi: { listening: "đang nghe", away: "vắng mặt", onDemand: "theo nhu cầu", idle: "chưa thấy", disabled: "tắt" },
-        en: { listening: "listening", away: "away", onDemand: "on demand", idle: "not seen", disabled: "off" },
+        vi: {
+            ready: "sẵn sàng",
+            listening: "đang nghe",
+            away: "vắng mặt",
+            onDemand: "theo nhu cầu",
+            idle: "chưa thấy",
+            disabled: "tắt",
+        },
+        en: {
+            ready: "ready",
+            listening: "listening",
+            away: "away",
+            onDemand: "on demand",
+            idle: "not seen",
+            disabled: "off",
+        },
     }[lang === "en" ? "en" : "vi"];
     const head = lang === "en" ? "Agents on this account:" : "Các trợ lý của tài khoản này:";
     const lines = agents.map(

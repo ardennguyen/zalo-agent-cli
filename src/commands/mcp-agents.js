@@ -87,7 +87,7 @@ export function registerMCPAgentsCommand(mcp, program) {
                 for (const a of report.agents) {
                     const p = a.presence;
                     info(
-                        `${a.slug}  ${a.name}  [${a.kind}]  ${a.credential}  mark: ${a.marksShown ? a.effectiveMark : "(hidden)"}` +
+                        `${a.slug}  ${a.name}  [${a.kind}, ${a.type}]  ${a.credential}  mark: ${a.marksShown ? a.effectiveMark : "(hidden)"}` +
                             `  ${p.state}${p.lastSeen ? ` (last seen ${p.lastSeen})` : ""}${a.enabled ? "" : "  disabled"}`,
                     );
                 }

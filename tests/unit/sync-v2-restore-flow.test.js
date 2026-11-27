@@ -198,12 +198,12 @@ describe("a restore against the fake phone", () => {
         );
     });
 
-    it("releases the conversation session as soon as it has the list, before asking for any message", async () => {
+    it("keeps the conversation session open with the others, and releases them all together at the end", async () => {
         const { phone } = await run();
         assert.deepEqual(
             phone.order.map((o) => o.cmd),
-            [590, 591, 590, 591],
-            "590 conversation, 591 for it, 590 messages, 591 for it",
+            [590, 590, 591, 591],
+            "590 conversation, 590 messages, then a 591 for each",
         );
     });
 
@@ -241,24 +241,21 @@ describe("a restore against the fake phone", () => {
             messages: [{ id: `${3000 + i}`, text: `hello ${i}`, ts: T + 1000 + i }],
         }));
 
-        it("never holds more than a wave of them: a wave is released together once its shards are stored", async () => {
+        it("are all released together once the run is stored, each exactly once", async () => {
             const { result, error, phone } = await run({ conversations: many }, { shardSize: 1, waveSize: 2 });
             assert.equal(error, null);
             assert.equal(result.reason, "complete");
             assert.equal(result.messagesSaved, 8);
-            // The phone's count of open sessions after every request and release, in the order they happened.
-            let open = 0;
-            let peak = 0;
-            for (const o of phone.order) {
-                open += o.cmd === 590 ? 1 : -1;
-                peak = Math.max(peak, open);
-            }
-            assert.equal(open, 0, "every session ended released");
-            assert.ok(peak <= 3, `at most a wave and a straggler were open at once, but ${peak} were`);
-            assert.equal(phone.releases.length, phone.requests.length, "and each was released exactly once");
+            const firstRelease = phone.order.findIndex((o) => o.cmd === 591);
+            assert.ok(
+                phone.order.slice(firstRelease).every((o) => o.cmd === 591),
+                "no request after the first release",
+            );
+            assert.equal(phone.releases.length, phone.requests.length, "every session is released");
+            assert.equal(new Set(phone.releases.map((r) => r.syncId)).size, phone.requests.length, "each once");
         });
 
-        it("the retry round lets go of its sessions too: a window with many failed ranges does not pile them up", async () => {
+        it("the retry round's sessions are released with the others, at the end", async () => {
             // Every conversation fails its first ask and is served on the retry, one conversation per session.
             const { result, error, phone } = await run(
                 { conversations: many, failPartition: (_partition, attempt) => attempt === 1 },
@@ -266,32 +263,27 @@ describe("a restore against the fake phone", () => {
             );
             assert.equal(error, null);
             assert.equal(result.messagesSaved, 8, "the retry served what the first ask could not");
-            let open = 0;
-            let peak = 0;
-            for (const o of phone.order) {
-                open += o.cmd === 590 ? 1 : -1;
-                peak = Math.max(peak, open);
-            }
             assert.ok(phone.requests.length >= 16, "the retry round did ask again, session by session");
-            assert.ok(peak <= 3, `${peak} sessions were open at once`);
+            const firstRelease = phone.order.findIndex((o) => o.cmd === 591);
+            assert.equal(firstRelease, phone.requests.length, "every request, then every release");
+            assert.equal(new Set(phone.releases.map((r) => r.syncId)).size, phone.requests.length, "each once");
         });
 
-        it("a session that failed is released as failed, at once, and the others as finished", async () => {
+        it("a session that failed is released as failed, and the others as finished", async () => {
             const { phone } = await run(
                 { conversations: many, failPartition: (p, attempt) => p.includes("CONV3") && attempt >= 0 },
                 { shardSize: 1, waveSize: 2 },
             );
-            const reasons = phone.releases.map((r) => r.reason);
-            assert.ok(reasons.includes(1), "finished sessions are released as finished");
-            // The first round's session for the failing conversation, and its release.
             const firstAsk = phone.requests.find(
                 (r) => r.type === "message" && r.queries.some((q) => q.partition.includes("CONV3")),
             );
-            const release = phone.releases.find((r) => r.syncId === firstAsk.syncId);
-            assert.equal(release.reason, 2, "the session that failed is released as failed");
-            const at = phone.order.findIndex((o) => o.cmd === 591 && phone.releases[o.at - 1] === release);
-            const asksAfter = phone.order.slice(at).filter((o) => o.cmd === 590).length;
-            assert.ok(asksAfter > 0, "it was released while the run still had more to ask for, not at the very end");
+            for (const r of phone.releases) {
+                const failing = phone.requests
+                    .find((q) => q.syncId === r.syncId)
+                    ?.queries.some((q) => q.partition.includes("CONV3"));
+                assert.equal(r.reason, failing ? 2 : 1, `the session ${failing ? "that failed" : "that finished"}`);
+            }
+            assert.ok(phone.releases.some((r) => r.syncId === firstAsk.syncId));
             assert.equal(new Set(phone.releases.map((r) => r.syncId)).size, phone.requests.length, "each once");
         });
     });

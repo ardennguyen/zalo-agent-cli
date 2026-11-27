@@ -37,7 +37,7 @@ const blobOf = (obj) => {
  *
  * @returns {{zproto: object, M: object, C: object}}
  */
-export function fakeCodecs() {
+export function fakeCodecs({ decryptDelayMs = 0 } = {}) {
     const keyPair = () => ({ publicKey: Buffer.alloc(32, 1), privateKey: Buffer.alloc(32, 2) });
     const klass = {
         SyncChunk: {
@@ -48,7 +48,11 @@ export function fakeCodecs() {
         zproto: {
             generateKeyPair: keyPair,
             decryptMetadata: (chunk) => ({ sessionRecord: Buffer.from("session"), plaintext: Buffer.from(chunk) }),
-            decryptMessage: (chunk) => ({ plaintext: Buffer.from(chunk) }),
+            decryptMessage: (chunk) => {
+                // A slow decrypt, for timing what runs beside it (it blocks its thread, as the real one does).
+                if (decryptDelayMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, decryptDelayMs);
+                return { plaintext: Buffer.from(chunk) };
+            },
         },
         M: klass,
         C: klass,
@@ -62,7 +66,8 @@ export function fakeCodecs() {
  * @property {string} id - the opaque conversation id
  * @property {"oneone"|"group"} [kind]
  * @property {number} lastTs
- * @property {Array<{id: string, text: string, ts: number}>} messages
+ * @property {Array<{id: string, text: string, ts: number, senderId?: string}>} messages - `senderId` defaults to
+ *   "S1", which no lookup is asked for
  */
 
 /**
@@ -82,6 +87,10 @@ export function fakeCodecs() {
  *   failed; `attempt` counts the times it has been asked for, from 1
  * @param {(path: string, phone: object) => number|null} [opts.downloadStatus] - an HTTP status to answer a batch
  *   download with (null: serve it); gets the phone, to look at the requests so far
+ * @param {number|((request: object) => number)} [opts.serveDelayMs] - how long the phone takes to serve a message
+ *   session once it has confirmed it (0: at once)
+ * @param {(release: object, n: number, phone: object) => boolean} [opts.dropReleaseAck] - leave this release
+ *   unanswered; `n` counts the releases of that session, from 1
  * @returns {{
  *   requests: object[], releases: object[], downloads: string[], downloadHeaders: object[], order: Array<{cmd: number, at: number}>,
  *   asked: (type: string) => object[],
@@ -199,34 +208,40 @@ export function installFakePhone(zalo, opts = {}) {
             const lost = asked.filter(([p, n]) => lose(p, n)).map(([p]) => p);
             const failed = asked.filter(([p, n]) => !lose(p, n) && failPartition(p, n)).map(([p]) => p);
             const served = asked.filter(([p, n]) => !lose(p, n) && !failPartition(p, n)).map(([p]) => p);
-            const parts = served.map((id) => {
-                const conv = conversations.find((c) => id.endsWith(`/${c.id}`));
-                return {
-                    id,
-                    messagesList: (conv?.messages ?? []).map((m) => ({
-                        globalId: m.id,
-                        clientId: `c${m.id}`,
-                        senderId: "S1",
-                        timestamp: m.ts,
-                        msgType: 0,
-                        content: m.text,
-                    })),
-                };
-            });
-            push601([
-                batchControl(inner.syncId, reqId, 0, false, 2, [], blobOf({})),
-                batchControl(
-                    inner.syncId,
-                    reqId,
-                    1,
-                    failed.length === 0 && lost.length === 0,
-                    1,
-                    served.map((partition) => ({ partition })),
-                    blobOf({ partitionsList: parts }),
-                ),
-                ...failed.map((p) => failureControl(inner.syncId, p, opts.failCode)),
-                ...(lost.length ? [transferStatus(inner.syncId, 2)] : []),
-            ]);
+            const serve = () => {
+                const parts = served.map((id) => {
+                    const conv = conversations.find((c) => id.endsWith(`/${c.id}`));
+                    return {
+                        id,
+                        messagesList: (conv?.messages ?? []).map((m) => ({
+                            globalId: m.id,
+                            clientId: `c${m.id}`,
+                            senderId: m.senderId ?? "S1",
+                            timestamp: m.ts,
+                            msgType: 0,
+                            content: m.text,
+                        })),
+                    };
+                });
+                push601([
+                    batchControl(inner.syncId, reqId, 0, false, 2, [], blobOf({})),
+                    batchControl(
+                        inner.syncId,
+                        reqId,
+                        1,
+                        failed.length === 0 && lost.length === 0,
+                        1,
+                        served.map((partition) => ({ partition })),
+                        blobOf({ partitionsList: parts }),
+                    ),
+                    ...failed.map((p) => failureControl(inner.syncId, p, opts.failCode)),
+                    ...(lost.length ? [transferStatus(inner.syncId, 2)] : []),
+                ]);
+            };
+            const delay =
+                typeof opts.serveDelayMs === "function" ? opts.serveDelayMs(requests.at(-1)) : opts.serveDelayMs;
+            if (delay > 0) setTimeout(serve, delay);
+            else serve();
         });
         const ack = ok({ reqId, err, ts: Date.now() });
         return ackDelayMs > 0 ? [{ cmd: 590, sub: 0, body: ack, delayMs: ackDelayMs }] : ack;
@@ -235,7 +250,11 @@ export function installFakePhone(zalo, opts = {}) {
     zalo.sock.respond(591, 0, (frame) => {
         const inner = frame.data?.data ?? {};
         releases.push({ syncId: inner.syncId, reason: inner.reason, reqId: frame.data?.reqId });
+        // When it came, kept out of the record's shape (tests compare it whole).
+        Object.defineProperty(releases.at(-1), "receivedAt", { value: Date.now(), enumerable: false });
         order.push({ cmd: 591, at: releases.length });
+        const n = releases.filter((r) => r.syncId === inner.syncId).length;
+        if (opts.dropReleaseAck?.(releases.at(-1), n, handle)) return null;
         const ack = ok({ reqId: frame.data?.reqId, err: 0, ts: Date.now() });
         return releaseAckDelayMs > 0 ? [{ cmd: 591, sub: 0, body: ack, delayMs: releaseAckDelayMs }] : ack;
     });

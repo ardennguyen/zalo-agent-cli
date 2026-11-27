@@ -204,7 +204,7 @@ Full checklist, including the wrapper and wiki steps after an engine release: **
 1. On the version branch: add the `CHANGELOG.md` section, `chore: bump version to X.Y.Z`, push.
 2. PR the version branch into `main` (user approves). Tag `vX.Y.Z` on the merge commit; the tag is the only name a release has — **never create a branch named after a release.**
 3. A GitHub Release from the tag (body = the CHANGELOG section) triggers `.github/workflows/publish.yml`, which publishes with `--provenance` via npm trusted publishing (no token).
-4. Then bump the wrapper's lock file and sweep the wiki (`docs/RELEASE.md`).
+4. Then bump the wrapper's exact engine pin in its `package.json`, release it, and sweep the wiki (`docs/RELEASE.md`).
 
 - **Never run `npm publish` manually.**
 

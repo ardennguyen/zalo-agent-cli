@@ -9,7 +9,7 @@ Three surfaces carry a version and all three must be touched, in this order:
 | Surface | Where the version lives | Lags behind when forgotten |
 |---|---|---|
 | Engine `@ardennguyen/zalo-agent-cli` | `package.json`, git tag, `CHANGELOG.md` | — |
-| Wrapper `@ardennguyen/zalo-mcp` | `npm-shrinkwrap.json` (the pinned engine), `package.json` range | wrapper installs serve an old engine |
+| Wrapper `@ardennguyen/zalo-mcp` | `package.json` (the exact engine version it pins) and its `package-lock.json` | wrapper installs serve an old engine |
 | Wiki `zalo-agent-cli.wiki` | `Home.md` "engine X.Y.Z" line, `(engine X.Y.Z)` notes on feature lines | pages describe flags the install does not have, or miss ones it does |
 
 ## 1. Engine
@@ -32,8 +32,8 @@ On the active version branch (`v2.5-dev` for 2.5.x, `v3.0-dev` for 3.0):
 6. **(user)** Open and merge the pull request `vX.Y-dev → main`. The merge is the release decision.
    `.github/workflows/prepare-release.yml` can do the `npm version` part of step 4 as a PR (manifests only, not the CHANGELOG); it
    defaults to `v3.0-dev`, so for a 2.5.x release pass `branch: v2.5-dev`. Run in the wrapper's repository, it sets the
-   wrapper's engine range to `^N.0.0` for the newest published engine major (`^3.0.0` once 3.0.0 is out), or to the
-   `engine_range` input when one is given.
+   wrapper's exact engine pin (§2) to the newest published engine version, or to the `engine_version` input when one
+   is given.
 7. Wait for `ci.yml` (Ubuntu, Node 22) to pass on the merge commit — the offline suite can fail on
    Linux after passing on Windows — then tag the merge commit and push the tag: `git tag vX.Y.Z <merge-sha> && git push origin vX.Y.Z`.
    The tag is the only name a release has; never create a branch named after it.
@@ -47,21 +47,22 @@ On the active version branch (`v2.5-dev` for 2.5.x, `v3.0-dev` for 3.0):
 
 ## 2. Wrapper (`zalo-mcp`)
 
-A wrapper install serves the engine its lock file pins, so the lock must move with every engine
-release even when the wrapper's own code did not change. The lock is `npm-shrinkwrap.json`: npm publishes it
-(never `package-lock.json`) and installs a package's dependencies by it, so `npm install -g`, the
-scripts' `install`/`init`/`update` (`npm ci`) and a `git clone` + `npm ci` all get exactly the pinned engine.
+A wrapper install serves the engine version its `package.json` pins exactly (`"3.5.1"`, never a range), so the
+pin must move with every engine release even when the wrapper's own code did not change. Every npm reads
+`package.json`, so `npm install -g`, the scripts' `install`/`init`/`update` and a `git clone` + `npm ci` all get
+exactly the pinned engine. `package-lock.json` is the wrapper repository's ordinary lock (CI runs `npm ci`); npm
+never publishes it. There is no `npm-shrinkwrap.json`: npm 12, which the wrapper's CI and publish job use, neither
+packs it nor runs `npm ci` by it.
 
-1. In `zalo-mcp/` on `v2.0-dev`: `npm install @ardennguyen/zalo-agent-cli@X.Y.Z --package-lock-only` (it writes `npm-shrinkwrap.json`)
-   (the `^3.0.0` range in `package.json`, set by wrapper 2.1.0, stays unless the engine's major or minor changed).
-2. `npm test`, then `git diff` — only `npm-shrinkwrap.json` (and `package.json` if the range moved).
-3. Decide whether the wrapper itself needs a version: a new engine flag the launcher must forward,
-   a README change, or a changed range → bump `version` in `package.json` and add a section to the
-   wrapper's `CHANGELOG.md` (from 2.1.0; earlier wrapper history is on its GitHub Releases). A lock-only move changes what installs get only
-   once it is released: `npm install -g` reads the published shrinkwrap, and `update` copies the published one.
-4. Commit `build: pin engine X.Y.Z in the lock file` (or `chore: bump version to A.B.C …`), push.
-5. If the wrapper version moved: **(user)** PR `v2.0-dev → main`, tag `vA.B.C`, GitHub Release —
-   the same `publish.yml` path as the engine.
+1. In `zalo-mcp/` on `v2.0-dev`: set `"@ardennguyen/zalo-agent-cli": "X.Y.Z"` in `package.json` (exact, no `^`),
+   then `npm install --package-lock-only`.
+2. `npm test`, then `git diff` — only `package.json` (the pin) and `package-lock.json`.
+3. Every pin move is a wrapper release: installs get the new engine only once the wrapper carrying the pin is
+   published (`npm install -g` and `update` read the published `package.json`). Bump `version` in `package.json`
+   (`npm install --package-lock-only` again) and add a section to the wrapper's `CHANGELOG.md` naming the engine it
+   installs (from 2.1.0; earlier wrapper history is on its GitHub Releases).
+4. Commit `build: pin engine X.Y.Z` and `chore: bump version to A.B.C (engine X.Y.Z)`, push.
+5. **(user)** PR `v2.0-dev → main`, tag `vA.B.C`, GitHub Release — the same `publish.yml` path as the engine.
 6. Deployed folders update themselves with `zalo-mcp.ps1 update` / `./zalo-mcp.sh update`; never
    `npm install` in a deployed folder (AGENTS.md §9).
 

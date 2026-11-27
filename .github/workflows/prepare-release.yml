@@ -10,8 +10,8 @@ on:
         description: 'Version branch to prepare from (default: the active one — engine v3.0-dev, wrapper v2.0-dev)'
         required: false
         type: string
-      engine_range:
-        description: 'Wrapper only: the engine range it depends on (default: ^N.0.0 for the newest published engine major, e.g. ^3.0.0)'
+      engine_version:
+        description: 'Wrapper only: the exact engine version it pins (default: the newest published engine, e.g. 3.5.1)'
         required: false
         type: string
 
@@ -31,7 +31,7 @@ jobs:
     env:
       VERSION: ${{ inputs.version }}
       BRANCH_INPUT: ${{ inputs.branch }}
-      ENGINE_RANGE_INPUT: ${{ inputs.engine_range }}
+      ENGINE_VERSION_INPUT: ${{ inputs.engine_version }}
     steps:
       - name: Select trusted upstream branch and validate version
         id: target
@@ -68,18 +68,18 @@ jobs:
           npm view "$EXPECTED_PACKAGE" versions --json > "$RUNNER_TEMP/published-versions.json"
           node -e 'const fs=require("fs"),v=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/published-versions.json","utf8")); if([].concat(v).includes(process.env.VERSION)) throw new Error("Version already published; choose a new release version");'
           if [[ "$EXPECTED_PACKAGE" == '@ardennguyen/zalo-mcp' ]]; then
-            # The wrapper follows the engine's newest major (^3.0.0 once 3.0.0 is out), never a hard-coded line.
-            # Read off the published versions, not the `latest` tag: a 2.5.x patch published after 3.0.0 moves it.
-            engine_range="${ENGINE_RANGE_INPUT:-}"
-            if [[ -z "$engine_range" ]]; then
+            # The wrapper pins one exact engine version (docs/RELEASE.md §2), never a range: every npm reads
+            # package.json, published or not. Default: the newest published engine, read off the published versions,
+            # not the `latest` tag (a 2.5.x patch published after 3.0.0 moves it).
+            engine_version="${ENGINE_VERSION_INPUT:-}"
+            if [[ -z "$engine_version" ]]; then
               npm view '@ardennguyen/zalo-agent-cli' versions --json > "$RUNNER_TEMP/engine-versions.json"
-              major=$(node -e 'const v=[].concat(JSON.parse(require("fs").readFileSync(process.env.RUNNER_TEMP+"/engine-versions.json","utf8"))).filter(x=>/^\d+\.\d+\.\d+$/.test(x)); if(!v.length) process.exit(1); console.log(Math.max(...v.map(x=>Number(x.split(".")[0]))));')
-              engine_range="^${major}.0.0"
+              engine_version=$(node -e 'const v=[].concat(JSON.parse(require("fs").readFileSync(process.env.RUNNER_TEMP+"/engine-versions.json","utf8"))).filter(x=>/^\d+\.\d+\.\d+$/.test(x)); if(!v.length) process.exit(1); const n=(x)=>x.split(".").map(Number); v.sort((a,b)=>{const p=n(a),q=n(b);return p[0]-q[0]||p[1]-q[1]||p[2]-q[2];}); console.log(v[v.length-1]);')
             fi
-            [[ "$engine_range" =~ ^\^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "engine_range must look like ^3.0.0"; exit 1; }
-            echo "Engine range: $engine_range"
-            npm view "@ardennguyen/zalo-agent-cli@${engine_range}" version --json
-            npm pkg set "dependencies.@ardennguyen/zalo-agent-cli=${engine_range}"
+            [[ "$engine_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "engine_version must look like 3.5.1"; exit 1; }
+            echo "Engine version: $engine_version"
+            npm view "@ardennguyen/zalo-agent-cli@${engine_version}" version --json
+            npm pkg set "dependencies.@ardennguyen/zalo-agent-cli=${engine_version}"
           fi
 
       - name: Synchronize package version and real registry lockfile

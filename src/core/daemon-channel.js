@@ -108,8 +108,26 @@ const PING_MS = 20_000;
 const DEFAULT_IDLE_MS = 90_000;
 
 /**
+ * The data class a stage belongs to: stages of one class run one at a time, stages of different classes may run
+ * together. `socket` is everything on the daemon's one WebSocket (the restore, reactions, history, the self-heal
+ * catch-up, boards); `media` downloads attachments over HTTP into the media folder; `cloud` walks the zCloud queue
+ * over REST (a walk asked for, or the daemon's own cmd 621 walk). A media download or a cloud walk never touches the
+ * socket, so a restore may run beside it: media never blocks text.
+ *
+ * @param {string} stage - e.g. `messages`, `mcp-sync:media`, `cloud-verify`
+ * @returns {"socket"|"media"|"cloud"}
+ */
+export function stageClass(stage) {
+    const name = String(stage).replace(/^mcp-sync:/, "");
+    if (name === "media") return "media";
+    if (name === "cloud" || name === "cloud-verify") return "cloud";
+    return "socket";
+}
+
+/**
  * One stage at a time on a daemon's socket -- the rule the sync routes enforce,
- * as an object the daemon can share with the jobs it starts itself.
+ * as an object the daemon can share with the jobs it starts itself -- and one at a time within each other data class
+ * (see {@link stageClass}).
  *
  * Two stages sharing the socket is measured to break the restore (see the
  * `lock` note in {@link startDaemonChannel}). The routes used to keep that rule
@@ -121,34 +139,40 @@ const DEFAULT_IDLE_MS = 90_000;
  * @returns {{
  *   tryAcquire: (stage: string) => (() => void)|null,
  *   acquire: (stage: string) => Promise<() => void>,
- *   current: () => {stage: string, startedAt: number}|null,
- * }} each acquire hands back its release; releasing twice is harmless
+ *   current: (stage?: string) => {stage: string, startedAt: number}|null,
+ * }} each acquire hands back its release; releasing twice is harmless. `current(stage)` names what holds that
+ *   stage's class; `current()` what holds the socket, else any other class
  */
 export function createStageLock() {
-    let held = null;
+    /** class -> what holds it */
+    const held = new Map();
 
     const take = (stage) => {
         let settle;
         const done = new Promise((resolve) => (settle = resolve));
+        const cls = stageClass(stage);
         const mine = { stage: String(stage), startedAt: Date.now(), done };
-        held = mine;
+        held.set(cls, mine);
         return () => {
-            if (held !== mine) return;
-            held = null;
+            if (held.get(cls) !== mine) return;
+            held.delete(cls);
             settle();
         };
     };
+    const show = (h) => (h ? { stage: h.stage, startedAt: h.startedAt } : null);
 
     return {
         tryAcquire(stage) {
-            return held ? null : take(stage);
+            return held.has(stageClass(stage)) ? null : take(stage);
         },
         async acquire(stage) {
-            while (held) await held.done;
+            const cls = stageClass(stage);
+            while (held.has(cls)) await held.get(cls).done;
             return take(stage);
         },
-        current() {
-            return held ? { stage: held.stage, startedAt: held.startedAt } : null;
+        current(stage) {
+            if (stage !== undefined) return show(held.get(stageClass(stage)));
+            return show(held.get("socket") ?? held.values().next().value);
         },
     };
 }
@@ -373,8 +397,9 @@ export function startDaemonChannel({
             return null;
         }
     };
-    // The stage that is running, and the controller its runner was given: `POST /sync/cancel` aborts it.
-    let activeStage = null;
+    // The stages that are running (one per data class, see stageClass), each with the controller its runner was given:
+    // `POST /sync/cancel` aborts the one of the class it names, or all of them.
+    const activeStages = new Set();
 
     // One stage at a time on this socket. Two stages sharing it is measured to
     // break the restore: running the reaction drain beside it lost the socket
@@ -434,7 +459,7 @@ export function startDaemonChannel({
         const release = lock.tryAcquire(stage);
         if (!release) {
             ticket.release();
-            const busy = lock.current() || {};
+            const busy = lock.current(stage) || {};
             return reply(409, {
                 error: `a ${busy.stage} sync is already running on this daemon`,
                 stage: busy.stage,
@@ -467,7 +492,8 @@ export function startDaemonChannel({
         // the runner puts its own house in order (a restore keeps what arrived and
         // releases its sessions on the phone) and ends with a `cancelled` result.
         const controller = new AbortController();
-        activeStage = { stage, controller };
+        const active = { stage, controller };
+        activeStages.add(active);
         res.on("close", () => {
             gone = true;
             clearInterval(ping);
@@ -484,7 +510,7 @@ export function startDaemonChannel({
             onLog?.(`the ${stage} sync stage failed: ${e?.message || String(e)}`);
         } finally {
             clearInterval(ping);
-            if (activeStage?.controller === controller) activeStage = null;
+            activeStages.delete(active);
             release();
             ticket.release();
             try {
@@ -498,11 +524,14 @@ export function startDaemonChannel({
     /** Ask the running stage to stop the way a Ctrl+C at the daemon's own terminal would (`/sync/cancel`). */
     const serveCancel = (body, reply) => {
         if (!tokenMatches(body.token, token)) return reply(403, { error: "bad token" });
-        const running = activeStage;
-        if (!running) return reply(200, { ok: true, stage: null });
-        onLog?.(`cancel requested for the ${running.stage} sync stage`);
-        running.controller.abort();
-        return reply(200, { ok: true, stage: running.stage });
+        const wanted = typeof body.stage === "string" && body.stage ? stageClass(body.stage) : null;
+        const running = [...activeStages].filter((a) => !wanted || stageClass(a.stage) === wanted);
+        if (!running.length) return reply(200, { ok: true, stage: null });
+        for (const a of running) {
+            onLog?.(`cancel requested for the ${a.stage} sync stage`);
+            a.controller.abort();
+        }
+        return reply(200, { ok: true, stage: running[0].stage });
     };
 
     /** Trigger a graceful shutdown over the loopback channel (`--stop`). */
@@ -757,13 +786,14 @@ export function sendViaDaemon(accountDir, req) {
  * socket). The stage's own `syncViaDaemon` stream then ends with the runner's `cancelled` result.
  *
  * @param {string} accountDir
- * @param {{timeoutMs?: number}} [opts]
+ * @param {{timeoutMs?: number, stage?: string}} [opts] - `stage`: cancel only the stage of that data class (a
+ *   restore, say, and not a media download beside it); without it every running stage
  * @returns {Promise<{ok: boolean, stage?: string|null, error?: string}|null>} null when no daemon is running
  */
-export function cancelViaDaemon(accountDir, { timeoutMs = 10_000 } = {}) {
+export function cancelViaDaemon(accountDir, { timeoutMs = 10_000, stage } = {}) {
     const chan = getDaemonChannel(accountDir);
     if (!chan) return Promise.resolve(null);
-    const payload = JSON.stringify({ token: chan.token });
+    const payload = JSON.stringify({ token: chan.token, ...(stage ? { stage } : {}) });
     return new Promise((resolve) => {
         const r = http.request(
             {

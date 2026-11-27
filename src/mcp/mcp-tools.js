@@ -1903,7 +1903,7 @@ export function registerTools(
                 // rather than wait minutes behind a restore.
                 const release = stageLock ? stageLock.tryAcquire("history") : () => {};
                 if (!release) {
-                    const busy = stageLock.current();
+                    const busy = stageLock.current("history");
                     return err(
                         `A ${busy?.stage || "sync"} stage is running on this socket. Try again when it finishes.`,
                     );

@@ -271,7 +271,7 @@ A GitHub Release created from the tag triggers `.github/workflows/publish.yml`, 
 It authenticates with **npm trusted publishing**, not a token: on npmjs.com the package lists this
 repository and `publish.yml` as its trusted publisher (with "Allow npm publish"), and the job's OIDC
 identity (`id-token: write`) is exchanged for a short-lived credential. That needs npm >= 11.5.1,
-which Node 22 does not ship, so the workflow upgrades npm before anything else. The repository's old
+which older Node lines did not ship (Node 22 has npm 10), so the workflow upgrades npm to ^12.2.0 before anything else. The repository's old
 `NPM_TOKEN` secret is unused. It replaced one that silently expired (set 2026-07-05; the publish of
 2.0.0 on 2026-10-13 got a bare `404 Not Found - PUT`, which is how npm reports a rejected
 credential). If a publish ever fails the same way now, check the trusted-publisher entry on

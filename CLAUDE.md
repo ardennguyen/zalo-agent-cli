@@ -131,7 +131,7 @@ Enforced by Prettier + ESLint — do not hand-format.
 | Setting | Value |
 |---|---|
 | Module system | ESM (`"type": "module"`), `.js` extensions required in imports |
-| Node | `>=22.19.0` |
+| Node | `>=22.19.0` for users (`engines`); we run, test and release on **Node 26** (LTS) |
 | Indent / width | 4 spaces / 120 columns |
 | Quotes / semicolons | Double quotes, semicolons on, trailing commas everywhere |
 | Lint | `no-var`, `no-debugger`, `no-duplicate-imports` = error; `prefer-const`, `eqeqeq`, `no-unused-vars` (ignore `^_`) = warn |
@@ -168,7 +168,7 @@ npm run format:check  # must exit 0
 npm test              # must exit 0
 ```
 
-Do **not** commit if any fail. CI runs exactly these on Node 22 plus `--version` and `--help`. **Run them on the owner's test server** (tmpfs copy, one background call through the test queue, never polled; commands in `agent/docs/test-server.md`), never on this PC.
+Do **not** commit if any fail. CI runs exactly these on Node 22 and Node 26 plus `--version` and `--help`. **Run them on the owner's test server** (tmpfs copy, one background call through the test queue, never polled; commands in `agent/docs/test-server.md`), never on this PC.
 
 While iterating, narrow the loop (`npm run test:unit`, `npm run test:cli`, `node --test <file>`, `--test-name-pattern=`) — but run the full gate before the commit.
 

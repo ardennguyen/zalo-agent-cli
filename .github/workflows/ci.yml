@@ -16,7 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: [22]
+        # 26 is the LTS line every machine of ours runs; 22 is the floor `engines` still promises users.
+        node-version: [22, 26]
     steps:
       - uses: actions/checkout@v4
 
@@ -25,7 +26,7 @@ jobs:
           node-version: ${{ matrix.node-version }}
 
       # The same npm the publish workflow uses, so the lockfile is checked the way it will be installed.
-      # npm ^12.2.0 needs Node ^22.22.2 or newer; `22` resolves to the latest 22.x.
+      # npm ^12.2.0 needs Node ^22.22.2, ^24.15.0 or >=26; `22` and `26` resolve to the latest of each line.
       - run: npm install -g npm@^12.2.0
 
       - run: npm ci

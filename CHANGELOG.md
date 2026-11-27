@@ -9,6 +9,10 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+#### Changed
+
+- **Node 26 (the current LTS line) is the recommended runtime.** CI runs the suite on Node 26 as well as Node 22, and releases are built and tested on Node 26. `engines` still accepts Node 22.19 or later.
+
 ## [3.6.1] — 2026-11-27
 
 #### Fixed

@@ -16,12 +16,12 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 26
           registry-url: https://registry.npmjs.org
 
-      # npm trusted publishing (OIDC) needs npm >= 11.5.1; Node 22 ships npm 10. npm ^12.2.0 is the
-      # current line (it needs Node ^22.22.2, which `22` resolves to). The tests below still run on
-      # Node 22 (the latest 22.x; `engines` asks for >=22.19.0).
+      # npm trusted publishing (OIDC) needs npm >= 11.5.1. npm ^12.2.0 is the current line (it needs
+      # Node ^22.22.2, ^24.15.0 or >=26). The release is built and tested on Node 26, the LTS line we
+      # run; ci.yml also runs the suite on Node 22, the floor `engines` asks for (>=22.19.0).
       - run: npm install -g npm@^12.2.0
 
       - run: npm ci

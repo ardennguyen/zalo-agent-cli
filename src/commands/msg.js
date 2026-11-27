@@ -113,7 +113,7 @@ function mentionName(uid, cacheOpen) {
  * in one call, and only runs when there is something missing, so the common
  * case still costs no network at all.
  *
- * Nothing is written back. `msg send` writes nothing to zalo.db (Arden,
+ * Nothing is written back. `msg send` writes nothing to zalo.db (the maintainer,
  * 2026-09-30: "the msg send should not write anything, the data will come
  * from live listener or sync"), so a member the cache cannot name costs this
  * one lookup on every send until the listener or a sync learns their name.

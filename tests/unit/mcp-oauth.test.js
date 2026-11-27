@@ -1043,7 +1043,7 @@ describe("binding a /mcp grant to an agent on the approve page", () => {
         assert.match(page.text, /value="\+new"/);
         const answer = await req(s.port, pagePath, {
             method: "POST",
-            form: { decision: "approve", secret: PASSWORD, agent: "+new", agentNew: "Arden Dev" },
+            form: { decision: "approve", secret: PASSWORD, agent: "+new", agentNew: "Demo Dev" },
         });
         const code = new URL(answer.headers.location).searchParams.get("code");
         const res = await tokenRequest(s.port, {
@@ -1058,7 +1058,7 @@ describe("binding a /mcp grant to an agent on the approve page", () => {
         const grants = createOAuthStore({ file: join(s.accountDir, OAUTH_STATE_FILE) }).listGrants();
         assert.deepEqual(
             grants.map((g) => [g.agent, g.agentName]),
-            [["arden-dev", "Arden Dev"]],
+            [["demo-dev", "Demo Dev"]],
         );
         assert.equal(slugFromName("Trợ lý Đơn hàng!"), "tro-ly-don-hang");
         assert.equal(slugFromName("123"), null);

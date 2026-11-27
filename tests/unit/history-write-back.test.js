@@ -1,7 +1,7 @@
 /**
  * `msg history` writes what it fetched into zalo.db -- insert-if-absent.
  *
- * Arden's rule (2026-09-30): msg history may cache fetched history if Zalo
+ * The maintainer's rule (2026-09-30): msg history may cache fetched history if Zalo
  * does, and it does: getrecentv2/getoldv2 rows go into the
  * same local message table as live messages, through the same writer,
  * but only rows not already held -- a stored row is never overwritten.

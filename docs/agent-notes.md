@@ -763,7 +763,7 @@ deliberately suppressed for `oa` commands.
 
 ## The cache has exactly two writers, by decision
 
-Arden ruled on 2026-09-29, in response to a proposal that `msg send` write its own row:
+The maintainer ruled on 2026-09-29, in response to a proposal that `msg send` write its own row:
 
 > "truth write and cache coming from listener and sync only, no auto write. Even if you're sure you
 > can handle all write the way live socket and sync write to db, still no."
@@ -1526,7 +1526,7 @@ Until 2026-09-30 `npm run lint` was plain `eslint src/ tests/`, and `eqeqeq` and
 `no-unused-vars` are set to `warn`. A warning prints but exits 0, so the gate passed with eight
 of them standing in `src/core/db.js`, `src/core/lock.js` and `src/commands/sync.js`. Every
 session saw them in its lint output and walked past, because nothing told it to stop — the
-controller included, while noting them as "pre-existing". Arden asked why they had been left so
+controller included, while noting them as "pre-existing". The maintainer asked why they had been left so
 long; the honest answer was that no check ever failed on them.
 
 That is the same shape as the commands that had never worked: a green check hiding a problem.
@@ -1565,7 +1565,7 @@ constants that are not ids (2^63, `Number.MAX_SAFE_INTEGER`, one rounded fake). 
 planting a real-looking id in a file and inside a zip entry; both went red.
 
 What a pushed leak costs: the values stay in history and in every clone. The remedy is a history
-rewrite (Arden approved one for `main..v2.0-dev` on 2026-09-30), plus accepting that clones made in
+rewrite (the maintainer approved one for `main..v2.0-dev` on 2026-09-30), plus accepting that clones made in
 the window keep them. Measured at the time: all three forks predate the leak; GitHub counted about
 212 clone events after it. Names have no automatic check. The local leak check in `.agents/`
 (§10) covers the wiki, not this repo.

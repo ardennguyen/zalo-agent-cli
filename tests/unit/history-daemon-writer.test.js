@@ -5,7 +5,7 @@
  *
  * AGENTS.md §13: one WebSocket per account, one db writer per account. The
  * listener, sync and msg history's fetch are the three paths that write
- * message rows (Arden's 2026-09-30 rulings), and a running `listen`/`mcp`
+ * message rows (the maintainer's 2026-09-30 rulings), and a running `listen`/`mcp`
  * daemon is the one writer while it runs. Before this, the daemon only lent
  * its socket: its history stage paged the old-message stream, wrote nothing
  * and handed the frames back for the CLI to write, and a group's cloud-message

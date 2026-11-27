@@ -256,7 +256,15 @@ describe("the send guard", () => {
         const g = guardSend({ cfg: c, claims, agent: ai, threadId: CUSTOMER });
         assert.deepEqual([g.code, g.holder], ["CLAIMED", "dev"]);
         assert.equal(guardSend({ cfg: c, claims, agent: dev, threadId: CUSTOMER }).ok, true);
-        assert.equal(guardSend({ cfg: c, claims, agent: ai, threadId: "other" }).code, "NOT_ROUTED");
+        // A client stays out of a conversation never routed to it; the companion (a service) is refused only where
+        // another agent has the conversation.
+        assert.equal(guardSend({ cfg: c, claims, agent: dev, threadId: "other" }).code, "NOT_ROUTED");
+        assert.equal(guardSend({ cfg: c, claims, agent: ai, threadId: "other" }).ok, true);
+        claims.noteRouted("dev", "devs", 60_000);
+        assert.equal(guardSend({ cfg: c, claims, agent: ai, threadId: "devs" }).code, "NOT_ROUTED");
+        // The default route's agent is open the same way, whatever its type.
+        const devDefault = cfg({ isolation: true, default: { target: "dev" } });
+        assert.equal(guardSend({ cfg: devDefault, claims, agent: dev, threadId: "other" }).ok, true);
         claims.assign("g1", "ai", { ms: 60_000, ownership: "message", msgId: "q1" });
         assert.equal(guardSend({ cfg: cfg(), claims, agent: dev, threadId: "g1", quoteMsgId: "q1" }).code, "CLAIMED");
         assert.equal(guardSend({ cfg: c, claims, agent: ai, threadId: MYDOCS, ownerChat: true }).ok, true);
@@ -356,6 +364,31 @@ describe("the runtime in the daemon", () => {
         assert.deepEqual(runtime.viewFilter([a, g], { agent: null }), []);
         assert.equal(runtime.mayRead(ai, CUSTOMER), true);
         assert.equal(runtime.mayRead(dev, CUSTOMER), false);
+    });
+
+    it("under privacy the companion may write to a friend the owner names, and the conversation is then its own", async () => {
+        const FRIEND = "5009";
+        const { runtime } = rig({ ...ROUTING, isolation: true });
+        const ai = { agent: AGENTS[0] };
+        const dev = { agent: AGENTS[1] };
+        // Never routed to anyone (2026-11-27: refused NOT_ROUTED): the companion's send goes out and claims it.
+        assert.equal(runtime.guard(ai, FRIEND, null).ok, true);
+        assert.equal(runtime.mayRead(ai, FRIEND), true);
+        runtime.onAgentSend("ai", FRIEND);
+        // Another agent is kept out, and the friend's reply comes back to the companion.
+        assert.deepEqual(
+            [runtime.guard(dev, FRIEND, null).code, runtime.guard(dev, FRIEND, null).holder],
+            ["CLAIMED", "ai"],
+        );
+        assert.equal(runtime.mayRead(dev, FRIEND), false);
+        const reply = await runtime.onIncoming(msg({ threadId: FRIEND, senderId: FRIEND, text: "ok" }));
+        assert.deepEqual([reply.route.to, reply.route.by], ["ai", "claim"]);
+        // A conversation another agent holds still refuses the companion.
+        runtime.claims.assign("5010", "dev", { ms: 60_000, held: true });
+        assert.equal(runtime.guard(ai, "5010", null).code, "CLAIMED");
+        assert.equal(runtime.mayRead(ai, "5010"), false);
+        // A client is not opened that way.
+        assert.equal(runtime.guard(dev, "5011", null).code, "NOT_ROUTED");
     });
 
     it("an agent turned off: the auto-reply step answers the customer once, the owner is told in My Documents", async () => {

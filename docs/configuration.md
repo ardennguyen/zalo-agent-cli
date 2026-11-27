@@ -409,7 +409,8 @@ pause, affinity, sticky focus and fallback need `routing.claims: true`.
 - **`@agents`** typed by the owner in any chat is answered in his My Documents with the agents and their presence.
 - **Per-agent privacy** (`routing.isolation: true`): an agent reads only conversations routed to it or claimed by it
   (`zalo_get_history`, `zalo_view_media`, `zalo_get_group_members`, `zalo_coverage` refuse with `NOT_ROUTED`; search and
-  lists leave the others out) and cannot send elsewhere.
+  lists leave the others out) and cannot send elsewhere. A service and the default route's agent are kept out only of
+  conversations routed to, or held by, another agent: a send into one nobody has goes out and makes it theirs.
 - `zalo_inbox` gains `claim`, `release`, `handoff`, `claims` and `route_test`; the admin API answers the same test at
   `POST /access/<ownId>/route-test` (with unsaved routes, for a console's test box).
 - **A console's view of the running router** (`POST /access/<ownId>/routing`, `{action, ...}`, answered by the account's

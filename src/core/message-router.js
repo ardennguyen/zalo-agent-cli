@@ -504,6 +504,14 @@ export function createClaims({ now = Date.now, onChange = () => {} } = {}) {
             if (!routed.has(agent)) routed.set(agent, new Map());
             routed.get(agent).set(String(thread), now() + ms);
         },
+        /** Whether a conversation was routed lately to, or is claimed by, an agent other than `agent`. */
+        routedElsewhere(agent, thread) {
+            const t = now();
+            const id = String(thread);
+            for (const [a, m] of routed) if (a !== agent && (m.get(id) ?? 0) > t) return true;
+            const c = live(threads, id);
+            return Boolean(c && c.holder !== agent);
+        },
         /** The conversations an agent may read under per-agent privacy: routed to it lately, or claimed by it. */
         allowedThreads(agent) {
             const out = new Set();
@@ -577,7 +585,8 @@ export function createClaims({ now = Date.now, onChange = () => {} } = {}) {
 /**
  * Whether a send by an agent may go out (docs/agent-routing.md §3.4): refused while the owner answers himself
  * (HUMAN_ACTIVE), when another agent holds the conversation or the quoted message (CLAIMED), or, under per-agent privacy,
- * when the conversation was never routed to it (NOT_ROUTED).
+ * when the conversation was never routed to it (NOT_ROUTED; a service or the default route's agent only when it was
+ * routed to another agent).
  *
  * @param {object} p
  * @param {object} p.cfg
@@ -608,12 +617,18 @@ export function guardSend({ cfg, claims, agent, threadId, quoteMsgId = null, own
                 message: `${holder} handles this ${quoteMsgId ? "message" : "conversation"}; nothing was sent. Use zalo_inbox handoff or ask the owner.`,
             };
     }
-    if (cfg.isolation && !claims.allowedThreads(agent.slug).has(String(threadId)))
-        return {
-            ok: false,
-            code: "NOT_ROUTED",
-            message: "This conversation was not routed to you; nothing was sent.",
-        };
+    // Per-agent privacy keeps an agent out of conversations routed to other agents. A service (the companion) and the
+    // default route's agent are refused only there: a conversation nobody else holds is theirs to write to, as the owner
+    // asks them (owner, 2026-11-27: the companion told to message a friend was refused), and the send claims it for them.
+    if (cfg.isolation && !claims.allowedThreads(agent.slug).has(String(threadId))) {
+        const open = agent.type === "service" || cfg.default?.target === agent.slug;
+        if (!open || claims.routedElsewhere(agent.slug, threadId))
+            return {
+                ok: false,
+                code: "NOT_ROUTED",
+                message: "This conversation was not routed to you; nothing was sent.",
+            };
+    }
     return { ok: true };
 }
 

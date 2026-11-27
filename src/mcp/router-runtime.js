@@ -448,7 +448,10 @@ ${n.threadId}`,
     /** After an agent's send: its claim on the conversation is held. */
     function onAgentSend(slug, threadId) {
         const cfg = cfgNow();
-        if (!cfg?.enabled || !cfg.claims || !slug || isMyDocuments(threadId)) return;
+        if (!cfg?.enabled || !slug || isMyDocuments(threadId)) return;
+        // Under per-agent privacy the conversation is this agent's to read now (the replies to its send come back to it).
+        if (cfg.isolation) claims.noteRouted(slug, threadId, settingOf(cfg, "affinityTtl"));
+        if (!cfg.claims) return;
         claims.assign(threadId, slug, { ms: settingOf(cfg, "claimTtl"), held: true });
     }
 
@@ -476,7 +479,10 @@ ${n.threadId}`,
     function mayRead(who, threadId) {
         const cfg = cfgNow();
         if (!cfg?.enabled || !cfg.isolation || !who.agent) return true;
-        return claims.allowedThreads(who.agent.slug).has(String(threadId));
+        if (claims.allowedThreads(who.agent.slug).has(String(threadId))) return true;
+        // A service and the default route's agent read any conversation not routed to another agent (as they may write).
+        const open = who.agent.type === "service" || cfg.default?.target === who.agent.slug;
+        return open && !claims.routedElsewhere(who.agent.slug, threadId);
     }
 
     /** A handler the console may name: an agent slug, a staff member of the routing, or the owner. */

@@ -395,7 +395,8 @@ trung và dự phòng cần `routing.claims: true`.
   nhân viên; câu trả lời của họ được gửi lại cho khách từ tài khoản này kèm dấu của họ).
 - **`@agents`** chủ gõ ở bất kỳ cuộc trò chuyện nào được trả lời trong My Documents của chủ.
 - **Riêng tư theo agent** (`routing.isolation: true`): agent chỉ đọc các cuộc được phân cho nó hoặc nó đang giữ
-  (`NOT_ROUTED` cho phần còn lại) và không gửi ra ngoài.
+  (`NOT_ROUTED` cho phần còn lại) và không gửi ra ngoài. Dịch vụ và agent của luồng mặc định chỉ bị chặn ở các cuộc
+  đã phân cho, hoặc đang do, agent khác giữ: gửi vào một cuộc chưa ai giữ thì được, và cuộc đó thành của nó.
 - `zalo_inbox` có thêm `claim`, `release`, `handoff`, `claims`, `route_test`; API admin trả lời cùng phép thử ở
   `POST /access/<ownId>/route-test`.
 - **Bảng điều khiển xem bộ phân công đang chạy** (`POST /access/<ownId>/routing`, `{action, ...}`, do daemon của tài

@@ -1607,9 +1607,11 @@ export function reportRestore(res, win, ctx = {}) {
         const how =
             res.reason === "socket-lost"
                 ? "the connection dropped"
-                : res.rowErrors
-                  ? "some messages could not be written"
-                  : "the run was cut short";
+                : res.requestFailure
+                  ? "Zalo stopped answering the sync requests"
+                  : res.rowErrors
+                    ? "some messages could not be written"
+                    : "the run was cut short";
         if (res.rowErrors) {
             warning(
                 `${res.rowErrors} message(s) could not be written to the local cache (${res.firstRowError ?? "unknown error"}). ` +

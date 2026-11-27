@@ -117,7 +117,7 @@ Each of these reports success, or names the wrong cause. They were all learned t
 | Command groups | **42** containers — 25 top-level + 11 OA subgroups + 3 ZBS subgroups + `mcp webhook` + `account security` + `cloud key` | the live commander tree | walk it. The number of `register*` calls in `src/index.js` is neither number: `oa` registers 11 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **38** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA/ZBS/Social commands | **94** (70 `oa` + 18 `zbs` + 6 `social`) | `src/commands/oa.js` + `src/commands/oa/*.js`, `src/commands/zbs.js`, `src/commands/social.js` | `node scripts/count-surface.mjs`. `zbs` counts with `oa`: both are the official API on the OA's OAuth token, so "personal" stays the unofficial surface |
-| Offline tests | **6039** as of 2026-11-27 (6034 pass, 5 skipped, 0 todo; Linux) | `npm test` | the run's own summary line |
+| Offline tests | **6059** as of 2026-11-27 (6054 pass, 5 skipped, 0 todo; Linux) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -2187,6 +2187,14 @@ of downloads for 98 conversations when Zalo does it. The wire was the same (cmd 
 - **Decrypt, decompress and protobuf decode run in two worker threads** (`decode-worker.js`, `decode-pool.js`, the
   shared code in `decode.js`); storing stays on the main thread (one db writer). A worker that fails hands its batch
   back to the main thread, which decodes chunk by chunk with the event loop handed back between chunks, as before.
+  **3.6.0 shipped without `dist/decode-worker.js`** (scripts/build.mjs built only the CLI and the key worker): on a
+  large account every batch decoded on the main thread, the loop stalled up to 18 s, the 590/591 ack timers fired on
+  resume before the socket's frames were read ("no answer within 10 s" for an ack already on the wire), one such
+  request failed the whole run, and the name lookups beside it failed with a bare "fetch failed" (a POST on a
+  connection the stalled loop could not service; undici does not resend a POST). 3.6.1: every file the bundle loads
+  beside itself is a build entry (`tests/unit/packaging-dist.test.js` builds and checks), acks are timed in awake time
+  (`awakeWait` in `channel.js`), an unanswered message request is asked again twice as a new session and the run ends
+  partial only after that, stores yield every 50 ms, and lookups and board reads resend a request that got no answer.
 - **A recent round first**: one session at priority 0 for the 10 most recent conversations, 100 messages each
   (`recentConversations`, `recentMessages`; 0 conversations turns it off), when the run asks for more than 10. Its
   messages come again in the full rounds, are stored once and counted once; it settles no range. Note: the server's

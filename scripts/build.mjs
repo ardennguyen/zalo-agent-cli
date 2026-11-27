@@ -5,10 +5,17 @@
  * as usual. The npm package ships dist/ instead of src/ (package.json `files`), so the engine's source is not
  * distributed — only this compiled runtime.
  *
- * Two entry points:
- *   - src/index.js               -> dist/index.js            the CLI/MCP bin (shebang kept)
- *   - src/core/keystore/worker.js -> dist/keystore-worker.js  the key layer's short-lived child process, spawned by
- *                                                             dist/index.js via process.execPath
+ * Three entry points ({@link ENTRIES}):
+ *   - src/index.js                          -> dist/index.js            the CLI/MCP bin (shebang kept)
+ *   - src/core/keystore/worker.js           -> dist/keystore-worker.js  the key layer's short-lived child process,
+ *                                                                       spawned by dist/index.js via process.execPath
+ *   - src/zalo/transfer-sync/decode-worker.js -> dist/decode-worker.js  the sync's decode worker thread, started by
+ *                                                                       dist/index.js as `new URL("./decode-worker.js",
+ *                                                                       import.meta.url)`
+ *
+ * A file the bundle loads by a path beside itself must be an entry here, or the published package lacks it (3.6.0
+ * shipped without the decode worker, and every restore decoded on the main thread). tests/unit/packaging-dist.test.js
+ * builds the bundle and fails on any such path it does not find.
  *
  * Three build-time substitutions (see the matching `typeof … !== "undefined"` guards in source). They matter only in
  * the bundle, where a module no longer sits where it did in src/:
@@ -23,11 +30,18 @@
  */
 import { build } from "esbuild";
 import { readFileSync, rmSync, mkdirSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+
+/** Every file of the runtime: source entry -> file name under dist/. */
+export const ENTRIES = Object.freeze([
+    { from: "src/index.js", to: "index.js" },
+    { from: "src/core/keystore/worker.js", to: "keystore-worker.js" },
+    { from: "src/zalo/transfer-sync/decode-worker.js", to: "decode-worker.js" },
+]);
 
 const define = {
     __ZALO_PKG_VERSION__: JSON.stringify(pkg.version),
@@ -35,34 +49,37 @@ const define = {
     __ZALO_CLI_ENTRY_SPEC__: JSON.stringify("./index.js"),
 };
 
-rmSync(join(root, "dist"), { recursive: true, force: true });
-mkdirSync(join(root, "dist"), { recursive: true });
+/**
+ * Build every entry into `outdir` (emptied first).
+ *
+ * @param {string} [outdir] - dist/ of this checkout by default; a test builds elsewhere
+ * @param {{logLevel?: string}} [opts]
+ * @returns {Promise<string[]>} the files written, by name
+ */
+export async function buildDist(outdir = join(root, "dist"), { logLevel = "info" } = {}) {
+    rmSync(outdir, { recursive: true, force: true });
+    mkdirSync(outdir, { recursive: true });
+    const common = {
+        bundle: true,
+        platform: "node",
+        format: "esm",
+        target: "node22",
+        minify: true,
+        packages: "external",
+        sourcemap: false,
+        legalComments: "none",
+        logLevel,
+        define,
+    };
+    // esbuild preserves the entry file's own `#!/usr/bin/env node` shebang (src/index.js line 1) at the top of the
+    // bundle, so no banner is added here — a second shebang would land on line 2 and break the ESM parse.
+    for (const { from, to } of ENTRIES) {
+        await build({ ...common, entryPoints: [join(root, from)], outfile: join(outdir, to) });
+    }
+    return ENTRIES.map((e) => e.to);
+}
 
-const common = {
-    bundle: true,
-    platform: "node",
-    format: "esm",
-    target: "node22",
-    minify: true,
-    packages: "external",
-    sourcemap: false,
-    legalComments: "none",
-    logLevel: "info",
-    define,
-};
-
-// esbuild preserves the entry file's own `#!/usr/bin/env node` shebang (src/index.js line 1) at the top of the
-// bundle, so no banner is added here — a second shebang would land on line 2 and break the ESM parse.
-await build({
-    ...common,
-    entryPoints: [join(root, "src/index.js")],
-    outfile: join(root, "dist/index.js"),
-});
-
-await build({
-    ...common,
-    entryPoints: [join(root, "src/core/keystore/worker.js")],
-    outfile: join(root, "dist/keystore-worker.js"),
-});
-
-console.log(`built dist/ for ${pkg.name}@${pkg.version}`);
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+    await buildDist();
+    console.log(`built dist/ for ${pkg.name}@${pkg.version}`);
+}

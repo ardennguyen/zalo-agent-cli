@@ -282,6 +282,51 @@ describe("syncBoards", () => {
         assert.match(stats.failures[0].reason, /403/);
     });
 
+    it("sends a board call that got no answer again, and the thread does not count as failed", async () => {
+        // fetch's own failure for a connection that closed under the request: nothing was answered.
+        const dropped = () =>
+            new TypeError("fetch failed", {
+                cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }),
+            });
+        const api = stubApi({ board: [NOTE], reminders: [GROUP_REMINDER] });
+        const board = api.getListBoard;
+        const reminder = api.getListReminder;
+        let boardFails = 1;
+        let reminderFails = 2;
+        api.getListBoard = async (...a) => (boardFails-- > 0 ? Promise.reject(dropped()) : board(...a));
+        api.getListReminder = async (...a) => (reminderFails-- > 0 ? Promise.reject(dropped()) : reminder(...a));
+        const stats = await syncBoards({
+            api,
+            threads: [{ threadId: "g1", type: "group" }],
+            concurrency: 1,
+            delayMs: 0,
+            networkRetryDelaysMs: [0, 0],
+        });
+        // Red before 3.6.1: one dropped connection failed the thread, and the pass reported partial.
+        assert.equal(stats.failed, 0, JSON.stringify(stats.failures));
+        assert.equal(stats.boardItems, 1);
+        assert.equal(stats.reminders, 1);
+    });
+
+    it("names why fetch failed when a board call never got an answer, after its retries", async () => {
+        const api = stubApi();
+        api.getListBoard = async () => {
+            throw new TypeError("fetch failed", {
+                cause: Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }),
+            });
+        };
+        const stats = await syncBoards({
+            api,
+            threads: [{ threadId: "g1", type: "group" }],
+            reminders: false,
+            concurrency: 1,
+            delayMs: 0,
+            networkRetryDelaysMs: [0, 0],
+        });
+        assert.equal(stats.failed, 1);
+        assert.match(stats.failures[0].reason, /fetch failed \(ECONNRESET: read ECONNRESET\)/);
+    });
+
     it("pages past a short page and stops at the first empty one", async () => {
         const api = stubApi({ board: [NOTE] });
         await syncBoards({

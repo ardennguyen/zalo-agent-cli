@@ -283,6 +283,81 @@ describe("a restore as fast as Zalo's", () => {
             assert.ok(Math.max(...times) - Math.min(...times) < 150, "in one burst");
         });
     });
+
+    it("asks again for a sync request Zalo left unanswered, and the run completes", async () => {
+        // The second message request goes unanswered once (no ack): asked again as a new session, it is served.
+        let dropped = null;
+        const { result, error, phone } = await run(
+            {
+                conversations: convs(3, "RETRY"),
+                dropRequest: (r) => {
+                    if (r.type !== "message" || dropped || !r.queries.some((q) => q.partition.endsWith("/RETRY1")))
+                        return false;
+                    dropped = r.syncId;
+                    return true;
+                },
+            },
+            {
+                before: () => zalo.http.route("/api/gid/decrypt", () => ({})),
+                shardSize: 1,
+                recentConversations: 0,
+                decodeWorkers: 0,
+                requestAckMs: 200,
+                requestRetryDelaysMs: [20, 20],
+            },
+        );
+        // Red before 3.6.1: "Zalo did not take the sync request: sync request (msg): no answer within 10 s".
+        assert.equal(error, null, error?.message);
+        assert.ok(dropped, "the fake phone dropped a request");
+        assert.equal(result.reason, "complete");
+        assert.equal(result.messagesSaved, 3);
+        assert.equal(result.requestFailure, undefined);
+        const asked = phone.asked("message").filter((r) => r.queries.some((q) => q.partition.endsWith("/RETRY1")));
+        assert.equal(asked.length, 2, "the unanswered request was asked once more");
+        assert.notEqual(asked[1].syncId, asked[0].syncId, "as a new session");
+        // The session given up on is released, as failed.
+        assert.deepEqual(
+            phone.releases.filter((r) => r.syncId === dropped).map((r) => r.reason),
+            [2],
+        );
+        assert.equal(getSyncRanges("done").length, 3);
+    });
+
+    it("a request unanswered through every try ends the run partial: what arrived is kept, the rest stays pending", async () => {
+        const { result, error, phone } = await run(
+            {
+                conversations: convs(4, "STEP"),
+                dropRequest: (r) => r.type === "message" && r.queries.some((q) => q.partition.endsWith("/STEP2")),
+            },
+            {
+                before: () => zalo.http.route("/api/gid/decrypt", () => ({})),
+                shardSize: 1,
+                recentConversations: 0,
+                decodeWorkers: 0,
+                requestAckMs: 150,
+                requestRetryDelaysMs: [20, 20],
+            },
+        );
+        // Red before 3.6.1: the whole run failed, and what the other sessions had stored was reported as nothing.
+        assert.equal(error, null, error?.message);
+        assert.equal(result.reason, "partial");
+        assert.match(result.requestFailure, /no answer within/);
+        const asked = phone.asked("message");
+        const tries = asked.filter((r) => r.queries.some((q) => q.partition.endsWith("/STEP2")));
+        assert.equal(tries.length, 3, "one try and two more");
+        // Nothing more is asked after the last try, and every session asked before it was consumed and settled.
+        const lastTry = asked.indexOf(tries.at(-1));
+        assert.equal(asked.length, lastTry + 1, "the run stopped asking");
+        const served = asked.slice(0, lastTry).filter((r) => !tries.includes(r));
+        assert.ok(served.length >= 1, "some sessions were asked before the failure");
+        const done = new Set(getSyncRanges("done").map((r) => r.partition));
+        for (const r of served)
+            for (const q of r.queries) assert.ok(done.has(q.partition), `${q.partition} not settled`);
+        assert.equal(result.messagesSaved, served.length);
+        // The conversation that was never served, and those never asked, are left for the next run.
+        assert.ok(!done.has(tries[0].queries[0].partition));
+        assert.equal(getSyncRanges("done").length + getSyncRanges("pending").length, 4);
+    });
 });
 
 describe("decoding in a worker", () => {

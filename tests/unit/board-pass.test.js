@@ -67,6 +67,23 @@ describe("runBoardPass", () => {
         for (const g of gaps) assert.ok(g >= 100, `gaps ${gaps.join(", ")} ms: the pass is not paced`);
     });
 
+    it("a thread whose fetch failed is flagged, and the next pass does it first", async () => {
+        const first = {
+            getListBoard: async (_opts, groupId) => {
+                if (groupId === "g7") throw new Error("Zalo answered 500");
+                return { items: [] };
+            },
+        };
+        const r = await runBoardPass(first, { reminders: false, concurrency: 1, delayMs: 0 });
+        assert.equal(r.stats.failed, 1);
+        // Red before 3.6.1: nothing remembered the failed thread; the next pass reached it 243rd.
+        assert.ok(getSyncState("boardStale:g7"), "the failed thread is flagged");
+        const second = recordingApi();
+        await runBoardPass(second, { reminders: false, concurrency: 1, delayMs: 0 });
+        assert.equal(second.asked[0], "g7");
+        assert.equal(getSyncState("boardStale:g7"), null, "a fetch that worked clears the flag");
+    });
+
     it("on 221 stops, notes the stop, and the next pass resumes at the refused thread", async () => {
         const first = recordingApi("g100");
         const r = await runBoardPass(first, { reminders: false, concurrency: 1, delayMs: 0 });

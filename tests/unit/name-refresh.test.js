@@ -39,6 +39,51 @@ describe("non-friend name refresh (refreshProfiles)", () => {
     const stateFile = join(SANDBOX_CONFIG_DIR, "name-refresh-test", "parked.json");
     beforeEach(() => rmSync(stateFile, { force: true }));
 
+    it("sends a request that got no answer again instead of stopping the refresh", async () => {
+        const api = profileApi();
+        const answer = api.getUserInfo;
+        let drops = 2;
+        api.getUserInfo = async (ids) => {
+            if (drops-- > 0) {
+                api.calls.push([...ids]);
+                throw new TypeError("fetch failed", {
+                    cause: Object.assign(new Error("Connect Timeout Error"), { code: "UND_ERR_CONNECT_TIMEOUT" }),
+                });
+            }
+            return answer(ids);
+        };
+        const waits = [];
+        const res = await refreshProfiles(api, uids(3), {
+            stateFile,
+            gapMs: 0,
+            sleep: async (ms) => void waits.push(ms),
+        });
+        // Red before 3.6.1: "request failed (fetch failed); stopped with 3 peer(s) left".
+        assert.equal(res.stoppedBy, null);
+        assert.equal(res.profiles.size, 3);
+        assert.equal(api.calls.length, 3);
+        assert.equal(waits.length, 2, "it waits before each new try");
+    });
+
+    it("says why fetch failed when every try went unanswered", async () => {
+        const logs = [];
+        const api = profileApi();
+        api.getUserInfo = async () => {
+            throw new TypeError("fetch failed", {
+                cause: Object.assign(new Error("getaddrinfo EAI_AGAIN"), { code: "EAI_AGAIN" }),
+            });
+        };
+        const res = await refreshProfiles(api, uids(3), {
+            stateFile,
+            gapMs: 0,
+            sleep: async () => {},
+            log: (m) => logs.push(m),
+        });
+        assert.equal(res.stoppedBy, "error");
+        assert.match(res.error, /fetch failed \(EAI_AGAIN: getaddrinfo EAI_AGAIN\)/);
+        assert.match(logs.join(" | "), /EAI_AGAIN/);
+    });
+
     it("asks for every uid, in requests of 500, one after another", async () => {
         const api = profileApi();
         const res = await refreshProfiles(api, uids(1203), { stateFile, gapMs: 0 });

@@ -20,6 +20,7 @@ import {
     resetLookupCoolDown,
     describeLookupError,
     isRateLimitError,
+    isTransientNetworkError,
     runPacedBatches,
     setUserInfoLogger,
 } from "../../src/zalo/custom/user-info.js";
@@ -184,6 +185,55 @@ describe("runPacedBatches", () => {
         assert.equal(r.failed, 4);
         assert.equal(r.skippedIds, 200);
         assert.ok(logs.some((m) => /3 failed batches in a row/.test(m)));
+    });
+
+    it("sends a batch that got no answer again before counting it failed, and says why when none came", async () => {
+        const { sleep, waits } = fakeSleep();
+        const logs = [];
+        const reset = () =>
+            new TypeError("fetch failed", {
+                cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }),
+            });
+        let calls = 0;
+        const r = await runPacedBatches(ids(2), {
+            batchSize: 100,
+            gapMs: 0,
+            sleep,
+            log: (m) => logs.push(m),
+            call: async () => {
+                calls++;
+                if (calls === 1) throw reset();
+                return "ok";
+            },
+        });
+        // Red before 3.6.1: "user-info: batch 1/1 (2 id(s)) failed: fetch failed", and the names stayed blank.
+        assert.deepEqual(r.results, ["ok"]);
+        assert.equal(r.failed, 0);
+        assert.equal(calls, 2);
+        assert.deepEqual(waits, [1000]);
+
+        const never = await runPacedBatches(ids(2), {
+            batchSize: 100,
+            gapMs: 0,
+            sleep,
+            log: (m) => logs.push(m),
+            call: async () => {
+                throw reset();
+            },
+        });
+        assert.equal(never.failed, 1);
+        assert.ok(
+            logs.some((m) => /failed: fetch failed \(UND_ERR_SOCKET: other side closed\)/.test(m)),
+            logs.join(" | "),
+        );
+    });
+
+    it("never resends what Zalo did answer, nor a rate limit", async () => {
+        assert.equal(isTransientNetworkError(zaloError(500, "server error")), false);
+        assert.equal(isTransientNetworkError(zaloError(221, "Too many requests")), false);
+        assert.equal(isTransientNetworkError(new Error("socket hang up")), false, "only fetch's own failure");
+        assert.equal(isTransientNetworkError(new TypeError("fetch failed")), true);
+        assert.equal(isTransientNetworkError(Object.assign(new Error("Zalo did not answer"), { timeout: true })), true);
     });
 
     it("writes to the registered sink when no log is passed, and stays silent without one", async () => {

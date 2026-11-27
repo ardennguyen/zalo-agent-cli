@@ -79,6 +79,8 @@ export function fakeCodecs({ decryptDelayMs = 0 } = {}) {
  * @param {"complete"|"decline"|"silent"} [opts.outcome] - `decline`: status 3 then 6; `silent`: status 3 only
  * @param {(request: object) => number} [opts.ackError] - the `err` of the ack of a 590 request, 0 by default
  * @param {number} [opts.ackDelayMs] - how long the phone takes to acknowledge a 590 request (0: at once)
+ * @param {(request: object, n: number) => boolean} [opts.dropRequest] - leave this 590 request unanswered: no ack, and
+ *   nothing served; `n` counts the requests so far, from 1
  * @param {(partition: string, attempt: number) => boolean} [opts.losePartition] - the phone never sends this
  *   partition's batch and goes idle (status 2) instead: a batch lost on the way
  * @param {number} [opts.releaseAckDelayMs] - how long it takes to acknowledge a 591 release (0: at once)
@@ -174,6 +176,7 @@ export function installFakePhone(zalo, opts = {}) {
             raw: inner,
         });
         order.push({ cmd: 590, at: requests.length });
+        if (opts.dropRequest?.(requests.at(-1), requests.length)) return null;
         const err = ackError(requests.at(-1));
         queueMicrotask(() => {
             if (err !== 0) return;

@@ -9,6 +9,8 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+## [3.6.1] — 2026-11-27
+
 #### Fixed
 
 - **The published package ships the decode worker.** 3.6.0 built only the CLI and the key worker into `dist/`, so an installed engine could not start its decode worker (`Cannot find module …/dist/decode-worker.js`) and every restore decrypted and decoded on the main thread, holding the event loop for seconds at a time. `dist/decode-worker.js` is built now, and a test builds the package and fails on any file the bundle loads beside itself that is not there.
@@ -1123,7 +1125,8 @@ npm install -g @ardennguyen/zalo-agent-cli@2.0.0
 
 Commands, flags and defaults: `skill/references/command-reference.md`. Operating it on a server: `docs/deployment.md`.
 
-[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.6.0...v3.0-dev
+[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.6.1...v3.0-dev
+[3.6.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.6.1
 [3.6.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.6.0
 [3.5.1]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.5.1
 [3.5.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.5.0

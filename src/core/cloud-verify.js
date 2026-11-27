@@ -15,8 +15,9 @@
  * - **Only when there is something new.** The notice carries the server's newest noise id; when it equals the saved
  *   place the index is current and nothing is requested.
  * - **At most once in 30 minutes**, counted from the last walk this daemon started.
- * - **Never beside another stage.** It takes the daemon's stage lock (`tryAcquire`, never waits): a notice that meets
- *   a running sync or history fetch is dropped, and the next one (or a `sync-cloud`) catches up.
+ * - **Never beside another cloud walk.** It takes the daemon's stage lock (`tryAcquire`, never waits) in the cloud class
+ *   (src/core/daemon-channel.js `stageClass`): a notice that meets a running walk is dropped, and the next one (or a
+ *   `sync-cloud`) catches up. A restore or a history fetch on the socket does not stop it: the walk is REST.
  * - **Never an acknowledgment.** The onboarding ack a client sends after its first verify changes what Zalo
  *   does with this account's cloud; it is not ours to send.
  * - **`forceVerify` and `forceReset` walk the whole queue from the top**: past the 30-minute pace and the "already

@@ -204,7 +204,8 @@ export function createSyncRunners({
          * phone does not ask; a key too old to spare the tap starts nothing.
          *
          * @param {{days?: number|null, from?: string|number, waitMs?: number,
-         *   shardSize?: number, waveSize?: number, fullResync?: boolean}} params
+         *   shardSize?: number, waveSize?: number, concurrency?: number, recentConversations?: number,
+         *   recentMessages?: number, fullResync?: boolean}} params
          * @param {(e: {phase: string, detail?: string}) => void} onEvent
          * @param {AbortSignal} [signal] - aborted by `POST /sync/cancel`: the restore keeps what arrived, releases
          *   its sessions on the phone and returns `reason: "cancelled"`
@@ -222,6 +223,11 @@ export function createSyncRunners({
                 waitMs: Number(params.waitMs) || undefined,
                 shardSize: Number(params.shardSize) || undefined,
                 waveSize: Number(params.waveSize) || undefined,
+                concurrency: Number(params.concurrency) || undefined,
+                recentConversations: Number.isInteger(params.recentConversations)
+                    ? params.recentConversations
+                    : undefined,
+                recentMessages: Number(params.recentMessages) || undefined,
                 fullResync: params.fullResync === true,
                 // The phone's key from a login's ticked "sync messages" offer (src/core/after-login.js): the phone
                 // does not ask again. Only this daemon's own after-login step hands one over, as `internal` (never

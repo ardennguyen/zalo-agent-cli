@@ -13,7 +13,8 @@ import { isDeepStrictEqual } from "node:util";
 export const SYNC_STAGES = Object.freeze(["messages", "reactions", "cloud", "media", "boards"]);
 
 /**
- * Create a bounded, account-local job tracker using the daemon's stage lock.
+ * Create a bounded, account-local job tracker using the daemon's stage lock. A stage waits only for its own data class
+ * (src/core/daemon-channel.js `stageClass`): a `messages` job runs while a `media` or `cloud` job does, and the reverse.
  * Completed jobs are retained until displaced by ten newer jobs or restart.
  * A requestId retry returns the same job while retained, without another tap.
  * @param {{runners: object, lock: object}} deps - daemon runners and shared stage lock
@@ -37,7 +38,9 @@ export function createSyncJobs({ runners, lock }) {
             }
             const release = lock.tryAcquire(`mcp-sync:${stage}`);
             if (!release)
-                throw new Error(`Sync/history is busy (${lock.current()?.stage}); check status and retry later.`);
+                throw new Error(
+                    `Sync/history is busy (${lock.current(`mcp-sync:${stage}`)?.stage}); check status and retry later.`,
+                );
 
             const job = {
                 jobId: randomUUID(),
@@ -50,8 +53,11 @@ export function createSyncJobs({ runners, lock }) {
                 phoneConfirmationRequired: stage === "messages",
                 events: [],
             };
-            // The lock guarantees no other running job is evicted here.
-            while (jobs.size >= 10) jobs.delete(jobs.keys().next().value);
+            // Jobs of different data classes run together: only finished ones are evicted.
+            for (const [id, old] of jobs) {
+                if (jobs.size < 10) break;
+                if (old.state !== "running") jobs.delete(id);
+            }
             jobs.set(job.jobId, job);
             const initial = snapshot(job);
             Promise.resolve().then(async () => {

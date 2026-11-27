@@ -20,7 +20,6 @@
  * See tests/HANDOFF.md / agent/work/transfer-sync-v2 for the protocol notes.
  */
 import { getGroupInfoWatched } from "../group-exit.js";
-import zlib from "node:zlib";
 import crypto from "node:crypto";
 import { resolve } from "node:path";
 import {
@@ -37,13 +36,17 @@ import {
     findMessageByClientId,
     countSyncRanges,
     deleteSyncRanges,
+    fillBlankSenderName,
+    fillOpaqueSender,
     getSyncRanges,
     markSyncRangesPending,
     setSyncRangeStatus,
 } from "../db.js";
 import { ensureAssets, loadCodecs } from "../../zalo/transfer-sync/assets.js";
 import { classifySyncMessage } from "../../zalo/transfer-sync/message-types.js";
-import { resolveNonFriendDms } from "../../zalo/custom/gid.js";
+import { lookupUserNames, resolveNonFriendDms } from "../../zalo/custom/gid.js";
+import { decodeChunk, splitChunks } from "../../zalo/transfer-sync/decode.js";
+import { DEFAULT_DECODE_WORKERS, createDecodePool } from "../../zalo/transfer-sync/decode-pool.js";
 import { createSenderResolver } from "./senders.js";
 import { fillDeferredNames, queueDeferredNames } from "./deferred-names.js";
 import { readUserAliases, currentUserName, resolveCurrentUserNames } from "../current-user-names.js";
@@ -110,23 +113,28 @@ export const STORE_SLICE = 500;
 /** How long a session may be waited for before the restore says what it is still missing. */
 const STALL_NOTE_MS = 60_000;
 /**
- * How many message sessions are asked for before the first of them has been served.
+ * How many message sessions are asked for ahead of the ones being consumed.
  *
- * Every session of a run (98 partitions at 30 each is four of them) goes out one after the other, each after the
- * previous one was acknowledged; they are then consumed and released together at the end. Fifty at once, with no
- * waiting for acks, once got our socket dropped with no error frame; the requests are ack-paced now. The phone stops
- * serving at about 32 sessions that are open together (live, 2026-10-25), so a wave is at most 30, which is also the
- * most the restore takes (see `waveSize`): a run of 79 sessions is three waves, and the sessions of a wave are released
- * together when the wave is done.
+ * Requests go out one after the other, each after the previous one was acknowledged (Y4b): fifty at once, with no
+ * waiting for acks, once got our socket dropped with no error frame. Up to this many sessions are requested and not yet
+ * consumed at any time; each one consumed lets the next request go out. At most 30, which is also a full shard's
+ * partition count. Every session stays open until the end of the run, where all are released together, as Zalo does.
  */
 const DEFAULT_WAVE_SIZE = 30;
+/** Message sessions consumed (waited for, downloaded, decoded, stored) at once, as Zalo does. */
+export const DEFAULT_CONCURRENCY = 4;
+/** The most sessions a caller may have consumed at once (Zalo allows 1 to 5). */
+const MAX_CONCURRENCY = 5;
 /**
- * Sessions released at once. One: each release goes out after the previous one was acknowledged. Four 591 within 3 ms
- * can get four acks, but this client's bursts were answered only in part (live, 2026-10-28: two acks for
- * thirty releases, two for each burst of four, the rest unanswered for 3 s and then released fine one at a time),
- * while one at a time was acknowledged every time.
+ * The recent round, as Zalo runs it before the full history: the most recent conversations, a page of messages
+ * each, asked for first and at priority 0, so recent chats are usable within seconds. The full rounds then store the
+ * same messages again, which changes nothing.
  */
-const RELEASE_BURST = 1;
+export const RECENT_CONVERSATIONS = 10;
+/** Messages per conversation in the recent round. */
+export const RECENT_MESSAGES = 100;
+/** Batches of one session downloaded and decoded ahead of the one being stored. */
+const DECODE_AHEAD = 4;
 /**
  * How many times a dropped socket may be reconnected inside one restore.
  *
@@ -239,38 +247,58 @@ export function resolveSyncWindow(days, now = Date.now(), fromTs = undefined) {
     };
 }
 
+/**
+ * A wake-up for loops that wait on each other: `wait()` resolves at the next `fire()`.
+ *
+ * @returns {{wait: () => Promise<void>, fire: () => void}}
+ */
+function createSignal() {
+    let waiters = [];
+    return {
+        wait: () => new Promise((r) => waiters.push(r)),
+        fire: () => {
+            const w = waiters;
+            waiters = [];
+            for (const r of w) r();
+        },
+    };
+}
+
+/**
+ * One lookup at a time: profile lookups that run beside a restore go through here, one after another, so moving them
+ * off the restore's critical path does not also make them run in parallel and meet Zalo's limit (221) sooner.
+ *
+ * @returns {{run: <T>(fn: () => Promise<T>) => Promise<T>, idle: () => Promise<void>}}
+ */
+export function createLookupLane() {
+    let tail = Promise.resolve();
+    return {
+        run(fn) {
+            const next = tail.then(fn, fn);
+            tail = next.then(
+                () => {},
+                () => {},
+            );
+            return next;
+        },
+        idle: async () => {
+            let seen;
+            do {
+                seen = tail;
+                await seen;
+            } while (seen !== tail);
+        },
+    };
+}
+
 const randId = (n = 32) =>
     [...crypto.randomBytes(n)]
         .map((b) => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"[b % 62])
         .join("");
 const b64 = (u8) => Buffer.from(u8).toString("base64");
 
-/** Split a downloaded batch blob into its length-prefixed payload chunks. */
-export function splitChunks(buf) {
-    const out = [];
-    let o = 0;
-    while (o + 4 <= buf.length) {
-        const n = buf.readUInt32LE(o);
-        o += 4;
-        if (o + n > buf.length) break;
-        out.push(buf.subarray(o, o + n));
-        o += n;
-    }
-    return out;
-}
-
-function decompress(p) {
-    try {
-        return zlib.zstdDecompressSync(p);
-    } catch {}
-    try {
-        return zlib.inflateSync(p);
-    } catch {}
-    try {
-        return zlib.gunzipSync(p);
-    } catch {}
-    return p;
-}
+/** Split a downloaded batch blob into its length-prefixed payload chunks (../../zalo/transfer-sync/decode.js). */
+export { splitChunks };
 
 /**
  * Decode a WebSocket frame body from Zalo (the `{encrypt, data}` envelope) with the per-session cipher key (the `key`
@@ -617,6 +645,37 @@ export class SyncV2 {
         return refresh;
     }
 
+    /**
+     * The names of the non-friend DM peers the tier-3 resolve found ids for, looked up after their messages were
+     * stored: each takes its title (alias first), and its rows stored without a sender name take the name. What a
+     * rate limit or a cancel kept from being looked up is queued for the fill-in (./deferred-names.js).
+     *
+     * @param {Map<string, {id: string}>} extra - opaque conversation id -> user id
+     * @param {Map<string, object>} threadMap
+     * @param {(m: string) => void} log
+     * @param {AbortSignal} [signal]
+     */
+    async _nameResolved(extra, threadMap, log, signal) {
+        const uids = [...new Set([...extra.values()].map((v) => String(v.id)))];
+        const { names, zaloNames, stoppedBy } = await lookupUserNames(this.api, uids, log, { signal });
+        for (const [gid, v] of extra) {
+            const uid = String(v.id);
+            const name = names.get(uid) || "";
+            if (!name) {
+                if (stoppedBy) this._deferredUids?.add(uid);
+                continue;
+            }
+            const zaloName = zaloNames.get(uid) || "";
+            const current = currentUserName(uid, { zaloName }, this.userAliases).name;
+            const entry = threadMap.get(gid);
+            if (entry) Object.assign(entry, { name: current, zaloName, snapshotName: name });
+            // A thread already stored takes the title now; one stored later takes it from the thread map.
+            if (getThreadType(uid) === "dm") upsertThread({ threadId: uid, type: "dm", name: current, lastUpdate: 0 });
+            fillBlankSenderName(uid, name);
+        }
+        this._senders?.refresh?.();
+    }
+
     /** Refresh the active account's own display name via onSelfName if provided. */
     async _refreshSelfName(onSelfName) {
         if (typeof onSelfName !== "function") return;
@@ -642,7 +701,14 @@ export class SyncV2 {
      * @param {number|null} [opts.days=null] only sync the last N days; falsy = full history.
      * @param {string|number} [opts.from] explicit lower bound (date string or epoch ms); beats `days`.
      * @param {number} [opts.shardSize=30] partitions per message round (server caps ~30).
-     * @param {number} [opts.waveSize=4] message sessions open at once.
+     * @param {number} [opts.waveSize=30] message sessions requested ahead of the ones being consumed (at most 30).
+     * @param {number} [opts.concurrency=4] message sessions consumed at once (1 to 5), as Zalo does.
+     * @param {number} [opts.recentConversations=10] conversations in the recent round asked for first (0: none).
+     * @param {number} [opts.recentMessages=100] messages per conversation in the recent round.
+     * @param {number} [opts.decodeWorkers=2] decode worker threads (0: decode on the main thread).
+     * @param {{url: URL|string, data?: object}} [opts.decodeWorker] with `codecs`: a decode worker entry that brings
+     *   its own stand-in codecs, and what it is started with (tests only; without it a test's codecs decode on the
+     *   main thread)
      * @param {number} [opts.waitMs=120000] per-phase wait budget.
      * @param {(s: {phase: string, detail?: string}) => void} [opts.onStatus]
      * @param {boolean} [opts.liveStore=true] false when the caller already taps live traffic
@@ -669,12 +735,29 @@ export class SyncV2 {
      */
     async restore(opts = {}) {
         this._senders = null;
+        this.nameRefresh = null;
+        this._background = [];
+        this._deferredUids = new Set();
         let res;
         try {
             res = await this._restoreRun(opts);
         } finally {
+            // The name lookups that ran beside the restore (never in its way): finished before it reports. A cancel
+            // or a rate limit ends them quickly; what they did not get is queued below.
+            // A finished task may queue another (the tier-3 ids queue their names), so wait until none is added.
+            for (let seen = 0; seen < this._background.length;) {
+                const batch = this._background.slice(seen);
+                seen = this._background.length;
+                await Promise.allSettled(batch);
+            }
+            try {
+                await this._senders?.settle?.();
+            } catch {
+                /* the lookups never throw; this is belt and braces */
+            }
             // What a rate limit (or a cancel) kept this run from looking up: queued for the fill-in.
             const deferred = this._senders?.deferred?.() ?? { opaque: [], uids: [] };
+            deferred.uids = [...new Set([...deferred.uids, ...this._deferredUids])];
             if (deferred.opaque.length || deferred.uids.length) {
                 try {
                     queueDeferredNames(this.accountDir, deferred);
@@ -691,6 +774,8 @@ export class SyncV2 {
             /* best-effort */
         }
         const queued = fill?.left ?? 0;
+        // The non-friend name refresh ran beside the restore, so its report may have come after the result was built.
+        if (this.nameRefresh && !res.nameRefresh) res = { ...res, nameRefresh: this.nameRefresh };
         return queued ? { ...res, namesDeferred: queued } : res;
     }
 
@@ -707,6 +792,14 @@ export class SyncV2 {
         }
         const shardSize = Math.min(30, Math.max(1, opts.shardSize || 30));
         const waveSize = Math.min(30, Math.max(1, opts.waveSize || DEFAULT_WAVE_SIZE));
+        const concurrency = Math.min(MAX_CONCURRENCY, Math.max(1, opts.concurrency || DEFAULT_CONCURRENCY));
+        const recentConversations = Number.isInteger(opts.recentConversations)
+            ? Math.max(0, opts.recentConversations)
+            : RECENT_CONVERSATIONS;
+        const recentMessages = Math.max(
+            1,
+            Number.isInteger(opts.recentMessages) ? opts.recentMessages : RECENT_MESSAGES,
+        );
         const stallNoteMs = opts.stallNoteMs ?? STALL_NOTE_MS;
         const stallIdleMs = opts.stallIdleMs ?? STALL_IDLE_MS;
         const waitMs = Math.max(30000, opts.waitMs || CONFIRM_WAIT_MS);
@@ -731,31 +824,78 @@ export class SyncV2 {
         // `opts.codecs` stands in for the decryption assets: a test runs the whole restore against a fake phone
         // with codecs of its own. The product never passes it.
         let codecs = opts.codecs;
+        let assets = null;
         if (!codecs) {
             onStatus({ phase: "assets", detail: "loading decryption assets" });
-            const assets = await ensureAssets(resolve(this.accountDir, "sync", "zproto-cache"), log);
+            assets = await ensureAssets(resolve(this.accountDir, "sync", "zproto-cache"), log);
             codecs = await loadCodecs(assets);
         }
-        const { zproto, M, C } = codecs;
-
-        onStatus({ phase: "contacts", detail: "reading friend/group lists for thread mapping" });
-        const threadMap = await this._buildThreadMap(log);
-        const senders = createSenderResolver(this.api, threadMap, { log, signal: opts.signal });
-        this._senders = senders;
+        const { zproto } = codecs;
+        // Decrypting and decoding a message session runs in worker threads, storing on this one (one db writer). A
+        // test's stand-in codecs reach the workers only through a worker entry of their own (`decodeWorker`).
+        const decodeWorkers = Number.isInteger(opts.decodeWorkers)
+            ? Math.max(0, opts.decodeWorkers)
+            : DEFAULT_DECODE_WORKERS;
+        const pool =
+            decodeWorkers > 0 && (assets || opts.decodeWorker?.url)
+                ? createDecodePool({
+                      size: decodeWorkers,
+                      assets,
+                      workerUrl: opts.decodeWorker?.url,
+                      workerData: opts.decodeWorker?.data,
+                      log,
+                  })
+                : null;
 
         initDb(resolve(this.accountDir, "zalo.db"));
-        // Names an earlier restore left for later because Zalo was limiting lookups: filled in first, unless lookups
-        // are still resting (./deferred-names.js).
-        try {
-            await fillDeferredNames(this.api, this.accountDir, { log, signal: opts.signal });
-        } catch (e) {
-            log(`deferred names: ${e?.message || e}`);
-        }
         // A full resync trusts nothing an earlier run settled (Y5c).
         if (opts.fullResync) deleteSyncRanges();
-        this._refreshThreadNames(threadMap);
-        await this._refreshDmNames(threadMap, log);
-        await this._refreshSelfName(opts.onSelfName);
+        // The friend and group lists map a conversation to its thread. They are read while the phone is asked for
+        // the conversation list, and waited for only once that list is in.
+        onStatus({ phase: "contacts", detail: "reading friend/group lists for thread mapping" });
+        const threadMapReady = this._buildThreadMap(log).catch((e) => {
+            log(`friend/group lists unavailable (${e?.message || e}); names/ids may be missing`);
+            return new Map();
+        });
+        /** @type {Map<string, object>} filled in once the lists are read */
+        let threadMap = new Map();
+        /** Created with the thread map; stores read senders from it, the lookups run in the background. */
+        let senders = null;
+        // Profile lookups beside the restore go one at a time (see createLookupLane).
+        const lane = createLookupLane();
+        /** Run name work beside the restore: never awaited by the text path, awaited by restore() before it reports. */
+        const background = (label, fn) => {
+            const p = lane.run(fn).catch((e) => log(`${label}: ${e?.message || e}`));
+            this._background.push(p);
+            return p;
+        };
+        /** Wait for the thread map, then build what reads it (the sender resolver). Done once. */
+        let mapped = null;
+        const awaitThreadMap = () =>
+            (mapped ??= (async () => {
+                threadMap = await threadMapReady;
+                senders = createSenderResolver(this.api, threadMap, {
+                    log,
+                    signal: opts.signal,
+                    resolveUsers: (...a) => lane.run(() => resolveNonFriendDms(...a)),
+                    // A sender resolved after its rows were stored: they take its user id (and name, where blank).
+                    onResolved: (opaque, user) => fillOpaqueSender(opaque, user.id, user.name),
+                });
+                this._senders = senders;
+                this._refreshThreadNames(threadMap);
+            })());
+        /**
+         * Names an earlier restore left for later because Zalo was limiting lookups (./deferred-names.js), the
+         * non-friend DM titles, and the account's own name: all beside the restore, none in its way. Queued after the
+         * tier-3 ids, which stores may wait for.
+         */
+        const startNameWork = () => {
+            background("deferred names", () =>
+                fillDeferredNames(this.api, this.accountDir, { log, signal: opts.signal }),
+            );
+            background("name refresh", () => this._refreshDmNames(threadMap, log));
+            background("own name", () => this._refreshSelfName(opts.onSelfName));
+        };
 
         // `let`: a daemon recovers a lost socket by logging in again, which builds a new api and a new
         // listener, and `opts.reconnect` can hand that api back (see `reconnect` below).
@@ -942,14 +1082,17 @@ export class SyncV2 {
          * back to isLast.
          *
          * Returns why it stopped, so the caller can tell "no data" from
-         * "the socket died" from "the phone never answered".
+         * "the socket died" from "the phone never answered", and "halted" when `halted()` says another session
+         * stopped the run while this one was waited for.
          */
-        const waitDone = async (id, budgetMs) => {
+        const waitDone = async (id, budgetMs, halted = () => false) => {
             const dl = Date.now() + resolveWaitBudget(budgetMs, waitMs);
             const s = sessions.get(id);
             let noted = Date.now();
             while (!s.done && !s.err && !s.fatal && Date.now() < dl) {
                 if (aborted()) return "cancelled";
+                // Another session of the pipeline stopped the run (a "no", a timeout, a dead socket).
+                if (halted()) return "halted";
                 // A minute of waiting says what the session has and what it lacks: without it a phone that went
                 // quiet looks exactly like work in progress (seen live, 2026-10-28: ten minutes of nothing).
                 if (Date.now() - noted >= stallNoteMs) {
@@ -986,46 +1129,16 @@ export class SyncV2 {
             );
         };
 
-        /** Releases sent and not yet answered: a request must not overtake them (see sendRequest). */
-        const releasing = new Set();
-
-        /**
-         * Release one session (the ack is awaited in the background; the next request waits for it).
-         *
-         * @returns {Promise<object>|undefined} the release, or nothing when the session is already let go of
-         */
-        const disposeOne = (id) => {
-            const s = sessions.get(id);
-            if (!s || s.disposed) return undefined;
-            s.disposed = true;
-            const going = channel.release(id, s.disposeReason ?? DISPOSE_REASON.SUCCESS).finally(() => {
-                releasing.delete(going);
-            });
-            releasing.add(going);
-            return going;
-        };
-
-        /**
-         * Release a wave's sessions together, once the wave is stored (see RELEASE_BURST for how many go out at once).
-         */
-        const disposeTogether = async (ids) => {
-            for (let i = 0; i < ids.length; i += RELEASE_BURST) {
-                await Promise.allSettled(ids.slice(i, i + RELEASE_BURST).map(disposeOne));
-            }
-        };
-
         /**
          * Send one cmd 590 and wait until Zalo acknowledges it (Y4a): requests are paced by their acks, so a
          * request is never sent into a queue that has not taken the one before it.
          *
-         * A request also waits for the releases still unanswered: 591 goes out, its ack comes back, and only then
-         * the 590.
+         * No request waits on a release: every session is released together at the end of the run.
          *
          * @returns {Promise<{socketClosed: boolean}>} `socketClosed` when the wire died before the ack; any other
          *   failure throws with words the person can act on
          */
         const sendRequest = async (kind, id, ek, req, tempKey = "") => {
-            await Promise.allSettled([...releasing]);
             try {
                 await channel.request({
                     tempKey,
@@ -1098,21 +1211,48 @@ export class SyncV2 {
                 liveThreadIds: [...mappedThreads, ...unmappedThreads],
             });
 
-        // decrypt one session's batches -> decoded proto objects. A batch that cannot be downloaded fails its
-        // scopes (Y3) instead of being skipped: they are returned, so the caller can count them.
-        const eachChunkObj = async (s, ek, protoClass, onObj) => {
-            const downloadFailures = [];
-            let sessionRecord = null;
-            const ordered = s.batches
-                .slice()
-                .sort((a, b) => (a.batchType === 2 ? -1 : 1) - (b.batchType === 2 ? -1 : 1) || a.idx - b.idx);
-            for (const bt of ordered) {
-                if (aborted()) break;
-                if (!bt.msgUrl) continue;
-                await new Promise((r) => setImmediate(r));
-                let blob;
+        /** Decode one downloaded batch: in a decode worker when there is one, else here, chunk by chunk. */
+        const decodeBlob = async (blob, ctx, cls) => {
+            if (pool && !pool.broken()) {
                 try {
-                    blob = await downloader.get(bt.msgUrl);
+                    return await pool.decode(blob, ctx, cls);
+                } catch (e) {
+                    if (!pool.broken())
+                        log(`a batch could not be decoded in a worker (${e?.message || e}); decoding here`);
+                }
+            }
+            // On this thread: hand the event loop back before each chunk. A single shard can carry tens of thousands of
+            // messages, and a blocked loop misses the socket's pings, after which Zalo drops the connection.
+            let sessionRecord = ctx.sessionRecord ?? null;
+            const objs = [];
+            for (const chunk of splitChunks(blob)) {
+                if (aborted()) break;
+                await new Promise((r) => setImmediate(r));
+                try {
+                    const out = decodeChunk(chunk, { ...ctx, sessionRecord }, codecs, cls);
+                    sessionRecord = out.sessionRecord;
+                    if (out.obj) objs.push(out.obj);
+                } catch {
+                    /* skip a bad chunk */
+                }
+            }
+            return { sessionRecord, objs };
+        };
+
+        // decrypt one session's batches -> decoded proto objects, handed to `onObj` in order. The metadata batch goes
+        // first (it carries the session record); the message batches are downloaded and decoded a few ahead of the
+        // one being stored. A batch that cannot be downloaded fails its scopes (Y3) instead of being skipped: they are
+        // returned, so the caller can count them.
+        const eachChunkObj = async (s, ek, cls, onObj) => {
+            const downloadFailures = [];
+            const keys = { ikPub: ik.publicKey, ikPriv: ik.privateKey, ekPriv: ek.privateKey };
+            const usable = s.batches.filter((b) => b.msgUrl);
+            const meta = usable.filter((b) => b.batchType === 2).sort((a, b) => a.idx - b.idx);
+            const rest = usable.filter((b) => b.batchType !== 2).sort((a, b) => a.idx - b.idx);
+            /** Download one batch; null (and the failure recorded) when it cannot be. */
+            const fetchBlob = async (bt) => {
+                try {
+                    return await downloader.get(bt.msgUrl);
                 } catch (e) {
                     recordDownloadFailure(s, bt, e);
                     downloadFailures.push({ batch: bt, error: e });
@@ -1120,39 +1260,41 @@ export class SyncV2 {
                         phase: "warn",
                         detail: `could not download a batch (${e.kind ?? "error"}: ${e.message}) — its conversations are marked failed`,
                     });
-                    continue;
+                    return null;
                 }
-                for (const chunk of splitChunks(blob)) {
-                    if (aborted()) break;
-                    // Hand the event loop back before each chunk. Decode and
-                    // store are synchronous and a single shard can carry tens of
-                    // thousands of messages; the listener keeps the socket alive with
-                    // a setInterval ping, and a blocked loop means a missed ping
-                    // means Zalo drops the connection mid-run. This is the same
-                    // problem a worker thread for decoding would avoid.
-                    await new Promise((r) => setImmediate(r));
-                    try {
-                        let plain;
-                        if (bt.batchType === 2) {
-                            const m = zproto.decryptMetadata(chunk, ik.publicKey, ik.privateKey, ek.privateKey);
-                            sessionRecord = m.sessionRecord;
-                            plain = m.plaintext;
-                        } else {
-                            if (!sessionRecord) continue;
-                            plain = zproto.decryptMessage(chunk, sessionRecord).plaintext;
-                        }
-                        let obj;
-                        try {
-                            obj = protoClass.deserializeBinary(decompress(plain)).toObject();
-                        } catch {
-                            continue;
-                        }
-                        await onObj(obj);
-                    } catch {
-                        /* skip bad chunk */
-                    }
+            };
+            let sessionRecord = null;
+            for (const bt of meta) {
+                if (aborted()) return { downloadFailures };
+                const blob = await fetchBlob(bt);
+                if (!blob) continue;
+                const out = await decodeBlob(blob, { batchType: 2, keys, sessionRecord }, cls);
+                sessionRecord = out.sessionRecord;
+                for (const obj of out.objs) {
+                    if (aborted()) return { downloadFailures };
+                    await onObj(obj);
                 }
             }
+            // Without a session record nothing decrypts, but every batch is still fetched: one that cannot be
+            // fails its scopes, as above.
+            const decodeOf = (bt) =>
+                fetchBlob(bt).then((blob) =>
+                    blob ? decodeBlob(blob, { batchType: bt.batchType, keys, sessionRecord }, cls) : null,
+                );
+            const ahead = [];
+            for (let i = 0; i < rest.length; i++) {
+                while (ahead.length < DECODE_AHEAD && i + ahead.length < rest.length) {
+                    ahead.push(decodeOf(rest[i + ahead.length]));
+                }
+                const out = await ahead.shift();
+                if (aborted()) break;
+                for (const obj of out?.objs ?? []) {
+                    if (aborted()) break;
+                    await onObj(obj);
+                }
+            }
+            // A cancel leaves batches decoding ahead: let them settle, so none runs past the run.
+            await Promise.allSettled(ahead);
             return { downloadFailures };
         };
 
@@ -1216,7 +1358,7 @@ export class SyncV2 {
             if (verdict.error) throw verdict.error;
 
             const convs = [];
-            const convRead = await eachChunkObj(convSession, ekConv, C.SyncChunk, (obj) => {
+            const convRead = await eachChunkObj(convSession, ekConv, "C", (obj) => {
                 for (const c of obj.conversationsList || []) convs.push(c);
             });
             // A conversation list with a hole in it is not a list: say so rather than restore a part of it.
@@ -1229,11 +1371,11 @@ export class SyncV2 {
                     { reason: "download-failed" },
                 );
             }
-            // The conversation session is released as soon as the list is in,
-            // before asking for any messages: it clears the
-            // phone's banner for that round instead of holding it open.
-            disposeOne(convId);
+            // The conversation session stays open with the others: every session of the run is released together at
+            // the end, as Zalo does.
             conversations = convs.length;
+            // The friend and group lists were read while the phone answered; they are needed from here on.
+            await awaitThreadMap();
             // The conversation round carries per-thread state the message
             // rounds never repeat (whether you have replied, and the ids of the
             // newest message). Keep it keyed by the opaque convId so the
@@ -1252,37 +1394,55 @@ export class SyncV2 {
                 // in the window, so separate that from a prompt that was never
                 // confirmed — the two need opposite advice from the caller.
                 reason = confirmed ? "empty-window" : "no-conversations";
+                startNameWork();
                 // The phone answered and had nothing for this window: that IS
                 // the window settled. Only an unconfirmed prompt is a non-result.
                 if (confirmed) recordRestoreSuccess(win, { resolveGaps: true });
                 return done(reason);
             }
 
-            // Tier 3: resolve 1-1 conversations not in the friend list (non-friends, OA) to
-            // real ids + names via /api/gid/decrypt. Left
-            // groups have no per-item endpoint, so they stay opaque.
+            // Tier 3: resolve 1-1 conversations not in the friend list (non-friends, OA) to real ids via
+            // /api/gid/decrypt. Left groups have no per-item endpoint, so they stay opaque. This runs beside the
+            // message requests: only a chunk holding one of these conversations waits for it, and only for the ids
+            // (a chunk is stored under its thread id); the names are looked up after, beside the restore.
             const unresolved = convs.filter((c) => c.convType !== 2 && !threadMap.has(c.convId)).map((c) => c.convId);
+            /** Conversations whose thread id is still being resolved. */
+            const awaitingIds = new Set(unresolved);
+            let idsReady = Promise.resolve();
             if (unresolved.length) {
                 onStatus({ phase: "resolve", detail: `resolving ${unresolved.length} non-friend conversation(s)` });
-                try {
-                    const extra = await resolveNonFriendDms(this.api, unresolved, log, { signal: opts.signal });
-                    for (const [gid, v] of extra)
-                        threadMap.set(gid, {
-                            id: v.id,
-                            name: currentUserName(v.id, { zaloName: v.zaloName }, this.userAliases).name,
-                            zaloName: v.zaloName || "",
-                            snapshotName: v.name,
-                            type: "dm",
+                idsReady = lane
+                    .run(() => resolveNonFriendDms(this.api, unresolved, log, { signal: opts.signal, names: false }))
+                    .then((extra) => {
+                        for (const [gid, v] of extra)
+                            threadMap.set(gid, {
+                                id: v.id,
+                                name: currentUserName(v.id, { zaloName: "" }, this.userAliases).name,
+                                zaloName: "",
+                                snapshotName: "",
+                                type: "dm",
+                            });
+                        senders.refresh();
+                        this._refreshThreadNames(threadMap);
+                        onStatus({
+                            phase: "resolve",
+                            detail: `resolved ${extra.size}/${unresolved.length} via gid/decrypt`,
                         });
-                    this._refreshThreadNames(threadMap);
-                    onStatus({
-                        phase: "resolve",
-                        detail: `resolved ${extra.size}/${unresolved.length} via gid/decrypt`,
-                    });
-                } catch (e) {
-                    log(`tier-3 resolve failed (${e.message})`);
-                }
+                        if (extra.size)
+                            background("non-friend names", () =>
+                                this._nameResolved(extra, threadMap, log, opts.signal),
+                            );
+                    })
+                    .catch((e) => log(`tier-3 resolve failed (${e?.message || e})`))
+                    .finally(() => awaitingIds.clear());
+                this._background.push(idsReady);
             }
+            startNameWork();
+            /** Wait for the tier-3 ids when a chunk holds a conversation they are still being looked up for. */
+            const idsFor = async (parts) => {
+                if (!awaitingIds.size) return;
+                if (parts.some((p) => awaitingIds.has(/^(?:oneone|group)\/(.+)$/.exec(p.id)?.[1]))) await idsReady;
+            };
 
             // `to` is per conversation, not a global bound. Each partition is
             // sent its own conversation's `lastTs` (30 partitions, 30 distinct
@@ -1393,35 +1553,35 @@ export class SyncV2 {
             for (let i = 0; i < todo.length; i += shardSize) shards.push(todo.slice(i, i + shardSize));
             onStatus({ phase: "messages", detail: `${todo.length} conversations in ${shards.length} batch(es)` });
 
-            // ---- message rounds (sharded) ----
-            // Requests go out in waves. The phone serves message sessions one
-            // at a time; firing all fifty shards of a full-history run at once got the socket
-            // dropped with no error frame, so the in-flight count is capped.
-            // Within a wave the requests still go out together, which is what
-            // makes them inherit the single confirmation.
-            const sendWave = async (wave) => {
-                const meta = [];
-                for (const shard of wave) {
-                    const ek = zproto.generateKeyPair();
-                    const sid = newSession(
-                        "msg",
-                        shard.map((q) => q.partition),
-                    );
-                    meta.push({ sid, ek });
-                    // Each request goes out after the one before it was acknowledged, not on a timer (Y4b).
-                    const sent = await sendRequest("msg", sid, ek, {
-                        type: "message",
-                        priority: 2,
-                        batchSize: 2000,
-                        queries: shard,
-                    });
-                    if (sent.socketClosed) {
-                        meta.socketClosed = true;
-                        break;
-                    }
-                }
-                return meta;
-            };
+            // ---- the recent round ----
+            // As Zalo does before the full history: the most recent conversations, a page of messages each, at
+            // priority 0, so the newest chats are usable within seconds. Its messages come again in the full rounds
+            // (the store is idempotent, and they are counted once); it settles no range. Not worth a session when the
+            // whole run is no bigger than it.
+            const recent =
+                recentConversations > 0 && todo.length > recentConversations
+                    ? {
+                          kind: "recent",
+                          queries: todo
+                              .slice()
+                              .sort(
+                                  (a, b) =>
+                                      (convMeta.get(b.partition.split("/")[1])?.lastTs ?? 0) -
+                                      (convMeta.get(a.partition.split("/")[1])?.lastTs ?? 0),
+                              )
+                              .slice(0, recentConversations)
+                              .map((q) => ({ ...q, limit: recentMessages })),
+                          sent: false,
+                      }
+                    : null;
+            onStatus({
+                phase: "messages",
+                detail:
+                    `${concurrency} session(s) consumed at once, up to ${waveSize} requested ahead` +
+                    (recent
+                        ? `; recent round first: ${recent.queries.length} conversation(s) x ${recentMessages} message(s)`
+                        : ""),
+            });
 
             // One budget for the whole run, not one per shard: a per-shard
             // budget multiplies (50 shards x 10 min = eight hours of waiting on
@@ -1454,11 +1614,21 @@ export class SyncV2 {
                 maxResumes: typeof opts.reconnect === "function" ? resolveMaxResumes(opts.maxResumes) : 0,
             });
 
-            // Store one decoded chunk: the same for a first ask and for the one retry.
+            /**
+             * The recent round and a full round store some messages twice (they may run at once): the messages of the
+             * recent round's conversations are counted the first time only.
+             */
+            const recentParts = new Set(recent ? recent.queries.map((q) => q.partition) : []);
+            const countedInRecent = new Set();
+            // Store one decoded chunk: the same for the recent round, a first ask and the one retry. Returns how many
+            // new messages it stored.
             const storeChunk = async (obj) => {
-                // Network identity lookups must finish before opening
-                // the synchronous SQLite transaction for this chunk.
-                await senders.prepare((obj.partitionsList || []).flatMap((p) => p.messagesList || []));
+                // A chunk is stored at once with what is known: senders it does not know are looked up in the
+                // background and filled in afterwards (./senders.js). Only a conversation whose thread id is still
+                // being resolved waits, for the id alone.
+                senders.note((obj.partitionsList || []).flatMap((p) => p.messagesList || []));
+                await idsFor(obj.partitionsList || []);
+                let saved = 0;
                 const rows = [];
                 for (const part of obj.partitionsList || []) {
                     const { gid, hit, threadId } = noteThread(part.id);
@@ -1472,7 +1642,7 @@ export class SyncV2 {
                 // cancel stops the storing (what is stored stays).
                 for (let at = 0; at < rows.length; at += STORE_SLICE) {
                     if (at > 0) await new Promise((r) => setImmediate(r));
-                    if (aborted()) return;
+                    if (aborted()) return saved;
                     runInTransaction(() => {
                         for (const { part, hit, threadId, isGroup, cm, msg } of rows.slice(at, at + STORE_SLICE)) {
                             // The payload's numeric msgType + meta decide the row;
@@ -1501,6 +1671,7 @@ export class SyncV2 {
                                 if (info.type === "group_event") {
                                     replaceLiveGroupEventPlaceholder(threadId, Number(msg.timestamp) || 0);
                                 }
+                                const msgId = syncMsgId(msg, threadId);
                                 insertMessage({
                                     // jspb renders an unset uint64 as
                                     // the STRING "0", which is truthy,
@@ -1512,7 +1683,7 @@ export class SyncV2 {
                                     // it does in a removal's
                                     // globalDelMsgId and a reaction's
                                     // gMsgID.
-                                    msgId: syncMsgId(msg, threadId),
+                                    msgId,
                                     threadId,
                                     senderId: senders.get(msg.senderId).id,
                                     senderName: senders.get(msg.senderId).name,
@@ -1530,6 +1701,12 @@ export class SyncV2 {
                                     // them.
                                     msgStatus: info.raw?.msgStatus,
                                 });
+                                // A message stored twice (the recent round and a full round) is counted once.
+                                if (recentParts.has(part.id)) {
+                                    if (countedInRecent.has(msgId)) continue;
+                                    countedInRecent.add(msgId);
+                                }
+                                saved++;
                                 messagesSaved++;
                                 if (info.hasAttachment) attachmentsSaved++;
                                 typeCounts[info.type] = (typeCounts[info.type] || 0) + 1;
@@ -1544,90 +1721,117 @@ export class SyncV2 {
                         }
                     });
                 }
+                return saved;
             };
 
-            // ---- wave by wave: send, wait, decrypt, decode, store ----
-            // Storing per shard rather than after all of them means an
-            // interrupted run keeps what it already pulled.
-            while (!schedule.done() && !stop) {
-                if (aborted()) {
+            /**
+             * Consume one requested session: wait for it, then download, decode and store what it brought, and settle
+             * its ranges. Up to `concurrency` of these run at once (see runPipeline).
+             *
+             * @param {{kind: "recent"|"shard", idx?: number, queries: object[], sid: string, ek: object}} m
+             * @param {() => boolean} halted
+             * @param {{lost: boolean}} round - set `lost` when the socket died under this session
+             */
+            const consumeOne = async (m, halted, round) => {
+                const left = runDeadline - Date.now();
+                const why = left > 0 ? await waitDone(m.sid, left, halted) : "timeout";
+                // Another session stopped the run first: this one is left as it is (released at the end).
+                if (why === "halted") return;
+                if (why === "socket-closed") {
+                    round.lost = true;
+                    return;
+                }
+                if (why === "cancelled") {
                     cancelled = true;
                     stop = true;
-                    break;
+                    return;
                 }
-                const wave = schedule.nextWave();
-                const waveMeta = await sendWave(wave.map((i) => shards[i]));
-                // A wire that died while the requests were going out loses the rest of the wave with it.
-                let lostSocket = Boolean(waveMeta.socketClosed);
-                for (let k = 0; !lostSocket && k < waveMeta.length; k++) {
-                    const m = waveMeta[k];
-                    const left = runDeadline - Date.now();
-                    const why = left > 0 ? await waitDone(m.sid, left) : "timeout";
-                    if (why === "socket-closed") {
-                        lostSocket = true;
-                        break;
+                if (why === "declined") {
+                    // Same rule as the conversation round: the phone's no ends the run.
+                    declined = sessions.get(m.sid).fatal;
+                    stop = true;
+                    return;
+                }
+                if (why === "idle-timeout" || why === "timeout") {
+                    stop = true;
+                    timedOut = true;
+                    onStatus({
+                        phase: "warn",
+                        detail: `timed out after ${finished}/${shards.length} batch(es) — keeping what arrived`,
+                    });
+                    return;
+                }
+                const served = sessions.get(m.sid);
+                if (m.kind === "recent") {
+                    // The recent round settles nothing: what it brought is stored, the full rounds bring it all.
+                    if (served.err || served.failures.length || why === "stalled")
+                        served.disposeReason ??= DISPOSE_REASON.ERROR;
+                    let saved = 0;
+                    await eachChunkObj(served, m.ek, "M", async (obj) => {
+                        saved += await storeChunk(obj);
+                    });
+                    onStatus({
+                        phase: "progress",
+                        detail: `recent round — ${saved} message(s) from the ${m.queries.length} most recent conversation(s)`,
+                    });
+                    return;
+                }
+                const shard = shards[m.idx];
+                if (why === "stalled") {
+                    // Fail this session alone (an idle timeout fails the session, not the run):
+                    // what arrived is stored, and the conversations it never delivered are asked for once more at
+                    // the end of the run, in sessions of their own.
+                    const missing = shard.filter(
+                        (q) => !served.covered.has(q.partition) && !served.failed.has(q.partition),
+                    );
+                    for (const q of missing) {
+                        served.failed.add(q.partition);
+                        served.failures.push({ partition: q.partition, code: "stalled" });
                     }
-                    if (why === "cancelled") {
-                        cancelled = true;
-                        stop = true;
-                        break;
-                    }
-                    if (why === "declined") {
-                        // Same rule as the conversation round: the phone's no ends the run.
-                        declined = sessions.get(m.sid).fatal;
-                        stop = true;
-                        break;
-                    }
-                    if (why === "stalled") {
-                        // Fail this session alone (an idle timeout fails the session, not the run):
-                        // what arrived is stored, and the conversations it never delivered are asked for once more at
-                        // the end of the run, in sessions of their own.
-                        const stalled = sessions.get(m.sid);
-                        const missing = shards[wave[k]].filter(
-                            (q) => !stalled.covered.has(q.partition) && !stalled.failed.has(q.partition),
-                        );
-                        for (const q of missing) {
-                            stalled.failed.add(q.partition);
-                            stalled.failures.push({ partition: q.partition, code: "stalled" });
-                        }
-                        stalled.disposeReason ??= DISPOSE_REASON.ERROR;
-                        onStatus({
-                            phase: "warn",
-                            detail:
-                                `the phone went idle with ${shards[wave[k]].length - missing.length} of ` +
-                                `${shards[wave[k]].length} conversation(s) of batch ${finished + 1} delivered — ` +
-                                `keeping those, and asking for the other ${missing.length} again at the end`,
-                        });
-                    } else if (why === "idle-timeout" || why === "timeout") {
-                        stop = true;
-                        timedOut = true;
-                        onStatus({
-                            phase: "warn",
-                            detail: `timed out after ${finished}/${shards.length} batch(es) — keeping what arrived`,
-                        });
-                        break;
-                    }
-                    // Served or refused, this shard is settled: a resume must
-                    // not ask the phone for it again.
-                    schedule.settle(wave[k]);
-                    // A message session that was prompted (status 3) rather than
-                    // authorized outright (5) cost the user a second tap.
-                    if (schedule.resumes() && sessions.get(m.sid).statuses.some((st) => Number(st) === 3)) {
-                        rePrompted = true;
-                    }
-                    const served = sessions.get(m.sid);
-                    if (why === "error") {
-                        // Keep the part that did arrive: one bad frame must not drop a whole shard.
-                        onStatus({
-                            phase: "warn",
-                            detail: `batch failed: ${JSON.stringify(served.err)} — keeping the part that arrived`,
-                        });
-                    }
-                    const failedHere = served.failures.length + (served.err ? 1 : 0);
-                    failedBatches += failedHere;
-                    batchStats.failed += failedHere;
-                    batchStats.total += served.batches.length + failedHere;
-                    if (shouldAbortOnFailures(batchStats)) {
+                    served.disposeReason ??= DISPOSE_REASON.ERROR;
+                    onStatus({
+                        phase: "warn",
+                        detail:
+                            `the phone went idle with ${shard.length - missing.length} of ` +
+                            `${shard.length} conversation(s) of batch ${m.idx + 1} delivered — ` +
+                            `keeping those, and asking for the other ${missing.length} again at the end`,
+                    });
+                }
+                // Served or refused, this shard is settled: a resume must not ask the phone for it again.
+                schedule.settle(m.idx);
+                // A message session that was prompted (status 3) rather than
+                // authorized outright (5) cost the user a second tap.
+                if (schedule.resumes() && served.statuses.some((st) => Number(st) === 3)) rePrompted = true;
+                if (why === "error") {
+                    // Keep the part that did arrive: one bad frame must not drop a whole shard.
+                    onStatus({
+                        phase: "warn",
+                        detail: `batch failed: ${JSON.stringify(served.err)} — keeping the part that arrived`,
+                    });
+                }
+                const failedHere = served.failures.length + (served.err ? 1 : 0);
+                failedBatches += failedHere;
+                batchStats.failed += failedHere;
+                batchStats.total += served.batches.length + failedHere;
+                if (shouldAbortOnFailures(batchStats) && !tooManyFailures) {
+                    stop = true;
+                    tooManyFailures = true;
+                    onStatus({
+                        phase: "warn",
+                        detail: `${batchStats.failed} of ${batchStats.total} batches failed — stopping and keeping what arrived`,
+                    });
+                }
+
+                let saved = 0;
+                const read = await eachChunkObj(served, m.ek, "M", async (obj) => {
+                    saved += await storeChunk(obj);
+                });
+
+                // Batches that could not be downloaded count as failed ones, and can stop the run like any other.
+                if (read.downloadFailures.length) {
+                    failedBatches += read.downloadFailures.length;
+                    batchStats.failed += read.downloadFailures.length;
+                    if (shouldAbortOnFailures(batchStats) && !tooManyFailures) {
                         stop = true;
                         tooManyFailures = true;
                         onStatus({
@@ -1635,48 +1839,117 @@ export class SyncV2 {
                             detail: `${batchStats.failed} of ${batchStats.total} batches failed — stopping and keeping what arrived`,
                         });
                     }
-
-                    const before = messagesSaved;
-                    const read = await eachChunkObj(sessions.get(m.sid), m.ek, M.SyncChunk, storeChunk);
-
-                    // Batches that could not be downloaded count as failed ones, and can stop the run like any other.
-                    if (read.downloadFailures.length) {
-                        failedBatches += read.downloadFailures.length;
-                        batchStats.failed += read.downloadFailures.length;
-                        if (shouldAbortOnFailures(batchStats) && !tooManyFailures) {
-                            stop = true;
-                            tooManyFailures = true;
-                            onStatus({
-                                phase: "warn",
-                                detail: `${batchStats.failed} of ${batchStats.total} batches failed — stopping and keeping what arrived`,
-                            });
-                        }
-                    }
-
-                    // The partitions of this shard now stand done, failed, or (a session that ended early) pending.
-                    if (served.err) sessionErrors++;
-                    settleRanges(shards[wave[k]], served);
-                    // The session is released with the others of its wave below, not now: a run's sessions are
-                    // released together once all are consumed. The phone stops serving at about 32 sessions open
-                    // together, which a wave never reaches.
-                    if (served.err || served.failures.length) served.disposeReason ??= DISPOSE_REASON.ERROR;
-
-                    finished++;
-                    // Per-shard progress: without it a 50-shard run prints nothing
-                    // between "50 batch(es)" and the final total, so a stall looks
-                    // exactly like work in progress.
-                    onStatus({
-                        phase: "progress",
-                        detail: `batch ${finished}/${shards.length} — ${messagesSaved - before} new message(s), ${messagesSaved} total`,
-                    });
                 }
 
-                // A wave that was consumed whole: let go of its sessions together, back to back (the next request
-                // waits for the acks, see sendRequest). One that stopped early is released by the end of the run,
-                // each with its own reason (cancelled, declined, failed); one that lost the socket is released by
-                // the first move on the next socket (releaseAbandoned).
-                if (!lostSocket && !stop) await disposeTogether(waveMeta.map((m) => m.sid));
-                if (!lostSocket) continue;
+                // The partitions of this shard now stand done, failed, or (a session that ended early) pending.
+                if (served.err) sessionErrors++;
+                settleRanges(shard, served);
+                // The session stays open until the end of the run, where every session is released together; how it
+                // ended decides the reason it is released with.
+                if (served.err || served.failures.length) served.disposeReason ??= DISPOSE_REASON.ERROR;
+
+                finished++;
+                // Per-shard progress: without it a 50-shard run prints nothing
+                // between "50 batch(es)" and the final total, so a stall looks
+                // exactly like work in progress.
+                onStatus({
+                    phase: "progress",
+                    detail: `batch ${finished}/${shards.length} — ${saved} new message(s), ${messagesSaved} total`,
+                });
+            };
+
+            /**
+             * One socket's worth of the message rounds: the requests go out one after the other, each after the
+             * previous ack (Y4b), at most `waveSize` ahead of the sessions consumed; `concurrency` sessions are
+             * consumed at once, in the order they were asked for. The phone serves while we decode and store.
+             *
+             * @returns {Promise<boolean>} true when the socket died under it
+             */
+            const runPipeline = async () => {
+                const jobs = [];
+                if (recent && !recent.sent) jobs.push(recent);
+                for (const idx of schedule.pending()) jobs.push({ kind: "shard", idx, queries: shards[idx] });
+                const requested = [];
+                const round = { lost: false };
+                const wake = createSignal();
+                let taken = 0;
+                let consumed = 0;
+                let requesting = true;
+                /** The first unexpected error of a request or a consumer: thrown once every loop has stopped. */
+                let failure = null;
+                const halted = () => {
+                    if (aborted()) {
+                        cancelled = true;
+                        stop = true;
+                    }
+                    return stop || round.lost || failure !== null;
+                };
+                const requester = async () => {
+                    try {
+                        for (const job of jobs) {
+                            while (!halted() && requested.length - consumed >= waveSize) await wake.wait();
+                            if (halted()) break;
+                            const ek = zproto.generateKeyPair();
+                            const sid = newSession(
+                                "msg",
+                                job.queries.map((q) => q.partition),
+                            );
+                            if (job.kind === "recent") job.sent = true;
+                            const sent = await sendRequest("msg", sid, ek, {
+                                type: "message",
+                                priority: job.kind === "recent" ? 0 : 2,
+                                batchSize: 2000,
+                                queries: job.queries,
+                            });
+                            if (sent.socketClosed) {
+                                round.lost = true;
+                                break;
+                            }
+                            requested.push({ ...job, sid, ek });
+                            wake.fire();
+                        }
+                    } catch (e) {
+                        failure ??= e;
+                    } finally {
+                        requesting = false;
+                        wake.fire();
+                    }
+                };
+                const consumer = async () => {
+                    for (;;) {
+                        if (halted()) return;
+                        if (taken < requested.length) {
+                            const m = requested[taken++];
+                            try {
+                                await consumeOne(m, halted, round);
+                            } catch (e) {
+                                failure ??= e;
+                            } finally {
+                                consumed++;
+                                // A session ended: the requester may send the next one, a stop reaches every loop.
+                                wake.fire();
+                            }
+                            continue;
+                        }
+                        if (!requesting) return;
+                        await wake.wait();
+                    }
+                };
+                await Promise.all([requester(), ...Array.from({ length: concurrency }, consumer)]);
+                if (failure) throw failure;
+                return round.lost;
+            };
+
+            // ---- the pipeline, and a resume when the socket dies under it ----
+            // What is stored per session stays stored: an interrupted run keeps what it already pulled.
+            while (!schedule.done() && !stop) {
+                if (aborted()) {
+                    cancelled = true;
+                    stop = true;
+                    break;
+                }
+                const lostSocket = await runPipeline();
+                if (!lostSocket) break;
                 socketDied = true;
                 onStatus({
                     phase: "warn",
@@ -1747,11 +2020,10 @@ export class SyncV2 {
                     )
                         break;
                     const retried = sessions.get(sid);
-                    await eachChunkObj(retried, ek, M.SyncChunk, storeChunk);
+                    await eachChunkObj(retried, ek, "M", storeChunk);
                     const had = new Set(failedRanges.keys());
                     settleRanges(queries, retried);
                     if (retried.err || retried.failures.length) retried.disposeReason ??= DISPOSE_REASON.ERROR;
-                    disposeOne(sid);
                     rangeInfo.recovered += queries.filter(
                         (q) => had.has(q.partition) && !failedRanges.has(q.partition),
                     ).length;
@@ -1797,22 +2069,28 @@ export class SyncV2 {
                 throw e;
             }
         } finally {
-            // Every session still open is released with the reason that fits how the run ended: the phone's own
-            // reason when it ended the session (a "no" has one), cancelled for a run the person stopped, finished
-            // for a run that settled its window, failed for one that did not (Y6a). The acks are awaited; on a
+            // Every session of the run is released here, together, as Zalo does: one burst of releases, then one more
+            // try, one at a time, for each that was not acknowledged (./channel.js `releaseAll`). The reason fits how
+            // the run ended: the phone's own reason when it ended the session (a "no" has one), cancelled for a run
+            // the person stopped, finished for a run that settled its window, failed for one that did not (Y6a). On a
             // dead wire this fails fast.
             const settled = !runError && (reason === "complete" || reason === "empty-window");
             await channel.releaseAll((id) => {
                 const s = sessions.get(id);
                 if (Number.isInteger(s?.disposeReason)) return s.disposeReason;
-                // A stop leaves finished sessions finished: only the ones still waiting are cancelled.
-                if (cancelled) return s?.done ? DISPOSE_REASON.SUCCESS : DISPOSE_REASON.CANCELLED;
+                // A session that delivered everything it was asked for is finished, however the run ended; only the
+                // ones still waiting take the run's reason: cancelled for a stop, failed for a run that did not settle.
+                if (s?.done) return DISPOSE_REASON.SUCCESS;
+                if (cancelled) return DISPOSE_REASON.CANCELLED;
                 return settled ? undefined : DISPOSE_REASON.ERROR;
             });
             detachSocketTaps();
             try {
                 detachLive();
             } catch {}
+            await pool?.close();
+            // A run that ended before it needed the lists still lets their read finish, so nothing outlives it.
+            await threadMapReady;
         }
         return done(reason);
     }

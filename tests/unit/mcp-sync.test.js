@@ -127,6 +127,39 @@ for (const reason of ["partial", "timeout", "socket-lost", "no-conversations"]) 
     });
 }
 
+it("a messages job runs while a media job does: media never blocks text, and each class still runs one at a time", async () => {
+    const lock = createStageLock();
+    const pending = {};
+    const runner = (stage) => () =>
+        new Promise((resolve) => {
+            pending[stage] = resolve;
+        });
+    const jobs = createSyncJobs({
+        runners: { messages: runner("messages"), media: runner("media"), cloud: runner("cloud") },
+        lock,
+    });
+    const media = jobs.start({ requestId: "media-1", stage: "media" });
+    assert.equal(media.state, "running");
+    const messages = jobs.start({ requestId: "restore-1", stage: "messages" });
+    assert.equal(messages.state, "running", "the restore starts beside the media download");
+    const cloud = jobs.start({ requestId: "cloud-1", stage: "cloud" });
+    assert.equal(cloud.state, "running", "and so does a cloud walk");
+    await tick();
+    assert.ok(pending.messages && pending.media && pending.cloud, "all three runners were started");
+    assert.throws(() => jobs.start({ requestId: "media-2", stage: "media" }), /busy \(mcp-sync:media\)/);
+    assert.throws(() => jobs.start({ requestId: "restore-2", stage: "messages" }), /busy \(mcp-sync:messages\)/);
+    assert.equal(lock.tryAcquire("history"), null, "the socket is still one stage at a time");
+    assert.equal(lock.tryAcquire("cloud-verify"), null, "and the cloud queue one walk at a time");
+    pending.messages({ reason: "complete" });
+    await tick();
+    assert.equal(jobs.status(messages.jobId).state, "completed", "text finished while media still runs");
+    assert.equal(jobs.status(media.jobId).state, "running");
+    pending.media({ saved: 1 });
+    pending.cloud({ pages: 1 });
+    await tick();
+    assert.equal(lock.current(), null);
+});
+
 it("runner failures are observable and release the lock; status does not retry", async () => {
     const f = fixture();
     f.jobs.start(request);

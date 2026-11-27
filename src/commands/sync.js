@@ -1264,7 +1264,9 @@ function stoppingNotice() {
 export function restoreViaDaemon(accountDir, req, { proc = process } = {}) {
     return whileInterruptible(
         (signal) => {
-            signal.addEventListener("abort", () => void cancelViaDaemon(accountDir), { once: true });
+            signal.addEventListener("abort", () => void cancelViaDaemon(accountDir, { stage: req?.stage }), {
+                once: true,
+            });
             return syncViaDaemon(accountDir, req);
         },
         { onStop: stoppingNotice, proc },

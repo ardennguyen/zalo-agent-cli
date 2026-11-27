@@ -71,10 +71,11 @@ function makeGidDecrypt(api) {
  * @param {object} api - logged-in session
  * @param {string[]} globalIds - the 32-char ids (partition without the `oneone/` prefix)
  * @param {(m: string) => void} [log]
- * @param {{signal?: AbortSignal}} [o] - stops between requests
- * @returns {Promise<Map<string, {id: string, name: string}>>} globalId -> {id, name}
+ * @param {{signal?: AbortSignal, names?: boolean}} [o] - `signal` stops between requests; `names: false` resolves the
+ *   ids only (the names are then empty), for a caller that looks the names up later with {@link lookupUserNames}
+ * @returns {Promise<Map<string, {id: string, name: string, zaloName: string}>>} globalId -> {id, name, zaloName}
  */
-export async function resolveNonFriendDms(api, globalIds, log = () => {}, { signal } = {}) {
+export async function resolveNonFriendDms(api, globalIds, log = () => {}, { signal, names: withNames = true } = {}) {
     const out = new Map();
     if (!globalIds || !globalIds.length) return out;
 
@@ -100,9 +101,30 @@ export async function resolveNonFriendDms(api, globalIds, log = () => {}, { sign
     if (!idToUser.size) return out;
 
     // 2. userId -> display name via getUserInfo (batched). Best-effort.
+    const { names, zaloNames } = withNames
+        ? await lookupUserNames(api, [...new Set(idToUser.values())], log, { signal })
+        : { names: new Map(), zaloNames: new Map() };
+
+    for (const [gid, uid] of idToUser)
+        out.set(gid, { id: uid, name: names.get(uid) || "", zaloName: zaloNames.get(uid) || "" });
+    return out;
+}
+
+/**
+ * Display names for user ids, through `getUserInfo` in paced batches (./user-info.js): what a lookup did not answer
+ * (a rate limit, a cancel, repeated failures) is simply absent.
+ *
+ * @param {object} api - logged-in session
+ * @param {string[]} uids
+ * @param {(m: string) => void} [log]
+ * @param {{signal?: AbortSignal}} [o]
+ * @returns {Promise<{names: Map<string, string>, zaloNames: Map<string, string>, stoppedBy: string|null}>} `names`:
+ *   the Zalo name, else the display name; `zaloNames`: the Zalo name alone
+ */
+export async function lookupUserNames(api, uids, log = () => {}, { signal } = {}) {
     const names = new Map();
     const zaloNames = new Map();
-    const uids = [...new Set([...idToUser.values()])];
+    if (!uids?.length) return { names, zaloNames, stoppedBy: null };
     const named = await runPacedBatches(uids, {
         batchSize: NAME_BATCH,
         label: "getUserInfo",
@@ -120,8 +142,5 @@ export async function resolveNonFriendDms(api, globalIds, log = () => {}, { sign
     }
     if ((named.failed || named.skippedIds) && !named.stoppedBy)
         log("some names may be blank (getUserInfo did not answer for every batch)");
-
-    for (const [gid, uid] of idToUser)
-        out.set(gid, { id: uid, name: names.get(uid) || "", zaloName: zaloNames.get(uid) || "" });
-    return out;
+    return { names, zaloNames, stoppedBy: named.stoppedBy };
 }

@@ -190,10 +190,10 @@ describe("when a cmd 621 notice makes the daemon walk", () => {
         assert.equal(calls.length, 2);
     });
 
-    it("leaves a notice that meets another stage, and does not count it against the throttle", async () => {
+    it("leaves a notice that meets another cloud walk, and does not count it against the throttle", async () => {
         setSyncState("cloudCursor", "my-place");
         const { verifier, calls, lock } = build();
-        const release = lock.tryAcquire("sync");
+        const release = lock.tryAcquire("cloud");
         assert.equal(await verifier.handle(frame()), "stage-running");
         assert.equal(calls.length, 0);
         release();

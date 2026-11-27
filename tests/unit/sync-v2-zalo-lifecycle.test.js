@@ -5,7 +5,8 @@
  *  - one ping per interval, not two;
  *  - a socket that dropped is reopened after a pause, and the first thing sent on the new one is the release, with
  *    reason 3, of every session the dead one left open, before any request, with sessions counted from 1 again;
- *  - sessions are requested up front in a wave, held until the wave is stored, and released together.
+ *  - sessions are requested ahead of the ones consumed (at most thirty ahead), held until the run is stored, and
+ *    released together at its end.
  *
  * Everything runs on the real listener against the fake Zalo's real WebSocket.
  */
@@ -173,9 +174,9 @@ describe("a restore in waves, as Zalo runs it", () => {
         return { result, error, events, phone };
     }
 
-    it("holds a wave's sessions open until the whole wave is stored, then releases them together", async () => {
-        // How many of the seven messages are stored at the moment the phone receives each release. Released one by
-        // one as each shard was stored, the first release of a wave would come with one message of it stored.
+    it("holds every session open until the whole run is stored, then releases them all together", async () => {
+        // How many of the seven messages are stored at the moment the phone receives each release. Released wave by
+        // wave, or one by one as each shard was stored, some releases would come before all seven are.
         const storedAtRelease = [];
         const { result, error, phone } = await run(
             { conversations: convs(7) },
@@ -196,52 +197,56 @@ describe("a restore in waves, as Zalo runs it", () => {
         assert.equal(error, null);
         assert.equal(result.reason, "complete");
         assert.equal(result.messagesSaved, 7);
-        assert.deepEqual(
-            storedAtRelease,
-            [0, 3, 3, 3, 6, 6, 6, 7],
-            "the conversation round's release, then each wave released only once all of its messages are stored",
-        );
+        assert.deepEqual(storedAtRelease, [7, 7, 7, 7, 7, 7, 7, 7], "no release before the whole run is stored");
         assert.deepEqual(
             phone.order.map((o) => o.cmd),
-            [590, 591, 590, 590, 590, 591, 591, 591, 590, 590, 590, 591, 591, 591, 590, 591],
-            "the conversation round and its release, then three waves: all requests, then all releases",
+            [590, 590, 590, 590, 590, 590, 590, 590, 591, 591, 591, 591, 591, 591, 591, 591],
+            "the conversation round and seven sessions, then the eight releases",
         );
     });
 
-    it("requests thirty sessions up front by default, and never more than thirty whatever is asked", async () => {
-        // The phone stops serving at about 32 sessions open together; a wave stays under that.
-        const firstWave = (phone) =>
-            phone.order
-                .map((o) => o.cmd)
-                .slice(2)
-                .findIndex((c) => c === 591);
-        const byDefault = await run({ conversations: convs(33) }, { shardSize: 1 });
+    it("asks for thirty sessions ahead of the ones consumed by default, and never more than thirty", async () => {
+        // The phone takes a long while to serve the first thirty sessions, so none is consumed while the requests go
+        // out: how far the requests run ahead of the sessions stored peaks at the window, and never passes it.
+        const opts = {
+            conversations: convs(33),
+            serveDelayMs: (r) => (r.type === "message" && r.ussidx <= 30 ? 8_000 : 0),
+        };
+        const peakAhead = (phone, events) => {
+            const stored = events.filter((e) => e.phase === "progress").map((e) => e.at);
+            let peak = 0;
+            for (const [i, r] of phone.asked("message").entries())
+                peak = Math.max(peak, i + 1 - stored.filter((t) => t < r.receivedAt).length);
+            return peak;
+        };
+        const timedEvents = [];
+        const onStatus = (e) => timedEvents.push({ ...e, at: Date.now() });
+        const byDefault = await run(opts, { shardSize: 1, recentConversations: 0, onStatus });
         assert.equal(byDefault.error, null);
-        assert.equal(firstWave(byDefault.phone), 30, "thirty 590 before the first of the releases");
+        assert.equal(byDefault.result.messagesSaved, 33);
+        assert.equal(peakAhead(byDefault.phone, timedEvents), 30, "thirty requests ahead of the sessions stored");
         await zalo.stop();
-        const asked = await run({ conversations: convs(33) }, { shardSize: 1, waveSize: 99 });
+        timedEvents.length = 0;
+        const asked = await run(opts, { shardSize: 1, waveSize: 99, recentConversations: 0, onStatus });
         assert.equal(asked.error, null);
-        assert.equal(firstWave(asked.phone), 30, "99 asked, 30 given");
+        assert.equal(peakAhead(asked.phone, timedEvents), 30, "99 asked, 30 given");
     });
 
-    it("releases a wave's sessions one after the other, each after the previous ack (bursts were answered only in part)", async () => {
+    it("releases the run's sessions in one burst, without waiting for each ack (as Zalo does at the end)", async () => {
         const { result, error } = await run(
-            { conversations: convs(10), releaseAckDelayMs: 40 },
+            { conversations: convs(10), releaseAckDelayMs: 200 },
             { shardSize: 1, waveSize: 10 },
         );
         assert.equal(error, null);
         assert.equal(result.reason, "complete");
-        // The releases after the conversation round's: the phone takes 40 ms to answer, so a release that waited for the
-        // previous ack goes out at least that long after it.
-        const releases = zalo.sock.received.filter((f) => f.cmd === 591).slice(1);
-        assert.equal(releases.length, 10);
-        for (const [i, f] of releases.entries()) {
-            if (i > 0)
-                assert.ok(
-                    f.t - releases[i - 1].t >= 35,
-                    `release ${i} went out ${f.t - releases[i - 1].t} ms after the one before`,
-                );
-        }
+        // The phone takes 200 ms to answer each release. One at a time, the eleven would span two seconds; in one burst
+        // every release has gone out before the first ack is back.
+        const releases = zalo.sock.received.filter((f) => f.cmd === 591);
+        assert.equal(releases.length, 11, "the conversation session and the ten message sessions");
+        const spread = releases.at(-1).t - releases[0].t;
+        assert.ok(spread < 150, `the releases went out over ${spread} ms`);
+        const lastRequest = zalo.sock.received.filter((f) => f.cmd === 590).at(-1);
+        assert.ok(releases[0].t >= lastRequest.t, "no release before the last request");
     });
 
     it("fails a session the phone left incomplete and idle on its own, stores what arrived, and asks again at the end", async () => {

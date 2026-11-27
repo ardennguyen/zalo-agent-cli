@@ -79,7 +79,9 @@ Use a unique 1–64 character `requestId` (`A-Z a-z 0-9 . _ : -`) for a new run.
 Retry the same key **and arguments** after a client timeout: while retained, it
 returns the existing job without starting sync or sending another prompt.
 Reusing a key with changed parameters is an error. A busy socket stage returns
-an MCP error immediately; no queued or automatic retry is created.
+an MCP error immediately; no queued or automatic retry is created. The lock is
+per data class: a `messages` job runs while a `media` or `cloud` job does (media
+never holds text up), while two jobs of one class still run one at a time.
 
 The process keeps the last ten jobs and twenty recent progress events per job
 in memory. Jobs, results and request deduplication disappear on restart or
@@ -96,7 +98,8 @@ never arrived) before the restore ends partially, keeping what was stored.
 `mcp start` keeps one sync job tracker shared by the stdio and HTTP transports
 (HTTP creates a fresh MCP server per request but shares the tracker). Both tools
 run the same sync stages as the CLI's daemon channel, use the current session for
-each run, and hold the same stage lock as history fetches and self-heal. No second
+each run, and hold the same stage lock as history fetches and self-heal (by data
+class: the socket stages one at a time, `media` and `cloud` each beside them). No second
 login, WebSocket, database connection or writer is introduced. A socket lost during
 a restore waits for the daemon's reconnect and resumes up to three times, then ends
 partially, as a daemon-routed CLI sync does.

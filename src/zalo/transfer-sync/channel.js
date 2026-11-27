@@ -11,8 +11,10 @@
  *  - **Counters.** `reqId` is `req_<n>` from one counter for every sync frame; `ussidx` counts the sessions of
  *    one run from 0.
  *  - **A release names its reason** (0 cancelled, 1 finished, 2 failed, 3 outdated) and is acknowledged too, 3 s
- *    and three attempts. A session released before its request was acknowledged is released the moment the ack
- *    lands, so the phone never keeps a banner for a session this client has walked away from.
+ *    and three attempts. A run releases its sessions together at its end, as Zalo does: all at once, then one more
+ *    try, one at a time, for each that was not acknowledged. A session released before its request was acknowledged
+ *    is released the moment the ack lands, so the phone never keeps a banner for a session this client has walked
+ *    away from.
  *  - **Open sessions are written down.** A session is recorded when its request goes out and forgotten when its
  *    release is acknowledged. A run that died leaves its sessions in the file, and the next run releases them
  *    with reason 3 before it starts anything.
@@ -35,7 +37,10 @@ export const RETRY_DELAYS_MS = Object.freeze([1_000, 2_000]);
 
 /** How long a release waits for its ack. */
 export const DISPOSE_ACK_MS = 3_000;
-/** Releases sent at once: one, each after the previous ack. Bursts were answered only in part (see sync-v2/index.js). */
+/**
+ * Releases of a dead socket's sessions sent at once: one, each after the previous ack, before the new socket's first
+ * request. (A run's own sessions go out in one burst at its end: see `releaseAll`.)
+ */
 const RELEASE_BURST = 1;
 
 /** The server's "this client is not supported". Not retried. */
@@ -377,16 +382,21 @@ export function createSyncChannel({
         },
 
         /**
-         * Release every open session.
+         * Release every open session, as Zalo does at the end of a run: every release at once, without waiting for
+         * the acks in between, then one more try for each that was not acknowledged, one at a time (a burst was once
+         * answered only in part, and the unanswered ones went through when sent singly).
          *
          * @param {(syncId: string) => number|undefined} [reasonOf] - a session's own reason (the phone's "no" has one)
          * @returns {Promise<number>} how many releases were acknowledged
          */
         async releaseAll(reasonOf = () => undefined) {
-            let acked = 0;
-            for (const syncId of [...sessions.keys()]) {
-                const r = await channel.release(syncId, reasonOf(syncId));
-                if (r.acked) acked++;
+            const ids = [...sessions.keys()];
+            const first = await Promise.all(ids.map((syncId) => channel.release(syncId, reasonOf(syncId))));
+            let acked = first.filter((r) => r.acked).length;
+            for (const [i, syncId] of ids.entries()) {
+                if (first[i].acked || first[i].late || !sessions.has(syncId)) continue;
+                const again = await channel.release(syncId, reasonOf(syncId));
+                if (again.acked) acked++;
             }
             return acked;
         },

@@ -2,7 +2,8 @@
  * The zalo_sync stages the MCP server runs itself, beside the daemon's own runners (src/core/daemon-sync.js:
  * `messages`, `reactions`, `cloud`): `media` downloads the attachments a restore recorded, as `sync-media` does, and
  * `boards` stores notes, pins, polls and reminders, as `sync-boards` does. Neither taps the phone. Both write the
- * cache, and this server is the account's one writer, so they run here, under the same stage lock as the others.
+ * cache, and this server is the account's one writer, so they run here, under the same stage lock as the others:
+ * `media` in a data class of its own, so a restore runs beside it (src/core/daemon-channel.js `stageClass`).
  */
 
 import { getSyncState, getThreadNames } from "../core/db.js";
